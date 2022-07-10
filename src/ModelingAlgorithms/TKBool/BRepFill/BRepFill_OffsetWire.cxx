@@ -254,7 +254,7 @@ static bool KPartCircle(
         anOffset *= -1;
       }
       gp_Circ2d theCirc = AHC->Circle();
-      if (anOffset > 0. || std::abs(anOffset) < theCirc.Radius())
+      if (anOffset >= 0. || std::abs(anOffset) < theCirc.Radius())
       {
         OC = new Geom2d_Circle(theCirc.Position(), theCirc.Radius() + anOffset);
       }
@@ -349,7 +349,7 @@ void BRepFill_OffsetWire::Init(const TopoDS_Face&     Spine,
   TopoDS_Shape                                                             aShape;
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>> aMap;
   bool                                                                     Done;
-  if (KPartCircle(myWorkSpine, 1., myIsOpenResult, 0., aShape, aMap, Done))
+  if (KPartCircle(myWorkSpine, 0., myIsOpenResult, 0., aShape, aMap, Done))
   {
     return;
   }
