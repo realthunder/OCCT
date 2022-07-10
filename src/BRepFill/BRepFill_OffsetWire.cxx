@@ -271,7 +271,7 @@ static Standard_Boolean KPartCircle
         anOffset *= -1;
       }
       gp_Circ2d theCirc = AHC->Circle();
-      if (anOffset > 0. || Abs(anOffset) < theCirc.Radius())
+      if (anOffset >= 0. || Abs(anOffset) < theCirc.Radius())
         OC = new Geom2d_Circle (theCirc.Position(), theCirc.Radius() + anOffset);
       else
       {
@@ -371,7 +371,7 @@ void BRepFill_OffsetWire::Init(const TopoDS_Face&     Spine,
   TopoDS_Shape aShape;
   BRepFill_IndexedDataMapOfOrientedShapeListOfShape aMap;
   Standard_Boolean Done;
-  if (KPartCircle(myWorkSpine,1.,myIsOpenResult,0.,aShape,aMap,Done)) return;
+  if (KPartCircle(myWorkSpine,0.,myIsOpenResult,0.,aShape,aMap,Done)) return;
 
   //-----------------------------------------------------
   // Calculate the map of bissectors to the left.  
