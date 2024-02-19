@@ -799,6 +799,14 @@ void BRepFeat_Form::GlobalPerform()
     } // if(expp.More() && !Comp.IsNull() && !myGShape.IsNull())  {
     //
 
+    if (myJustFeat && myPerfSelection == BRepFeat_NoSelection)
+    {
+      myShape = theGShape;
+      Done();
+      myStatusError = BRepFeat_OK;
+      return;
+    }
+
     //--- generation of "just feature" for assembly = Parts of tool
     bool             bFlag = myPerfSelection != BRepFeat_NoSelection;
     BRepFeat_Builder theBuilder;
