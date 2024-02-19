@@ -636,6 +636,13 @@ static void Descendants(const TopoDS_Shape&,
     }//if(expp.More() && !Comp.IsNull() && !myGShape.IsNull())  {
     //
 
+    if(myJustFeat && myPerfSelection == BRepFeat_NoSelection) {
+      myShape = theGShape;
+      Done();
+      myStatusError = BRepFeat_OK;
+      return;
+    }
+
 //--- generation of "just feature" for assembly = Parts of tool
     Standard_Boolean bFlag = (myPerfSelection == BRepFeat_NoSelection) ? 0 : 1;
     BRepFeat_Builder theBuilder;
