@@ -256,6 +256,14 @@ void Geom_RectangularTrimmedSurface::SetTrim(const Standard_Real U1,
     utrim1 = Udeb;
     utrim2 = Ufin;
   }
+  else if (fabs(U1 - Udeb) < Precision::PConfusion()
+          && fabs(U2 - Ufin) < Precision::PConfusion()
+          && USense)
+  {
+    utrim1 = Udeb;
+    utrim2 = Ufin;
+    isutrimmed = Standard_False;
+  }
   else {
     if ( U1 == U2)
       throw Standard_ConstructionError("Geom_RectangularTrimmedSurface::U1==U2");
@@ -295,6 +303,14 @@ void Geom_RectangularTrimmedSurface::SetTrim(const Standard_Real U1,
   if (!VTrim) {
     vtrim1 = Vdeb;
     vtrim2 = Vfin;
+  }
+  else if (fabs(V1 - Vdeb) < Precision::PConfusion()
+          && fabs(V2 - Vfin) < Precision::PConfusion()
+          && VSense)
+  {
+    vtrim1 = Vdeb;
+    vtrim2 = Vfin;
+    isvtrimmed = Standard_False;
   }
   else {
     if ( V1 == V2)
