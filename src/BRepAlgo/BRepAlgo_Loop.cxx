@@ -91,15 +91,6 @@ void BRepAlgo_Loop::Init(const TopoDS_Face& F)
 static void Bubble(const TopoDS_Edge&        E,
 		   TopTools_SequenceOfShape& Seq) 
 {
-  //Remove duplicates
-  for (Standard_Integer i = 1; i < Seq.Length(); i++)
-    for (Standard_Integer j = i+1; j <= Seq.Length(); j++)
-      if (Seq(i) == Seq(j))
-      {
-        Seq.Remove(j);
-        j--;
-      }
-  
   Standard_Boolean Invert   = Standard_True;
   Standard_Integer NbPoints = Seq.Length();
   Standard_Real    U1,U2;
@@ -797,19 +788,12 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
   }
 
   while (!SV.IsEmpty()) {
-    while (!SV.IsEmpty() && 
-	   SV.First().Orientation() != TopAbs_FORWARD) {
-      SV.Remove(1);
-    }
-    if (SV.IsEmpty())
-      break;
     V1  = TopoDS::Vertex(SV.First());
     SV.Remove(1);
     if (SV.IsEmpty())
       break;
-    if (SV.First().Orientation() == TopAbs_REVERSED) {
+    if (!SV.First().IsSame(V1)) {
       V2  = TopoDS::Vertex(SV.First());
-      SV.Remove(1);
       //-------------------------------------------
       // Copy the edge and restriction by V1 V2.
       //-------------------------------------------
