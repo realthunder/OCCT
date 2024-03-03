@@ -1041,18 +1041,24 @@ void GeomLib_CurveOnSurfaceEvaluator::Evaluate (Standard_Integer *,/*Dimension*/
 {
   gp_Pnt Point;
 
+  Adaptor3d_Curve *C;
+
   //Gestion des positionnements gauche / droite
   if ((DebutFin[0] != FirstParam) || (DebutFin[1] != LastParam)) 
     { 
       TrimCurve = CurveOnSurface.Trim(DebutFin[0], DebutFin[1], Precision::PConfusion());
       FirstParam = DebutFin[0];
       LastParam  = DebutFin[1];
+      C = TrimCurve.get();
     }
+  else {
+      C = &CurveOnSurface;
+  }
 
   //Positionemment
   if (*DerivativeRequest == 0)
     {
-     TrimCurve->D0((*Parameter), Point) ;
+     C->D0((*Parameter), Point) ;
    
      for (Standard_Integer ii = 0 ; ii < 3 ; ii++)
        Result[ii] = Point.Coord(ii + 1);
@@ -1060,14 +1066,14 @@ void GeomLib_CurveOnSurfaceEvaluator::Evaluate (Standard_Integer *,/*Dimension*/
   if (*DerivativeRequest == 1) 
     {
       gp_Vec Vector;
-      TrimCurve->D1((*Parameter), Point, Vector);
+      C->D1((*Parameter), Point, Vector);
       for (Standard_Integer ii = 0 ; ii < 3 ; ii++)
         Result[ii] = Vector.Coord(ii + 1) ;
     }
   if (*DerivativeRequest == 2) 
     {
       gp_Vec Vector, VecBis;
-      TrimCurve->D2((*Parameter), Point, VecBis, Vector);
+      C->D2((*Parameter), Point, VecBis, Vector);
       for (Standard_Integer ii = 0 ; ii < 3 ; ii++)
         Result[ii] = Vector.Coord(ii + 1) ;
     }
