@@ -230,6 +230,13 @@ void Geom_RectangularTrimmedSurface::SetTrim(const double U1,
     utrim1 = Udeb;
     utrim2 = Ufin;
   }
+  else if (std::abs(U1 - Udeb) < Precision::PConfusion()
+           && std::abs(U2 - Ufin) < Precision::PConfusion() && USense)
+  {
+    utrim1     = Udeb;
+    utrim2     = Ufin;
+    isutrimmed = false;
+  }
   else
   {
     if (U1 == U2)
@@ -280,6 +287,13 @@ void Geom_RectangularTrimmedSurface::SetTrim(const double U1,
   {
     vtrim1 = Vdeb;
     vtrim2 = Vfin;
+  }
+  else if (std::abs(V1 - Vdeb) < Precision::PConfusion()
+           && std::abs(V2 - Vfin) < Precision::PConfusion() && VSense)
+  {
+    vtrim1     = Vdeb;
+    vtrim2     = Vfin;
+    isvtrimmed = false;
   }
   else
   {
