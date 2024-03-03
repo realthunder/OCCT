@@ -226,6 +226,7 @@ const TopTools_ListOfShape& BRepAlgo_Image::Image(const TopoDS_Shape& S) const
 {
   if (!HasImage(S)) { 
     static TopTools_ListOfShape L;
+    L.Clear();
     L.Append(S);
     return L;
   }
