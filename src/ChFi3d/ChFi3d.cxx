@@ -130,6 +130,13 @@ ChFiDS_TypeOfConcavity ChFi3d::DefineConnectType(const TopoDS_Edge&     E,
   }
 }
 
+Standard_Boolean ChFi3d::IsTangentFaces(const TopoDS_Edge&  theEdge,
+                                        const TopoDS_Face&  theFace1,
+                                        const TopoDS_Face&  theFace2,
+                                        const GeomAbs_Shape theOrder)
+{
+  return ChFi3d::IsTangentFaces(theEdge, theFace1, theFace2, 0.1, theOrder);
+}
 //=======================================================================
 //function : IsTangentFaces
 //purpose  : 
@@ -137,6 +144,7 @@ ChFiDS_TypeOfConcavity ChFi3d::DefineConnectType(const TopoDS_Edge&     E,
 Standard_Boolean ChFi3d::IsTangentFaces(const TopoDS_Edge&  theEdge,
                                         const TopoDS_Face&  theFace1,
                                         const TopoDS_Face&  theFace2,
+                                        Standard_Real G1Tol,
                                         const GeomAbs_Shape theOrder)
 {
   if (theOrder == GeomAbs_G1 && BRep_Tool::Continuity(theEdge, theFace1, theFace2) != GeomAbs_C0)
@@ -218,7 +226,7 @@ Standard_Boolean ChFi3d::IsTangentFaces(const TopoDS_Edge&  theEdge,
 
     LocalAnalysis_SurfaceContinuity aCont(aC2d1, aC2d2, aPar,
       aSurf1, aSurf2, theOrder,
-      0.001, TolC0, 0.1, 0.1, 0.1);
+      0.001, TolC0, 0.1, 0.1, G1Tol);
     if (!aCont.IsDone())
     {
       if (theOrder == GeomAbs_C2 &&
