@@ -837,7 +837,7 @@ Standard_Boolean ChFi3d_Builder::PerformElement(const Handle(ChFiDS_Spine)& Spin
   if(ff1.IsNull() || ff2.IsNull()) return 0;
 //  Modified by Sergey KHROMOV - Fri Dec 21 17:46:22 2001 End
 //if(BRep_Tool::Continuity(Ec,ff1,ff2) != GeomAbs_C0) return 0;
-  if (ChFi3d::IsTangentFaces(Ec,ff1,ff2)) return 0;
+  if (ChFi3d::IsTangentFaces(Ec,ff1,ff2, 0.001)) return 0;
 //  Modified by Sergey KHROMOV - Fri Dec 21 17:46:24 2001 Begin
 
   TopoDS_Face FirstFace = ff1;
