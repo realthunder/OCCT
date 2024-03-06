@@ -50,7 +50,10 @@ ChFiDS_FilSpine::ChFiDS_FilSpine(const double Tol)
 void ChFiDS_FilSpine::Reset(const bool AllData)
 {
   ChFiDS_Spine::Reset(AllData);
-  laws.Clear();
+  if (!parandrad.IsEmpty())
+  {
+    laws.Clear();
+  }
   if (AllData)
   {
     parandrad.Clear();
@@ -59,7 +62,10 @@ void ChFiDS_FilSpine::Reset(const bool AllData)
   {
     double spinedeb = FirstParameter();
     double spinefin = LastParameter();
-
+    if (parandrad.IsEmpty())
+    {
+      return;
+    }
     gp_XY FirstUandR = parandrad.First();
     gp_XY LastUandR  = parandrad.Last();
     if (std::abs(spinedeb - FirstUandR.X()) > gp::Resolution())
@@ -234,10 +240,18 @@ void ChFiDS_FilSpine::UnSetRadius(const TopoDS_Vertex& V)
 
 void ChFiDS_FilSpine::SetRadius(const occ::handle<Law_Function>& C, const int /*IinC*/)
 {
-  splitdone                                          = false;
-  occ::handle<Law_Composite>                   prout = new Law_Composite();
-  NCollection_List<occ::handle<Law_Function>>& lst   = prout->ChangeLaws();
-  lst.Append(C);
+  splitdone = false;
+  if (dynamic_cast<const Law_Composite*>(C.get()))
+  {
+    laws.Append(C);
+  }
+  else
+  {
+    occ::handle<Law_Composite>                   prout = new Law_Composite();
+    NCollection_List<occ::handle<Law_Function>>& lst   = prout->ChangeLaws();
+    lst.Append(C);
+    laws.Append(prout);
+  }
   parandrad.Clear();
 }
 
@@ -267,6 +281,11 @@ bool ChFiDS_FilSpine::IsConstant() const
 
 bool ChFiDS_FilSpine::IsConstant(const int IE) const
 {
+  if (parandrad.IsEmpty())
+  {
+    return false;
+  }
+
   double Uf = FirstParameter(IE);
   double Ul = LastParameter(IE);
 
@@ -376,8 +395,11 @@ void ChFiDS_FilSpine::AppendElSpine(const occ::handle<ChFiDS_ElSpine>& Els)
 
 void ChFiDS_FilSpine::AppendLaw(const occ::handle<ChFiDS_ElSpine>& Els)
 {
-  occ::handle<Law_Composite> l = ComputeLaw(Els);
-  laws.Append(l);
+  if (!parandrad.IsEmpty())
+  {
+    occ::handle<Law_Composite> l = ComputeLaw(Els);
+    laws.Append(l);
+  }
 }
 
 static void mklaw(NCollection_List<occ::handle<Law_Function>>& res,

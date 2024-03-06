@@ -122,6 +122,7 @@ static TopoDS_Wire WireFromList(NCollection_List<TopoDS_Shape>& Edges)
           anEdge.Reverse();
           V2 = V3;
         }
+        found = true;
         break;
       }
     }
@@ -315,6 +316,19 @@ void BRepFill_Filling::AddConstraints(
     CurFace  = SeqOfConstraints(i).myFace;
     CurOrder = SeqOfConstraints(i).myOrder;
 
+    // this silently defaults to C0 with an invalid value,
+    // where before an exception would be
+    // thrown out of curve constraints. Good, Bad?
+    int orderAdapt = 0;
+    if (CurOrder == GeomAbs_G1)
+    {
+      orderAdapt = 1;
+    }
+    else if (CurOrder == GeomAbs_G2)
+    {
+      orderAdapt = 2;
+    }
+
     if (CurFace.IsNull())
     {
       if (CurOrder == GeomAbs_C0)
@@ -322,7 +336,7 @@ void BRepFill_Filling::AddConstraints(
         occ::handle<BRepAdaptor_Curve> HCurve = new BRepAdaptor_Curve();
         HCurve->Initialize(CurEdge);
         const occ::handle<Adaptor3d_Curve>& aHCurve = HCurve; // to avoid ambiguity
-        Constr = new BRepFill_CurveConstraint(aHCurve, CurOrder, myNbPtsOnCur, myTol3d);
+        Constr = new BRepFill_CurveConstraint(aHCurve, orderAdapt, myNbPtsOnCur, myTol3d);
       }
       else
       { // Pas de representation Topologique
@@ -347,7 +361,7 @@ void BRepFill_Filling::AddConstraints(
           new Adaptor3d_CurveOnSurface(CurvOnSurf);
 
         Constr = new GeomPlate_CurveConstraint(HCurvOnSurf,
-                                               CurOrder,
+                                               orderAdapt,
                                                myNbPtsOnCur,
                                                myTol3d,
                                                myTolAng,
@@ -367,7 +381,7 @@ void BRepFill_Filling::AddConstraints(
       occ::handle<Adaptor3d_CurveOnSurface> HCurvOnSurf = new Adaptor3d_CurveOnSurface(CurvOnSurf);
 
       Constr = new BRepFill_CurveConstraint(HCurvOnSurf,
-                                            CurOrder,
+                                            orderAdapt,
                                             myNbPtsOnCur,
                                             myTol3d,
                                             myTolAng,

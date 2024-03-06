@@ -693,28 +693,18 @@ static void Transform(const bool    WithRotation,
   if (!axe1.IsParallel(axe2, 1.e-4))
   {
     gp_Vec Vtrans(Pos1, Pos2), Vsign;
-    double alpha, beta, sign = 1;
+    double alpha, beta;
     alpha = Vtrans.Dot(axe1);
     beta  = Vtrans.Dot(axe2);
     if (alpha < -1.e-7)
     {
       axe1 *= -1;
     }
-    if (beta < 1.e-7)
+    if (beta < -1.e-7)
     {
       axe2 *= -1;
     }
-    alpha        = Vtrans.Dot(axe1);
-    beta         = Vtrans.Dot(axe2);
     gp_Vec norm2 = axe1 ^ axe2;
-    Vsign.SetLinearForm(Vtrans.Dot(axe1), axe2, -Vtrans.Dot(axe2), axe1);
-    alpha       = Vsign.Dot(axe1);
-    beta        = Vsign.Dot(axe2);
-    bool pasnul = (std::abs(alpha) > 1.e-4 && std::abs(beta) > 1.e-4);
-    if (alpha * beta > 0.0 && pasnul)
-    {
-      sign = -1;
-    }
     gp_Ax1 Norm(Pos2, norm2);
     double ang = axe1.AngleWithRef(axe2, norm2);
     if (!WithRotation)
@@ -728,7 +718,6 @@ static void Transform(const bool    WithRotation,
         ang = ang + M_PI;
       }
     }
-    ang *= sign;
     Pnew = Pnew.Rotated(Norm, ang);
   }
 }

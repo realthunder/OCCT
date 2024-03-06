@@ -361,7 +361,7 @@ int Extrema_ExtCC::NbExt() const
 
 void Extrema_ExtCC::Points(const int N, Extrema_POnCurv& P1, Extrema_POnCurv& P2) const
 {
-  if (N < 1 || N > NbExt())
+  if (N < 1 || N > NbExt() || mypoints.Length() < 2 * N)
   {
     throw Standard_OutOfRange();
   }

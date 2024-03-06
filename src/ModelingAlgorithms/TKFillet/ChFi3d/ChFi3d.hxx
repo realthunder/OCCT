@@ -48,6 +48,12 @@ public:
                                              const TopoDS_Face&  theFace2,
                                              const GeomAbs_Shape Order = GeomAbs_G1);
 
+  Standard_EXPORT static bool IsTangentFaces(const TopoDS_Edge&  theEdge,
+                                             const TopoDS_Face&  theFace1,
+                                             const TopoDS_Face&  theFace2,
+                                             const double        G1Tol,
+                                             const GeomAbs_Shape Order = GeomAbs_G1);
+
   //! Returns Reversed in Or1 and(or) Or2 if
   //! the concave edge defined by the interior of faces F1 and F2,
   //! in the neighbourhood of their boundary E is of the edge opposite to the

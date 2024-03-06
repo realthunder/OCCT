@@ -911,7 +911,7 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
   }
   //  Modified by Sergey KHROMOV - Fri Dec 21 17:46:22 2001 End
   // if(BRep_Tool::Continuity(Ec,ff1,ff2) != GeomAbs_C0) return 0;
-  if (ChFi3d::IsTangentFaces(Ec, ff1, ff2))
+  if (ChFi3d::IsTangentFaces(Ec, ff1, ff2, 0.001))
   {
     return false;
   }
