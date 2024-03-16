@@ -1,0 +1,79 @@
+{% set name = "occt" %}
+{% set version = "7.7.2" %}
+{% set build = 2 %}
+
+{% set build = build + 100 %}   # [variant == "novtk"]
+{% set build = build + 200 %}   # [variant == "all"]
+
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  - git_url : ../
+
+build:
+  number: {{ build }}
+  string: {{ variant }}_h{{ PKG_HASH }}_{{ build }}
+  run_exports:
+    # ABI changes between minor versions, see e.g.
+    # https://github.com/conda-forge/occt-feedstock/issues/97
+    - {{ pin_subpackage('occt', max_pin='x.x.x') }}
+  script_env:
+    - USE_VTK=OFF  # [variant=='novtk']
+    - USE_VTK=ON  # [variant=='all']
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - cmake 3.18
+    - ninja
+    - {{ cdt('mesa-libgl-devel') }}  # [linux]
+    - {{ cdt('libxi-devel') }}       # [linux]
+    - {{ cdt('libxext-devel') }}     # [linux]
+  host:
+    - freetype
+    - freeimage
+    - fontconfig
+    - xorg-libxt  # [linux]
+    - rapidjson
+    - vtk  # [variant=='all']
+  run:
+    - freetype
+    - freeimage
+    - fontconfig
+    - xorg-libxt  # [linux]
+    - rapidjson
+    - vtk  # [variant=='all']
+
+# test:
+#   requires:
+#     - ninja
+#     - cmake
+#   files:
+#     - CMakeLists.txt
+#   commands:
+#     - cmake -G "Ninja" .
+
+about:
+  home: https://github.com/realthunder/FreeCAD
+  license: LGPL2
+  license_family: LGPL
+  license_file: LICENSE
+  summary: 'FreeCAD Link Branch'
+  description: |
+    FreeCAD Link Branch with various enhancement
+about:
+  home: https://github.com/realthunder/OCCT
+  license_family: LGPL
+  license: LGPL-2.1-only
+  license_file: LICENSE_LGPL_21.txt
+  summary: Fork of the occ (opencascade) CAD-Kernel
+  description: |
+    This is a fork of OCC CAD-Kernel with some hot fix patches that maintains
+    binary compatibility with the offical OCC release of the same version.
+
+extra:
+  recipe-maintainers:
+    - realthunder
