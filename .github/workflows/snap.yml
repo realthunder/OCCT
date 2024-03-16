@@ -1,0 +1,26 @@
+name: Publish Snap
+
+on:
+  push:
+    tags:
+      - "*"
+    
+jobs:
+  publish_amd64:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: git permission workaround
+      run: |
+        sudo git config --global --add safe.directory "$GITHUB_WORKSPACE"
+    - name: install snapcraft
+      run: sudo snap install snapcraft --classic
+    - name: build snap 
+      run: |
+          sudo snapcraft --destructive-mode
+          sudo rm -rf $HOME/.config/snapcraft
+    - name: upload snap
+      env:
+        SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.STORE_LOGIN }}
+      run: |
+        snapcraft upload --release=stable freecad-rt-deps-core22*.snap

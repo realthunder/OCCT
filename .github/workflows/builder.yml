@@ -1,0 +1,66 @@
+name: Conda builder
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      arch:
+        required: true
+        type: string
+      python-version:
+        required: true
+        type: string
+      recipe:
+        required: false
+        type: string
+        default: conda
+      use_mamba:
+        required: false
+        default: true
+        type: boolean
+    secrets:
+      token:
+        required: true
+
+jobs:
+  conda_deployment_with_new_tag:
+    name: Conda build for ${{ inputs.os }} ${{ inputs.arch }} py${{ inputs.python-version }}
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Conda environment creation and activation
+        uses: realthunder/setup-miniconda@main
+        with:
+          python-version: ${{ inputs.python-version }}
+          miniforge-variant: Mambaforge
+          auto-update-conda: false
+          auto-activate-base: false
+          show-channel-urls: true
+      - name: Install mamba build
+        if: inputs.use_mamba
+        shell: bash -el {0}
+        run: mamba install boa -c conda-forge
+      - name: Set build variant
+        shell: bash -el {0}
+        run: |
+          if ${{ startsWith(inputs.os, 'macos') }}; then
+            platform=osx
+          elif ${{ startsWith(inputs.os, 'windows') }}; then
+            platform=win
+          else
+            platform=linux
+          fi
+          printf "target_platform:\n  - %s-%s\n" $platform ${{ inputs.arch }} > conda/variant.yaml
+          cat conda/variant.yaml
+      - name: Build and upload the conda packages
+        uses: realthunder/action-build-and-upload-conda-packages@main
+        with:
+          meta_yaml_dir: ${{ inputs.recipe }}
+          python-version: ${{ inputs.python-version }}
+          variant_conf: conda/variant.yaml
+          mambabuild: ${{ inputs.use_mamba }}
+          user: realthunder
+          label: main
+          token: ${{ secrets.token }}

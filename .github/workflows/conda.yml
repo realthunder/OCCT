@@ -1,0 +1,34 @@
+name: Publish conda
+
+on:
+  push:
+    tags:
+      - "*"
+
+  workflow_dispatch:
+
+jobs:
+  conda_deployment_with_new_tag:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-11, ubuntu-latest, windows-latest]
+        python-version: ["3.11"]
+        arch : ["64"]
+        include:
+          # - os: windows-latest
+          #   python-version: "3.8"
+          #   arch : "64"
+          - os: ubuntu-latest
+            arch: aarch64
+            python-version: "3.11"
+          - os: self-hosted-mac
+            arch: arm64
+            python-version: "3.11"
+    uses: ./.github/workflows/builder.yml
+    with:
+      os: ${{ matrix.os }}
+      arch: ${{ matrix.arch }}
+      python-version: ${{ matrix.python-version }}
+    secrets:
+      token: ${{ secrets.ANACONDA_TOKEN }}
