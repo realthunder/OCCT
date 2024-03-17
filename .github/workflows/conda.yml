@@ -3,7 +3,8 @@ name: Publish conda
 on:
   push:
     tags:
-      - "*"
+      - "*all"
+      - "*conda"
 
   workflow_dispatch:
 

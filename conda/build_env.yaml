@@ -1,0 +1,9 @@
+channels:
+  - realthunder
+  - conda-forge
+  - default
+
+dependencies:
+  - anaconda-client
+  - urllib3 <2.0.0
+  - conda-build
