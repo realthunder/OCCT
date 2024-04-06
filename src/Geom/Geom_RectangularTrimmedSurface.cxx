@@ -54,19 +54,19 @@ Handle(Geom_Geometry) Geom_RectangularTrimmedSurface::Copy () const {
 
   Handle(Geom_RectangularTrimmedSurface) S;
 
-  if ( isutrimmed && isvtrimmed ) 
-    S = new RectangularTrimmedSurface (basisSurf,
-				       utrim1   , utrim2,
-				       vtrim1   , vtrim2,
-				       Standard_True, Standard_True);
-  else if ( isutrimmed)
+  if (isutrimmed && !isvtrimmed)
     S = new RectangularTrimmedSurface (basisSurf,
 				       utrim1   , utrim2,
 				       Standard_True, Standard_True);
-  else if (isvtrimmed)
+  else if (isvtrimmed && !isutrimmed)
     S = new RectangularTrimmedSurface (basisSurf,
 				       vtrim1   , vtrim2,
 				       Standard_False    , Standard_True);
+  else 
+    S = new RectangularTrimmedSurface (basisSurf,
+				       utrim1   , utrim2,
+				       vtrim1   , vtrim2,
+				       Standard_True, Standard_True);
 
   return S;
 }
