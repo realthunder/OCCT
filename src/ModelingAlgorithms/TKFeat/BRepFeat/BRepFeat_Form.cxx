@@ -799,7 +799,14 @@ void BRepFeat_Form::GlobalPerform()
     } // if(expp.More() && !Comp.IsNull() && !myGShape.IsNull())  {
     //
 
-    if (myJustFeat && myPerfSelection == BRepFeat_NoSelection)
+    // If we consider myPrefSelection, e.g. BRepFeat_SelectionU, the feature
+    // might be discarded if UntilInShape is true and the generated prism shape
+    // is inside the base. However, this would be perfectly normal if the
+    // caller wants to do a cut from base on its own. So, just return the
+    // feature without filtering.
+    //
+    // if(myJustFeat && myPerfSelection == BRepFeat_NoSelection)
+    if (myJustFeat)
     {
       myShape = theGShape;
       Done();
