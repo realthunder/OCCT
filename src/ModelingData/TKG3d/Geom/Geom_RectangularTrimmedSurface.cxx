@@ -52,17 +52,17 @@ occ::handle<Geom_Geometry> Geom_RectangularTrimmedSurface::Copy() const
 
   occ::handle<Geom_RectangularTrimmedSurface> S;
 
-  if (isutrimmed && isvtrimmed)
-  {
-    S = new RectangularTrimmedSurface(basisSurf, utrim1, utrim2, vtrim1, vtrim2, true, true);
-  }
-  else if (isutrimmed)
+  if (isutrimmed && !isvtrimmed)
   {
     S = new RectangularTrimmedSurface(basisSurf, utrim1, utrim2, true, true);
   }
-  else if (isvtrimmed)
+  else if (isvtrimmed && !isutrimmed)
   {
     S = new RectangularTrimmedSurface(basisSurf, vtrim1, vtrim2, false, true);
+  }
+  else
+  {
+    S = new RectangularTrimmedSurface(basisSurf, utrim1, utrim2, vtrim1, vtrim2, true, true);
   }
 
   return S;
