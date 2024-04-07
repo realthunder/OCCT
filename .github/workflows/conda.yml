@@ -23,9 +23,12 @@ jobs:
           - os: ubuntu-latest
             arch: aarch64
             python-version: "3.11"
-          - os: self-hosted-mac
+          - os: macos-11
             arch: arm64
             python-version: "3.11"
+          # - os: self-hosted-mac
+          #   arch: arm64
+          #   python-version: "3.11"
     uses: ./.github/workflows/builder.yml
     with:
       os: ${{ matrix.os }}
