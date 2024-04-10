@@ -1,3 +1,5 @@
+git describe --long
+echo "GIT_DESCRIBE_NUMBER: $GIT_DESCRIBE_NUMBER"
 cmake -S . -B build  -G Ninja \
       -D CMAKE_FIND_ROOT_PATH="$PREFIX;$BUILD_PREFIX/$HOST/sysroot" \
       -D CMAKE_INSTALL_PREFIX:FILEPATH=$PREFIX \

@@ -30,6 +30,8 @@ jobs:
     runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
       - name: Conda environment creation and activation
         uses: realthunder/setup-miniconda@main
         with:

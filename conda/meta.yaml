@@ -13,8 +13,8 @@ source:
   - git_url : ../
 
 build:
-  number: {{ environ.get("GIT_DESCRIBE_NUMBER", 0) | int + build }}
-  string: {{ variant }}_h{{ PKG_HASH }}_{{ build }}
+  number: {{ GIT_DESCRIBE_NUMBER }}
+  string: {{ variant }}_h{{ PKG_HASH }}_{{ GIT_DESCRIBE_NUMBER }}
   run_exports:
     # ABI changes between minor versions, see e.g.
     # https://github.com/conda-forge/occt-feedstock/issues/97
