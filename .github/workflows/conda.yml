@@ -34,5 +34,6 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       python-version: ${{ matrix.python-version }}
+      use_mamba: ${{ matrix.arch != 'aarch64' }}
     secrets:
       token: ${{ secrets.ANACONDA_TOKEN }}
