@@ -28,6 +28,7 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Curve2d.hxx>
 #include <BRepAlgo_AsDes.hxx>
+#include <BRepAlgo_Loop.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Edge.hxx>
 #include <BRepCheck_Vertex.hxx>
@@ -76,6 +77,7 @@
 #include <Precision.hxx>
 #include <Standard_ConstructionError.hxx>
 #include <Standard_NotImplemented.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
@@ -87,11 +89,13 @@
 #include <TopoDS_Solid.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <TopTools.hxx>
 #include <TopTools_DataMapOfShapeShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopTools_MapOfShape.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <Geom_Line.hxx>
 #include <NCollection_Vector.hxx>
 #include <NCollection_IncAllocator.hxx>
@@ -118,7 +122,6 @@
   Standard_Integer NVN        = 0;  
   static OSD_Chronometer  Clock;
   char name[100];
-
 
 
 
@@ -314,7 +317,7 @@ static
                             TopTools_DataMapOfShapeShape& theETrimEInf);
 
 static 
-  Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
+  Standard_Boolean TrimEdges(const TopTools_ListOfShape& aLFaces,
                              const Standard_Real theOffset,
                              const BRepOffset_Analyse& Analyse,
                              BRepOffset_DataMapOfShapeOffset& theMapSF,
@@ -830,6 +833,7 @@ void BRepOffset_MakeOffset::SetFaces()
     //-------------
     myInitOffsetFace.SetRoot (aFace)  ;    
     myInitOffsetFace.Bind    (aFace, aFace);
+    ShowTopoShape(__FILE__, aFace, "aFace");
     myImageOffset.SetRoot    (aFace)  ;  
   }
 }
@@ -862,6 +866,7 @@ void BRepOffset_MakeOffset::SetFacesWithOffset()
 
 void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRange)
 {  
+  BRepAlgo_LoopIntersectingEdgeMap IntersectingEdgeMap;
   myDone = Standard_False;
   //
 
@@ -916,7 +921,32 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
     const TopoDS_Edge& anE = TopoDS::Edge(anEExp.Current());
     const BRepOffset_ListOfInterval& aLI = myAnalyse.Type(anE);
     if (aLI.IsEmpty())
+    {
+      ShowTopoShape(__FILE__, anE, "EType_Unknown");
       continue;
+    }
+    const char *name = "EType_Unknown";
+    switch(aLI.First().Type()) {
+    case ChFiDS_Concave:
+      name = "EType_Concave";
+      break;
+    case ChFiDS_Convex:
+      name = "EType_Convex";
+      break;
+    case ChFiDS_Tangential:
+      name = "EType_Tangential";
+      break;
+    case ChFiDS_FreeBound:
+      name = "EType_FreeBound";
+      break;
+    case ChFiDS_Other:
+      name = "EType_Other";
+      break;
+    case ChFiDS_Mixed:
+      name = "EType_Mixed";
+      break;
+    }
+    ShowTopoShape(__FILE__, anE, name);
     if (aLI.Last().Type() == ChFiDS_Mixed)
     {
       myError = BRepOffset_MixedConnectivity;
@@ -976,6 +1006,41 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
     }
   }
 
+  for (Standard_Integer ii = 1; ii <= NewEdges.Extent(); ++ii) {
+    const TopoDS_Shape& NE = NewEdges(ii);
+    if (!myInitOffsetEdge.IsImage(NE)) {
+      ShowTopoShape(__FILE__, NE, "NewImageSkip");
+      continue;
+    }
+    const TopoDS_Shape& CE = myInitOffsetEdge.ImageFrom(NE);
+    const TopTools_ListOfShape& LE = myInitOffsetEdge.Image(CE);
+    if (LE.Extent() > 1) {
+      for (TopTools_ListIteratorOfListOfShape itL(LE); itL.More(); itL.Next()) {
+        const TopoDS_Shape& E = itL.Value();
+        if (!E.IsSame(NE)) {
+          if (myImageOffset.HasImage(E)) {
+            TopTools_ListOfShape LEOld = myImageOffset.Image(E);
+            TopTools_ListIteratorOfListOfShape itL1(LEOld);
+            for (; itL1.More(); itL1.Next()) {
+              myImageOffset.Remove(itL1.Value());
+            }
+          }
+          if (!myImageOffset.HasImage(NE)) {
+            ShowTopoShape(__FILE__, E, "NewImageFrom");
+            ShowTopoShape(__FILE__, NE, "NewImage1");
+            myImageOffset.Bind(E, NE);
+          }
+          else {
+            // E is edge from myFaces, NE is extended edge, image of NE is cut edges
+            const TopTools_ListOfShape& LCE = myImageOffset.Image(NE);
+            ShowTopoShape(__FILE__, E, "NewImage", LCE);
+            myImageOffset.Bind(E, LCE);
+          }
+        }
+      }
+    }
+  }
+
   //-------------------------------------------------------
   // Unwinding 2D and reconstruction of modified faces
   //----------------------------------------------------
@@ -984,6 +1049,8 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   {
     return;
   }
+
+
   //-----------------------------------------------------
   // Reconstruction of non modified faces sharing 
   // reconstructed edges
@@ -1025,6 +1092,7 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   // Unwinding 3D.
   //--------------
   SelectShells ();
+  ShowTopoShape(__FILE__, myOffsetShape, "OffsetShape1_");
   //----------------------------------
   // Remove INTERNAL edges if necessary
   //----------------------------------
@@ -1043,6 +1111,7 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   // Creation of solids.
   //----------------------
   MakeSolid (aPS.Next(aSteps(PIOperation_MakeSolid)));
+  ShowTopoShape(__FILE__, myOffsetShape, "OffsetShape2_");
   if (myError != BRepOffset_NoError)
   {
     return;
@@ -1129,7 +1198,11 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     for (exp.Init(myShape,TopAbs_FACE); exp.More(); exp.Next())
     {
       NbF++;
-      Glue.Add (exp.Current());
+      TopoDS_Shape F = exp.Current();
+      if (myImageOffset.HasImage(F)) {
+        F = myImageOffset.Image(F).First();
+      }
+      Glue.Add (F);
     } 
     Standard_Boolean YaResult = 0;
     if (!myOffsetShape.IsNull())
@@ -1316,7 +1389,8 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
 
   Standard_Real aNbFaces = myFaceComp.NbChildren() + myAnalyse.NewFaces().Extent() + myFaces.Extent();
   Standard_Real anOffsetsPart = (myFaceComp.NbChildren() + myAnalyse.NewFaces().Extent()) / aNbFaces;
-  Standard_Real aDeepeningsPart = myFaces.Extent() / aNbFaces;
+  // Standard_Real aDeepeningsPart = myFaces.Extent() / aNbFaces;
+  Standard_Real aDeepeningsPart = 0;
 
   TColStd_Array1OfReal aSteps(0, BuildOffsetByInter_Last - 1);
   {
@@ -1385,10 +1459,20 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
   }
 
   TopTools_ListOfShape aLFaces;
-  for (Exp.Init(myFaceComp,TopAbs_FACE) ; Exp.More(); Exp.Next())
+  for (Exp.Init(myFaceComp,TopAbs_FACE) ; Exp.More(); Exp.Next()) {
+    ShowTopoShape(__FILE__, Exp.Current(), "FaceComp");
     aLFaces.Append (Exp.Current());
-  for (TopTools_ListOfShape::Iterator it (myAnalyse.NewFaces()); it.More(); it.Next())
+  }
+  for (TopTools_ListOfShape::Iterator it (myAnalyse.NewFaces()); it.More(); it.Next()) {
+
+    ShowTopoShape(__FILE__, it.Value(), "FaceCompNew");
     aLFaces.Append (it.Value());
+  }
+  for (TopTools_IndexedMapOfShape::Iterator it (myFaces); it.More(); it.Next()) {
+    ShowTopoShape(__FILE__, it.Value(), "FaceContext");
+    aLFaces.Append (it.Value());
+    // MES.UnBind(it.Value());
+  }
   //---------------------------------------------------------------------------------
   // Extension of neighbor edges of new edges and intersection between neighbors.
   //--------------------------------------------------------------------------------
@@ -1409,7 +1493,7 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
   //Map of edges obtained after FACE-FACE (offsetted) intersection.
   //Key1 is edge trimmed by intersection points with other edges;
   //Item is not-trimmed edge. 
-  if (!TrimEdges(myFaceComp, myOffset, myAnalyse, MapSF, MES, Build,
+  if (!TrimEdges(aLFaces, myOffset, myAnalyse, MapSF, MES, Build,
                  AsDes, AsDes2d, NewEdges, aETrimEInf, anEdgesOrigins))
   {
     myError = BRepOffset_CannotTrimEdges;
@@ -1502,13 +1586,16 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
       return;
     }
     const TopoDS_Shape& FI   = it.Value();
-    myInitOffsetFace.SetRoot(FI);
-    TopoDS_Face  OF  = MapSF(FI).Face();
+    const BRepOffset_Offset *pOffset = MapSF.Seek(FI);
+    TopoDS_Face  OF  = pOffset ? pOffset->Face() : TopoDS::Face(FI);
+    if (pOffset)
+      myInitOffsetFace.SetRoot(FI);
     if (MES.IsBound(OF)) {
       OF = TopoDS::Face(MES(OF));
       if (IMOE.HasImage(OF)) {
         const TopTools_ListOfShape& LOFE = IMOE.Image(OF);
         myInitOffsetFace.Bind(FI,LOFE);
+        ShowTopoShape(__FILE__, FI, "FI1_", LOFE);
         for (itLF.Initialize(LOFE); itLF.More(); itLF.Next()) {
           const TopoDS_Shape& OFE =  itLF.Value();
           myImageOffset.SetRoot(OFE);
@@ -1547,8 +1634,12 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
           continue;
         }
         //
-        myInitOffsetFace.Bind(FI,OF);
-        myImageOffset.SetRoot(OF);
+        ShowTopoShape(__FILE__, FI, "FI2_");
+        if (!myInitOffsetFace.HasImage(FI)) {
+          myInitOffsetFace.Bind(FI,OF);
+          myImageOffset.SetRoot(OF);
+          ShowTopoShape(__FILE__, OF, "OF2_");
+        }
 #ifdef DRAW 
         if (AffichInt2d) {
           sprintf(name,"AF_%d",NbAF++);
@@ -1599,8 +1690,12 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
       }
     }
     else {
-      myInitOffsetFace.Bind(FI,OF);
-      myImageOffset.SetRoot(OF);
+      ShowTopoShape(__FILE__, FI, "FI3_");
+      if (!myInitOffsetFace.HasImage(FI)) {
+        myInitOffsetFace.Bind(FI,OF);
+        ShowTopoShape(__FILE__, OF, "OF3_");
+        myImageOffset.SetRoot(OF);
+      }
       TopTools_MapOfShape View;
       for (Exp2.Init(OF.Oriented(TopAbs_FORWARD),TopAbs_EDGE); 
            Exp2.More(); Exp2.Next()) {
@@ -1670,7 +1765,8 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
           }
         } 
         else { // Free boundary.
-          TopoDS_Shape aNewEdge = MapSF(aFaceRef).Generated(anEdgeRef);
+          const BRepOffset_Offset *pOffset = MapSF.Seek(aFaceRef);
+          TopoDS_Shape aNewEdge = pOffset ? pOffset->Generated(anEdgeRef) : anEdgeRef;
 
           if (MES.IsBound(aNewEdge))
             aNewEdge = MES(aNewEdge);
@@ -1999,6 +2095,8 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
 
     const TopoDS_Face&  OF = It.Value().Face();
     myInitOffsetFace.Bind    (SI,OF);      
+    ShowTopoShape(__FILE__, SI, "SI");
+    ShowTopoShape(__FILE__, OF, "OF");
     myInitOffsetFace.SetRoot (SI);      // Initial<-> Offset
     myImageOffset.SetRoot    (OF);      // FaceOffset root of images
     
@@ -2143,8 +2241,19 @@ void BRepOffset_MakeOffset::ToContext (BRepOffset_DataMapOfShapeOffset& MapSF)
     //--------------
     // MAJ SD.
     //--------------
+
+#if 1
+    if (!BRepCheck_Analyzer(NF, Standard_False).IsValid())
+    {
+        ShapeFix_Shape aFix(NF);
+        aFix.Perform();
+        NF = TopoDS::Face(aFix.Shape());
+    }
+#endif
     myInitOffsetFace.Bind    (S,NF);      
     myInitOffsetFace.SetRoot (S);      // Initial<-> Offset
+    ShowTopoShape(__FILE__, S, "S1_");
+    ShowTopoShape(__FILE__, NF, "NF1_");
     myImageOffset.SetRoot    (NF);
 
     if (S.ShapeType() == TopAbs_FACE) {
@@ -2708,9 +2817,12 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d& Inter, const Mess
     // it is necessary to calculate Inside taking account of the concavity or convexity of edges
     // between the cap and the part.
 
-    if (myJoin == GeomAbs_Arc) 
+    if (myJoin == GeomAbs_Arc)  {
       Inter.ContextIntByArc (myFaces,InSide,myAnalyse,myInitOffsetFace,myInitOffsetEdge, aPS.Next());
+    }
   }
+
+  TopTools_IndexedMapOfShape& NewEdges = Inter.NewEdges();
   if (myInter) {
     //-------------
     //Complete.
@@ -2721,7 +2833,6 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d& Inter, const Mess
       myError = BRepOffset_UserBreak;
       return;
     }
-    TopTools_IndexedMapOfShape& NewEdges = Inter.NewEdges();
     if (myJoin == GeomAbs_Intersection) {
       BRepOffset_Tool::CorrectOrientation (myFaceComp,NewEdges,myAsDes,myInitOffsetFace,myOffset);
     }
@@ -2740,6 +2851,40 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d& Inter, const Mess
 #ifdef OCCT_DEBUG
   if ( ChronBuild) Clock.Show();
 #endif
+
+
+  // Look up new edges and replace AsDes accordingly
+
+  for (Standard_Integer ii = 1; ii <= NewEdges.Extent(); ++ii) {
+    const TopoDS_Shape& NE = NewEdges(ii);
+    if (!myInitOffsetEdge.IsImage(NE)) {
+      ShowTopoShape(__FILE__, NE, "ReplaceAsDesSkipNE");
+      continue;
+    }
+    const TopoDS_Shape& E = myInitOffsetEdge.ImageFrom(NE);
+    if (myAsDes->HasAscendant(E)) {
+      ShowTopoShape(__FILE__, E, "ReplaceAsDes");
+      ShowTopoShape(__FILE__, NE, "ReplaceAsDesWith");
+      myAsDes->Replace(E, NE);
+      continue;
+    }
+
+    const TopTools_ListOfShape& LE = myInitOffsetEdge.Image(E);
+    for (TopTools_ListIteratorOfListOfShape itL(LE); itL.More(); itL.Next()) {
+      const TopoDS_Shape& OE = itL.Value();
+      if (OE.IsSame(NE))
+        continue;
+      if (!myAsDes->HasAscendant(OE)) {
+        ShowTopoShape(__FILE__, E, "ReplaceAsDesSkipE2");
+        ShowTopoShape(__FILE__, OE, "ReplaceAsDesSkipOE2");
+        ShowTopoShape(__FILE__, NE, "ReplaceAsDesSkipNE2");
+        continue;
+      }
+      ShowTopoShape(__FILE__, OE, "ReplaceAsDes");
+      ShowTopoShape(__FILE__, NE, "ReplaceAsDesWith");
+      myAsDes->Replace(OE, NE);
+    }
+  }
 }
 
 //=======================================================================
@@ -2776,7 +2921,7 @@ void BRepOffset_MakeOffset::Intersection2D (const TopTools_IndexedMapOfShape& Mo
       return;
     }
     const TopoDS_Face& F  = TopoDS::Face(Modif(i));
-    BRepOffset_Inter2d::Compute(myAsDes, F, NewEdges, myTol, myEdgeIntEdges, aDMVV, aPS.Next());
+    BRepOffset_Inter2d::Compute(myAsDes, F, NewEdges, myTol, myEdgeIntEdges, aDMVV, aPS.Next(), &myFaces);
   }
   //
   BRepOffset_Inter2d::FuseVertices(aDMVV, myAsDes, myImageVV);
@@ -2838,6 +2983,27 @@ void BRepOffset_MakeOffset::MakeLoops(TopTools_IndexedMapOfShape& Modif, const M
   if (myOffset > 0 ) InSide = 0;
   myMakeLoops.BuildOnContext(LC,myAnalyse,myAsDes,myImageOffset,InSide, aPS.Next(LC.Extent()));
 
+  TopExp_Explorer Exp;
+  TopTools_ListIteratorOfListOfShape itl;
+  for (i = 1; i <= myFaces.Extent(); i++) {
+    const TopoDS_Shape& aFace = myFaces(i);
+    for (Exp.Init(aFace, TopAbs_EDGE); Exp.More(); Exp.Next()) {
+      const TopoDS_Shape& anEdge = Exp.Current();
+      if (!myImageOffset.HasImage(anEdge))
+        continue;
+
+      const TopTools_ListOfShape& LE = myImageOffset.Image(anEdge);
+      if (LE.Extent() == 1 && LE.First().IsSame(anEdge))
+        continue;
+      for (itl.Initialize(myAnalyse.Ancestors(anEdge)); itl.More(); itl.Next()) {
+        if (!itl.Value().IsSame(aFace)) {
+          Modif.Add(itl.Value());
+          ShowTopoShape(__FILE__, itl.Value(), "Modif");
+        }
+      }
+    }
+  }
+
 #ifdef OCCT_DEBUG
   if ( ChronBuild) Clock.Show();
 #endif
@@ -2862,15 +3028,44 @@ void BRepOffset_MakeOffset::MakeFaces (TopTools_IndexedMapOfShape& /*Modif*/,
   TopTools_ListIteratorOfListOfShape itr;
   const TopTools_ListOfShape& Roots = myInitOffsetFace.Roots();
   TopTools_ListOfShape        LOF;
+  TopTools_MapOfShape     MOF;
   //----------------------------------
   // Loop on all faces //.
   //----------------------------------
   for (itr.Initialize(Roots); itr.More(); itr.Next()) {
-    TopoDS_Face F = TopoDS::Face(myInitOffsetFace.Image(itr.Value()).First());
-    if (!myImageOffset.HasImage(F)) {
-      LOF.Append(F);
+    ShowTopoShape(__FILE__, itr.Value(), "BuildFacesRoot");
+    TopoDS_Face FI = TopoDS::Face(myInitOffsetFace.Image(itr.Value()).First());
+    if (!myImageOffset.HasImage(FI)) {
+      LOF.Append(FI);
+      ShowTopoShape(__FILE__, FI, "BuildFacesImage");
+    }
+    else {
+      ShowTopoShape(__FILE__, FI, "BuildFacesImage", myImageOffset.Image(FI));
     }
   }
+  for (Standard_Integer ii = 1; ii <= myFaces.Extent(); ++ii) {
+    const TopoDS_Shape& F = myFaces(ii);
+    for (TopExp_Explorer Exp(F, TopAbs_EDGE); Exp.More(); Exp.Next()) {
+      const TopoDS_Shape& E = Exp.Current();
+      if (!myImageOffset.HasImage(E) || !myAnalyse.HasAncestor(E))
+        continue;
+      ShowTopoShape(__FILE__, E, "BuildFacesRootE", myImageOffset.Image(E));
+      const TopTools_ListOfShape& LA = myAnalyse.Ancestors(E);
+      for (itr.Initialize(LA); itr.More(); itr.Next()) {
+        const TopoDS_Shape& OF = itr.Value();
+        if (!OF.IsSame(F) && MOF.Add(OF)) {
+          ShowTopoShape(__FILE__, OF, "BuildFacesRootOF");
+          LOF.Append(OF);
+          TopTools_ListOfShape LE;
+          for (TopExp_Explorer Exp1(OF, TopAbs_EDGE); Exp1.More(); Exp1.Next()) {
+            LE.Append(Exp1.Current());
+          }
+          myAsDes->Add(OF, LE);
+        }
+      }
+    }
+  }
+
   //
   Message_ProgressScope aPS(theRange, NULL, 1);
   if ((myJoin == GeomAbs_Intersection) && myInter && myIsPlanar) {
@@ -3457,6 +3652,7 @@ void BRepOffset_MakeOffset::MakeShells (const Message_ProgressRange& theRange)
     //
     TopTools_ListOfShape Image;
     myImageOffset.LastImage(aF,Image);
+    ShowTopoShape(__FILE__, aF, "aFIm", Image);
     TopTools_ListIteratorOfListOfShape it2(Image);
     for (; it2.More(); it2.Next()) {
       const TopoDS_Shape& aFIm = it2.Value();
@@ -3469,12 +3665,14 @@ void BRepOffset_MakeOffset::MakeShells (const Message_ProgressRange& theRange)
     for (; Explo.More(); Explo.Next()) {
       const TopoDS_Shape& aF = Explo.Current();
       aLSF.Append(aF);
+      ShowTopoShape(__FILE__, aF, "aF");
     }
     //
     it.Initialize(myWalls);
     for (; it.More(); it.Next()) {
       const TopoDS_Shape& aF = it.Value();
       aLSF.Append(aF);
+      ShowTopoShape(__FILE__, aF, "aF1_");
     }
   }
   //
@@ -3516,6 +3714,7 @@ void BRepOffset_MakeOffset::MakeShells (const Message_ProgressRange& theRange)
       }
     }
   }
+  ShowTopoShape(__FILE__, myOffsetShape, "OffsetShape");
 }
 
 //=======================================================================
@@ -3632,15 +3831,46 @@ void BRepOffset_MakeOffset::SelectShells ()
   for ( ; exp.More(); exp.Next()) {
     const TopoDS_Edge& E = TopoDS::Edge(exp.Current());
     const TopTools_ListOfShape& LA = myAnalyse.Ancestors(E);
+    ShowTopoShape(__FILE__, E, "CheckFree", LA);
     if (LA.Extent() < 2) {
       if (myAnalyse.Type(E).First().Type() == ChFiDS_FreeBound) {
               FreeEdges.Add(E);                       
+              ShowTopoShape(__FILE__, E, "AddFree");
       }
     }  
   }
   // myShape has free borders and there are no caps
   // no unwinding 3d.
   if (!FreeEdges.IsEmpty() && myFaces.IsEmpty()) return;
+
+#if 1
+  TopTools_DataMapIteratorOfDataMapOfShapeListOfShape itM(BRepAlgo_LoopIntersectingEdgeMap::EdgeMap());
+  for (; itM.More(); itM.Next()) {
+    if (!FreeEdges.Contains(itM.Key())) {
+      TopoDS_Shape S = itM.Key();
+      Standard_Boolean Found = Standard_False;
+      TopTools_ListOfShape LE;
+      while (myImageOffset.IsImage(S)) {
+        const TopoDS_Shape& NS = myImageOffset.ImageFrom(S);
+        if (S.IsSame(NS))
+          break;
+        LE.Append(NS);
+        if (FreeEdges.Contains(NS))
+          Found = Standard_True;
+        S = NS;
+      }
+      if (Found)
+        ShowTopoShape(__FILE__, itM.Key(), "AddFreeSkip", LE);
+      else
+        continue;
+    }
+    TopTools_ListIteratorOfListOfShape itL(itM.Value());
+    for (; itL.More(); itL.Next()) {
+      ShowTopoShape(__FILE__, itL.Value(), "AddFree1");
+      FreeEdges.Add(itL.Value());
+    }
+  }
+#endif
 
   myOffsetShape = BRepOffset_Tool::Deboucle3D(myOffsetShape,FreeEdges);
 }
@@ -4375,7 +4605,8 @@ void BRepOffset_MakeOffset::IntersectEdges(const TopTools_ListOfShape& theFaces,
   {
     const TopoDS_Face& aF  = TopoDS::Face (it.Value());
     aTolF = BRep_Tool::Tolerance (aF);
-    if (!BRepOffset_Inter2d::ConnexIntByInt(aF, theMapSF(aF), theMES, theBuild, theAsDes, theAsDes2d,
+    
+    if (!BRepOffset_Inter2d::ConnexIntByInt(aF, theMapSF.Seek(aF), theMES, theBuild, theAsDes, theAsDes2d,
                                             myOffset, aTolF, myAnalyse, aMFV, myImageVV, myEdgeIntEdges, aDMVV, aPS1.Next()))
     {
       myError = BRepOffset_CannotExtentEdge;
@@ -4392,9 +4623,12 @@ void BRepOffset_MakeOffset::IntersectEdges(const TopTools_ListOfShape& theFaces,
   Message_ProgressScope aPS2(aPSOuter.Next(), "Intersecting edges created from vertices", aNbF);
   for (i = 1; i <= aNbF; ++i) {
     const TopoDS_Face& aF = TopoDS::Face(aMFV(i));
+    const BRepOffset_Offset *OFI = theMapSF.Seek(aF);
+    if (!OFI)
+      continue;
     aTolF = BRep_Tool::Tolerance(aF);
     BRepOffset_Inter2d::ConnexIntByIntInVert
-      (aF, theMapSF(aF), theMES, theBuild, theAsDes, theAsDes2d, aTolF, myAnalyse, aDMVV, aPS2.Next());
+      (aF, OFI, theMES, theBuild, theAsDes, theAsDes2d, aTolF, myAnalyse, aDMVV, aPS2.Next());
     if (!aPS2.More())
     {
       myError = BRepOffset_UserBreak;
@@ -4414,7 +4648,7 @@ void BRepOffset_MakeOffset::IntersectEdges(const TopTools_ListOfShape& theFaces,
 //function : TrimEdges
 //purpose  : 
 //=======================================================================
-Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
+Standard_Boolean TrimEdges(const TopTools_ListOfShape& aLFaces,
                  const Standard_Real theOffset,
                  const BRepOffset_Analyse& Analyse,
                  BRepOffset_DataMapOfShapeOffset& theMapSF,
@@ -4430,17 +4664,14 @@ Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
   TopoDS_Shape    NE;
   TopoDS_Edge     TNE;
   TopoDS_Face     NF;
-
-  TopTools_ListOfShape aLFaces;
-  for (Exp.Init (theShape, TopAbs_FACE); Exp.More(); Exp.Next())
-    aLFaces.Append (Exp.Current());
+  BRep_Builder    B;
 
   TopTools_MapOfShape aMFGenerated;
   TopTools_IndexedDataMapOfShapeListOfShape aDMEF;
   for (TopTools_ListOfShape::Iterator it (Analyse.NewFaces()); it.More(); it.Next())
   {
     const TopoDS_Shape& aFG = it.Value();
-    aLFaces.Append (aFG);
+    // aLFaces.Append (aFG);
     aMFGenerated.Add (aFG);
     TopExp::MapShapesAndUniqueAncestors (aFG, TopAbs_EDGE, TopAbs_FACE, aDMEF);
   }
@@ -4448,10 +4679,12 @@ Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
   for (TopTools_ListOfShape::Iterator it (aLFaces); it.More(); it.Next())
   {
     const TopoDS_Face& FI  = TopoDS::Face (it.Value());
-    NF = theMapSF(FI).Face();
+    const BRepOffset_Offset *OFI = theMapSF.Seek(FI);
+    NF = OFI ? OFI->Face() : FI;
     if (theMES.IsBound(NF)) {
       NF = TopoDS::Face(theMES(NF));
     }
+    // ShowTopoShape(__FILE__, NF, "TrimEdges");
     //
     TopTools_MapOfShape View;
     TopTools_IndexedMapOfShape VEmap;
@@ -4466,6 +4699,7 @@ Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
       if (!View.Add(aS)) {
         continue;
       }
+      ShowTopoShape(__FILE__, aS, "Trimming");
       //
       if (theBuild.IsBound(aS)) {
         NE = theBuild(aS);
@@ -4478,12 +4712,15 @@ Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
             pLEOr = theEdgesOrigins.Bound(NEC, TopTools_ListOfShape());
           }
           AppendToList(*pLEOr, aS);
+          ShowTopoShape(__FILE__, NEC, "TrimedOriginal", *pLEOr);
         }
         // trim edges
         if (NE.ShapeType() == TopAbs_EDGE) {
           if (theNewEdges.Add(NE)) {
-            if (!TrimEdge (TopoDS::Edge(NE),theAsDes2d,theAsDes, theETrimEInf))
+            if (!TrimEdge (TopoDS::Edge(NE),theAsDes2d,theAsDes, theETrimEInf)) {
+              ShowTopoShape(__FILE__, NE, "NoTrim");
               return Standard_False;
+            }
           }
         }
         else {
@@ -4496,11 +4733,14 @@ Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
             TopoDS_Edge NEC = TopoDS::Edge(ExpC.Current());
             if (theNewEdges.Add(NEC)) {
               if (!theAsDes2d->Descendant(NEC).IsEmpty()) {
-                if(!TrimEdge (NEC,theAsDes2d, theAsDes, theETrimEInf))
+                if(!TrimEdge (NEC,theAsDes2d, theAsDes, theETrimEInf)) {
+                  ShowTopoShape(__FILE__, NEC, "NoTrim1_");
                   return Standard_False;
+                }
               }
               else {
                 if (theAsDes->HasAscendant(NEC)) {
+                  ShowTopoShape(__FILE__, NEC, "NoTrim2_");
                   theAsDes->Remove(NEC);
                 }
               }
@@ -4510,15 +4750,27 @@ Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
       }
       else {
         if (aS.ShapeType() != TopAbs_EDGE) {
+          ShowTopoShape(__FILE__, aS, "NoTrim3_");
           continue;
         }
-        if (aMFGenerated.Contains (FI) && aDMEF.FindFromKey (aS).Extent() == 1)
+        if (aMFGenerated.Contains (FI) && aDMEF.FindFromKey (aS).Extent() == 1) {
+          ShowTopoShape(__FILE__, aS, "NoTrim4_");
           continue;
+        }
 
-        NE = theMapSF(FI).Generated(aS);
-        //// modified by jgv, 19.12.03 for OCC4455 ////
-        NE.Orientation(aS.Orientation());
-        //
+        if (OFI) {
+          NE = theMapSF(FI).Generated(aS);
+          //// modified by jgv, 19.12.03 for OCC4455 ////
+          NE.Orientation(aS.Orientation());
+        }
+        else {
+          NE = aS.EmptyCopied();
+          TopoDS_Vertex V1, V2;
+          TopExp::Vertices(TopoDS::Edge(aS), V1, V2);
+	  B.Add (NE, V1);
+	  B.Add (NE, V2);
+        }
+
         TopTools_ListOfShape* pLEOr = theEdgesOrigins.ChangeSeek(NE);
         if (!pLEOr) {
           pLEOr = theEdgesOrigins.Bound(NE, TopTools_ListOfShape());
@@ -4526,11 +4778,15 @@ Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
         AppendToList(*pLEOr, aS);
         //
         if (theMES.IsBound(NE)) {
+          ShowTopoShape(__FILE__, NE, "Triming1");
           NE = theMES(NE);
+          ShowTopoShape(__FILE__, NE, "TrimingMES");
           NE.Orientation(aS.Orientation());
           if (theNewEdges.Add(NE)) {
-            if (!TrimEdge (TopoDS::Edge(NE), theAsDes2d, theAsDes, theETrimEInf))
+            if (!TrimEdge (TopoDS::Edge(NE), theAsDes2d, theAsDes, theETrimEInf)) {
+              ShowTopoShape(__FILE__, NE, "NoTrim5_");
               return Standard_False;
+            }
           } 
         }
         else {
@@ -4540,6 +4796,7 @@ Standard_Boolean TrimEdges(const TopoDS_Shape& theShape,
             TopoDS_Edge aNewEdge;
             BRepOffset_Inter2d::ExtentEdge(anEdge, aNewEdge, theOffset);
             theETrimEInf.Bind(anEdge, aNewEdge);
+            ShowTopoShape(__FILE__, aNewEdge, "TrimExtent");
           }
         }
         theAsDes->Add(NF,NE);
@@ -4576,6 +4833,7 @@ Standard_Boolean TrimEdge(TopoDS_Edge&                  NE,
   Standard_Real UMax = -UMin;
 
   const TopTools_ListOfShape& LE = AsDes2d->Descendant(NE);
+  ShowTopoShape(__FILE__, NE, "TrimingEdge", LE);
   //
   Standard_Boolean bTrim = Standard_False;
   //
@@ -4583,6 +4841,8 @@ Standard_Boolean TrimEdge(TopoDS_Edge&                  NE,
     TopTools_ListIteratorOfListOfShape it (LE);
     for (; it.More(); it.Next()) {
       TopoDS_Vertex V = TopoDS::Vertex(it.Value());
+      if (V.IsSame(V1) || V.IsSame(V2))
+        continue;
       if (NE.Orientation() == TopAbs_REVERSED)
         V.Reverse();
       //V.Orientation(TopAbs_INTERNAL);
@@ -4593,7 +4853,9 @@ Standard_Boolean TrimEdge(TopoDS_Edge&                  NE,
         GeomAPI_ProjectPointOnCurve Projector(thePoint, theCurve);
         if (Projector.NbPoints() == 0)
         {
-          return Standard_False;
+          ShowTopoShape(__FILE__, V, "NoTrimNoPoint");
+          // return Standard_False;
+          continue;
         }
         U = Projector.LowerDistanceParameter();
       }
@@ -4605,18 +4867,18 @@ Standard_Boolean TrimEdge(TopoDS_Edge&                  NE,
       }
     }
     //
-    if (V1.IsNull() || V2.IsNull()) {
-      return Standard_False;
-    }
-    if (!V1.IsSame(V2)) {
+    if (UMin < UMax) {
       NE.Free( Standard_True );
       BRep_Builder B;
       TopAbs_Orientation Or = NE.Orientation();
       NE.Orientation(TopAbs_FORWARD);
-      TopoDS_Vertex VF,VL;
-      TopExp::Vertices (NE,VF,VL);
-      B.Remove(NE,VF);
-      B.Remove(NE,VL);
+      TopTools_ListOfShape LV;
+      for (TopoDS_Iterator it(NE); it.More(); it.Next())
+        LV.Append(it.Value());
+      for (TopTools_ListIteratorOfListOfShape itLV(LV); itLV.More(); itLV.Next()) {
+        ShowTopoShape(__FILE__, itLV.Value(), "TrimRemove");
+        B.Remove(NE,itLV.Value());
+      }
       B.Add  (NE,V1.Oriented(TopAbs_FORWARD));
       B.Add  (NE,V2.Oriented(TopAbs_REVERSED));
       B.Range(NE,UMin,UMax);
@@ -4624,15 +4886,28 @@ Standard_Boolean TrimEdge(TopoDS_Edge&                  NE,
       AsDes->Add(NE,V1.Oriented(TopAbs_FORWARD));
       AsDes->Add(NE,V2.Oriented(TopAbs_REVERSED));
       BRepLib::SameParameter(NE, aSameParTol, Standard_True);
+      if (LE.Extent() > 2) {
+        for (it.Initialize(LE); it.More(); it.Next()) {
+          TopoDS_Vertex V = TopoDS::Vertex(it.Value());
+          if (!V.IsSame(V1) && !V.IsSame(V2))
+            AsDes->Add(NE, V);
+        }
+      }
       //
       bTrim = Standard_True;
     }
+    else {
+      ShowTopoShape(__FILE__, NE, "NoTrimNoPoint2_", LE);
+    }
+  }
+  else {
+    ShowTopoShape(__FILE__, NE, "NoTrimRemove");
   }
   //
   if (!bTrim) {
     BRepAdaptor_Curve aBAC(NE);
     if (aBAC.GetType() == GeomAbs_Line) {
-      if (AsDes->HasAscendant(NE)) {
+      if (AsDes->HasAscendant(NE) && !AsDes->HasDescendant(NE)) {
         AsDes->Remove(NE);
       }
     }
@@ -4641,6 +4916,8 @@ Standard_Boolean TrimEdge(TopoDS_Edge&                  NE,
   {
     if (!theETrimEInf.IsBound(NE)) {
       theETrimEInf.Bind(NE, aSourceEdge);
+      ShowTopoShape(__FILE__, aSourceEdge, "TrimedSource");
+      ShowTopoShape(__FILE__, NE, "Trimed", AsDes->Descendant(NE));
     }
   }
   return Standard_True;
@@ -4660,7 +4937,10 @@ void GetEnlargedFaces(const TopTools_ListOfShape& theFaces,
   for (TopTools_ListOfShape::Iterator it (theFaces); it.More(); it.Next())
   {
     const TopoDS_Shape& FI  = it.Value();
-    const TopoDS_Shape& OFI = theMapSF(FI).Face();
+    TopoDS_Shape OFI = FI;
+    const BRepOffset_Offset *pSO = theMapSF.Seek(FI);
+    if (pSO)
+      OFI = pSO->Face();
     if (theMES.IsBound(OFI)) {
       const TopoDS_Face& aLocalFace = TopoDS::Face(theMES(OFI));
       theLSF.Append(aLocalFace);

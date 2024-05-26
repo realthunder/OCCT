@@ -57,6 +57,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <TopTools.hxx>
 #include <TopTools_DataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfOrientedShape.hxx>
@@ -224,12 +225,21 @@ void BRepCheck_Wire::InContext(const TopoDS_Shape& S)
       {
         st = SelfIntersect(TopoDS::Face(S), ed1, ed2, Standard_True);
       }
-      if (st != BRepCheck_NoError) { break; }
+      if (st != BRepCheck_NoError) { 
+        break;
+      }
       st = Closed();
-      if (st != BRepCheck_NoError) { break; }
+      if (st != BRepCheck_NoError) {
+        break;
+      }
       st = Orientation(TopoDS::Face(S));
-      if (st != BRepCheck_NoError) { break; }
+      if (st != BRepCheck_NoError) {
+        break;
+      }
       st = Closed2d(TopoDS::Face(S));
+      if (st != BRepCheck_NoError) {
+        break;
+      }
       break;
     }
     default:
@@ -919,6 +929,11 @@ BRepCheck_Status BRepCheck_Wire::Orientation(const TopoDS_Face& F,
       }
       else if (!Changedesens) { //nbconnex == 0
         theOstat = BRepCheck_NotClosed;
+        if (!VL.IsNull())
+        {
+          ShowTopoShape(__FILE__, VL, "NotClosedV");
+          ShowTopoShape(__FILE__, myShape, "NotClosedW");
+        }
         if (Update)
         {
           BRepCheck::Add (aStatusList, theOstat);

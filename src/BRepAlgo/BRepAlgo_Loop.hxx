@@ -25,6 +25,7 @@
 #include <TopTools_DataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <BRepAlgo_Image.hxx>
+class BRepAlgo_AsDes;
 class TopoDS_Edge;
 
 
@@ -57,6 +58,9 @@ public:
   
   //! Make loops.
   Standard_EXPORT void Perform();
+
+  void Perform(const TopTools_ListOfShape* ContextFaces,
+               const Handle(BRepAlgo_AsDes)& AsDes = Handle(BRepAlgo_AsDes)());
   
   //! Update VE map according to Image Vertex - Vertex
   Standard_EXPORT void UpdateVEmap (TopTools_IndexedDataMapOfShapeListOfShape& theVEmap);
@@ -80,7 +84,12 @@ public:
   //! Returns the list of new edges built from an edge <E>
   //! it can be an empty list.
   Standard_EXPORT const TopTools_ListOfShape& NewEdges (const TopoDS_Edge& E) const;
-  
+
+  const TopTools_DataMapOfShapeListOfShape & CutEdges () const
+  {
+      return myCutEdges;
+  }
+
   //! Returns the datamap of vertices with their substitutes.
   Standard_EXPORT void GetVerticesForSubstitute (TopTools_DataMapOfShapeShape& VerVerMap) const;
   
@@ -105,6 +114,12 @@ protected:
 
 
 private:
+  void CutEdge (const TopoDS_Edge& E,
+                const TopTools_ListOfShape& VonE,
+                TopTools_ListOfShape& NE,
+                Standard_Boolean KeepAll) const;
+
+  void FindLoop();
 
 
 
@@ -123,7 +138,15 @@ private:
 };
 
 
-
+// Helper class to enable collecting intersecting concave edges found when
+// building loop
+class BRepAlgo_LoopIntersectingEdgeMap
+{
+public:
+  BRepAlgo_LoopIntersectingEdgeMap();
+  ~BRepAlgo_LoopIntersectingEdgeMap();
+  static TopTools_DataMapOfShapeListOfShape &EdgeMap();
+};
 
 
 

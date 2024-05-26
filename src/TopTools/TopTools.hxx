@@ -22,8 +22,11 @@
 #include <Standard_Handle.hxx>
 
 #include <Standard_OStream.hxx>
-class TopoDS_Shape;
 
+#include <TopTools_ListOfShape.hxx>
+#include <TopTools_SequenceOfShape.hxx>
+#include <TopTools_MapOfShape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 
 //! The  TopTools package provides   utilities for the
 //! topological data structure.
@@ -84,5 +87,17 @@ public:
   Standard_EXPORT static void Dummy (const Standard_Integer I);
 
 };
+
+extern "C" {
+typedef Standard_Boolean FuncShowTopoShape(const char *Key, const TopoDS_Shape &s, const char *name);
+Standard_EXPORT void SetFuncShowTopoShape(FuncShowTopoShape *func);
+}
+
+Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopoDS_Shape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_ListOfShape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_SequenceOfShape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_IndexedMapOfShape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_MapOfShape &, Standard_Boolean Oriented = 0);
 
 #endif // _TopTools_HeaderFile

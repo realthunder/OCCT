@@ -29,6 +29,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_Image.hxx>
+#include <BRepAlgo_Loop.hxx>
 #include <BRepLib.hxx>
 #include <BRepLib_MakeEdge.hxx>
 #include <BRepLib_MakeFace.hxx>
@@ -102,6 +103,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <TopTools.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_SequenceOfShape.hxx>
 
@@ -135,6 +137,7 @@ static Standard_Integer NbExtE      = 1;
 #ifdef OCCT_DEBUG
 static Standard_Boolean AffichExtent = Standard_False;
 #endif
+
 
 static
   void PerformPlanes(const TopoDS_Face& theFace1,
@@ -724,7 +727,18 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face& F1,
   Handle (Geom_Surface) S1 = BRep_Tool::Surface(F1);
   Handle (Geom_Surface) S2 = BRep_Tool::Surface(F2);  
 
-  GeomInt_IntSS Inter (S1,S2, Precision::Confusion(),1,1,1);
+  Standard_Real umin,umax,vmin,vmax;
+
+  Handle(GeomAdaptor_Surface) AS1 = new GeomAdaptor_Surface();
+  BRepTools::UVBounds(F1,umin,umax,vmin,vmax);
+  AS1->Load(S1,umin,umax,vmin,vmax);
+
+  Handle(GeomAdaptor_Surface) AS2 = new GeomAdaptor_Surface();
+  BRepTools::UVBounds(F2,umin,umax,vmin,vmax);
+  AS2->Load(S2,umin,umax,vmin,vmax);
+
+  GeomInt_IntSS Inter;
+  Inter.Perform (AS1,AS2, Precision::Confusion(),1,1,1);
   
   if (Inter.IsDone()) {
     for (Standard_Integer i = 1; i <= Inter.NbLines(); i++) {
@@ -3532,14 +3546,20 @@ void BRepOffset_Tool::ExtentFace (const TopoDS_Face&            F,
       const TopoDS_Edge& E = TopoDS::Edge(exp2.Current());
       if (ConstShapes.IsBound(E)) ToBuild.UnBind(E);
       if (ToBuild.IsBound(E)) {
-        EnLargeFace(TopoDS::Face(ToBuild(E)),StopFace,Standard_False);
+        const TopoDS_Shape& FTB = ToBuild(E);
+        EnLargeFace(TopoDS::Face(FTB),StopFace,Standard_False);
         TopoDS_Face NullFace;
         BRepOffset_Tool::Inter3D (EF,StopFace,LInt1,LInt2,Side,E,NullFace,NullFace);
         // No intersection, it may happen for example for a chosen (non-offsetted) planar face and
         // its neighbour offseted cylindrical face, if the offset is directed so that
         // the radius of the cylinder becomes smaller.
-        if (LInt1.IsEmpty())
+        if (LInt1.IsEmpty()) {
+          ShowTopoShape(__FILE__, FTB, "StopFaceSkip");
           continue;  
+        }
+
+        ShowTopoShape(__FILE__, FTB, "StopFace");
+
 	if (LInt1.Extent() > 1) { 
 	  // l intersection est en plusieurs edges (franchissement de couture)
 	  SelectEdge (F,EF,E,LInt1);
@@ -3910,12 +3930,16 @@ TopoDS_Shape BRepOffset_Tool::Deboucle3D(const TopoDS_Shape& S,
           if (anEdge.Orientation() == TopAbs_INTERNAL) {
             const TopoDS_Face& aFace = TopoDS::Face(aLF.First());
             if (aFace.Orientation() != TopAbs_INTERNAL) {
+              ShowTopoShape(__FILE__, anEdge, "Internal", aLF);
               continue;
             }
           }
           if (!Boundary.Contains(anEdge) &&
               !BRep_Tool::Degenerated(anEdge))
+          {
+            ShowTopoShape(__FILE__, anEdge, "NoFreeFound", aLF);
             JeGarde = Standard_False;
+          }
         }
       }
       if (JeGarde) SS = S;
