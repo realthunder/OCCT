@@ -21,6 +21,20 @@
 #include <TopoDS_Shape.hxx>
 #include <TopTools_MapOfOrientedShape.hxx>
 
+extern "C" {
+#if 0
+void showTopoShape(const TopoDS_Shape &s, const char *name);
+void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
+#else
+static void showTopoShape(const TopoDS_Shape &s, const char *name)
+{
+}
+static void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes)
+{
+}
+#endif
+}
+
 IMPLEMENT_STANDARD_RTTIEXT(BRepAlgo_AsDes,Standard_Transient)
 
 //=======================================================================

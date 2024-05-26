@@ -65,6 +65,19 @@
 #include <TopTools_MapOfShape.hxx>
 
 #include <stdio.h>
+extern "C" {
+#if 0
+void showTopoShape(const TopoDS_Shape &s, const char *name);
+void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
+#else
+static void showTopoShape(const TopoDS_Shape &s, const char *name)
+{
+}
+static void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes)
+{
+}
+#endif
+}
 IMPLEMENT_STANDARD_RTTIEXT(BRepCheck_Wire,BRepCheck_Result)
 
 static void Propagate(const TopTools_IndexedDataMapOfShapeListOfShape&,
@@ -224,12 +237,21 @@ void BRepCheck_Wire::InContext(const TopoDS_Shape& S)
       {
         st = SelfIntersect(TopoDS::Face(S), ed1, ed2, Standard_True);
       }
-      if (st != BRepCheck_NoError) { break; }
+      if (st != BRepCheck_NoError) { 
+        break;
+      }
       st = Closed();
-      if (st != BRepCheck_NoError) { break; }
+      if (st != BRepCheck_NoError) {
+        break;
+      }
       st = Orientation(TopoDS::Face(S));
-      if (st != BRepCheck_NoError) { break; }
+      if (st != BRepCheck_NoError) {
+        break;
+      }
       st = Closed2d(TopoDS::Face(S));
+      if (st != BRepCheck_NoError) {
+        break;
+      }
       break;
     }
     default:
@@ -919,6 +941,11 @@ BRepCheck_Status BRepCheck_Wire::Orientation(const TopoDS_Face& F,
       }
       else if (!Changedesens) { //nbconnex == 0
         theOstat = BRepCheck_NotClosed;
+        if (!VL.IsNull())
+        {
+          showTopoShape(VL, "NotClosedV");
+          showTopoShape(myShape, "NotClosedW");
+        }
         if (Update)
         {
           BRepCheck::Add (aStatusList, theOstat);

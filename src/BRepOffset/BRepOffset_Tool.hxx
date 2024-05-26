@@ -159,6 +159,7 @@ public:
   Standard_EXPORT static void ExtentFace (const TopoDS_Face& F,
                                           TopTools_DataMapOfShapeShape& ConstShapes,
                                           TopTools_DataMapOfShapeShape& ToBuild,
+                                          TopTools_IndexedMapOfShape& IntersectingFaces,
                                           const TopAbs_State Side,
                                           const Standard_Real TolConf,
                                           TopoDS_Face& NF);

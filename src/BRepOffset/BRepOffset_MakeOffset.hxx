@@ -163,6 +163,8 @@ private:
   Standard_EXPORT void BuildOffsetByArc(const Message_ProgressRange& theRange);
   
   Standard_EXPORT void BuildOffsetByInter(const Message_ProgressRange& theRange);
+  void BuildOffsetByInter(const Message_ProgressRange& theRange,
+                          TopTools_IndexedMapOfShape *IntersectingFaces);
 
   //! Make Offset faces
   Standard_EXPORT void MakeOffsetFaces(BRepOffset_DataMapOfShapeOffset& theMapSF, const Message_ProgressRange& theRange);
@@ -192,7 +194,9 @@ private:
 
   Standard_EXPORT void MakeSolid(const Message_ProgressRange& theRange);
   
-  Standard_EXPORT void ToContext (BRepOffset_DataMapOfShapeOffset& MapSF);
+  Standard_EXPORT void ToContext (TopTools_IndexedMapOfShape& FacesToBuild,
+                                  BRepOffset_DataMapOfShapeOffset& MapSF,
+                                  TopTools_IndexedMapOfShape& IntersectingFaces);
   
   //! Private method use to update the map face<->offset
   Standard_EXPORT void UpdateFaceOffset();
