@@ -29,6 +29,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_Image.hxx>
+#include <BRepAlgo_Loop.hxx>
 #include <BRepLib.hxx>
 #include <BRepLib_MakeEdge.hxx>
 #include <BRepLib_MakeFace.hxx>
@@ -135,6 +136,33 @@ static Standard_Integer NbExtE      = 1;
 #ifdef OCCT_DEBUG
 static Standard_Boolean AffichExtent = Standard_False;
 #endif
+
+extern "C" {
+#if 1
+void showTopoShape(const TopoDS_Shape &s, const char *name);
+void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
+#else
+static void showTopoShape(const TopoDS_Shape &s, const char *name)
+{
+}
+static void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes)
+{
+}
+#endif
+}
+// #define DRAW
+Standard_Boolean AffichInter  = Standard_True;
+static Standard_Integer NbNewEdges  = 1;
+static Standard_Integer NbFaces     = 1;
+static Standard_Integer NbFOB       = 1;
+static Standard_Integer NbFTE       = 1;
+static Standard_Integer NbExtE      = 1;
+
+namespace DBRep {
+static void Set(const char *name, const TopoDS_Shape &shape) {
+    showTopoShape(shape, name);
+}
+}
 
 static
   void PerformPlanes(const TopoDS_Face& theFace1,
@@ -724,7 +752,18 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face& F1,
   Handle (Geom_Surface) S1 = BRep_Tool::Surface(F1);
   Handle (Geom_Surface) S2 = BRep_Tool::Surface(F2);  
 
-  GeomInt_IntSS Inter (S1,S2, Precision::Confusion(),1,1,1);
+  Standard_Real umin,umax,vmin,vmax;
+
+  Handle(GeomAdaptor_Surface) AS1 = new GeomAdaptor_Surface();
+  BRepTools::UVBounds(F1,umin,umax,vmin,vmax);
+  AS1->Load(S1,umin,umax,vmin,vmax);
+
+  Handle(GeomAdaptor_Surface) AS2 = new GeomAdaptor_Surface();
+  BRepTools::UVBounds(F2,umin,umax,vmin,vmax);
+  AS2->Load(S2,umin,umax,vmin,vmax);
+
+  GeomInt_IntSS Inter;
+  Inter.Perform (AS1,AS2, Precision::Confusion(),1,1,1);
   
   if (Inter.IsDone()) {
     for (Standard_Integer i = 1; i <= Inter.NbLines(); i++) {
@@ -3910,12 +3949,16 @@ TopoDS_Shape BRepOffset_Tool::Deboucle3D(const TopoDS_Shape& S,
           if (anEdge.Orientation() == TopAbs_INTERNAL) {
             const TopoDS_Face& aFace = TopoDS::Face(aLF.First());
             if (aFace.Orientation() != TopAbs_INTERNAL) {
+              showTopoShapes(anEdge, "Internal", aLF);
               continue;
             }
           }
           if (!Boundary.Contains(anEdge) &&
               !BRep_Tool::Degenerated(anEdge))
+          {
+            showTopoShapes(anEdge, "NoFreeFound", aLF);
             JeGarde = Standard_False;
+          }
         }
       }
       if (JeGarde) SS = S;

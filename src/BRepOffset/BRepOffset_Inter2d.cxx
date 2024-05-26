@@ -87,6 +87,20 @@ static Standard_Integer NbE2d = 0;
 static Standard_Integer NbNewVertices  = 0;
 #endif
 
+extern "C" {
+#if 0
+void showTopoShape(const TopoDS_Shape &s, const char *name);
+void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
+#else
+static void showTopoShape(const TopoDS_Shape &s, const char *name)
+{
+}
+static void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes)
+{
+}
+#endif
+}
+
 //=======================================================================
 //function : CommonVertex
 //purpose  : 
@@ -454,6 +468,7 @@ static void EdgeInter(const TopoDS_Face&              F,
       Geom2dAdaptor_Curve GAC1(pcurve1, f[1], l[1]);
       Geom2dAdaptor_Curve GAC2(pcurve2, f[2], l[2]);
       Geom2dInt_GInter Inter2d( GAC1, GAC2, TolDub, TolDub );
+      Standard_Boolean InterEndpoint = Standard_False;
       for (i = 1; i <= Inter2d.NbPoints(); i++)
         {
           gp_Pnt P3d;
@@ -464,9 +479,25 @@ static void EdgeInter(const TopoDS_Face&              F,
               gp_Pnt2d P2d = Inter2d.Point(i).Value();
               P3d = BAsurf.Value( P2d.X(), P2d.Y() );
             }
+          Standard_Real ParamsOnE1 = Inter2d.Point(i).ParamOnFirst();
+          Standard_Real ParamsOnE2 = Inter2d.Point(i).ParamOnSecond();
+          if (Abs(ParamsOnE1 - f[1]) <= Precision::Confusion()
+              || Abs(ParamsOnE1 - l[1]) <= Precision::Confusion()
+              || Abs(ParamsOnE2 - f[2]) <= Precision::Confusion()
+              || Abs(ParamsOnE2 - l[2]) <= Precision::Confusion())
+          {
+            if (!InterEndpoint) {
+              InterEndpoint = Standard_True;
+              ResPoints.Clear();
+              ResParamsOnE1.Clear();
+              ResParamsOnE2.Clear();
+            }
+          }
+          else if (InterEndpoint)
+            continue;
           ResPoints.Append( P3d );
-          ResParamsOnE1.Append( Inter2d.Point(i).ParamOnFirst() );
-          ResParamsOnE2.Append( Inter2d.Point(i).ParamOnSecond() );
+          ResParamsOnE1.Append( ParamsOnE1 );
+          ResParamsOnE2.Append( ParamsOnE2 );
         }
 
       for (i = 1; i <= ResPoints.Length(); i++)
@@ -545,6 +576,8 @@ static void EdgeInter(const TopoDS_Face&              F,
           LV1.Append( aNewVertex.Oriented(OO1) );
           LV2.Append( aNewVertex.Oriented(OO2) );
         }
+        showTopoShapes(E1, "InterE1_", LV1);
+        showTopoShapes(E2, "InterE2_", LV2);
     }
   
   //----------------------------------
