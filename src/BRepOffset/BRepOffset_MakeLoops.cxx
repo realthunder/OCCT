@@ -90,6 +90,8 @@ void BRepOffset_MakeLoops::Build(const TopTools_ListOfShape&   LF,
     const TopTools_ListOfShape& LE = AsDes->Descendant(F);
     TopTools_ListOfShape        AddedEdges;
 
+    showTopoShapes(F, "LoopFace", LE);
+
     for (itl.Initialize(LE); itl.More(); itl.Next()) {
       TopoDS_Edge E = TopoDS::Edge(itl.Value());
       if (Image.HasImage(E)) {
@@ -302,6 +304,9 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
     if (InSide) Loops.Init(TopoDS::Face(aReversedF));
 //    if (InSide) Loops.Init(TopoDS::Face(F.Reversed()));
     else        Loops.Init(F);
+
+    showTopoShape(F, "LoopContext");
+
     //--------------------------------------------------------
     // return edges of F not modified by definition.
     //--------------------------------------------------------
@@ -314,6 +319,7 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
 	// the stop of cups except for the connectivity stops between caps.
 	//      if (!AsDes->HasAscendant(CE)) {
         TopoDS_Shape aReversedE = CE.Reversed();
+        showTopoShape(CE, "LoopContextE");
 	if (InSide) Loops.AddConstEdge(CE);
 	else        Loops.AddConstEdge(TopoDS::Edge(aReversedE));
 //	else        Loops.AddConstEdge(TopoDS::Edge(CE.Reversed()));
@@ -334,6 +340,7 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
 	// See pb for the edges that have disappeared?
 	//-------------------------------------------
 	const TopTools_ListOfShape& LCE = Image.Image(E);
+        showTopoShapes(E, "LoopContextImageE", LCE);
 	for (itLCE.Initialize(LCE); itLCE.More(); itLCE.Next()) {
 	  TopoDS_Shape CE = itLCE.Value().Oriented(E.Orientation()); 	  
 	  if (MapExtent.Contains(E)) {
@@ -365,8 +372,10 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
 	    Loops.AddEdge(E,AsDes->Descendant(E));
 	  }
 	  AddedEdges.Append (E);
+          showTopoShapes(E, "LoopContextAddEdge", LV);
 	}
 	else if (IsBetweenCorks(E,AsDes,LContext)) {
+          showTopoShape(E, "LoopContextConstEdge_");
 	TopoDS_Shape aLocalShape = E.Reversed();
 	  if (InSide) Loops.AddConstEdge(E);
 	  else        Loops.AddConstEdge(TopoDS::Edge(aLocalShape));
@@ -374,6 +383,9 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
 //	  else        Loops.AddConstEdge(TopoDS::Edge(E.Reversed()));
 	}
 	else { 
+          char name[256];
+          snprintf(name, sizeof(name), "LoopContextConstEdge1_%x_%p", E.HashCode(0xffff), &Image);
+          showTopoShape(E, name);
 	  TopoDS_Shape aLocalShape = E.Reversed();
 	  if (InSide) Loops.AddConstEdge(TopoDS::Edge(aLocalShape));
 	  else        Loops.AddConstEdge(E);

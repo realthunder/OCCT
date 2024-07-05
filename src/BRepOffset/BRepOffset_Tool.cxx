@@ -3458,6 +3458,7 @@ void BRepOffset_Tool::BuildNeighbour (const TopoDS_Wire& W,
 void BRepOffset_Tool::ExtentFace (const TopoDS_Face&            F,
 				  TopTools_DataMapOfShapeShape& ConstShapes,
 				  TopTools_DataMapOfShapeShape& ToBuild,
+                                  TopTools_IndexedMapOfShape& IntersectingFaces,
 				  const TopAbs_State            Side,
 				  const Standard_Real           TolConf,
 				  TopoDS_Face&                  NF)
@@ -3571,14 +3572,21 @@ void BRepOffset_Tool::ExtentFace (const TopoDS_Face&            F,
       const TopoDS_Edge& E = TopoDS::Edge(exp2.Current());
       if (ConstShapes.IsBound(E)) ToBuild.UnBind(E);
       if (ToBuild.IsBound(E)) {
+        const TopoDS_Shape& FTB = ToBuild(E);
         EnLargeFace(TopoDS::Face(ToBuild(E)),StopFace,Standard_False);
         TopoDS_Face NullFace;
         BRepOffset_Tool::Inter3D (EF,StopFace,LInt1,LInt2,Side,E,NullFace,NullFace);
         // No intersection, it may happen for example for a chosen (non-offsetted) planar face and
         // its neighbour offseted cylindrical face, if the offset is directed so that
         // the radius of the cylinder becomes smaller.
-        if (LInt1.IsEmpty())
+        if (LInt1.IsEmpty()) {
+          showTopoShape(FTB, "StopFaceSkip");
           continue;  
+        }
+
+        showTopoShape(FTB, "StopFace");
+        IntersectingFaces.Add(FTB);
+
 	if (LInt1.Extent() > 1) { 
 	  // l intersection est en plusieurs edges (franchissement de couture)
 	  SelectEdge (F,EF,E,LInt1);

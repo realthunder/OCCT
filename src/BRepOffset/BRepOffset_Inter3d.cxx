@@ -47,7 +47,7 @@
 #include <BOPTools_AlgoTools.hxx>
 
 extern "C" {
-#if 0
+#if 1
 void showTopoShape(const TopoDS_Shape &s, const char *name);
 void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
 #else
@@ -301,6 +301,7 @@ void BRepOffset_Inter3d::ConnexIntByArc(const TopTools_ListOfShape& /*SetOfFaces
     const TopoDS_Edge&               E = TopoDS::Edge(Exp.Current());
     const BRepOffset_ListOfInterval& L = Analyse.Type(E);
     if (!L.IsEmpty() && L.First().Type() == OT) {
+      showTopoShape(E, "InterE");
       //-----------------------------------------------------------
       // edge is of the proper type , return adjacent faces.
       //-----------------------------------------------------------
@@ -313,9 +314,46 @@ void BRepOffset_Inter3d::ConnexIntByArc(const TopTools_ListOfShape& /*SetOfFaces
         F2 = TopoDS::Face(InitOffsetFace.Image(InitF2).First());
         if (!IsDone(F1,F2)) {
           BRepOffset_Tool::Inter3D (F1,F2,LInt1,LInt2,mySide,E,InitF1,InitF2);
+          showTopoShape(InitF1, "InterInitF1_");
+          showTopoShape(InitF2, "InterInitF2_");
+          showTopoShapes(F1, "InterF1_", LInt1);
+          showTopoShapes(F2, "InterF1_", LInt2);
           Store (F1,F2,LInt1,LInt2);
         }
       }          
+    }
+    else if (L.IsEmpty())
+      showTopoShape(E, "NoInterE");
+    else {
+      const char *name = "NoInterE_Unknown";
+      switch(L.First().Type()) {
+      case ChFiDS_Concave:
+        name = "NoInterE_Concave";
+        break;
+      case ChFiDS_Convex:
+        name = "NoInterE_Convex";
+        break;
+      case ChFiDS_Tangential:
+        name = "NoInterE_Tangential";
+        break;
+      case ChFiDS_FreeBound:
+        name = "NoInterE_FreeBound";
+        break;
+      case ChFiDS_Other:
+        name = "NoInterE_Other";
+        break;
+      case ChFiDS_Mixed:
+        name = "NoInterE_Mixed";
+        break;
+      }
+      showTopoShape(E, name);
+      const TopTools_ListOfShape& Anc = Analyse.Ancestors(E);
+      if (Anc.Extent() == 2) {
+        const TopoDS_Face& InitF1 = TopoDS::Face(Anc.First());
+        const TopoDS_Face& InitF2 = TopoDS::Face(Anc.Last());
+        showTopoShape(InitF1, "NoInterF1_");
+        showTopoShape(InitF2, "NoInterF2_");
+      }
     }
   }
   //---------------------------------------------------------------------
@@ -402,6 +440,8 @@ void BRepOffset_Inter3d::ConnexIntByArc(const TopTools_ListOfShape& /*SetOfFaces
                   F2 = TopoDS::Face(InitOffsetFace.Image(InitF2).First());
                   if (!IsDone(F1,F2)) {
                     BRepOffset_Tool::Inter3D (F1,F2,LInt1,LInt2,mySide,NullEdge,NullFace,NullFace);
+                    showTopoShapes(F1, "Inter1F1_", LInt1);
+                    showTopoShapes(F2, "Inter1F1_", LInt2);
                     Store (F1,F2,LInt1,LInt2);
                   }
                 }
@@ -412,6 +452,8 @@ void BRepOffset_Inter3d::ConnexIntByArc(const TopTools_ListOfShape& /*SetOfFaces
                   F2 = TopoDS::Face(InitOffsetFace.Image(InitF2).First());
                   if (!IsDone(F1,F2)) {
                     BRepOffset_Tool::Inter3D (F1,F2,LInt1,LInt2,mySide,NullEdge,NullFace,NullFace);
+                    showTopoShapes(F1, "Inter2F1_", LInt1);
+                    showTopoShapes(F2, "Inter2F1_", LInt2);
                     Store (F1,F2,LInt1,LInt2);
                   }
                 }
@@ -978,8 +1020,8 @@ void BRepOffset_Inter3d::ContextIntByInt
     if (ExtentContext) WCF = TopoDS::Face(MES(CF));
     else               WCF = CF;
 
-    showTopoShape(CF, "CF");
-    showTopoShape(WCF, "WCF");
+    // showTopoShape(CF, "CF");
+    // showTopoShape(WCF, "WCF");
 
     TopTools_IndexedMapOfShape VEmap;
     TopExp::MapShapes(CF.Oriented(TopAbs_FORWARD), TopAbs_EDGE  , VEmap);
@@ -991,7 +1033,7 @@ void BRepOffset_Inter3d::ContextIntByInt
     aNbVE = VEmap.Extent();
     for (j = 1; j <= aNbVE; ++j) {
       const TopoDS_Shape& aS = VEmap(j);
-      showTopoShape(WCF, "VEmap");
+      // showTopoShape(WCF, "VEmap");
       //
       bEdge = (aS.ShapeType() == TopAbs_EDGE);
       //
@@ -1009,6 +1051,7 @@ void BRepOffset_Inter3d::ContextIntByInt
           //----------------------------------------------------------------
           if (!ExtentContext) {
             myAsDes->Add(CF,E);
+            showTopoShape(E, "ExtentE");
             myNewEdges.Add(E);
           }
           else {
@@ -1035,14 +1078,14 @@ void BRepOffset_Inter3d::ContextIntByInt
               myAsDes->Add(CF,NE);
               myNewEdges.Add(NE);
               MES.Bind(E,NE);
-              showTopoShape(NE, "NE");
+              showTopoShape(NE, "ExtentNE");
             }
             else {
               TopoDS_Shape NE = MES(E);
               TopoDS_Shape aLocalShape = NE.Oriented(E.Orientation());
               myAsDes->Add(CF,aLocalShape);
 //            myAsDes->Add(CF,NE.Oriented(E.Orientation()));
-              showTopoShape(NE, "BE");
+              showTopoShape(NE, "ExtentBE");
             }
           }
           continue;
@@ -1070,7 +1113,7 @@ void BRepOffset_Inter3d::ContextIntByInt
           }
           //
           const TopTools_ListOfShape& aLF = Analyse.Ancestors(aE);
-          showTopoShapes(aE, "aE", aLF);
+          // showTopoShapes(aE, "aE", aLF);
           itF.Initialize(aLF);
           for (; itF.More(); itF.Next()) {
             const TopoDS_Shape& aF = itF.Value();
@@ -1090,6 +1133,7 @@ void BRepOffset_Inter3d::ContextIntByInt
       itF.Initialize(Anc);
       for (; itF.More(); itF.Next()) {
         const TopoDS_Face& F = TopoDS::Face(itF.Value());
+        showTopoShape(F, "MapSF");
         OF = TopoDS::Face(MapSF(F).Face());
         TopoDS_Shape aLocalShape = MapSF(F).Generated(E);
         OE = TopoDS::Edge(aLocalShape);
@@ -1097,13 +1141,13 @@ void BRepOffset_Inter3d::ContextIntByInt
         if (!MES.IsBound(OF)) {
           BRepOffset_Tool::EnLargeFace(OF,NF,1,1);
           MES.Bind(OF,NF);
-          showTopoShape(OF, "OF");
-          showTopoShape(NF, "NF");
+          // showTopoShape(OF, "OF");
+          // showTopoShape(NF, "NF");
         }
         else {
           NF = TopoDS::Face(MES(OF));
-          showTopoShape(OF, "OF2_");
-          showTopoShape(NF, "NF2_");
+          // showTopoShape(OF, "OF2_");
+          // showTopoShape(NF, "NF2_");
         }
         if (!IsDone(NF,CF)) {
           TopTools_ListOfShape LInt1,LInt2;
@@ -1112,8 +1156,8 @@ void BRepOffset_Inter3d::ContextIntByInt
           BRepOffset_Tool::Inter3D (WCF,NF,LInt1,LInt2,Side,E,CF,F);
           SetDone(NF,CF);
           if (!LInt1.IsEmpty()) {
-            showTopoShapes(CF, "IntCF", LInt1);
-            showTopoShapes(NF, "IntNF", LInt2);
+            showTopoShapes(OF, "ExtentIntCF", LInt1);
+            // showTopoShapes(NF, "IntNF", LInt2);
             Store (CF,NF,LInt1,LInt2);
             if ((LInt1.Extent() == 1) && !Build.IsBound(aS)) {
               Build.Bind(aS,LInt1.First());
@@ -1209,6 +1253,7 @@ void BRepOffset_Inter3d::ContextIntByArc(const TopTools_IndexedMapOfShape& Conte
 //            B.UpdateVertex(TopoDS::Vertex(V2.Oriented(TopAbs_INTERNAL)),l,NE,Tol);
             NE.Orientation(E.Orientation());
             myAsDes->Add(CF,NE);
+            showTopoShape(NE, "ContextExtent");
             InitOffsetEdge.Bind(E,NE);
           }
           else {
@@ -1231,6 +1276,29 @@ void BRepOffset_Inter3d::ContextIntByArc(const TopTools_IndexedMapOfShape& Conte
       showTopoShape(SI, "SI");
       showTopoShape(OE, "OE");
       showTopoShape(OF1, "OF1_");
+
+      TopoDS_Edge NE;
+      Standard_Real f,l,Tol;
+      BRep_Tool::Range(OE,f,l);
+      Tol = BRep_Tool::Tolerance(OE);
+      ExtentEdge(CF,OE,NE);
+      TopoDS_Vertex V1,V2;
+      TopExp::Vertices(OE,V1,V2);
+      NE.Orientation(TopAbs_FORWARD);
+      myAsDes->Add(NE,V1.Oriented(TopAbs_REVERSED));
+      myAsDes->Add(NE,V2.Oriented(TopAbs_FORWARD));
+      TopoDS_Shape aLocalShape = V1.Oriented(TopAbs_INTERNAL);
+      B.UpdateVertex(TopoDS::Vertex(aLocalShape),f,NE,Tol);
+      B.Add(NE, aLocalShape);
+      aLocalShape = V2.Oriented(TopAbs_INTERNAL);
+      B.UpdateVertex(TopoDS::Vertex(aLocalShape),l,NE,Tol);
+      B.Add(NE, aLocalShape);
+//            B.UpdateVertex(TopoDS::Vertex(V1.Oriented(TopAbs_INTERNAL)),f,NE,Tol);
+//            B.UpdateVertex(TopoDS::Vertex(V2.Oriented(TopAbs_INTERNAL)),l,NE,Tol);
+      NE.Orientation(OE.Orientation());
+      InitOffsetEdge.Add(E, NE);
+      OE = NE;
+      showTopoShape(NE, "ContextExtent2_");
 
       {
         //Check if OE has pcurve in CF
@@ -1430,6 +1498,7 @@ void BRepOffset_Inter3d::Store(const TopoDS_Face& F1,
     myTouched.Add(F2);
     myAsDes->Add( F1,LInt1);
     myAsDes->Add( F2,LInt2);
+    showTopoShapes(F1, "Inter3d", LInt1);
     TopTools_ListIteratorOfListOfShape it(LInt1);
     for (; it.More(); it.Next()) {
       myNewEdges.Add(it.Value());
