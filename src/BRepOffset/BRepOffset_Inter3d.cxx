@@ -1499,6 +1499,7 @@ void BRepOffset_Inter3d::Store(const TopoDS_Face& F1,
     myAsDes->Add( F1,LInt1);
     myAsDes->Add( F2,LInt2);
     showTopoShapes(F1, "Inter3d", LInt1);
+    showTopoShapes(F2, "Inter3dF2", LInt2);
     TopTools_ListIteratorOfListOfShape it(LInt1);
     for (; it.More(); it.Next()) {
       myNewEdges.Add(it.Value());

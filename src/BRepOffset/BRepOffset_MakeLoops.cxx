@@ -124,6 +124,7 @@ void BRepOffset_MakeLoops::Build(const TopTools_ListOfShape&   LF,
     // F => New faces;
     //-----------------------
     Image.Bind(F,NF);
+    showTopoShapes(F, "BuildBind", NF);
 #if 0
     TopTools_ListIteratorOfListOfShape itAdded;
     for (itAdded.Initialize(AddedEdges); itAdded.More(); itAdded.Next()) {
@@ -140,11 +141,11 @@ void BRepOffset_MakeLoops::Build(const TopTools_ListOfShape&   LF,
       //-----------------------
       if (Image.HasImage(E)) {
 	Image.Add(E,LoopNE);
-        showTopoShapes(E, "CutImageAdd", LoopNE);
+        showTopoShapes(E, "CutImageAdd1", LoopNE);
       }
       else {
 	Image.Bind(E,LoopNE);
-        showTopoShapes(E, "CutImage", LoopNE);
+        showTopoShapes(E, "CutImage1", LoopNE);
       }
     }
   }
@@ -383,9 +384,7 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
 //	  else        Loops.AddConstEdge(TopoDS::Edge(E.Reversed()));
 	}
 	else { 
-          char name[256];
-          snprintf(name, sizeof(name), "LoopContextConstEdge1_%x_%p", E.HashCode(0xffff), &Image);
-          showTopoShape(E, name);
+          showTopoShape(E, "LoopContextConstEdge1");
 	  TopoDS_Shape aLocalShape = E.Reversed();
 	  if (InSide) Loops.AddConstEdge(TopoDS::Edge(aLocalShape));
 	  else        Loops.AddConstEdge(E);
@@ -407,6 +406,7 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
     // F => New faces;
     //-----------------------
     Image.Bind(F,NF);   
+    showTopoShapes(F, "BuildBind2", NF);
 
 #if 0
     TopTools_ListIteratorOfListOfShape itAdded;
@@ -424,9 +424,11 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
       //-----------------------
       if (Image.HasImage(E)) {
 	Image.Add(E,LoopNE);
+        showTopoShapes(E, "CutImageAdd", LoopNE);
       }
       else {
 	Image.Bind(E,LoopNE);
+        showTopoShapes(E, "CutImage", LoopNE);
       }
     }
   }
@@ -511,13 +513,13 @@ void BRepOffset_MakeLoops::BuildFaces(const TopTools_ListOfShape&   LF,
     Loops.Init(F);
     ToRebuild = Standard_False;
     TopTools_ListOfShape        AddedEdges;
-    
+
     if (!Image.HasImage(F)) {
-      showTopoShape(F, "F");
       //----------------------------------
       // Face F not yet reconstructed.
       //----------------------------------
       const TopTools_ListOfShape& LE = AsDes->Descendant(F);
+      showTopoShapes(F, "BuildFace", LE);
       //----------------------------------------------------------------
       // first loop to find if the edges of the face were reconstructed.
       // - maj on map MONV. Some vertices on reconstructed edges
@@ -537,7 +539,6 @@ void BRepOffset_MakeLoops::BuildFaces(const TopTools_ListOfShape&   LF,
 	    Loops.AddConstEdge(CE);
 	    continue;
 	  }
-          showTopoShape(E, "E");
 	  //----------------------------------
 	  // F should be reconstructed.
 	  //----------------------------------
@@ -650,7 +651,10 @@ void BRepOffset_MakeLoops::BuildFaces(const TopTools_ListOfShape&   LF,
 	}
       }  
     }
-    if (ToRebuild) {
+    if (!ToRebuild) {
+      showTopoShape(F, "BuildFaceSkip");
+    }
+    else {
       //------------------------
       // Reconstruction.
       //------------------------
@@ -664,6 +668,7 @@ void BRepOffset_MakeLoops::BuildFaces(const TopTools_ListOfShape&   LF,
       // F => New faces;
       //-----------------------
       Image.Bind(F,NF); 
+      showTopoShapes(F, "BuildFaceBind", NF);
 
 #if 0
       TopTools_ListIteratorOfListOfShape itAdded;

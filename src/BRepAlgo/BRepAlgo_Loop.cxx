@@ -604,9 +604,24 @@ void BRepAlgo_Loop::Perform()
 
   FindLoop();
 
-  for (itl.Initialize(IntersectingEdges); itl.More(); itl.Next()) {
-    const TopTools_ListOfShape &aList = NewEdges(TopoDS::Edge(itl.Value()));
-    _EdgeMap.Bind(itl.Value(), aList);
+  if (_CollectingEdges) {
+#if 1
+    TopTools_DataMapIteratorOfDataMapOfShapeListOfShape itM(myCutEdges);
+    for (; itM.More(); itM.Next()) {
+      showTopoShapes(itM.Key(), "InterNewEdge", itM.Value());
+      TopTools_ListOfShape *pLE = _EdgeMap.ChangeSeek(itM.Key());
+      if (!pLE)
+        pLE = _EdgeMap.Bound(itM.Key(), TopTools_ListOfShape());
+      for (itl.Initialize(itM.Value()); itl.More(); itl.Next())
+        pLE->Append(itl.Value());
+    }
+#else
+    for (itl.Initialize(IntersectingEdges); itl.More(); itl.Next()) {
+      const TopTools_ListOfShape &aList = NewEdges(TopoDS::Edge(itl.Value()));
+      _EdgeMap.Bind(itl.Value(), aList);
+      showTopoShapes(itl.Value(), "InterNewEdge", aList);
+    }
+#endif
   }
 }
 
@@ -697,10 +712,8 @@ void FindAllLoops(const TopoDS_Vertex& CV,
   CurrentVEMap.Bind(CV, CE);
   CurrentEdgeList.Prepend(CE);
   char name[256];
-  // snprintf(name, sizeof(name), "CV_%x_", CV.HashCode(0xffff));
-  // showTopoShape(CV, name);
-  // snprintf(name, sizeof(name), "CE_%x_", CE.HashCode(0xffff));
-  // showTopoShape(CE, name);
+  // showTopoShape(CV, "CV");
+  // showTopoShape(CE, "CE");
 
   TopExp::Vertices(CE, V1, V2);
   if (CV.IsSame(V1))
@@ -723,17 +736,14 @@ void FindAllLoops(const TopoDS_Vertex& CV,
       if (VF.IsNull()) {
         VF = NV;
         VL = NV.IsSame(V1) ? V2 : V1;
-        // snprintf(name, sizeof(name), "NWVF_%x_", VF.HashCode(0xffff));
-        // showTopoShape(VF, name);
+        // showTopoShape(VF, "NWVF");
       }
       else if (VL.IsSame(V1))
         VL = V2;
       else
         VL = V1;
-      // snprintf(name, sizeof(name), "NWV_%x_", VL.HashCode(0xffff));
-      // showTopoShape(VL, name);
-      // snprintf(name, sizeof(name), "NWE_%x_", E.HashCode(0xffff));
-      // showTopoShape(E, name);
+      // showTopoShape(VL, "NWV");
+      // showTopoShape(E, "NWE");
       aMakeWire.Add(E);
       if (VL.IsSame(VF))
         break;
@@ -807,9 +817,7 @@ void FindAllLoops(const TopoDS_Vertex& CV,
 
   CurrentVEMap.UnBind(CV);
   CurrentEdgeList.RemoveFirst();
-  // showTopoShapes(CE, "Pop", CurrentEdgeList);
-  // snprintf(name, sizeof(name), "Pop_%x_", CE.HashCode(0xffff));
-  // showTopoShape(CE, name);
+  // showTopoShape(CE, "Pop");
 }
 
 void SplitWires(TopTools_ListOfShape& OutputWires,
@@ -1071,16 +1079,9 @@ void BRepAlgo_Loop::FindLoop()
 #if 0
   for (Standard_Integer ii = 1; ii <= MVE.Extent(); ++ii)
   {
-    char name[256];
-    const TopoDS_Shape& V = MVE.FindKey(ii);
-    snprintf(name, sizeof(name), "MVEV_%x_", V.HashCode(0xffff));
-    showTopoShape(V, name);
+    showTopoShape(V, "MVEV");
     for (itl.Initialize(MVE(ii)); itl.More(); itl.Next())
-    {
-      const TopoDS_Shape& E = itl.Value();
-      snprintf(name, sizeof(name), "MVE_%x_", E.HashCode(0xffff));
-      showTopoShape(E, name);
-    }
+      showTopoShape(E, "MVE");
   }
 #endif
 
