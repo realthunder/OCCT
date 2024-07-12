@@ -376,7 +376,7 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
           showTopoShapes(E, "LoopContextAddEdge", LV);
 	}
 	else if (IsBetweenCorks(E,AsDes,LContext)) {
-          showTopoShape(E, "LoopContextConstEdge_");
+          showTopoShape(E, "LoopContextConstEdge");
 	TopoDS_Shape aLocalShape = E.Reversed();
 	  if (InSide) Loops.AddConstEdge(E);
 	  else        Loops.AddConstEdge(TopoDS::Edge(aLocalShape));

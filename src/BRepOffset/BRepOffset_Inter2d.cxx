@@ -1611,6 +1611,18 @@ void BRepOffset_Inter2d::Compute (const Handle(BRepAlgo_AsDes)&     AsDes,
                                   TopTools_IndexedDataMapOfShapeListOfShape& theDMVV,
                                   const Message_ProgressRange& theRange)
 {
+    Compute(AsDes, F, NewEdges, Tol, theEdgeIntEdges, theDMVV, theRange, nullptr);
+}
+
+void BRepOffset_Inter2d::Compute (const Handle(BRepAlgo_AsDes)&     AsDes,
+                                  const TopoDS_Face&                F,
+                                  const TopTools_IndexedMapOfShape& NewEdges,
+                                  const Standard_Real               Tol,
+                                  const TopTools_DataMapOfShapeListOfShape& theEdgeIntEdges,
+                                  TopTools_IndexedDataMapOfShapeListOfShape& theDMVV,
+                                  const Message_ProgressRange& theRange,
+                                  const TopTools_IndexedMapOfShape* ContextFaces)
+{
 #ifdef DRAW
   NbF2d++;
   NbE2d = 0;
@@ -1689,10 +1701,30 @@ void BRepOffset_Inter2d::Compute (const Handle(BRepAlgo_AsDes)&     AsDes,
       if (ToIntersect &&
           (!EdgesOfFace.Contains(E1) || !EdgesOfFace.Contains(E2)) &&
           (NewEdges.Contains(E1) || NewEdges.Contains(E2)) ) {
+
+        if (ContextFaces && AsDes->HasAscendant(E1) && AsDes->HasAscendant(E2)) {
+          TopTools_ListIteratorOfListOfShape itL(AsDes->Ascendant(E1));
+          for (; itL.More(); itL.Next()) {
+            if (ContextFaces->Contains(itL.Value()))
+              break;
+          }
+          if (itL.More()) {
+            for (itL.Initialize(AsDes->Ascendant(E2)); itL.More(); itL.Next()) {
+              if (ContextFaces->Contains(itL.Value())) {
+                ToIntersect = Standard_False;
+                showTopoShape(E1, "ComputeESkipE1");
+                showTopoShape(E2, "ComputeESkipE2");
+                break;
+              }
+            }
+          }
+        }
         
-        TopoDS_Shape aLocalShape = F.Oriented(TopAbs_FORWARD);
-        EdgeInter(TopoDS::Face(aLocalShape),BAsurf,E1,E2,AsDes,Tol,Standard_True, theDMVV);
-//          EdgeInter(TopoDS::Face(F.Oriented(TopAbs_FORWARD)),E1,E2,AsDes,Tol,Standard_True);
+        if (ToIntersect) {
+          TopoDS_Shape aLocalShape = F.Oriented(TopAbs_FORWARD);
+          EdgeInter(TopoDS::Face(aLocalShape),BAsurf,E1,E2,AsDes,Tol,Standard_True, theDMVV);
+  //          EdgeInter(TopoDS::Face(F.Oriented(TopAbs_FORWARD)),E1,E2,AsDes,Tol,Standard_True);
+         }
       }
       it2LE.Next();
       j++;
