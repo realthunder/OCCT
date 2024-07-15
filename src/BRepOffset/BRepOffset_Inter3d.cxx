@@ -1227,7 +1227,9 @@ void BRepOffset_Inter3d::ContextIntByArc(const TopTools_IndexedMapOfShape& Conte
       const TopoDS_Edge& E = TopoDS::Edge(exp.Current());
       showTopoShape(E, "ContextEdge");
       if (!Analyse.HasAncestor(E)) {
-        if (InSide) {
+        // if (InSide)
+        if (false)
+        {
           showTopoShape(E, "Inside");
           myAsDes->Add(CF,E);
         }
@@ -1243,7 +1245,8 @@ void BRepOffset_Inter3d::ContextIntByArc(const TopTools_IndexedMapOfShape& Conte
             NE.Orientation(TopAbs_FORWARD);
             myAsDes->Add(NE,V1.Oriented(TopAbs_REVERSED));
             myAsDes->Add(NE,V2.Oriented(TopAbs_FORWARD));
-            TopoDS_Shape aLocalShape = V1.Oriented(TopAbs_INTERNAL);
+            TopoDS_Shape aLocalShape;
+            aLocalShape = V1.Oriented(TopAbs_INTERNAL);
             B.UpdateVertex(TopoDS::Vertex(aLocalShape),f,NE,Tol);
             B.Add(NE, aLocalShape);
             aLocalShape = V2.Oriented(TopAbs_INTERNAL);

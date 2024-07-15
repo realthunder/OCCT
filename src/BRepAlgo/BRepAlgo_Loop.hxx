@@ -25,6 +25,7 @@
 #include <TopTools_DataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <BRepAlgo_Image.hxx>
+class BRepAlgo_AsDes;
 class TopoDS_Edge;
 
 
@@ -57,6 +58,9 @@ public:
   
   //! Make loops.
   Standard_EXPORT void Perform();
+
+  void Perform(const TopTools_ListOfShape* ContextFaces,
+               const Handle(BRepAlgo_AsDes)& AsDes = Handle(BRepAlgo_AsDes)());
   
   //! Update VE map according to Image Vertex - Vertex
   Standard_EXPORT void UpdateVEmap (TopTools_IndexedDataMapOfShapeListOfShape& theVEmap);

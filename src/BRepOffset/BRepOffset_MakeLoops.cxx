@@ -396,7 +396,7 @@ void BRepOffset_MakeLoops::BuildOnContext(const TopTools_ListOfShape&   LContext
     //------------------------
     // Unwind.
     //------------------------
-    Loops.Perform();
+    Loops.Perform(&LContext, AsDes);
     Loops.WiresToFaces();      
     //------------------------
     // MAJ SD.

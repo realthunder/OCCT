@@ -21,6 +21,7 @@
 #include <BRep_TEdge.hxx>
 #include <BRep_Tool.hxx>
 #include <BRep_TVertex.hxx>
+#include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_FaceRestrictor.hxx>
 #include <BRepAlgo_Loop.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -473,49 +474,78 @@ static void StoreInMVE (const TopoDS_Face&                  F,
 
 void BRepAlgo_Loop::Perform()
 {
+    Perform(nullptr);
+}
+
+void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
+                            const Handle(BRepAlgo_AsDes)& AsDes)
+{
   TopTools_ListIteratorOfListOfShape                  itl, itl1, itl2;
-  TopoDS_Vertex                                       V1,V2;
+  TopoDS_Vertex                                       V1,V2,OV1,OV2;
   BRep_Builder                                        B;
+  TopExp_Explorer                                     aExp;
 
   //------------------------------------------------
   // Check intersection in myConstEdges which is possible when make thick solid
   // with concave removed face
   //------------------------------------------------
+  TopTools_ListOfShape theEdges = myEdges;
   TopTools_ListOfShape ConstEdges;
   TopTools_ListOfShape IntersectingEdges;
   if (_CollectingEdges) {
     TopTools_MapOfShape EMap;
-    TopTools_ListOfShape theEdges = myEdges;
     TopTools_ListOfShape theVerts;
+    TopTools_ListOfShape LV;
+    TopTools_MapOfShape MV;
 
     for (itl.Initialize(myConstEdges); itl.More(); itl.Next())
       theEdges.Append(itl.Value());
 
-    for (itl.Initialize(myConstEdges); itl.More(); itl.Next())
+    for (itl.Initialize(theEdges); itl.More(); itl.Next())
     {
       const TopoDS_Edge& anEdge = TopoDS::Edge(itl.Value());
       // Sewn edges can be doubled or not in myConstEdges
       if (!EMap.Add(anEdge))
         continue;
 
+      LV.Clear();
+      MV.Clear();
+
+      Standard_Integer VertexCount = 0;
+      if (myVerOnEdges.IsBound(anEdge)) {
+        const TopTools_ListOfShape& LE = myVerOnEdges(anEdge);
+        VertexCount = LE.Extent();
+        for (itl1.Initialize(LE); itl1.More(); itl1.Next()) {
+          if (itl1.Value().Orientation() == TopAbs_FORWARD ||
+              itl1.Value().Orientation() == TopAbs_REVERSED) {
+            LV.Append(itl1.Value());
+            MV.Add(itl1.Value());
+          }
+        }
+      }
+
       Standard_Real aF, aL;
       const Handle(Geom_Curve) C = BRep_Tool::Curve(anEdge, aF, aL);
       TopExp::Vertices(anEdge, V1, V2);
-      TopTools_ListOfShape LV;
       for (itl1.Initialize(theEdges); itl1.More(); itl1.Next()) {
         const TopoDS_Edge& otherEdge = TopoDS::Edge(itl1.Value());
-        if (otherEdge.IsSame(anEdge))
-          continue;
-        TopoDS_Vertex OV1, OV2;
-        TopExp::Vertices (otherEdge,OV1,OV2);
+        // YES, we will check vertices from the same edge in order to convert
+        // orientation from TopAbs_INTERNAL to either FORWARD or REVERSED
+        //
+        // if (otherEdge.IsSame(anEdge))
+        //   continue;
+
         theVerts.Clear();
         const TopTools_ListOfShape *pLV = myVerOnEdges.Seek(otherEdge);
         if (pLV)
           theVerts = *pLV;
+        TopExp::Vertices(otherEdge, OV1, OV2);
         theVerts.Append(OV1);
         theVerts.Append(OV2);
         for (itl2.Initialize(theVerts); itl2.More(); itl2.Next()) {
           TopoDS_Vertex aVertex = TopoDS::Vertex(itl2.Value());
+          if (!MV.Add(aVertex))
+            continue;
           Standard_Real Tol = BRep_Tool::Tolerance(aVertex);
           gp_Pnt OP = BRep_Tool::Pnt(aVertex);
           if (OP.Distance(BRep_Tool::Pnt(V1)) < Tol
@@ -526,16 +556,25 @@ void BRepAlgo_Loop::Perform()
             Standard_Real D = Proj.LowerDistance();
             Standard_Real P = Proj.LowerDistanceParameter();
             if (D < Tol  && P > aF && P < aL) {
-              TopoDS_Shape aLocalShape = aVertex.Oriented(TopAbs_INTERNAL);
+              TopoDS_Shape aLocalShape;
+              if (P < (aF + aL)/2)
+                aLocalShape = aVertex.Oriented(TopAbs_REVERSED);
+              else
+                aLocalShape = aVertex.Oriented(TopAbs_FORWARD);
               B.UpdateVertex(TopoDS::Vertex(aLocalShape),P,anEdge,Tol);
               LV.Append(aLocalShape);
             }
           }
         }
       }
-      if (!LV.IsEmpty()) {
-        IntersectingEdges.Append(anEdge);
-        myVerOnEdges.Bind(anEdge, LV);
+      if (LV.Extent()) {
+        if (VertexCount == 0) {
+          IntersectingEdges.Append(anEdge);
+          myVerOnEdges.Bind(anEdge, LV);
+        }
+        else {
+          *myVerOnEdges.ChangeSeek(anEdge) = LV;
+        }
         showTopoShapes(anEdge, "InterEdge", LV);
       }
       else {
@@ -573,7 +612,7 @@ void BRepAlgo_Loop::Perform()
   //------------------------------------------------
   // Cut edges
   //------------------------------------------------
-  for (itl.Initialize(myEdges); itl.More(); itl.Next())
+  for (itl.Initialize(theEdges); itl.More(); itl.Next())
   {
     const TopoDS_Edge& anEdge = TopoDS::Edge(itl.Value());
     if (myCutEdges.Seek(anEdge))
@@ -582,24 +621,25 @@ void BRepAlgo_Loop::Perform()
     const TopTools_ListOfShape* pVertices = myVerOnEdges.Seek (anEdge);
     if (pVertices)
     {
-      CutEdge (anEdge, *pVertices, LCE);
+      Standard_Boolean KeepAll = Standard_True;
+      if (ContextFaces && AsDes && AsDes->HasAscendant(anEdge)) {
+        const TopTools_ListOfShape LF = AsDes->Ascendant(anEdge);
+        Standard_Integer Count = 0;
+        for (itl1.Initialize(LF); itl1.More(); itl1.Next()) {
+          for (itl2.Initialize(*ContextFaces); itl2.More(); itl2.Next()) {
+            if (itl2.Value().IsSame(itl1.Value()) && ++Count > 1) {
+              KeepAll = Standard_False;
+              showTopoShape(anEdge, "NoKeepAll");
+              break;
+            }
+          }
+          if (!KeepAll)
+            break;
+        }
+      }
+      CutEdge (anEdge, *pVertices, LCE, KeepAll);
       myCutEdges.Bind(anEdge, LCE);
     }
-  }
-
-  for (itl.Initialize(IntersectingEdges); itl.More(); itl.Next())
-  {
-    const TopoDS_Edge& anEdge = TopoDS::Edge(itl.Value());
-    if (myCutEdges.Seek(anEdge))
-      continue;
-    TopTools_ListOfShape LCE;
-    const TopTools_ListOfShape* pVertices = myVerOnEdges.Seek (anEdge);
-    if (pVertices)
-    {
-      CutEdge (anEdge, *pVertices, LCE, Standard_True/*Keep all cut edge*/);
-      myCutEdges.Bind(anEdge, LCE);
-    }
-
   }
 
   FindLoop();
@@ -1119,13 +1159,13 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
 			     const TopTools_ListOfShape& VOnE,
 			             TopTools_ListOfShape& NE   ) const 
 {
-  CutEdge(E, VOnE, NE, Standard_False);
+  CutEdge(E, VOnE, NE, Standard_True);
 }
 
 
 void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
-			     const TopTools_ListOfShape& VOnE,
-			     TopTools_ListOfShape& NE,
+                             const TopTools_ListOfShape& VOnE,
+                             TopTools_ListOfShape& NE,
                              Standard_Boolean KeepAll) const 
 {
   Standard_Real Tol = 0.001; //5.e-05; //5.e-07;
@@ -1146,7 +1186,7 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
   //--------------------------------
   Bubble (WE,SV);
 
-  KeepAll = Standard_True;
+  // KeepAll = Standard_True;
 
   if (KeepAll)
     showTopoShape(WE, "CuttingInter");
@@ -1174,8 +1214,7 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
   Standard_Boolean Extended = Standard_False;
   for (; It.More(); It.Next())
   {
-    if (It.Value().Orientation() == TopAbs_INTERNAL)
-    {
+    if (It.Value().Orientation() == TopAbs_INTERNAL) {
       Extended = Standard_True;
       break;
     }
@@ -1224,14 +1263,20 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
   for (Standard_Integer ii = 1; ii <= SV.Length(); ++ii) {
     if (SV(ii).Orientation() == TopAbs_FORWARD)
       showTopoShape(SV(ii), "CuttingVF");
-    else
+    else if (SV(ii).Orientation() == TopAbs_REVERSED)
       showTopoShape(SV(ii), "CuttingVR");
+    else if (SV(ii).Orientation() == TopAbs_INTERNAL)
+      showTopoShape(SV(ii), "CuttingVI");
+    else if (SV(ii).Orientation() == TopAbs_EXTERNAL)
+      showTopoShape(SV(ii), "CuttingVE");
+    else
+      showTopoShape(SV(ii), "CuttingV");
   }
 
-  if (!KeepAll && Extended)
-  {
-    SV.ChangeFirst().Orientation(TopAbs_FORWARD);
-  }
+  // if (!KeepAll && Extended)
+  // {
+  //   SV.ChangeFirst().Orientation(TopAbs_FORWARD);
+  // }
 
   while (!SV.IsEmpty()) {
     while (!KeepAll && !SV.IsEmpty() && 
@@ -1244,7 +1289,9 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
     SV.Remove(1);
     if (SV.IsEmpty())
       break;
-    if (!SV.First().IsSame(V1)) {
+    if (SV.First().IsSame(V1))
+      continue;
+    if (KeepAll || SV.First().Orientation() == TopAbs_REVERSED) {
       V2  = TopoDS::Vertex(SV.First());
       //-------------------------------------------
       // Copy the edge and restriction by V1 V2.
