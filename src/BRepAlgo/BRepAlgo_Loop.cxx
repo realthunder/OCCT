@@ -71,7 +71,7 @@ static char* name = new char[100];
 #endif
 
 extern "C" {
-#if 1
+#if 0
 void showTopoShape(const TopoDS_Shape &s, const char *name);
 void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
 #else
@@ -480,7 +480,7 @@ void BRepAlgo_Loop::Perform()
 void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
                             const Handle(BRepAlgo_AsDes)& AsDes)
 {
-  TopTools_ListIteratorOfListOfShape                  itl, itl1, itl2;
+  TopTools_ListIteratorOfListOfShape                  itl, itl1, itl2, itl3;
   TopoDS_Vertex                                       V1,V2,OV1,OV2;
   BRep_Builder                                        B;
   TopExp_Explorer                                     aExp;
@@ -506,22 +506,39 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
       const TopoDS_Edge& anEdge = TopoDS::Edge(itl.Value());
       // Sewn edges can be doubled or not in myConstEdges
       if (!EMap.Add(anEdge))
-        continue;
+          continue;
 
       LV.Clear();
       MV.Clear();
 
-      Standard_Integer VertexCount = 0;
+      Standard_Boolean Bounded = Standard_False;
+      Standard_Integer ExistingCount = 0;
+      Standard_Real FP, LP;
+      TopoDS_Shape VF, VL;
       if (myVerOnEdges.IsBound(anEdge)) {
         const TopTools_ListOfShape& LE = myVerOnEdges(anEdge);
-        VertexCount = LE.Extent();
+        Bounded = Standard_True;
         for (itl1.Initialize(LE); itl1.More(); itl1.Next()) {
           if (itl1.Value().Orientation() == TopAbs_FORWARD ||
               itl1.Value().Orientation() == TopAbs_REVERSED) {
             LV.Append(itl1.Value());
             MV.Add(itl1.Value());
+	    Standard_Real P = BRep_Tool::Parameter(TopoDS::Vertex(itl1.Value()),anEdge);
+            if (LV.Extent() == 1) {
+              FP = LP = P;
+              VF = VL = itl1.Value();
+            }
+            else if (FP > P) {
+              VF = itl1.Value();
+              FP = P;
+            }
+            else if (LP < P) {
+              VL = itl1.Value();
+              LP = P;
+            }
           }
         }
+        ExistingCount = LV.Extent();
       }
 
       Standard_Real aF, aL;
@@ -557,7 +574,35 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
             Standard_Real P = Proj.LowerDistanceParameter();
             if (D < Tol  && P > aF && P < aL) {
               TopoDS_Shape aLocalShape;
-              if (P < (aF + aL)/2)
+              if (ExistingCount == 2 && P < FP) {
+                aLocalShape = aVertex.Oriented(TopAbs_FORWARD);
+                showTopoShape(aLocalShape, "VertexOverF");
+                if (VF.Orientation() == TopAbs_FORWARD) {
+                  VF.Orientation(TopAbs_REVERSED);
+                  for (itl3.Initialize(LV); itl3.More(); itl3.Next()) {
+                    if (itl3.Value().IsSame(VF)) {
+                      itl3.Value().Orientation(TopAbs_REVERSED);
+                      showTopoShape(itl3.Value(), "VertexFlipF");
+                      break;
+                    }
+                  }
+                }
+              }
+              else if (ExistingCount == 2 && P > LP) {
+                aLocalShape = aVertex.Oriented(TopAbs_REVERSED);
+                showTopoShape(aLocalShape, "VertexOverR");
+                if (VL.Orientation() == TopAbs_REVERSED) {
+                  VL.Orientation(TopAbs_FORWARD);
+                  for (itl3.Initialize(LV); itl3.More(); itl3.Next()) {
+                    if (itl3.Value().IsSame(VL)) {
+                      itl3.Value().Orientation(TopAbs_FORWARD);
+                      showTopoShape(itl3.Value(), "VertexFlipR");
+                      break;
+                    }
+                  }
+                }
+              }
+              else if (P < (aF + aL)/2)
                 aLocalShape = aVertex.Oriented(TopAbs_REVERSED);
               else
                 aLocalShape = aVertex.Oriented(TopAbs_FORWARD);
@@ -568,7 +613,7 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
         }
       }
       if (LV.Extent()) {
-        if (VertexCount == 0) {
+        if (!Bounded) {
           IntersectingEdges.Append(anEdge);
           myVerOnEdges.Bind(anEdge, LV);
         }

@@ -88,7 +88,7 @@ static Standard_Integer NbNewVertices  = 0;
 #endif
 
 extern "C" {
-#if 1
+#if 0
 void showTopoShape(const TopoDS_Shape &s, const char *name);
 void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
 #else

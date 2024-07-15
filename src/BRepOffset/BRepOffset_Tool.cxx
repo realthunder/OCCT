@@ -138,7 +138,7 @@ static Standard_Boolean AffichExtent = Standard_False;
 #endif
 
 extern "C" {
-#if 1
+#if 0
 void showTopoShape(const TopoDS_Shape &s, const char *name);
 void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
 #else
