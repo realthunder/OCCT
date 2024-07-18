@@ -572,40 +572,40 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
           if (Proj.NbPoints() > 0) {
             Standard_Real D = Proj.LowerDistance();
             Standard_Real P = Proj.LowerDistanceParameter();
+            auto ReorientVertex = [&](TopoDS_Shape &V, TopAbs_Orientation Ori) {
+              if (V.Orientation() == Ori)
+                return;
+              V.Orientation(Ori);
+              for (itl3.Initialize(LV); itl3.More(); itl3.Next()) {
+                if (itl3.Value().IsSame(V)) {
+                  itl3.Value().Orientation(Ori);
+                  showTopoShape(V, "VertexFlip");
+                  break;
+                }
+              }
+            };
             if (D < Tol  && P > aF && P < aL) {
               TopoDS_Shape aLocalShape;
               if (ExistingCount == 2 && P < FP) {
                 aLocalShape = aVertex.Oriented(TopAbs_FORWARD);
                 showTopoShape(aLocalShape, "VertexOverF");
-                if (VF.Orientation() == TopAbs_FORWARD) {
-                  VF.Orientation(TopAbs_REVERSED);
-                  for (itl3.Initialize(LV); itl3.More(); itl3.Next()) {
-                    if (itl3.Value().IsSame(VF)) {
-                      itl3.Value().Orientation(TopAbs_REVERSED);
-                      showTopoShape(itl3.Value(), "VertexFlipF");
-                      break;
-                    }
-                  }
-                }
+                ReorientVertex(VF, TopAbs_REVERSED);
               }
               else if (ExistingCount == 2 && P > LP) {
                 aLocalShape = aVertex.Oriented(TopAbs_REVERSED);
                 showTopoShape(aLocalShape, "VertexOverR");
-                if (VL.Orientation() == TopAbs_REVERSED) {
-                  VL.Orientation(TopAbs_FORWARD);
-                  for (itl3.Initialize(LV); itl3.More(); itl3.Next()) {
-                    if (itl3.Value().IsSame(VL)) {
-                      itl3.Value().Orientation(TopAbs_FORWARD);
-                      showTopoShape(itl3.Value(), "VertexFlipR");
-                      break;
-                    }
-                  }
-                }
+                ReorientVertex(VL, TopAbs_FORWARD);
               }
-              else if (P < (aF + aL)/2)
+              else if (P < (aF + aL)/2) {
                 aLocalShape = aVertex.Oriented(TopAbs_REVERSED);
-              else
+                if (ExistingCount == 2)
+                  ReorientVertex(VF, TopAbs_FORWARD);
+              }
+              else {
                 aLocalShape = aVertex.Oriented(TopAbs_FORWARD);
+                if (ExistingCount == 2)
+                  ReorientVertex(VL, TopAbs_REVERSED);
+              }
               B.UpdateVertex(TopoDS::Vertex(aLocalShape),P,anEdge,Tol);
               LV.Append(aLocalShape);
             }
@@ -620,7 +620,19 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
         else {
           *myVerOnEdges.ChangeSeek(anEdge) = LV;
         }
-        showTopoShapes(anEdge, "InterEdge", LV);
+        showTopoShape(anEdge, "InterEdge");
+        for (itl1.Initialize(LV); itl1.More(); itl1.Next()) {
+          if (itl1.Value().Orientation() == TopAbs_FORWARD)
+            showTopoShape(itl1.Value(), "InterVF");
+          else if (itl1.Value().Orientation() == TopAbs_REVERSED)
+            showTopoShape(itl1.Value(), "InterVR");
+          else if (itl1.Value().Orientation() == TopAbs_INTERNAL)
+            showTopoShape(itl1.Value(), "InterVI");
+          else if (itl1.Value().Orientation() == TopAbs_EXTERNAL)
+            showTopoShape(itl1.Value(), "InterVE");
+          else
+            showTopoShape(itl1.Value(), "InterV");
+        }
       }
       else {
         ConstEdges.Append(anEdge);

@@ -1064,8 +1064,13 @@ void BRepOffset_Inter3d::ContextIntByInt
               TopoDS_Vertex V1,V2;
               TopExp::Vertices(E,V1,V2);
               NE.Orientation(TopAbs_FORWARD);
-              myAsDes->Add(NE,V1.Oriented(TopAbs_REVERSED));
-              myAsDes->Add(NE,V2.Oriented(TopAbs_FORWARD));
+              if (E.Orientation() == TopAbs_REVERSED) {
+                myAsDes->Add(NE,V1.Oriented(TopAbs_REVERSED));
+                myAsDes->Add(NE,V2.Oriented(TopAbs_FORWARD));
+              } else {
+                myAsDes->Add(NE,V1);
+                myAsDes->Add(NE,V2);
+              }
               TopoDS_Shape aLocalShape = V1.Oriented(TopAbs_INTERNAL);
               B.UpdateVertex(TopoDS::Vertex(aLocalShape),f,NE,Tol);
               B.Add(NE, aLocalShape);
@@ -1243,8 +1248,14 @@ void BRepOffset_Inter3d::ContextIntByArc(const TopTools_IndexedMapOfShape& Conte
             TopoDS_Vertex V1,V2;
             TopExp::Vertices(E,V1,V2);
             NE.Orientation(TopAbs_FORWARD);
-            myAsDes->Add(NE,V1.Oriented(TopAbs_REVERSED));
-            myAsDes->Add(NE,V2.Oriented(TopAbs_FORWARD));
+            if (E.Orientation() == TopAbs_REVERSED) {
+              myAsDes->Add(NE,V1.Oriented(TopAbs_REVERSED));
+              myAsDes->Add(NE,V2.Oriented(TopAbs_FORWARD));
+            }
+            else {
+              myAsDes->Add(NE,V1);
+              myAsDes->Add(NE,V2);
+            }
             TopoDS_Shape aLocalShape;
             aLocalShape = V1.Oriented(TopAbs_INTERNAL);
             B.UpdateVertex(TopoDS::Vertex(aLocalShape),f,NE,Tol);
