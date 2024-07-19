@@ -103,6 +103,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <TopTools.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_SequenceOfShape.hxx>
 
@@ -137,19 +138,6 @@ static Standard_Integer NbExtE      = 1;
 static Standard_Boolean AffichExtent = Standard_False;
 #endif
 
-extern "C" {
-#if 1
-void showTopoShape(const TopoDS_Shape &s, const char *name);
-void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
-#else
-static void showTopoShape(const TopoDS_Shape &s, const char *name)
-{
-}
-static void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes)
-{
-}
-#endif
-}
 
 static
   void PerformPlanes(const TopoDS_Face& theFace1,
@@ -3445,7 +3433,6 @@ void BRepOffset_Tool::BuildNeighbour (const TopoDS_Wire& W,
 void BRepOffset_Tool::ExtentFace (const TopoDS_Face&            F,
 				  TopTools_DataMapOfShapeShape& ConstShapes,
 				  TopTools_DataMapOfShapeShape& ToBuild,
-                                  TopTools_IndexedMapOfShape& IntersectingFaces,
 				  const TopAbs_State            Side,
 				  const Standard_Real           TolConf,
 				  TopoDS_Face&                  NF)
@@ -3560,19 +3547,18 @@ void BRepOffset_Tool::ExtentFace (const TopoDS_Face&            F,
       if (ConstShapes.IsBound(E)) ToBuild.UnBind(E);
       if (ToBuild.IsBound(E)) {
         const TopoDS_Shape& FTB = ToBuild(E);
-        EnLargeFace(TopoDS::Face(ToBuild(E)),StopFace,Standard_False);
+        EnLargeFace(TopoDS::Face(FTB),StopFace,Standard_False);
         TopoDS_Face NullFace;
         BRepOffset_Tool::Inter3D (EF,StopFace,LInt1,LInt2,Side,E,NullFace,NullFace);
         // No intersection, it may happen for example for a chosen (non-offsetted) planar face and
         // its neighbour offseted cylindrical face, if the offset is directed so that
         // the radius of the cylinder becomes smaller.
         if (LInt1.IsEmpty()) {
-          showTopoShape(FTB, "StopFaceSkip");
+          ShowTopoShape(__FILE__, FTB, "StopFaceSkip");
           continue;  
         }
 
-        showTopoShape(FTB, "StopFace");
-        IntersectingFaces.Add(FTB);
+        ShowTopoShape(__FILE__, FTB, "StopFace");
 
 	if (LInt1.Extent() > 1) { 
 	  // l intersection est en plusieurs edges (franchissement de couture)
@@ -3944,14 +3930,14 @@ TopoDS_Shape BRepOffset_Tool::Deboucle3D(const TopoDS_Shape& S,
           if (anEdge.Orientation() == TopAbs_INTERNAL) {
             const TopoDS_Face& aFace = TopoDS::Face(aLF.First());
             if (aFace.Orientation() != TopAbs_INTERNAL) {
-              showTopoShapes(anEdge, "Internal", aLF);
+              ShowTopoShape(__FILE__, anEdge, "Internal", aLF);
               continue;
             }
           }
           if (!Boundary.Contains(anEdge) &&
               !BRep_Tool::Degenerated(anEdge))
           {
-            showTopoShapes(anEdge, "NoFreeFound", aLF);
+            ShowTopoShape(__FILE__, anEdge, "NoFreeFound", aLF);
             JeGarde = Standard_False;
           }
         }

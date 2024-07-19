@@ -19,21 +19,9 @@
 #include <Standard_ConstructionError.hxx>
 #include <Standard_Type.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopTools.hxx>
 #include <TopTools_MapOfOrientedShape.hxx>
 
-extern "C" {
-#if 0
-void showTopoShape(const TopoDS_Shape &s, const char *name);
-void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
-#else
-static void showTopoShape(const TopoDS_Shape &s, const char *name)
-{
-}
-static void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes)
-{
-}
-#endif
-}
 
 IMPLEMENT_STANDARD_RTTIEXT(BRepAlgo_AsDes,Standard_Transient)
 
@@ -53,6 +41,10 @@ BRepAlgo_AsDes::BRepAlgo_AsDes()
 
 void BRepAlgo_AsDes::Add(const TopoDS_Shape& S, const TopoDS_Shape& SS)
 {
+  if (SS.ShapeType() == TopAbs_VERTEX) {
+    ShowTopoShape(__FILE__, S, "AsDes");
+    ShowTopoShape(__FILE__, SS, "AsDesSS");
+  }
   if (!down.IsBound(S)) {
     TopTools_ListOfShape L;
     down.Bind(S,L);

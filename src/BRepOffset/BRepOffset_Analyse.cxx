@@ -43,11 +43,6 @@
 #include <ChFi3d.hxx>
 #include <LocalAnalysis_SurfaceContinuity.hxx>
 
-extern "C" {
-void showTopoShape(const TopoDS_Shape &s, const char *name);
-void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
-}
-
 static void CorrectOrientationOfTangent(gp_Vec& TangVec,
                                         const TopoDS_Vertex& aVertex,
                                         const TopoDS_Edge& anEdge)
@@ -311,12 +306,6 @@ void BRepOffset_Analyse::Perform (const TopoDS_Shape& S,
 
   // Build ancestors.
   BuildAncestors (S,myAncestors);
-  const Standard_Integer aNbA = myAncestors.Extent();
-  for (Standard_Integer i = 1; i <= aNbA; ++i)
-  {
-    const TopoDS_Shape& aSS = myAncestors.FindKey (i);
-    const TopTools_ListOfShape& aLA = myAncestors (i);
-  }
 
   TopTools_ListOfShape aLETang;
   TopExp_Explorer Exp(S.Oriented(TopAbs_FORWARD),TopAbs_EDGE);
@@ -732,6 +721,7 @@ void BRepOffset_Analyse::TreatTangentFaces (const TopTools_ListOfShape& theLE, c
         TopTools_ListOfShape aLFOpposite;
         aLFOpposite.Append (aFNew);
         aLFOpposite.Append (aFToRemove);
+        myAncestors.Add (aEOpposite, aLFOpposite);
         myMapEdgeType.Bind (aEOpposite, BRepOffset_ListOfInterval());
         EdgeAnalyse (aEOpposite, aFNew, TopoDS::Face (aFToRemove), aSinTol, myMapEdgeType (aEOpposite));
 

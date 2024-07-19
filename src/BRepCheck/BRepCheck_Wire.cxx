@@ -57,6 +57,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <TopTools.hxx>
 #include <TopTools_DataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfOrientedShape.hxx>
@@ -65,19 +66,6 @@
 #include <TopTools_MapOfShape.hxx>
 
 #include <stdio.h>
-extern "C" {
-#if 0
-void showTopoShape(const TopoDS_Shape &s, const char *name);
-void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes);
-#else
-static void showTopoShape(const TopoDS_Shape &s, const char *name)
-{
-}
-static void showTopoShapes(const TopoDS_Shape &s, const char *name, const TopTools_ListOfShape &shapes)
-{
-}
-#endif
-}
 IMPLEMENT_STANDARD_RTTIEXT(BRepCheck_Wire,BRepCheck_Result)
 
 static void Propagate(const TopTools_IndexedDataMapOfShapeListOfShape&,
@@ -943,8 +931,8 @@ BRepCheck_Status BRepCheck_Wire::Orientation(const TopoDS_Face& F,
         theOstat = BRepCheck_NotClosed;
         if (!VL.IsNull())
         {
-          showTopoShape(VL, "NotClosedV");
-          showTopoShape(myShape, "NotClosedW");
+          ShowTopoShape(__FILE__, VL, "NotClosedV");
+          ShowTopoShape(__FILE__, myShape, "NotClosedW");
         }
         if (Update)
         {
