@@ -90,7 +90,7 @@ public:
 
 extern "C" {
 typedef Standard_Boolean FuncShowTopoShape(const char *Key, const TopoDS_Shape &s, const char *name);
-Standard_EXPORT void SetFuncShowTopoShape(FuncShowTopoShape *func);
+Standard_EXPORT Standard_Integer SetFuncShowTopoShape(FuncShowTopoShape *func);
 }
 
 Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented = 0);

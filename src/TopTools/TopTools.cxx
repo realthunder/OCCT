@@ -51,9 +51,11 @@ static FuncShowTopoShape *_FuncShowTopoShape;
 #endif
 
 static thread_local char _ShapeName[256];
-void SetFuncShowTopoShape(FuncShowTopoShape *func)
+#define OCCT_EXT_VERSION 1
+Standard_Integer SetFuncShowTopoShape(FuncShowTopoShape *func)
 {
   _FuncShowTopoShape = func;
+  return OCCT_EXT_VERSION;
 }
 
 static inline Standard_Boolean _ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented)
