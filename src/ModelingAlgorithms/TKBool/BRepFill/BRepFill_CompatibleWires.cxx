@@ -779,7 +779,7 @@ void BRepFill_CompatibleWires::Init(const NCollection_Sequence<TopoDS_Shape>& Se
 {
   myInit    = Sections;
   myWork    = Sections;
-  myPercent = 0.1;
+  myPercent = 0.01;
   myStatus  = BRepFill_ThruSectionErrorStatus_NotDone;
   myMap.Clear();
 }
