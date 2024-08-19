@@ -692,7 +692,7 @@ void BRepFill_CompatibleWires::Init(const TopTools_SequenceOfShape& Sections)
 {
   myInit = Sections;
   myWork = Sections;
-  myPercent = 0.1;
+  myPercent = 0.01;
   myStatus = BRepFill_ThruSectionErrorStatus_NotDone;
   myMap.Clear();
 
