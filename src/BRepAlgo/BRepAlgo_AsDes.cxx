@@ -42,8 +42,8 @@ BRepAlgo_AsDes::BRepAlgo_AsDes()
 void BRepAlgo_AsDes::Add(const TopoDS_Shape& S, const TopoDS_Shape& SS)
 {
   if (SS.ShapeType() == TopAbs_VERTEX) {
-    ShowTopoShape(__FILE__, S, "AsDes");
-    ShowTopoShape(__FILE__, SS, "AsDesSS");
+    SHOW_TOPO_SHAPE(S, "AsDes");
+    SHOW_TOPO_SHAPE(SS, "AsDesSS");
   }
   if (!down.IsBound(S)) {
     TopTools_ListOfShape L;

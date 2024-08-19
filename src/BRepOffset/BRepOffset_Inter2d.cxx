@@ -137,8 +137,8 @@ static void GetEdgesOrientedInFace(const TopoDS_Shape& theShape,
                                    TopTools_SequenceOfShape&     theSeqEdges)
 {
   const TopTools_ListOfShape& aEdges = theAsDes->Descendant (theFace);
-  // ShowTopoShape(__FILE__, theFace, "OrientedInFace", aEdges);
-  // ShowTopoShape(__FILE__, TopoDS_Shape(), "OrientedInFace", aEdges);
+  // SHOW_TOPO_SHAPE(theFace, "OrientedInFace", aEdges);
+  // SHOW_TOPO_SHAPE(TopoDS_Shape(), "OrientedInFace", aEdges);
 
   TopExp_Explorer anExplo (theShape, TopAbs_EDGE);
   for (; anExplo.More(); anExplo.Next())
@@ -286,7 +286,7 @@ static void Store(const TopoDS_Edge& theEdge,
   const TopTools_ListOfShape& aLVEx = theAsDes2d->Descendant(theEdge);
   if (!IsToUpdate && aLVEx.IsEmpty()) {
     if (theLV.Extent()) {
-        ShowTopoShape(__FILE__, theEdge, "Store", theLV);
+        SHOW_TOPO_SHAPE(theEdge, "Store", theLV);
         theAsDes2d->Add(theEdge, theLV);
     }
     return;
@@ -363,8 +363,8 @@ static void Store(const TopoDS_Edge& theEdge,
       pLV->Append(aLVC);
     }
     theAsDes2d->Add(theEdge, aV);
-    ShowTopoShape(__FILE__, theEdge, "StoreAdd");
-    ShowTopoShape(__FILE__, aV, "StoreAddV");
+    SHOW_TOPO_SHAPE(theEdge, "StoreAdd");
+    SHOW_TOPO_SHAPE(aV, "StoreAddV");
   }
 }
 
@@ -573,8 +573,8 @@ static void EdgeInter(const TopoDS_Face&              F,
           LV2.Append( aNewVertex.Oriented(OO2) );
         }
         if (!LV1.IsEmpty()) {
-          ShowTopoShape(__FILE__, E1, "InterE1_", LV1);
-          ShowTopoShape(__FILE__, E2, "InterE2_", LV2);
+          SHOW_TOPO_SHAPE(E1, "InterE1_", LV1);
+          SHOW_TOPO_SHAPE(E2, "InterE2_", LV2);
         }
     }
   
@@ -753,8 +753,8 @@ static void RefEdgeInter(const TopoDS_Face&              F,
     if (anAngle <= 1.e-8 || M_PI - anAngle <= 1.e-8)
     {
       theCoincide = Standard_True;
-      ShowTopoShape(__FILE__, E1, "RefEdgeNoInter1_");
-      ShowTopoShape(__FILE__, E2, "RefEdgeNoInter1_");
+      SHOW_TOPO_SHAPE(E1, "RefEdgeNoInter1_");
+      SHOW_TOPO_SHAPE(E2, "RefEdgeNoInter1_");
       return;
     }
     else
@@ -772,8 +772,8 @@ static void RefEdgeInter(const TopoDS_Face&              F,
     theCoincide = (Inter2d.NbSegments() &&
                    (GAC1.GetType() == GeomAbs_Line) &&
                    (GAC2.GetType() == GeomAbs_Line));
-    ShowTopoShape(__FILE__, E1, "RefEdgeNoInter2_");
-    ShowTopoShape(__FILE__, E2, "RefEdgeNoInter2_");
+    SHOW_TOPO_SHAPE(E1, "RefEdgeNoInter2_");
+    SHOW_TOPO_SHAPE(E2, "RefEdgeNoInter2_");
     return;
   }
   //
@@ -991,8 +991,8 @@ static void RefEdgeInter(const TopoDS_Face&              F,
     TolStore = Max (TolStore, TolLL);
     Store (E1,E2,LV1,LV2,TolStore,AsDes, aDMVV);
   }
-  ShowTopoShape(__FILE__, E1, "RefEdgeInterE1_", LV1);
-  ShowTopoShape(__FILE__, E2, "RefEdgeInterE2_", LV2);
+  SHOW_TOPO_SHAPE(E1, "RefEdgeInterE1_", LV1);
+  SHOW_TOPO_SHAPE(E2, "RefEdgeInterE2_", LV2);
 }
 
 
@@ -1641,7 +1641,7 @@ void BRepOffset_Inter2d::Compute (const Handle(BRepAlgo_AsDes)&     AsDes,
   Standard_Integer                   j, i = 1;
   BRepAdaptor_Surface BAsurf(F);
 
-  // ShowTopoShape(__FILE__, F, "ComputeF");
+  // SHOW_TOPO_SHAPE(F, "ComputeF");
   //
   Message_ProgressScope aPS(theRange, "Intersecting edges on faces", LE.Size());
   for ( it1LE.Initialize(LE) ; it1LE.More(); it1LE.Next(), aPS.Next()) {
@@ -1650,7 +1650,7 @@ void BRepOffset_Inter2d::Compute (const Handle(BRepAlgo_AsDes)&     AsDes,
       return;
     }
     const TopoDS_Edge& E1 = TopoDS::Edge(it1LE.Value());        
-    ShowTopoShape(__FILE__, E1, "ComputeE");
+    SHOW_TOPO_SHAPE(E1, "ComputeE");
 
     j = 1;
     it2LE.Initialize(LE);
@@ -1705,8 +1705,8 @@ void BRepOffset_Inter2d::Compute (const Handle(BRepAlgo_AsDes)&     AsDes,
             for (itL.Initialize(AsDes->Ascendant(E2)); itL.More(); itL.Next()) {
               if (ContextFaces->Contains(itL.Value())) {
                 ToIntersect = Standard_False;
-                ShowTopoShape(__FILE__, E1, "ComputeESkipE1");
-                ShowTopoShape(__FILE__, E2, "ComputeESkipE2");
+                SHOW_TOPO_SHAPE(E1, "ComputeESkipE1");
+                SHOW_TOPO_SHAPE(E2, "ComputeESkipE2");
                 break;
               }
             }
@@ -1804,7 +1804,7 @@ Standard_Boolean BRepOffset_Inter2d::ConnexIntByInt
           {
             return Standard_False;
           }
-          ShowTopoShape(__FILE__, NE, "ConnexExtent");
+          SHOW_TOPO_SHAPE(NE, "ConnexExtent");
           MES.Bind  (OE,NE);
         }
       }
@@ -1812,9 +1812,9 @@ Standard_Boolean BRepOffset_Inter2d::ConnexIntByInt
   }
   
   TopoDS_Face           FIO = TopoDS::Face(OFI?OFI->Face():FI);
-  ShowTopoShape(__FILE__, FIO, "ConnexFIO");
+  SHOW_TOPO_SHAPE(FIO, "ConnexFIO");
   if (MES.IsBound(FIO)) {
-    ShowTopoShape(__FILE__, FIO, "ConnexMES");
+    SHOW_TOPO_SHAPE(FIO, "ConnexMES");
     FIO = TopoDS::Face(MES(FIO));
   }
   //
@@ -1863,25 +1863,25 @@ Standard_Boolean BRepOffset_Inter2d::ConnexIntByInt
       if (CurE.IsSame(NextE)) continue;
       TopoDS_Vertex Vref = CommonVertex(CurE, NextE); 
 
-      ShowTopoShape(__FILE__, CurE, "ConnexInterCurE");
-      ShowTopoShape(__FILE__, NextE, "ConnexInterNextE");
+      SHOW_TOPO_SHAPE(CurE, "ConnexInterCurE");
+      SHOW_TOPO_SHAPE(NextE, "ConnexInterNextE");
       TopoDS_Edge aReplacement = Analyse.EdgeReplacement (FI, CurE);
       if (!aReplacement.IsSame(CurE)) {
         CurE = aReplacement;
-        ShowTopoShape(__FILE__, CurE, "ConnexInterReplaceCurE");
+        SHOW_TOPO_SHAPE(CurE, "ConnexInterReplaceCurE");
       }
       aReplacement = Analyse.EdgeReplacement (FI, NextE);
       if (!aReplacement.IsSame(NextE)) {
         NextE = aReplacement;
-        ShowTopoShape(__FILE__, NextE, "ConnexInterReplaceNextE");
+        SHOW_TOPO_SHAPE(NextE, "ConnexInterReplaceNextE");
       }
 
       TopoDS_Edge CEO, NEO;
       if (OFI) {
         CEO = TopoDS::Edge(OFI->Generated(CurE));
         NEO = TopoDS::Edge(OFI->Generated(NextE));
-        ShowTopoShape(__FILE__, CEO, "ConnexInterCEO");
-        ShowTopoShape(__FILE__, NEO, "ConnexInterNEO");
+        SHOW_TOPO_SHAPE(CEO, "ConnexInterCEO");
+        SHOW_TOPO_SHAPE(NEO, "ConnexInterNEO");
       }
       else {
         CEO = CurE;
@@ -1925,8 +1925,8 @@ Standard_Boolean BRepOffset_Inter2d::ConnexIntByInt
         if (DoInter) {
           anOr1 = TopAbs_REVERSED;
           anOr2 = TopAbs_FORWARD;
-          ShowTopoShape(__FILE__, NE1, "ConnexInter1");
-          ShowTopoShape(__FILE__, NE2, "ConnexInter2");
+          SHOW_TOPO_SHAPE(NE1, "ConnexInter1");
+          SHOW_TOPO_SHAPE(NE2, "ConnexInter2");
           NE1seq.Append(NE1);
           NE2seq.Append(NE2);
         }
@@ -1939,12 +1939,12 @@ Standard_Boolean BRepOffset_Inter2d::ConnexIntByInt
         GetEdgesOrientedInFace (NE2, FIO, theAsDes, NE2seq);
         if (NE1seq.IsEmpty() || NE2seq.IsEmpty()) {
           DoInter = 0;
-          ShowTopoShape(__FILE__, NE1, NE1seq.IsEmpty()?"ConnexInterError3":"ConnexInter3");
-          ShowTopoShape(__FILE__, NE2, NE2seq.IsEmpty()?"ConnexInterError4":"ConnexInter4");
+          SHOW_TOPO_SHAPE(NE1, NE1seq.IsEmpty()?"ConnexInterError3":"ConnexInter3");
+          SHOW_TOPO_SHAPE(NE2, NE2seq.IsEmpty()?"ConnexInterError4":"ConnexInter4");
         }
         else {
-          ShowTopoShape(__FILE__, NE1, "ConnexInter3");
-          ShowTopoShape(__FILE__, NE2, "ConnexInter4");
+          SHOW_TOPO_SHAPE(NE1, "ConnexInter3");
+          SHOW_TOPO_SHAPE(NE2, "ConnexInter4");
           anOr1 = TopAbs_REVERSED;
           anOr2 = TopAbs_FORWARD;
         }
@@ -1957,11 +1957,11 @@ Standard_Boolean BRepOffset_Inter2d::ConnexIntByInt
         GetEdgesOrientedInFace (NE1, FIO, theAsDes, NE1seq);
         if (NE1seq.IsEmpty()) {
           DoInter = 0;
-          ShowTopoShape(__FILE__, NE1, NE1seq.IsEmpty()?"ConnexInterError5":"ConnexInter5");
+          SHOW_TOPO_SHAPE(NE1, NE1seq.IsEmpty()?"ConnexInterError5":"ConnexInter5");
         }
         else {
-          ShowTopoShape(__FILE__, NE1, "ConnexInter5");
-          ShowTopoShape(__FILE__, NE2, "ConnexInter6");
+          SHOW_TOPO_SHAPE(NE1, "ConnexInter5");
+          SHOW_TOPO_SHAPE(NE2, "ConnexInter6");
           NE2seq.Append (NE2);
           anOr1 = TopAbs_REVERSED;
           anOr2 = TopAbs_FORWARD;
@@ -1975,11 +1975,11 @@ Standard_Boolean BRepOffset_Inter2d::ConnexIntByInt
         GetEdgesOrientedInFace (NE1, FIO, theAsDes, NE1seq);
         if (NE1seq.IsEmpty()) {
           DoInter = 0;
-          ShowTopoShape(__FILE__, NE1, NE1seq.IsEmpty()?"ConnexInterError7":"ConnexInter7");
+          SHOW_TOPO_SHAPE(NE1, NE1seq.IsEmpty()?"ConnexInterError7":"ConnexInter7");
         }
         else {
-          ShowTopoShape(__FILE__, NE1, "ConnexInter7");
-          ShowTopoShape(__FILE__, NE2, "ConnexInter8");
+          SHOW_TOPO_SHAPE(NE1, "ConnexInter7");
+          SHOW_TOPO_SHAPE(NE2, "ConnexInter8");
           NE2seq.Append (NE2);
           anOr1 = TopAbs_FORWARD;
           anOr2 = TopAbs_REVERSED;
@@ -1987,8 +1987,8 @@ Standard_Boolean BRepOffset_Inter2d::ConnexIntByInt
       }
       else {
         DoInter = 0;
-        ShowTopoShape(__FILE__, CurE, "ConnexNoInter");
-        ShowTopoShape(__FILE__, NextE, "ConnexNoInter");
+        SHOW_TOPO_SHAPE(CurE, "ConnexNoInter");
+        SHOW_TOPO_SHAPE(NextE, "ConnexNoInter");
       }
       if (DoInter) {
         //------------------------------------

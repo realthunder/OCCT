@@ -931,8 +931,8 @@ BRepCheck_Status BRepCheck_Wire::Orientation(const TopoDS_Face& F,
         theOstat = BRepCheck_NotClosed;
         if (!VL.IsNull())
         {
-          ShowTopoShape(__FILE__, VL, "NotClosedV");
-          ShowTopoShape(__FILE__, myShape, "NotClosedW");
+          SHOW_TOPO_SHAPE(VL, "NotClosedV");
+          SHOW_TOPO_SHAPE(myShape, "NotClosedW");
         }
         if (Update)
         {

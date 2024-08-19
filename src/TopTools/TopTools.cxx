@@ -35,20 +35,7 @@ void TopTools::Dummy(const Standard_Integer)
 {
 }
 
-#define OCCT_SHOW_SHAPE
-
-#ifdef OCCT_SHOW_SHAPE
-extern "C" {
-Standard_Boolean showTopoShape(const char *key, const TopoDS_Shape &s, const char *name);
-}
-
-static FuncShowTopoShape *_FuncShowTopoShape = showTopoShape;
-
-#else
-
 static FuncShowTopoShape *_FuncShowTopoShape;
-
-#endif
 
 static thread_local char _ShapeName[256];
 #define OCCT_EXT_VERSION 1
@@ -58,7 +45,7 @@ Standard_Integer SetFuncShowTopoShape(FuncShowTopoShape *func)
   return OCCT_EXT_VERSION;
 }
 
-static inline Standard_Boolean _ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented)
+static inline Standard_Boolean _ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented)
 {
   if (!_FuncShowTopoShape)
     return Standard_False;
@@ -87,77 +74,72 @@ static inline Standard_Boolean _ShowTopoShape (const char *Key, const TopoDS_Sha
     }
   }
 
-#ifdef OCCT_SHOW_SHAPE
-  (void)Key;
-  return _FuncShowTopoShape(nullptr, S, Name);
-#else
-  return _FuncShowTopoShape(Key, S, Name);
-#endif
+  return _FuncShowTopoShape(Key, line, S, Name);
 }
 
-void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented)
+void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented)
 {
-  _ShowTopoShape(Key, S, Name, Oriented);
+  _ShowTopoShape(Key, line, S, Name, Oriented);
 }
 
 
-void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopoDS_Shape &S2, Standard_Boolean Oriented)
+void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopoDS_Shape &S2, Standard_Boolean Oriented)
 {
   if (!_FuncShowTopoShape)
     return;
   snprintf(_ShapeName, sizeof(_ShapeName), "%s1", Name);
-  if (!_ShowTopoShape(Key, S, _ShapeName, Oriented))
+  if (!_ShowTopoShape(Key, line, S, _ShapeName, Oriented))
     return;
   snprintf(_ShapeName, sizeof(_ShapeName), "%s2", Name);
-  _ShowTopoShape(nullptr, S2, _ShapeName, Oriented);
+  _ShowTopoShape(nullptr, line, S2, _ShapeName, Oriented);
 }
 
-void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_ListOfShape &Shapes, Standard_Boolean Oriented)
+void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopTools_ListOfShape &Shapes, Standard_Boolean Oriented)
 {
   if (!_FuncShowTopoShape)
     return;
-  if (!_ShowTopoShape(Key, S, Name, Oriented))
+  if (!_ShowTopoShape(Key, line, S, Name, Oriented))
     return;
   TopTools_ListIteratorOfListOfShape it(Shapes);
   for (; it.More(); it.Next()) {
     snprintf(_ShapeName, sizeof(_ShapeName), "%s_item", Name);
-    _ShowTopoShape(nullptr, it.Value(), _ShapeName, Oriented);
+    _ShowTopoShape(nullptr, 0, it.Value(), _ShapeName, Oriented);
   }
 }
 
-void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_SequenceOfShape &Shapes, Standard_Boolean Oriented)
+void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopTools_SequenceOfShape &Shapes, Standard_Boolean Oriented)
 {
   if (!_FuncShowTopoShape)
     return;
-  if (!_ShowTopoShape(Key, S, Name, Oriented))
+  if (!_ShowTopoShape(Key, line, S, Name, Oriented))
     return;
   for (Standard_Integer ii = 1; ii <= Shapes.Length(); ++ii) {
     snprintf(_ShapeName, sizeof(_ShapeName), "%s_item", Name);
-    _ShowTopoShape(nullptr, Shapes(ii), _ShapeName, Oriented);
+    _ShowTopoShape(nullptr, 0, Shapes(ii), _ShapeName, Oriented);
   }
 }
 
-void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_IndexedMapOfShape &Shapes, Standard_Boolean Oriented)
+void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopTools_IndexedMapOfShape &Shapes, Standard_Boolean Oriented)
 {
   if (!_FuncShowTopoShape)
     return;
-  if (!_ShowTopoShape(Key, S, Name, Oriented))
+  if (!_ShowTopoShape(Key, line, S, Name, Oriented))
     return;
   for (Standard_Integer ii = 1; ii <= Shapes.Extent(); ++ii) {
     snprintf(_ShapeName, sizeof(_ShapeName), "%s_item", Name);
-    _ShowTopoShape(nullptr, Shapes(ii), _ShapeName, Oriented);
+    _ShowTopoShape(nullptr, 0, Shapes(ii), _ShapeName, Oriented);
   }
 }
 
-void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_MapOfShape &Shapes, Standard_Boolean Oriented)
+void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopTools_MapOfShape &Shapes, Standard_Boolean Oriented)
 {
   if (!_FuncShowTopoShape)
     return;
-  if (!_ShowTopoShape(Key, S, Name, Oriented))
+  if (!_ShowTopoShape(Key, line, S, Name, Oriented))
     return;
   TopTools_MapIteratorOfMapOfShape it(Shapes);
   for (; it.More(); it.Next()) {
     snprintf(_ShapeName, sizeof(_ShapeName), "%s_item", Name);
-    _ShowTopoShape(nullptr, it.Value(), _ShapeName, Oriented);
+    _ShowTopoShape(nullptr, 0, it.Value(), _ShapeName, Oriented);
   }
 }

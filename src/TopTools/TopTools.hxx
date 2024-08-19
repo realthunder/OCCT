@@ -89,15 +89,19 @@ public:
 };
 
 extern "C" {
-typedef Standard_Boolean FuncShowTopoShape(const char *Key, const TopoDS_Shape &s, const char *name);
+typedef Standard_Boolean FuncShowTopoShape(const char *Key, int line, const TopoDS_Shape &s, const char *name);
 Standard_EXPORT Standard_Integer SetFuncShowTopoShape(FuncShowTopoShape *func);
 }
 
-Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented = 0);
-Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopoDS_Shape &, Standard_Boolean Oriented = 0);
-Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_ListOfShape &, Standard_Boolean Oriented = 0);
-Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_SequenceOfShape &, Standard_Boolean Oriented = 0);
-Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_IndexedMapOfShape &, Standard_Boolean Oriented = 0);
-Standard_EXPORT void ShowTopoShape (const char *Key, const TopoDS_Shape& S, const char *Name, const TopTools_MapOfShape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopoDS_Shape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopTools_ListOfShape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopTools_SequenceOfShape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopTools_IndexedMapOfShape &, Standard_Boolean Oriented = 0);
+Standard_EXPORT void ShowTopoShape (const char *Key, int line, const TopoDS_Shape& S, const char *Name, const TopTools_MapOfShape &, Standard_Boolean Oriented = 0);
+
+#define SHOW_TOPO_SHAPE(_S, ...) do {\
+  ShowTopoShape(__FILE__, __LINE__, _S, ## __VA_ARGS__); \
+} while(0)
 
 #endif // _TopTools_HeaderFile

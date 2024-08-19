@@ -3554,11 +3554,11 @@ void BRepOffset_Tool::ExtentFace (const TopoDS_Face&            F,
         // its neighbour offseted cylindrical face, if the offset is directed so that
         // the radius of the cylinder becomes smaller.
         if (LInt1.IsEmpty()) {
-          ShowTopoShape(__FILE__, FTB, "StopFaceSkip");
+          SHOW_TOPO_SHAPE(FTB, "StopFaceSkip");
           continue;  
         }
 
-        ShowTopoShape(__FILE__, FTB, "StopFace");
+        SHOW_TOPO_SHAPE(FTB, "StopFace");
 
 	if (LInt1.Extent() > 1) { 
 	  // l intersection est en plusieurs edges (franchissement de couture)
@@ -3930,14 +3930,14 @@ TopoDS_Shape BRepOffset_Tool::Deboucle3D(const TopoDS_Shape& S,
           if (anEdge.Orientation() == TopAbs_INTERNAL) {
             const TopoDS_Face& aFace = TopoDS::Face(aLF.First());
             if (aFace.Orientation() != TopAbs_INTERNAL) {
-              ShowTopoShape(__FILE__, anEdge, "Internal", aLF);
+              SHOW_TOPO_SHAPE(anEdge, "Internal", aLF);
               continue;
             }
           }
           if (!Boundary.Contains(anEdge) &&
               !BRep_Tool::Degenerated(anEdge))
           {
-            ShowTopoShape(__FILE__, anEdge, "NoFreeFound", aLF);
+            SHOW_TOPO_SHAPE(anEdge, "NoFreeFound", aLF);
             JeGarde = Standard_False;
           }
         }
