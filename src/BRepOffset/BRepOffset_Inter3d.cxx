@@ -79,20 +79,21 @@ static void ExtentEdge(const TopoDS_Face& /*F*/,
   // geometry of the edge recalculating the intersection of surfaces.  
 
   NE.Orientation(TopAbs_FORWARD);
-  Standard_Real f,l;
-  BRep_Tool::Range(E,f,l);
-  Standard_Real length = l-f;
-  f -=  100*length;
-  l +=  100*length;
+  Standard_Real f0,l0,f,l;
+  BRep_Tool::Range(E,f0,l0);
+  Standard_Real length = l0-f0;
+  f =  f0 - 100*length;
+  l =  l0 + 100*length;
 
   BRep_Builder B;
   B.Range(NE,f,l);
   BRepAdaptor_Curve CE(E);
   if (CE.IsPeriodic() && l-f >= CE.Period()) {
-    f = 0;
-    l = CE.Period();
+    length = CE.Period() - (l0 - f0);
+    f = f0 - length/2;
+    l = l0 + length/2;
     B.Range(NE,f,l);
-    TopoDS_Vertex V = BRepLib_MakeVertex(CE.Value(0));
+    TopoDS_Vertex V = BRepLib_MakeVertex(CE.Value(f));
     B.Add(NE,V.Oriented(TopAbs_FORWARD));
     B.Add(NE,V.Oriented(TopAbs_REVERSED));
     NE.Closed(Standard_True);

@@ -533,6 +533,11 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
                 }
               }
             };
+            if (C->IsPeriodic()) {
+              while (P < aF) {
+                P += C->Period();
+              }
+            }
             if (D < Tol  && P > aF && P < aL) {
               TopoDS_Shape aLocalShape;
               if (Extended) {
@@ -564,6 +569,9 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
               B.UpdateVertex(TopoDS::Vertex(aLocalShape),P,anEdge,Tol);
               LV.Append(aLocalShape);
               SHOW_TOPO_SHAPE(aLocalShape, "InterV", 1);
+            }
+            else if (D < Tol) {
+              SHOW_TOPO_SHAPE(aVertex, "InterVSkip", 1);
             }
           }
         }
