@@ -13,8 +13,8 @@ source:
   - git_url : ../
 
 build:
-  number: {{ GIT_DESCRIBE_NUMBER }}
-  string: {{ variant }}_h{{ PKG_HASH }}_{{ GIT_DESCRIBE_NUMBER }}
+  number: {{ build + (GIT_DESCRIBE_NUMBER|int) }}
+  string: {{ variant }}_h{{ PKG_HASH }}_{{ build + (GIT_DESCRIBE_NUMBER|int) }}
   run_exports:
     # ABI changes between minor versions, see e.g.
     # https://github.com/conda-forge/occt-feedstock/issues/97
@@ -26,7 +26,7 @@ build:
 requirements:
   build:
     - {{ compiler('cxx') }}
-    - cmake 3.18
+    - cmake
     - ninja
     - {{ cdt('mesa-libgl-devel') }}  # [linux]
     - {{ cdt('libxi-devel') }}       # [linux]
@@ -37,14 +37,14 @@ requirements:
     - fontconfig
     - xorg-libxt  # [linux]
     - rapidjson
-    - vtk  # [variant=='all']
+    - vtk  9.2.6 # [variant=='all']
   run:
     - freetype
     - freeimage
     - fontconfig
     - xorg-libxt  # [linux]
     - rapidjson
-    - vtk  # [variant=='all']
+    - vtk  9.2.6 # [variant=='all']
 
 # test:
 #   requires:

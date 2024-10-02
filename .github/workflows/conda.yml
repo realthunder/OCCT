@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-11, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest, windows-2019]
         python-version: ["3.11"]
         arch : ["64"]
         include:
@@ -23,17 +23,17 @@ jobs:
           - os: ubuntu-latest
             arch: aarch64
             python-version: "3.11"
-          - os: macos-11
-            arch: arm64
-            python-version: "3.11"
-          # - os: self-hosted-mac
+          # - os: macos-latest
           #   arch: arm64
           #   python-version: "3.11"
+          - os: self-hosted-mac
+            arch: arm64
+            python-version: "3.11"
     uses: ./.github/workflows/builder.yml
     with:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       python-version: ${{ matrix.python-version }}
-      use_mamba: ${{ matrix.arch != 'aarch64' }}
+      use_mamba: ${{ matrix.arch != 'aarch64' && matrix.arch != 'arm64' }}
     secrets:
       token: ${{ secrets.ANACONDA_TOKEN }}
