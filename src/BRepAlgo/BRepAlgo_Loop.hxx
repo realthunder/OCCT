@@ -30,7 +30,7 @@ class TopoDS_Edge;
 
 
 //! Builds the loops from a set of edges on a face.
-class BRepAlgo_Loop 
+class BRepAlgo_Loop
 {
 public:
 
@@ -59,7 +59,7 @@ public:
   //! Make loops.
   Standard_EXPORT void Perform();
 
-  void Perform(const TopTools_ListOfShape* ContextFaces,
+  Standard_EXPORT void Perform(const TopTools_ListOfShape* ContextFaces,
                const Handle(BRepAlgo_AsDes)& AsDes = Handle(BRepAlgo_AsDes)());
   
   //! Update VE map according to Image Vertex - Vertex
@@ -143,9 +143,9 @@ private:
 class BRepAlgo_LoopIntersectingEdgeMap
 {
 public:
-  BRepAlgo_LoopIntersectingEdgeMap();
-  ~BRepAlgo_LoopIntersectingEdgeMap();
-  static TopTools_DataMapOfShapeListOfShape &EdgeMap();
+  Standard_EXPORT BRepAlgo_LoopIntersectingEdgeMap();
+  Standard_EXPORT ~BRepAlgo_LoopIntersectingEdgeMap();
+  Standard_EXPORT static TopTools_DataMapOfShapeListOfShape &EdgeMap();
 };
 
 
