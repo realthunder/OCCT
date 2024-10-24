@@ -517,6 +517,8 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
                 || OP.Distance(BRep_Tool::Pnt(TopoDS::Vertex(VL))) < Tol)
                 continue;
           }
+          if (C.IsNull())
+              continue;
           GeomAPI_ProjectPointOnCurve Proj(BRep_Tool::Pnt(aVertex), C);
           if (Proj.NbPoints() > 0) {
             Standard_Real D = Proj.LowerDistance();
