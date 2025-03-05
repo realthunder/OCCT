@@ -31,6 +31,7 @@ requirements:
     - {{ cdt('mesa-libgl-devel') }}  # [linux]
     - {{ cdt('libxi-devel') }}       # [linux]
     - {{ cdt('libxext-devel') }}     # [linux]
+    - {{ cdt('xorg-x11-proto-devel') }}  # [linux]
   host:
     - freetype
     - freeimage
