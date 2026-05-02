@@ -29,7 +29,7 @@ parts:
       - libgl-dev
       - rapidjson-dev
     build-environment:
-      - LD_LIBRARY_PATH: "$CRAFT_STAGE/usr/lib/$CRAFT_ARCH_TRIPLET/"
+      - LD_LIBRARY_PATH: "$CRAFT_STAGE/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/"
     override-build: |
       craftctl default
       find "${CRAFT_PART_INSTALL}/usr/lib/cmake" \
@@ -59,7 +59,7 @@ parts:
       - -DENABLE_MED=0
       - -DENABLE_FLTK=0
     build-environment:
-      - LD_LIBRARY_PATH: "$CRAFT_STAGE/usr/lib/$CRAFT_ARCH_TRIPLET:$CRAFT_STAGE/usr/lib"
+      - LD_LIBRARY_PATH: "$CRAFT_STAGE/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:$CRAFT_STAGE/usr/lib"
   
   cleanup:
     after: [occt, gmsh]
