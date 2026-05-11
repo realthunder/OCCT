@@ -4341,6 +4341,7 @@ Standard_Boolean BRepOffset_MakeOffset::CheckInputData(const Message_ProgressRan
   // Connectivity of input shape.
   if (!IsConnectedShell(myFaceComp))
   {
+    SHOW_TOPO_SHAPE(myFaceComp, "NotConnectedShell");
     myError = BRepOffset_NotConnectedShell;
     return Standard_False;
   }

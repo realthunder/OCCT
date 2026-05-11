@@ -39,6 +39,7 @@
 #include <Precision.hxx>
 #include <ShapeBuild_ReShape.hxx>
 #include <ShapeFix_Shape.hxx>
+#include <ShapeFix_Wire.hxx>
 #include <TColStd_SequenceOfReal.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -135,9 +136,10 @@ static void Bubble(const TopoDS_Edge&        E,
   //Remove duplicates
   for (Standard_Integer i = 1; i < Seq.Length(); i++) {
     for (Standard_Integer j = i+1; j <= Seq.Length(); j++) {
-      if (Seq(i) == Seq(j))
+      if (Seq(i) == Seq(j) && SeqU(i) == SeqU(j))
       {
         Seq.Remove(j);
+        SeqU.Remove(j);
         j--;
       }
     }
@@ -222,7 +224,8 @@ void BRepAlgo_Loop::SetImageVV (const BRepAlgo_Image& theImageVV)
 //=======================================================================
 
 static TopoDS_Vertex  UpdateClosedEdge(const TopoDS_Edge&         E,
-				       TopTools_SequenceOfShape&  SV)
+				       TopTools_SequenceOfShape&  SV,
+                                       TColStd_SequenceOfReal&    SU)
 {
   TopoDS_Vertex    VB [2], V1, V2, VRes;
   gp_Pnt           P,PC;
@@ -255,11 +258,21 @@ static TopoDS_Vertex  UpdateClosedEdge(const TopoDS_Edge&         E,
     }
     else {
       SV.Remove(1);
-      if (!SV.IsEmpty()) SV.Remove(SV.Length());
+      SU.Remove(1);
+      if (!SV.IsEmpty()) {
+        SV.Remove(SV.Length());
+        SU.Remove(SU.Length());
+      }
     }
   }
-  else if (OnStart) SV.Remove(1);
-  else if (OnEnd  ) SV.Remove(SV.Length());
+  else if (OnStart) {
+    SV.Remove(1);
+    SU.Remove(1);
+  }
+  else if (OnEnd  ) {
+    SV.Remove(SV.Length());
+    SU.Remove(SU.Length());
+  }
 
   return VRes;
 }
@@ -363,26 +376,26 @@ static void StoreInMVE (const TopoDS_Face&                  F,
     MVE.Add(V1,Empty);
   }
   MVE.ChangeFromKey(V1).Append(E);
-  // SHOW_TOPO_SHAPE(V1, "MVE_V1_");
+  SHOW_TOPO_SHAPE(V1, "MVE_V1_");
   if (!V1.IsSame(V2)) {
      if (!MVE.Contains(V2)) {
        MVE.Add(V2,Empty);
      }
      MVE.ChangeFromKey(V2).Append(E);
-     // SHOW_TOPO_SHAPE(V2, "MVE_V2_");
+     SHOW_TOPO_SHAPE(V2, "MVE_V2_");
   }
   TopLoc_Location L ;
   Handle(Geom_Surface) S = BRep_Tool::Surface(F,L);
   if (BRep_Tool::IsClosed(E,S,L)) {
     MVE.ChangeFromKey(V2).Append(E.Reversed());
-    // SHOW_TOPO_SHAPE(V2, "MVE_ClosedV2_");
+    SHOW_TOPO_SHAPE(V2, "MVE_ClosedV2_");
     if (!V1.IsSame(V2)) {
       MVE.ChangeFromKey(V1).Append(E.Reversed());
-      // SHOW_TOPO_SHAPE(V1, "MVE_ClosedV1_");
+      SHOW_TOPO_SHAPE(V1, "MVE_ClosedV1_");
     }
     YaCouture = Standard_True;
   }
-  // SHOW_TOPO_SHAPE(E, "MVE");
+  SHOW_TOPO_SHAPE(E, "MVE");
 }
 
 //=======================================================================
@@ -478,8 +491,11 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
 
       for (TopoDS_Iterator It(anEdge); It.More(); It.Next()) {
         if (It.Value().Orientation() == TopAbs_INTERNAL) {
-          Extended = Standard_True;
-          break;
+            SHOW_TOPO_SHAPE(anEdge, "IEdge2");
+            SHOW_TOPO_SHAPE(It.Value(), "Internal2");
+            if (!VF.IsNull() && !VL.IsNull())
+                Extended = Standard_True;
+            break;
         }
       }
 
@@ -519,6 +535,7 @@ void BRepAlgo_Loop::Perform(const TopTools_ListOfShape* ContextFaces,
           }
           if (C.IsNull())
               continue;
+          SHOW_TOPO_SHAPE(aVertex, "CheckInterV");
           GeomAPI_ProjectPointOnCurve Proj(BRep_Tool::Pnt(aVertex), C);
           if (Proj.NbPoints() > 0) {
             Standard_Real D = Proj.LowerDistance();
@@ -692,10 +709,12 @@ struct WireInfo
   mutable TopoDS_Wire aWire;
   std::vector<std::pair<TopoDS_Shape,Standard_Integer>> Edges;
   Standard_Integer aHashCode;
+  Standard_Boolean HasSeam;
   mutable TopoDS_Face aFace;
 
-  WireInfo(const TopoDS_Wire &W)
+  WireInfo(const TopoDS_Wire &W, Standard_Boolean HasSeam = Standard_False)
     : aWire(W)
+    , HasSeam(HasSeam)
   {
     TopoDS_Iterator aIt(W);
     for (; aIt.More(); aIt.Next()) {
@@ -720,7 +739,17 @@ struct WireInfo
     :aWire(other.aWire)
     ,Edges(other.Edges)
     ,aHashCode(other.aHashCode)
+    ,HasSeam(other.HasSeam)
   {}
+
+  Standard_Boolean Contains(const TopoDS_Edge &E) const
+  {
+    for (const auto &s : Edges) {
+      if (s.first.IsSame(E))
+        return Standard_True;
+    }
+    return Standard_False;
+  }
 };
 
 struct WireInfoHasher
@@ -759,11 +788,11 @@ void FindAllLoops(const TopoDS_Vertex& CV,
   TopTools_ListIteratorOfListOfShape itl;
   TopoDS_Vertex                      V1, V2, NV;
 
+  SHOW_TOPO_SHAPE(CV, "CV");
+  SHOW_TOPO_SHAPE(CE, "CE");
+
   CurrentVEMap.Bind(CV, CE);
   CurrentEdgeList.Prepend(CE);
-  // SHOW_TOPO_SHAPE(CV, "CV");
-  // SHOW_TOPO_SHAPE(CE, "CE");
-
   TopExp::Vertices(CE, V1, V2);
   if (CV.IsSame(V1))
     NV = V2;
@@ -774,7 +803,7 @@ void FindAllLoops(const TopoDS_Vertex& CV,
   const TopoDS_Shape *pE = CurrentVEMap.Seek(NV);
   if (pE)
     EF = TopoDS::Edge(*pE);
-  if (pE && !EF.IsSame(CE)) {
+  if (pE && (!EF.IsSame(CE) || V1.IsSame(V2))) {
     TopoDS_Edge E = EF;
     TopoDS_Vertex VF, VL;
     BRepLib_MakeWire aMakeWire;
@@ -784,14 +813,14 @@ void FindAllLoops(const TopoDS_Vertex& CV,
       if (VF.IsNull()) {
         VF = NV;
         VL = NV.IsSame(V1) ? V2 : V1;
-        // SHOW_TOPO_SHAPE(VF, "NWVF");
+        SHOW_TOPO_SHAPE(VF, "NWVF");
       }
       else if (VL.IsSame(V1))
         VL = V2;
       else
         VL = V1;
-      // SHOW_TOPO_SHAPE(VL, "NWV");
-      // SHOW_TOPO_SHAPE(E, "NWE");
+      SHOW_TOPO_SHAPE(VL, "NWV");
+      SHOW_TOPO_SHAPE(E, "NWE");
       aMakeWire.Add(E);
       if (VL.IsSame(VF))
         break;
@@ -802,7 +831,7 @@ void FindAllLoops(const TopoDS_Vertex& CV,
         SHOW_TOPO_SHAPE(NW, "NewWire");
     }
     else {
-        // SHOW_TOPO_SHAPE(NW, "DiscardWire");
+        SHOW_TOPO_SHAPE(NW, "DiscardWire");
     }
   }
   else
@@ -855,27 +884,31 @@ void SplitWires(TopTools_ListOfShape& OutputWires,
     if (aNF.IsNull())
     {
       Handle(Geom_Surface) S = BRep_Tool::Surface(aFace, L);
+      SHOW_TOPO_SHAPE(aFace, "MakeTestSurface");
       B.MakeFace(aNF, S, L, Tol);
-      B.Add(aNF, aWire);
-      B.NaturalRestriction(aNF, Standard_False);
 
       BRepTopAdaptor_FClass2d FClass2d(aNF,Precision::PConfusion());
-      if(FClass2d.PerformInfinitePoint() != TopAbs_OUT) { 
-        aNF.EmptyCopy();
+      if(FClass2d.PerformInfinitePoint() == TopAbs_OUT) { 
+        B.Add(aNF, aWire);
+        SHOW_TOPO_SHAPE(aWire, "MakeTestWire");
+      }
+      else {
         aWire.Reverse();
         B.Add(aNF, aWire);
-        B.NaturalRestriction(aNF, Standard_False);
+        SHOW_TOPO_SHAPE(aWire, "MakeTestReverseWire");
       }
+      B.NaturalRestriction(aNF, Standard_False);
 
       BRepCheck_Analyzer anAnalyzer(aNF);
       if (!anAnalyzer.IsValid())
       {
+        SHOW_TOPO_SHAPE(aNF, "MakeTestBeforeFix");
         ShapeFix_Shape aFix(aNF);
         aFix.Perform();
         aNF = TopoDS::Face(aFix.Shape());
       }
       aNF = TopoDS::Face(aNF.Oriented(TopAbs_FORWARD));
-      SHOW_TOPO_SHAPE(aNF, "MakeFace");
+      SHOW_TOPO_SHAPE(aNF, "MakeTestFace");
 
       // WARNING! There must be some bug in IntTools_FClass2d::Init() which
       // makes this class instance not reusable, i.e. Init() with other face
@@ -893,8 +926,8 @@ void SplitWires(TopTools_ListOfShape& OutputWires,
       // middle point inside the wire.
       //----------------------------------------------
       const TopoDS_Vertex& aVertex(TopoDS::Vertex(aExp.Current()));
-      const TopTools_ListOfShape& EL = MVE.FindFromKey(aVertex);
-      if (EL.Extent() <= 2)
+      const TopTools_ListOfShape* pEL = MVE.Seek(aVertex);
+      if (!pEL || pEL->Extent() <= 2)
         continue;
 
       aCheckMap.Clear();
@@ -902,7 +935,7 @@ void SplitWires(TopTools_ListOfShape& OutputWires,
       aWireEdgeMap.Clear();
       TopExp::MapShapes(aWire, TopAbs_EDGE, aWireEdgeMap);
 
-      for (itl.Initialize(EL); itl.More(); itl.Next())
+      for (itl.Initialize(*pEL); itl.More(); itl.Next())
       {
         const TopoDS_Edge &aEdge = TopoDS::Edge(itl.Value());
 
@@ -1014,7 +1047,7 @@ void SplitWires(TopTools_ListOfShape& OutputWires,
 
 void BRepAlgo_Loop::FindLoop()
 {
-  TopTools_ListIteratorOfListOfShape itl,  itl1;
+  TopTools_ListIteratorOfListOfShape itl, itl1, itl2;
   Standard_Boolean   YaCouture = Standard_False;
 
   myNewWires.Clear();
@@ -1070,34 +1103,147 @@ void BRepAlgo_Loop::FindLoop()
   TopTools_DataMapOfShapeShape CurrentVEMap;
   TopTools_ListOfShape CurrentEdgeList;
   MapOfWire NewWires;
+  TopoDS_Vertex V1, V2, NV, NNV;
 
   //-----------------------------------------------
   // Find all possible closed wires
   //----------------------------------------------
 
-  const TopoDS_Vertex& VF = TopoDS::Vertex(MVE.FindKey(1));
 #if 0
   for (Standard_Integer ii = 1; ii <= MVE.Extent(); ++ii)
   {
-    SHOW_TOPO_SHAPE(V, "MVEV");
+    const TopoDS_Vertex& VF = TopoDS::Vertex(MVE.FindKey(ii));
+    SHOW_TOPO_SHAPE(VF, "MVEV");
     for (itl.Initialize(MVE(ii)); itl.More(); itl.Next())
-      SHOW_TOPO_SHAPE(E, "MVE");
+      SHOW_TOPO_SHAPE(TopoDS::Edge(itl.Value()), "MVE");
   }
 #endif
 
+  MapIteratorOfMapOfWire itW;
+  TopLoc_Location L;
+  Handle(Geom_Surface) S = BRep_Tool::Surface(myFace, L);
+  Standard_Boolean IsPeriodic = S->IsUPeriodic() || S->IsVPeriodic();
+  DejaVu.Clear();
+
   for (Standard_Integer ii = 1; ii <= MVE.Extent(); ++ii)
   {
+    const TopoDS_Vertex& VF = TopoDS::Vertex(MVE.FindKey(ii));
+
     for (itl.Initialize(MVE(ii)); itl.More(); itl.Next())
     {
-      FindAllLoops(VF, TopoDS::Edge(itl.Value()), CurrentVEMap,
-          CurrentEdgeList, MVE, NewWires, myFace, myTolConf);
+      TopoDS_Edge CE = TopoDS::Edge(itl.Value());
+      TopExp::Vertices(CE, V1, V2, Standard_True);
+
+      if (!DejaVu.Add(CE))
+          continue;
+
+      FindAllLoops(VF, CE, CurrentVEMap,
+            CurrentEdgeList, MVE, NewWires, myFace, myTolConf);
+
+      // Perioidc surface needs a wire with seam edge. Look for wires consists
+      // of a wire with two closed edge joined by a seam edge.
+      //
+      // Note: sphere have one and only one edge (actually two identical edge
+      // but opposite orientation) that is the seam. But we can't have a
+      // continuous sphere face when dealing with thick solid. Or can we???
+
+      // Start with closed periodic edge first.
+      if (!IsPeriodic || !V1.IsSame(V2))
+          continue;
+
+      NV = V2;
+      SHOW_TOPO_SHAPE(CE, "SeamEdge1", Standard_True);
+      SHOW_TOPO_SHAPE(NV, "SeamEdgeV1", Standard_True);
+      for (itl1.Initialize(MVE.FindFromKey(NV)); itl1.More(); itl1.Next())
+      {
+        TopoDS_Edge NE = TopoDS::Edge(itl1.Value());
+        if (NE.IsSame(CE))
+          continue;
+        TopExp::Vertices(NE, V1, V2, Standard_True);
+        if (V1.IsSame(V2))
+          continue;
+
+        if (NV.IsSame(V1))
+          NNV = V2;
+        else {
+          NNV = V1;
+          V1 = V2;
+          V2 = NNV;
+          NE.Reverse();
+        }
+
+        for (itl2.Initialize(MVE.FindFromKey(NNV)); itl2.More(); itl2.Next())
+        {
+          TopoDS_Edge NNE = TopoDS::Edge(itl2.Value());
+          if (NNE.IsSame(CE))
+            continue;
+          TopExp::Vertices(NNE, V1, V2, Standard_True);
+          if (V1.IsSame(V2))
+          {
+            for (itW.Initialize(NewWires); itW.More();) {
+                const WireInfo &info = itW.Key();
+                if (info.HasSeam)
+                    break;
+                itW.Next();
+                if (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE)) {
+                    SHOW_TOPO_SHAPE(info.aWire, "SeamRemove");
+                    NewWires.Remove(info);
+                }
+            }
+            if (itW.More())
+                break;
+
+            DejaVu.Add(NE);
+            DejaVu.Add(NNE);
+
+            SHOW_TOPO_SHAPE(NE, "SeamEdge2", Standard_True);
+            SHOW_TOPO_SHAPE(NNV, "SeamEdgeV2", Standard_True);
+            SHOW_TOPO_SHAPE(NNE, "SeamEdge3", Standard_True);
+
+            BRepLib_MakeWire aMakeWire;
+            aMakeWire.Add(TopoDS::Edge(NE.Reversed()));
+            aMakeWire.Add(CE);
+            aMakeWire.Add(NE);
+            aMakeWire.Add(NNE);
+            TopoDS_Wire NW = aMakeWire.Wire();
+
+            ShapeFix_Wire aFixer;
+            aFixer.Load(NW);
+            aFixer.SetFace(myFace);
+            aFixer.FixReorder();
+            aFixer.FixConnected();
+            aFixer.FixSeam(0);
+            aFixer.FixEdgeCurves();
+            aFixer.FixDegenerated();
+            NW = aFixer.Wire();
+
+            if (NW.Closed() && NewWires.Add(WireInfo(NW, Standard_True))) {
+                SHOW_TOPO_SHAPE(NW, "NewWire2");
+            }
+            else {
+                SHOW_TOPO_SHAPE(NW, "DiscardWire2");
+            }
+          }
+        }
+      }
+
     }
   }
 
-  //-----------------------------------------------
-  // Split wires
-  //----------------------------------------------
-  SplitWires(myNewWires, NewWires, MVE, myFace);
+  if (!IsPeriodic) {
+    //-----------------------------------------------
+    // Split wires
+    //----------------------------------------------
+    SplitWires(myNewWires, NewWires, MVE, myFace);
+  }
+  else {
+    MapIteratorOfMapOfWire itW;
+    for (itW.Initialize(NewWires); itW.More(); itW.Next())
+    {
+      const TopoDS_Wire& aWire = itW.Value().aWire;
+      myNewWires.Append(aWire);
+    }
+  }
 
   TopTools_MapOfShape UsedEdges;
   TopExp_Explorer aExp;
@@ -1181,6 +1327,8 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
   for (; It.More(); It.Next())
   {
     if (It.Value().Orientation() == TopAbs_INTERNAL) {
+      SHOW_TOPO_SHAPE(WE, "IEdge");
+      SHOW_TOPO_SHAPE(It.Value(), "Internal");
       Extended = Standard_True;
       break;
     }
@@ -1200,16 +1348,16 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
 
   auto InsertVertex = [&](const TopoDS_Shape &V, Standard_Real U) {
     for (Standard_Integer ii = 1; ii <= SV.Length(); ++ii) {
-      if (SV(ii).IsSame(V))
+      if (SV(ii).IsSame(V) && SU(ii) == U)
         return;
       if (SU(ii) > U) {
-        SHOW_TOPO_SHAPE(V, "CuttingInsV", 1);
+        SHOW_TOPO_SHAPE(V, "CuttingInsV1", 1);
         SU.InsertBefore(ii, U);
         SV.InsertBefore(ii, V);
         return;
       }
     }
-    SHOW_TOPO_SHAPE(V, "CuttingInsV", 1);
+    SHOW_TOPO_SHAPE(V, "CuttingInsV2", 1);
     SU.Append(U);
     SV.Append(V);
   };
@@ -1221,7 +1369,7 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
   //----------------------------------------------------
   TopoDS_Vertex VCEI;
   if (!VF.IsNull() && VF.IsSame(VL)) {
-    VCEI = UpdateClosedEdge(WE,SV);    
+    VCEI = UpdateClosedEdge(WE,SV,SU);    
     if (!VCEI.IsNull()) {
       TopoDS_Shape aLocalV = VCEI.Oriented(TopAbs_FORWARD);
       VF = TopoDS::Vertex(aLocalV);
@@ -1248,16 +1396,18 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
   while (!SV.IsEmpty()) {
     while (!KeepAll && !SV.IsEmpty() && 
 	   SV.First().Orientation() != TopAbs_FORWARD) {
+      SHOW_TOPO_SHAPE(SV.First(), SV.First().Orientation()==TopAbs_FORWARD?"VF1":"VR1");
       SV.Remove(1);
     }
     if (SV.IsEmpty())
       break;
     V1  = TopoDS::Vertex(SV.First());
+    SHOW_TOPO_SHAPE(SV.First(), SV.First().Orientation()==TopAbs_FORWARD?"VF2":"VR2");
+
     SV.Remove(1);
     if (SV.IsEmpty())
       break;
-    if (SV.First().IsSame(V1))
-      continue;
+    SHOW_TOPO_SHAPE(SV.First(), SV.First().Orientation()==TopAbs_FORWARD?"VF4":"VR4");
     if (KeepAll || SV.First().Orientation() == TopAbs_REVERSED) {
       V2  = TopoDS::Vertex(SV.First());
       //-------------------------------------------
@@ -1302,7 +1452,7 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
       Standard_Real fpar, lpar;
       BRep_Tool::Range( EE, fpar, lpar );
       if (lpar - fpar <= Precision::Confusion()) {
-        SHOW_TOPO_SHAPE(EE, "CutEdgeRemove");
+        SHOW_TOPO_SHAPE(EE, "CutEdgeRemove1");
 	NE.Remove(it);
       }
       else
@@ -1310,7 +1460,7 @@ void BRepAlgo_Loop::CutEdge (const TopoDS_Edge&          E,
 	  gp_Pnt2d pf, pl;
 	  BRep_Tool::UVPoints( EE, myFace, pf, pl );
 	  if (pf.Distance(pl) <= Tol && !BRep_Tool::IsClosed(EE)) {
-            SHOW_TOPO_SHAPE(EE, "CutEdgeRemove");
+            SHOW_TOPO_SHAPE(EE, "CutEdgeRemove2");
 	    NE.Remove(it);
           }
 	  else
@@ -1347,6 +1497,7 @@ const TopTools_ListOfShape&  BRepAlgo_Loop::NewFaces() const
 void  BRepAlgo_Loop::WiresToFaces() 
 {  
   if (!myNewWires.IsEmpty()) {
+    SHOW_TOPO_SHAPE(myFace, "FaceRestrict", myNewWires);
     BRepAlgo_FaceRestrictor FR;
     TopoDS_Shape aLocalS = myFace.Oriented(TopAbs_FORWARD);
     FR.Init (TopoDS::Face(aLocalS),Standard_False, Standard_True);
@@ -1362,10 +1513,10 @@ void  BRepAlgo_Loop::WiresToFaces()
     if (FR.IsDone()) {
       TopAbs_Orientation OriF = myFace.Orientation();
       for (; FR.More(); FR.Next()) {
+        SHOW_TOPO_SHAPE(FR.Current(), "NewFace");
 	myNewFaces.Append(FR.Current().Oriented(OriF));
       }
     }
-    SHOW_TOPO_SHAPE(TopoDS_Shape(), "NewFace", myNewFaces);
   }
 }
 
