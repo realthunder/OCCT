@@ -55,6 +55,16 @@ IMPLEMENT_STANDARD_RTTIEXT(RWGltf_CafWriter, Standard_Transient)
 
 namespace
 {
+  //! Map of scene node id to the written glTF mesh index, filled by
+  //! writeMeshes(): instance nodes referring to the same shape label share
+  //! one glTF mesh entry instead of duplicating it per node, preserving
+  //! instancing information in the exported file. writeNodes() consumes it
+  //! within the same Perform() call. Kept out of the class (thread-local
+  //! instead of a new field) to preserve the object layout for binary
+  //! compatibility with existing users of this patched library.
+  static thread_local NCollection_DataMap<TCollection_AsciiString, Standard_Integer>
+    THE_NodeMeshIndexMap;
+
   //! Write three float values.
   static void writeVec3 (std::ostream& theStream,
                          const gp_XYZ& theVec3)
@@ -1868,10 +1878,30 @@ void RWGltf_CafWriter::writeMeshes (const RWGltf_GltfSceneNodeMap& theSceneNodeM
   int aDracoBufInd = 0;
   NCollection_IndexedDataMap<int, int> aDracoBufIndMap;
   NCollection_Map<Handle(RWGltf_GltfFaceList)> aWrittenFaces;
+  // Instance nodes referring to the same shape label (with the same style)
+  // share a single glTF mesh entry; THE_NodeMeshIndexMap records which mesh
+  // each scene node ends up with for writeNodes(). Keyed on the referred
+  // label; a per-instance style override falls back to its own mesh.
+  THE_NodeMeshIndexMap.Clear();
+  NCollection_DataMap<TDF_Label, std::pair<Standard_Integer, XCAFPrs_Style>, TDF_LabelMapHasher> aMeshIndexOfLabel;
+  Standard_Integer aWrittenMeshIndex = -1;
   for (RWGltf_GltfSceneNodeMap::Iterator aSceneNodeIter (theSceneNodeMap); aSceneNodeIter.More(); aSceneNodeIter.Next())
   {
     const XCAFPrs_DocumentNode& aDocNode = aSceneNodeIter.Value();
     const TCollection_AsciiString aNodeName = formatName (myMeshNameFormat, aDocNode.Label, aDocNode.RefLabel);
+
+    if (!myDracoParameters.DracoCompression)
+    {
+      if (const std::pair<Standard_Integer, XCAFPrs_Style>* aSharedMesh =
+            aMeshIndexOfLabel.Seek (aDocNode.RefLabel))
+      {
+        if (aSharedMesh->second.IsEqual (aDocNode.Style))
+        {
+          THE_NodeMeshIndexMap.Bind (aDocNode.Id, aSharedMesh->first);
+          continue;
+        }
+      }
+    }
 
     bool toStartPrims = true;
     Standard_Integer aNbFacesInNode = 0;
@@ -1957,6 +1987,13 @@ void RWGltf_CafWriter::writeMeshes (const RWGltf_GltfSceneNodeMap& theSceneNodeM
     {
       myWriter->EndArray();
       myWriter->EndObject();
+      ++aWrittenMeshIndex;
+      THE_NodeMeshIndexMap.Bind (aDocNode.Id, aWrittenMeshIndex);
+      if (!myDracoParameters.DracoCompression)
+      {
+        aMeshIndexOfLabel.Bind (aDocNode.RefLabel,
+                                std::make_pair (aWrittenMeshIndex, aDocNode.Style));
+      }
     }
   }
   myWriter->EndArray();
@@ -1977,6 +2014,7 @@ void RWGltf_CafWriter::writeNodes (const Handle(TDocStd_Document)&  theDocument,
 {
 #ifdef HAVE_RAPIDJSON
   Standard_ProgramError_Raise_if (myWriter.get() == NULL, "Internal error: RWGltf_CafWriter::writeNodes()");
+  (void )theSceneNodeMap; // mesh indices come from THE_NodeMeshIndexMap now
 
   // Prepare full indexed map of scene nodes in correct order.
   RWGltf_GltfSceneNodeMap aSceneNodeMapWithChildren; // indexes starting from 1
@@ -2114,12 +2152,12 @@ void RWGltf_CafWriter::writeNodes (const Handle(TDocStd_Document)&  theDocument,
     }
     if (!aDocNode.IsAssembly)
     {
-      // Mesh order of current node is equal to order of this node in scene nodes map
-      Standard_Integer aMeshIdx = theSceneNodeMap.FindIndex (aDocNode.Id);
-      if (aMeshIdx > 0)
+      // The mesh index comes from writeMeshes(), which shares one mesh
+      // entry among instance nodes referring to the same shape label.
+      if (const Standard_Integer* aMeshIdx = THE_NodeMeshIndexMap.Seek (aDocNode.Id))
       {
         myWriter->Key ("mesh");
-        myWriter->Int (aMeshIdx - 1);
+        myWriter->Int (*aMeshIdx);
       }
     }
     {
