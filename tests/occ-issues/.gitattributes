@@ -1,0 +1,3 @@
+*.FCStd binary
+*.brp binary
+*.step -text

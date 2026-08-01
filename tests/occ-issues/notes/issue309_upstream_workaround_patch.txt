@@ -1,0 +1,85 @@
+From: Charlemagne Lasse <charlemagnelasse@gmail.com>
+Date: Mon, 11 Apr 2022 14:07:39 +0200
+Subject: Add workaround patches for fillet crashes
+
+* https://github.com/FreeCAD/FreeCAD/issues/6625#issuecomment-1094133666
+* https://github.com/FreeCAD/FreeCAD/issues/6625#issuecomment-1094139670
+
+diff --git a/src/ChFi3d/ChFi3d_Builder_0.cxx b/src/ChFi3d/ChFi3d_Builder_0.cxx
+index 5e64b338a11adfee3c4f99bf6f817cfb2df37c38..036211efaa640a23eb2ad43aec79f0cc84f5cbe3 100644
+--- a/src/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -732,10 +732,13 @@ Standard_Boolean ChFi3d_IsInFront(TopOpeBRepDS_DataStructure& DStr,
+   if(fd1->IndexOfS1() == fd2->IndexOfS1()) { 
+     jf1 = 1; jf2 = 1; 
+     face = TopoDS::Face(DStr.Shape(fd1->Index(jf1)));
++    if (face.IsNull()) throw Standard_Failure("ChFi3d_IsInFront : Trying to check orientation of NULL face");
+     OrSave1 = cd1->Orientation(jf1);
+     Or = OrFace1 = face.Orientation();
+     OrSave2 = cd2->Orientation(jf2);
+-    OrFace2 = DStr.Shape(fd2->Index(jf2)).Orientation();
++    const TopoDS_Shape& shape2 = DStr.Shape(fd2->Index(jf2));
++    if (shape2.IsNull()) throw Standard_Failure("ChFi3d_IsInFront : Trying to check orientation of NULL shape");
++    OrFace2 = shape2.Orientation();
+     visavis = Standard_True;
+     sameside = ChFi3d::SameSide(Or,OrSave1,OrSave2,OrFace1,OrFace2);
+     // The parameters of the other side are not used for orientation. This would raise problems
+@@ -753,10 +756,13 @@ Standard_Boolean ChFi3d_IsInFront(TopOpeBRepDS_DataStructure& DStr,
+   if(fd1->IndexOfS2() == fd2->IndexOfS1()) { 
+     jf1 = 2; jf2 = 1; 
+     face = TopoDS::Face(DStr.Shape(fd1->Index(jf1)));
++    if (face.IsNull()) throw Standard_Failure("ChFi3d_IsInFront : Trying to check orientation of NULL face");
+     OrSave1 = cd1->Orientation(jf1);
+     Or = OrFace1 = face.Orientation();
+     OrSave2 = cd2->Orientation(jf2);
+-    OrFace2 = DStr.Shape(fd2->Index(jf2)).Orientation();
++    const TopoDS_Shape& shape2 = DStr.Shape(fd2->Index(jf2));
++    if (shape2.IsNull()) throw Standard_Failure("ChFi3d_IsInFront : Trying to check orientation of NULL shape");
++    OrFace2 = shape2.Orientation();
+     visavis = Standard_True;
+     sameside = ChFi3d::SameSide(Or,OrSave1,OrSave2,OrFace1,OrFace2);
+     // The parameters of the other side are not used for orientation. This would raise problems
+@@ -786,10 +792,13 @@ Standard_Boolean ChFi3d_IsInFront(TopOpeBRepDS_DataStructure& DStr,
+   if(fd1->IndexOfS1() == fd2->IndexOfS2()) { 
+     jf1 = 1; jf2 = 2; 
+     face = TopoDS::Face(DStr.Shape(fd1->Index(jf1)));
++    if (face.IsNull()) throw Standard_Failure("ChFi3d_IsInFront : Trying to check orientation of NULL face");
+     OrSave1 = cd1->Orientation(jf1);
+     Or = OrFace1 = face.Orientation();
+     OrSave2 = cd2->Orientation(jf2);
+-    OrFace2 = DStr.Shape(fd2->Index(jf2)).Orientation();
++    const TopoDS_Shape& shape2 = DStr.Shape(fd2->Index(jf2));
++    if (shape2.IsNull()) throw Standard_Failure("ChFi3d_IsInFront : Trying to check orientation of NULL shape");
++    OrFace2 = shape2.Orientation();
+     visavis = Standard_True;
+     sameside = ChFi3d::SameSide(Or,OrSave1,OrSave2,OrFace1,OrFace2);
+     // The parameters of the other side are not used for orientation.
+@@ -819,10 +828,13 @@ Standard_Boolean ChFi3d_IsInFront(TopOpeBRepDS_DataStructure& DStr,
+   if(fd1->IndexOfS2() == fd2->IndexOfS2()) { 
+     jf1 = 2; jf2 = 2; 
+     face = TopoDS::Face(DStr.Shape(fd1->Index(jf1)));
++    if (face.IsNull()) throw Standard_Failure("ChFi3d_IsInFront : Trying to check orientation of NULL face");
+     OrSave1 = cd1->Orientation(jf1);
+     Or = OrFace1 = face.Orientation();
+     OrSave2 = cd2->Orientation(jf2);
+-    OrFace2 = DStr.Shape(fd2->Index(jf2)).Orientation();
++    const TopoDS_Shape& shape2 = DStr.Shape(fd2->Index(jf2));
++    if (shape2.IsNull()) throw Standard_Failure("ChFi3d_IsInFront : Trying to check orientation of NULL shape");
++    OrFace2 = shape2.Orientation();
+     visavis = Standard_True;
+     sameside = ChFi3d::SameSide(Or,OrSave1,OrSave2,OrFace1,OrFace2);
+     // The parameters of the other side are not used for orientation.
+diff --git a/src/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ChFi3d/ChFi3d_Builder_C1.cxx
+index d4e48a4c909b384555bd8b637384c9be7c49f9f3..28f93bb99c511d7400e90091d84e16f76dc02e31 100644
+--- a/src/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -2115,6 +2115,9 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const Standard_Integer Index)
+       F=Face[nb-1];
+       if (!prolface[nb-1]) faceprol[nb-1]=F;
+     }
++
++    if (F.IsNull()) throw Standard_Failure("IntersectionAtEnd : Trying to intersect with NULL face");
++
+     Sfacemoins1=BRep_Tool::Surface(F);
+     Handle(Geom_Curve) cint;
+     Handle(Geom2d_Curve) C2dint1, C2dint2,cface,cfacemoins1;
