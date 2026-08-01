@@ -1198,6 +1198,13 @@ void BRepAlgo_Loop::FindLoop()
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     MVE;
 
+  // Degenerated edges (pole edges of spheres/cones) must not take part in the
+  // vertex-topology loop search: being closed on their single vertex they come
+  // out as bogus standalone one-edge wires, while the wire actually crossing
+  // the singularity is left open in UV space. Collect them and re-insert each
+  // into the wire passing through its vertex once the wires are built.
+  NCollection_List<TopoDS_Shape> DegenEdges;
+
   // add cut edges (in the order the edges were cut - hash order here would
   // make vertex canonicalization and loop discovery nondeterministic).
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> Emap;
@@ -1211,6 +1218,11 @@ void BRepAlgo_Loop::FindLoop()
       TopoDS_Edge& E = TopoDS::Edge(itl1.ChangeValue());
       if (Emap.Add(E))
       {
+        if (BRep_Tool::Degenerated(E))
+        {
+          DegenEdges.Append(E);
+          continue;
+        }
         StoreInMVE(myFace, E, MVE, YaCouture, myVerticesForSubstitute, myTolConf);
       }
     }
@@ -1225,6 +1237,11 @@ void BRepAlgo_Loop::FindLoop()
     TopoDS_Edge& E = TopoDS::Edge(itl.ChangeValue());
     if (DejaVu.Add(E))
     {
+      if (BRep_Tool::Degenerated(E))
+      {
+        DegenEdges.Append(E);
+        continue;
+      }
       StoreInMVE(myFace, E, MVE, YaCouture, myVerticesForSubstitute, myTolConf);
     }
   }
@@ -1401,6 +1418,39 @@ void BRepAlgo_Loop::FindLoop()
     {
       const TopoDS_Wire& aWire = itW.Value().aWire;
       myNewWires.Append(aWire);
+    }
+  }
+
+  // Re-insert the degenerated edges: each one belongs to the wire that passes
+  // through the singularity vertex - without it that wire does not close in UV
+  // space and the resulting face is unorientable.
+  if (!DegenEdges.IsEmpty())
+  {
+    BRep_Builder    aBB;
+    TopExp_Explorer aVExp;
+    for (itl.Initialize(DegenEdges); itl.More(); itl.Next())
+    {
+      const TopoDS_Edge&  DE  = TopoDS::Edge(itl.Value());
+      const TopoDS_Vertex aDV = TopExp::FirstVertex(TopoDS::Edge(DE.Oriented(TopAbs_FORWARD)));
+      bool                added = false;
+      for (itl1.Initialize(myNewWires); itl1.More() && !added; itl1.Next())
+      {
+        TopoDS_Wire& W = TopoDS::Wire(itl1.ChangeValue());
+        for (aVExp.Init(W, TopAbs_VERTEX); aVExp.More(); aVExp.Next())
+        {
+          if (aVExp.Current().IsSame(aDV))
+          {
+            aBB.Add(W, DE);
+            SHOW_TOPO_SHAPE(DE, "DegenEdgeKept");
+            added = true;
+            break;
+          }
+        }
+      }
+      if (!added)
+      {
+        SHOW_TOPO_SHAPE(DE, "DegenEdgeDropped");
+      }
     }
   }
 
