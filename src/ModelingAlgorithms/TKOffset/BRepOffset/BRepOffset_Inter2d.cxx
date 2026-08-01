@@ -2173,8 +2173,36 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
           anOr2 = TopAbs_FORWARD;
           SHOW_TOPO_SHAPE(NE1, "ConnexInter1");
           SHOW_TOPO_SHAPE(NE2, "ConnexInter2");
-          NE1seq.Append(NE1);
-          NE2seq.Append(NE2);
+          // Build() may bind a compound of section edges - decompose it, as
+          // the OFI path does, instead of letting TopoDS::Edge throw below.
+          if (NE1.ShapeType() == TopAbs_EDGE)
+          {
+            NE1seq.Append(NE1);
+          }
+          else
+          {
+            GetEdgesOrientedInFace(NE1, FIO, theAsDes, NE1seq);
+          }
+          if (NE2.ShapeType() == TopAbs_EDGE)
+          {
+            NE2seq.Append(NE2);
+          }
+          else
+          {
+            GetEdgesOrientedInFace(NE2, FIO, theAsDes, NE2seq);
+          }
+          if (NE1seq.IsEmpty() || NE2seq.IsEmpty())
+          {
+            DoInter = false;
+            SHOW_TOPO_SHAPE(NE1, NE1seq.IsEmpty() ? "ConnexInterError1" : "ConnexInter1");
+            SHOW_TOPO_SHAPE(NE2, NE2seq.IsEmpty() ? "ConnexInterError2" : "ConnexInter2");
+          }
+          else
+          {
+            // NE1 is the CurE-side image, NE2 the NextE-side one: consume the
+            // sequences with the aChoice 1/2 ends (Last of NE1, First of NE2).
+            aChoice = 1;
+          }
         }
       }
       else if (Build.IsBound(CurE) && Build.IsBound(NextE))

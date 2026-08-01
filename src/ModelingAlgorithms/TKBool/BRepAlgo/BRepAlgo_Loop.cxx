@@ -128,6 +128,14 @@ static void Bubble(const TopoDS_Edge&                  E,
     return;
   }
 
+  for (int i = 1; i <= Seq.Length(); i++)
+  {
+    TopoDS_Shape aLocalV = Seq(i).Oriented(TopAbs_INTERNAL);
+    V                    = TopoDS::Vertex(aLocalV);
+    U                    = BRep_Tool::Parameter(V, E);
+    SeqU.Append(U);
+  }
+
   // Remove duplicates
   for (int i = 1; i < Seq.Length(); i++)
   {
@@ -140,14 +148,7 @@ static void Bubble(const TopoDS_Edge&                  E,
         j--;
       }
     }
-    TopoDS_Shape aLocalV = Seq(i).Oriented(TopAbs_INTERNAL);
-    V                    = TopoDS::Vertex(aLocalV);
-    U                    = BRep_Tool::Parameter(V, E);
-    SeqU.Append(U);
   }
-  V = TopoDS::Vertex(Seq.Last().Oriented(TopAbs_INTERNAL));
-  U = BRep_Tool::Parameter(V, E);
-  SeqU.Append(U);
 
   bool Invert   = true;
   int  NbPoints = Seq.Length();
@@ -282,15 +283,13 @@ static TopoDS_Vertex UpdateClosedEdge(const TopoDS_Edge&                  E,
 //=================================================================================================
 
 static void PurgeNewEdges(
-  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
                                                                 NewEdges,
   const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& UsedEdges)
 {
-  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>::
-    Iterator it(NewEdges);
-  for (; it.More(); it.Next())
+  for (int ii = 1; ii <= NewEdges.Extent(); ++ii)
   {
-    NCollection_List<TopoDS_Shape>&          LNE = NewEdges.ChangeFind(it.Key());
+    NCollection_List<TopoDS_Shape>&          LNE = NewEdges.ChangeFromIndex(ii);
     NCollection_List<TopoDS_Shape>::Iterator itL(LNE);
     while (itL.More())
     {
@@ -731,7 +730,7 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
         }
       }
       CutEdge(anEdge, *pVertices, LCE, KeepAll);
-      myCutEdges.Bind(anEdge, LCE);
+      myCutEdges.Add(anEdge, LCE);
     }
   }
 
@@ -740,8 +739,9 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
   if (_CollectingEdges)
   {
 #if 1
-    NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>::
-      Iterator itM(myCutEdges);
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>::Iterator itM(myCutEdges);
     for (; itM.More(); itM.Next())
     {
       SHOW_TOPO_SHAPE(itM.Key(), "InterNewEdge", itM.Value());
@@ -856,8 +856,10 @@ struct WireInfoHasher
   }
 };
 
-typedef NCollection_Map<WireInfo, WireInfoHasher>           MapOfWire;
-typedef NCollection_Map<WireInfo, WireInfoHasher>::Iterator MapIteratorOfMapOfWire;
+// Indexed so iteration follows discovery order: wire emission order feeds
+// FaceRestrictor input order and must not depend on hash/address order.
+typedef NCollection_IndexedMap<WireInfo, WireInfoHasher>           MapOfWire;
+typedef NCollection_IndexedMap<WireInfo, WireInfoHasher>::Iterator MapIteratorOfMapOfWire;
 
 void FindAllLoops(const TopoDS_Vertex&                                                  CV,
                   const TopoDS_Edge&                                                    CE,
@@ -923,16 +925,30 @@ void FindAllLoops(const TopoDS_Vertex&                                          
       {
         break;
       }
-      E = TopoDS::Edge(CurrentVEMap.Find(VL));
+      const TopoDS_Shape* pNext = CurrentVEMap.Seek(VL);
+      if (!pNext)
+      {
+        // The walk left the current DFS path (possible after tolerance-based
+        // vertex substitutions) - this candidate cannot form a loop.
+        break;
+      }
+      E = TopoDS::Edge(*pNext);
     }
-    TopoDS_Wire NW = aMakeWire.Wire();
-    if (NW.Closed() && NewWires.Add(NW))
+    if (aMakeWire.IsDone())
     {
-      SHOW_TOPO_SHAPE(NW, "NewWire");
+      TopoDS_Wire NW = aMakeWire.Wire();
+      if (NW.Closed() && !NewWires.Contains(NW) && NewWires.Add(NW) > 0)
+      {
+        SHOW_TOPO_SHAPE(NW, "NewWire");
+      }
+      else
+      {
+        SHOW_TOPO_SHAPE(NW, "DiscardWire");
+      }
     }
     else
     {
-      SHOW_TOPO_SHAPE(NW, "DiscardWire");
+      SHOW_TOPO_SHAPE(EF, "DiscardOpenChain");
     }
   }
   else
@@ -1083,15 +1099,6 @@ void SplitWires(NCollection_List<TopoDS_Shape>& OutputWires,
         // Classify the point
         TopAbs_State aState = aClassifier.Perform(aP2D);
 
-        static int index;
-        if (index++ == 10)
-        {
-          double                           aT11, aT12;
-          const occ::handle<Geom2d_Curve>& aC2D1 = BRep_Tool::CurveOnSurface(aEdge, aFace, aT11, aT12);
-          gp_Pnt2d                         aP2D1 = aC2D1->Value((aT11 + aT12) / 2.);
-          aClassifier.Perform(aP2D1);
-        }
-
         if (aClassifier.IsHole() && aState == TopAbs_OUT)
         {
           SHOW_TOPO_SHAPE(aNF, "Prune2_");
@@ -1191,10 +1198,12 @@ void BRepAlgo_Loop::FindLoop()
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     MVE;
 
-  // add cut edges.
+  // add cut edges (in the order the edges were cut - hash order here would
+  // make vertex canonicalization and loop discovery nondeterministic).
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> Emap;
-  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>::
-    Iterator itM(myCutEdges);
+  NCollection_IndexedDataMap<TopoDS_Shape,
+                             NCollection_List<TopoDS_Shape>,
+                             TopTools_ShapeMapHasher>::Iterator itM(myCutEdges);
   for (; itM.More(); itM.Next())
   {
     for (itl1.Initialize(itM.Value()); itl1.More(); itl1.Next())
@@ -1308,24 +1317,31 @@ void BRepAlgo_Loop::FindLoop()
           TopExp::Vertices(NNE, V1, V2, true);
           if (V1.IsSame(V2))
           {
-            itW = MapIteratorOfMapOfWire(NewWires);
-            while (itW.More())
+            // Look for an already-built seam wire first: only when none exists
+            // may the plain wires be removed and replaced. Removing before the
+            // scan completes would destroy wires without a replacement whenever
+            // a seam wire happens to come later in map-iteration order.
+            bool hasSeamWire = false;
+            for (itW = MapIteratorOfMapOfWire(NewWires); itW.More(); itW.Next())
             {
-              const WireInfo& info = itW.Key();
-              if (info.HasSeam)
+              if (itW.Value().HasSeam)
               {
+                hasSeamWire = true;
                 break;
               }
-              itW.Next();
+            }
+            if (hasSeamWire)
+            {
+              break;
+            }
+            for (int iw = NewWires.Extent(); iw >= 1; --iw)
+            {
+              const WireInfo& info = NewWires(iw);
               if (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE))
               {
                 SHOW_TOPO_SHAPE(info.aWire, "SeamRemove");
-                NewWires.Remove(info);
+                NewWires.RemoveFromIndex(iw);
               }
-            }
-            if (itW.More())
-            {
-              break;
             }
 
             DejaVu.Add(NE);
@@ -1340,6 +1356,11 @@ void BRepAlgo_Loop::FindLoop()
             aMakeWire.Add(CE);
             aMakeWire.Add(NE);
             aMakeWire.Add(NNE);
+            if (!aMakeWire.IsDone())
+            {
+              SHOW_TOPO_SHAPE(CE, "DiscardSeamChain");
+              continue;
+            }
             TopoDS_Wire NW = aMakeWire.Wire();
 
             ShapeFix_Wire aFixer;
@@ -1352,7 +1373,8 @@ void BRepAlgo_Loop::FindLoop()
             aFixer.FixDegenerated();
             NW = aFixer.Wire();
 
-            if (NW.Closed() && NewWires.Add(WireInfo(NW, true)))
+            WireInfo aSeamInfo(NW, true);
+            if (NW.Closed() && !NewWires.Contains(aSeamInfo) && NewWires.Add(aSeamInfo) > 0)
             {
               SHOW_TOPO_SHAPE(NW, "NewWire2");
             }
@@ -1678,7 +1700,7 @@ void BRepAlgo_Loop::WiresToFaces()
 
 const NCollection_List<TopoDS_Shape>& BRepAlgo_Loop::NewEdges(const TopoDS_Edge& E) const
 {
-  return myCutEdges(E);
+  return myCutEdges.FindFromKey(E);
 }
 
 //=================================================================================================
@@ -1781,7 +1803,14 @@ void BRepAlgo_Loop::UpdateVEmap(
 
       gp_Ax2 anAxis;
       bool   IsSingular;
-      GeomLib::AxeOfInertia(Points, anAxis, IsSingular);
+      // Only the first Count slots were filled on this pass; the tail holds
+      // zeros or points of a previously processed cluster.
+      NCollection_Array1<gp_Pnt> aFilledPoints(1, Count);
+      for (int jj = 1; jj <= Count; jj++)
+      {
+        aFilledPoints(jj) = Points(jj);
+      }
+      GeomLib::AxeOfInertia(aFilledPoints, anAxis, IsSingular);
       aCentre         = anAxis.Location();
       double aMaxDist = 0.;
       for (int jj = 1; jj <= Count; jj++)

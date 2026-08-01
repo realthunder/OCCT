@@ -226,6 +226,12 @@ void BRepAlgo_AsDes::BackReplace(const TopoDS_Shape&                   OldS,
 
 void BRepAlgo_AsDes::Replace(const TopoDS_Shape& OldS, const TopoDS_Shape& NewS)
 {
+  if (OldS.IsSame(NewS))
+  {
+    // Merging a shape's records into itself would end with UnBind(OldS),
+    // erasing the shape's up/down entries entirely.
+    return;
+  }
   for (int i = 0; i < 2; ++i)
   {
     NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&

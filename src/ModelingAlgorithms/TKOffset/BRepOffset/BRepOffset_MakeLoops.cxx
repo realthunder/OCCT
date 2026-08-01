@@ -113,9 +113,10 @@ void BRepOffset_MakeLoops::Build(const NCollection_List<TopoDS_Shape>& LF,
 
     // Iterate on all cut edges (instead of only AddedEdges), because the
     // image of an edge cut in another face may have been refined here.
-    NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>::
-      Iterator itAdded;
-    for (itAdded.Initialize(Loops.CutEdges()); itAdded.More(); itAdded.Next())
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>::Iterator itAdded(Loops.CutEdges());
+    for (; itAdded.More(); itAdded.Next())
     {
       const TopoDS_Edge&                    E      = TopoDS::Edge(itAdded.Key());
       const NCollection_List<TopoDS_Shape>& LoopNE = itAdded.Value();
@@ -163,6 +164,9 @@ void BRepOffset_MakeLoops::Build(const NCollection_List<TopoDS_Shape>& LF,
       LV.Prepend(NV);
       if (!VM.Add(NV))
       {
+        // Already-visited vertices are compressed: their binding holds the
+        // final target. Follow it once, or the chain stops one step short.
+        NV = myVerVerMap.Find(NV);
         break;
       }
       NV = myVerVerMap.Find(NV);
@@ -446,9 +450,10 @@ void BRepOffset_MakeLoops::BuildOnContext(const NCollection_List<TopoDS_Shape>& 
 
     // Iterate on all cut edges (instead of only AddedEdges), because the
     // image of an edge cut in another face may have been refined here.
-    NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>::
-      Iterator itAdded;
-    for (itAdded.Initialize(Loops.CutEdges()); itAdded.More(); itAdded.Next())
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>::Iterator itAdded(Loops.CutEdges());
+    for (; itAdded.More(); itAdded.Next())
     {
       const TopoDS_Edge&                    E      = TopoDS::Edge(itAdded.Key());
       const NCollection_List<TopoDS_Shape>& LoopNE = itAdded.Value();
@@ -741,9 +746,10 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
 
       // Iterate on all cut edges (instead of only AddedEdges), because the
       // image of an edge cut in another face may have been refined here.
-      NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>::
-        Iterator itAdded;
-      for (itAdded.Initialize(Loops.CutEdges()); itAdded.More(); itAdded.Next())
+      NCollection_IndexedDataMap<TopoDS_Shape,
+                                 NCollection_List<TopoDS_Shape>,
+                                 TopTools_ShapeMapHasher>::Iterator itAdded(Loops.CutEdges());
+      for (; itAdded.More(); itAdded.Next())
       {
         const TopoDS_Edge&                    E      = TopoDS::Edge(itAdded.Key());
         const NCollection_List<TopoDS_Shape>& LoopNE = itAdded.Value();

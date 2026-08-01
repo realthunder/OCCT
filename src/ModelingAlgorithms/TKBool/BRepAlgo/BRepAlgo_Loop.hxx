@@ -93,7 +93,11 @@ public:
   Standard_EXPORT const NCollection_List<TopoDS_Shape>& NewEdges(const TopoDS_Edge& E) const;
 
   //! Returns the map edge => list of cut edges.
-  const NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+  //! Indexed so that iteration follows the order in which edges were cut -
+  //! consumers must not depend on hash order.
+  const NCollection_IndexedDataMap<TopoDS_Shape,
+                                   NCollection_List<TopoDS_Shape>,
+                                   TopTools_ShapeMapHasher>&
     CutEdges() const
   {
     return myCutEdges;
@@ -127,7 +131,7 @@ private:
                                  myVerOnEdges;
   NCollection_List<TopoDS_Shape> myNewWires;
   NCollection_List<TopoDS_Shape> myNewFaces;
-  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
                                                                            myCutEdges;
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> myVerticesForSubstitute;
   BRepAlgo_Image                                                           myImageVV;
