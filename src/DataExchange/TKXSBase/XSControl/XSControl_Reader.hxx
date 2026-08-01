@@ -203,9 +203,15 @@ public:
   //! during translation and flushed once at the end (possibly in parallel), and
   //! result shapes are extracted only after the flush. Falls back to plain
   //! sequential behavior with an actor that does not support deferral.
+  //! @param theFirst rank of the first root to transfer (1-based); values below 1
+  //!        are clamped to 1.
+  //! @param theLast rank of the last root to transfer; 0 (default) or values
+  //!        beyond the root count mean "up to the last root".
   //! Warning - This function clears existing output shapes first.
   Standard_EXPORT int TransferRootsDeferred(
-    const Message_ProgressRange& theProgress = Message_ProgressRange());
+    const Message_ProgressRange& theProgress = Message_ProgressRange(),
+    const int                    theFirst    = 1,
+    const int                    theLast     = 0);
 
   //! Clears the list of shapes that
   //! may have accumulated in calls to TransferOne or TransferRoot.C

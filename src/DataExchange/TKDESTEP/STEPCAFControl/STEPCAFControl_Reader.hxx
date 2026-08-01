@@ -119,6 +119,19 @@ public:
     const occ::handle<TDocStd_Document>& doc,
     const Message_ProgressRange&         theProgress = Message_ProgressRange());
 
+  //! Translates the roots of ranks [num, theLastNum] of the currently loaded
+  //! STEP file into the document, like TransferOneRoot() but for a contiguous
+  //! batch of roots (healing runs deferred over the whole batch, in parallel
+  //! when enabled). Intended for progressive imports that hand over the
+  //! document batch by batch; each call re-runs the attribute post-pass
+  //! (colors, names, ...) over the session, so batches should grow with the
+  //! root count. Returns True if succeeded.
+  Standard_EXPORT bool TransferRootRange(
+    const int                            num,
+    const int                            theLastNum,
+    const occ::handle<TDocStd_Document>& doc,
+    const Message_ProgressRange&         theProgress = Message_ProgressRange());
+
   //! Translates currently loaded STEP file into the document
   //! Returns True if succeeded, and False in case of fail
   //! Provided for use like single-file reader
@@ -265,7 +278,8 @@ public:
 protected:
   //! Translates STEP file already loaded into the reader
   //! into the document
-  //! If num==0, translates all roots, else only root number num
+  //! If num==0, translates all roots, else the roots of ranks
+  //! [num, max(num, theLastNum)]
   //! Returns True if succeeded, and False in case of fail
   //! If asOne is True, in case of multiple results composes
   //! them into assembly. Fills sequence of produced labels
@@ -273,8 +287,9 @@ protected:
                                 const int                            num,
                                 const occ::handle<TDocStd_Document>& doc,
                                 NCollection_Sequence<TDF_Label>&     Lseq,
-                                const bool                           asOne = false,
-                                const Message_ProgressRange& theProgress = Message_ProgressRange());
+                                const bool                           asOne       = false,
+                                const Message_ProgressRange&         theProgress = Message_ProgressRange(),
+                                const int                            theLastNum  = 0);
 
   //! Add a shape to a document
   //! Depending on a case, this shape can be added as one, or

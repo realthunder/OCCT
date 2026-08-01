@@ -299,9 +299,16 @@ int XSControl_Reader::TransferRoots(const Message_ProgressRange& theProgress)
 
 //=================================================================================================
 
-int XSControl_Reader::TransferRootsDeferred(const Message_ProgressRange& theProgress)
+int XSControl_Reader::TransferRootsDeferred(const Message_ProgressRange& theProgress,
+                                            const int                    theFirst,
+                                            const int                    theLast)
 {
   NbRootsForTransfer();
+
+  const size_t aFirst = static_cast<size_t>(std::max(theFirst, 1));
+  const size_t aLast  = (theLast < 1 || static_cast<size_t>(theLast) > theroots.Size())
+                          ? theroots.Size()
+                          : static_cast<size_t>(theLast);
 
   const occ::handle<XSControl_TransferReader>& aTransferReader = thesession->TransferReader();
   aTransferReader->BeginTransfer();
@@ -317,9 +324,12 @@ int XSControl_Reader::TransferRootsDeferred(const Message_ProgressRange& theProg
   // Translation and the deferred flush (dominated by shape healing) are of
   // comparable cost; give each its own half of the progress range.
   Message_ProgressScope aScope(theProgress, nullptr, 2);
-  Message_ProgressScope aProgressScope(aScope.Next(), "Root", static_cast<double>(theroots.Size()));
+  Message_ProgressScope aProgressScope(aScope.Next(),
+                                       "Root",
+                                       static_cast<double>(aLast + 1 > aFirst ? aLast + 1 - aFirst
+                                                                              : 0));
   NCollection_Sequence<occ::handle<Standard_Transient>> aTransferred;
-  for (size_t i = 1; i <= theroots.Size() && aProgressScope.More(); i++)
+  for (size_t i = aFirst; i <= aLast && aProgressScope.More(); i++)
   {
     occ::handle<Standard_Transient> aStart = theroots.Value(i);
     // rec=false: recording would snapshot the binder's shape before the deferred

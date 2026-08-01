@@ -383,6 +383,17 @@ bool STEPCAFControl_Reader::TransferOneRoot(const int                           
 
 //=================================================================================================
 
+bool STEPCAFControl_Reader::TransferRootRange(const int                            num,
+                                              const int                            theLastNum,
+                                              const occ::handle<TDocStd_Document>& doc,
+                                              const Message_ProgressRange&         theProgress)
+{
+  NCollection_Sequence<TDF_Label> Lseq;
+  return Transfer(myReader, num, doc, Lseq, false, theProgress, theLastNum);
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Reader::Transfer(const occ::handle<TDocStd_Document>& doc,
                                      const Message_ProgressRange&         theProgress)
 {
@@ -529,7 +540,8 @@ bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  reader
                                      const occ::handle<TDocStd_Document>& doc,
                                      NCollection_Sequence<TDF_Label>&     Lseq,
                                      const bool                           asOne,
-                                     const Message_ProgressRange&         theProgress)
+                                     const Message_ProgressRange&         theProgress,
+                                     const int                            theLastNum)
 {
   reader.ClearShapes();
   occ::handle<StepData_StepModel> aModel = occ::down_cast<StepData_StepModel>(reader.Model());
@@ -552,7 +564,17 @@ bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  reader
     {
       return false;
     }
-    reader.TransferOneRoot(nroot, aPSRoot.Next());
+    const int aLast = std::min(std::max(theLastNum, nroot), num);
+    if (aLast == nroot && Interface_Static::IVal("read.step.parallel.healing") == 0)
+    {
+      reader.TransferOneRoot(nroot, aPSRoot.Next());
+    }
+    else
+    {
+      // A contiguous batch of roots; healing is deferred across the batch
+      // (and parallel within it when enabled).
+      reader.TransferRootsDeferred(aPSRoot.Next(), nroot, aLast);
+    }
   }
   else if (Interface_Static::IVal("read.step.parallel.healing") == 0)
   {
