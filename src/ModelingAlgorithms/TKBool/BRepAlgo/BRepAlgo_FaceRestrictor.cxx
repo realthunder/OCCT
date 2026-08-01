@@ -17,6 +17,7 @@
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepAlgo_FaceRestrictor.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom_Curve.hxx>
@@ -287,6 +288,47 @@ static void Store(
   keyContains(W1).Append(W2);
 }
 
+//=======================================================================
+// function : WireUVArea
+// purpose  : Approximate absolute area of the wire in the UV space of
+//           the face. Used to resolve contradictory containment
+//           classifications (see PerformWithCorrection).
+//=======================================================================
+
+static double WireUVArea(const TopoDS_Wire& W, const TopoDS_Face& F)
+{
+  NCollection_Sequence<gp_Pnt2d> aPoints;
+  BRepTools_WireExplorer         aWExp;
+  for (aWExp.Init(W, F); aWExp.More(); aWExp.Next())
+  {
+    const TopoDS_Edge&        anEdge = aWExp.Current();
+    double                    f, l;
+    occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(anEdge, F, f, l);
+    if (aC2d.IsNull())
+    {
+      continue;
+    }
+    const int aNbSamples = 32;
+    for (int i = 0; i < aNbSamples; ++i)
+    {
+      double aT = f + (l - f) * i / aNbSamples;
+      if (anEdge.Orientation() == TopAbs_REVERSED)
+      {
+        aT = l + (f - l) * i / aNbSamples;
+      }
+      aPoints.Append(aC2d->Value(aT));
+    }
+  }
+  double anArea = 0.0;
+  for (int i = 1; i <= aPoints.Length(); ++i)
+  {
+    const gp_Pnt2d& aP1 = aPoints(i);
+    const gp_Pnt2d& aP2 = aPoints(i < aPoints.Length() ? i + 1 : 1);
+    anArea += (aP1.X() - aP2.X()) * (aP1.Y() + aP2.Y()) * 0.5;
+  }
+  return std::abs(anArea);
+}
+
 //=================================================================================================
 
 static void BuildFaceIn(
@@ -422,6 +464,60 @@ void BRepAlgo_FaceRestrictor::PerformWithCorrection()
       }
     }
   }
+  //---------------------------------------------------------------------
+  // Resolve contradictory classifications. On periodic surfaces the
+  // 2d classifier may report two wires as located inside each other
+  // (e.g. when they touch in a point), which would leave no exterior
+  // wire at all and no face would be built. Keep only the claim
+  // "smaller wire is inside the larger one" measured by UV area.
+  //---------------------------------------------------------------------
+  for (it.Initialize(wires); it.More(); it.Next())
+  {
+    const TopoDS_Wire& W1 = TopoDS::Wire(it.Value());
+    if (!keyIsIn.IsBound(W1))
+    {
+      continue;
+    }
+    NCollection_List<TopoDS_Shape>&          aL1 = keyIsIn(W1);
+    NCollection_List<TopoDS_Shape>::Iterator it2(aL1);
+    while (it2.More())
+    {
+      const TopoDS_Wire& W2       = TopoDS::Wire(it2.Value());
+      bool               isMutual = false;
+      if (keyIsIn.IsBound(W2))
+      {
+        for (NCollection_List<TopoDS_Shape>::Iterator it3(keyIsIn(W2)); it3.More(); it3.Next())
+        {
+          if (it3.Value().IsSame(W1))
+          {
+            isMutual = true;
+            break;
+          }
+        }
+      }
+      // Drop the claim "W1 is inside W2" when W1 is actually the
+      // bigger wire of a contradictory pair.
+      if (isMutual && WireUVArea(W1, myFace) >= WireUVArea(W2, myFace))
+      {
+        // Remove W1 from the list of wires contained in W2.
+        NCollection_List<TopoDS_Shape>& aContained = keyContains(W2);
+        for (NCollection_List<TopoDS_Shape>::Iterator it4(aContained); it4.More(); it4.Next())
+        {
+          if (it4.Value().IsSame(W1))
+          {
+            aContained.Remove(it4);
+            break;
+          }
+        }
+        aL1.Remove(it2); // removes W2 from the wires containing W1
+      }
+      else
+      {
+        it2.Next();
+      }
+    }
+  }
+
   NCollection_List<TopoDS_Shape> WireExt;
 
   for (it.Initialize(wires); it.More(); it.Next())
