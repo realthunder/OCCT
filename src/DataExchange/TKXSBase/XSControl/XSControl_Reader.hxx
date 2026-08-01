@@ -198,6 +198,15 @@ public:
   Standard_EXPORT int TransferRoots(
     const Message_ProgressRange& theProgress = Message_ProgressRange());
 
+  //! Same as TransferRoots(), but runs the whole batch with the actor's deferred
+  //! post-processing enabled: per-shape work such as shape healing is accumulated
+  //! during translation and flushed once at the end (possibly in parallel), and
+  //! result shapes are extracted only after the flush. Falls back to plain
+  //! sequential behavior with an actor that does not support deferral.
+  //! Warning - This function clears existing output shapes first.
+  Standard_EXPORT int TransferRootsDeferred(
+    const Message_ProgressRange& theProgress = Message_ProgressRange());
+
   //! Clears the list of shapes that
   //! may have accumulated in calls to TransferOne or TransferRoot.C
   Standard_EXPORT void ClearShapes();

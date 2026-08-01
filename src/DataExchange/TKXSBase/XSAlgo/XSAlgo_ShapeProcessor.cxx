@@ -79,6 +79,10 @@ TopoDS_Shape XSAlgo_ShapeProcessor::ProcessShape(const TopoDS_Shape&            
 void XSAlgo_ShapeProcessor::initializeContext(const TopoDS_Shape& theShape)
 {
   myContext = new ShapeProcess_ShapeContext(theShape, nullptr);
+  if (!myMessenger.IsNull())
+  {
+    myContext->SetMessenger(myMessenger);
+  }
   for (XSAlgo_ShapeProcessor::ParameterMap::Iterator aParameterIter(myParameters);
        aParameterIter.More();
        aParameterIter.Next())

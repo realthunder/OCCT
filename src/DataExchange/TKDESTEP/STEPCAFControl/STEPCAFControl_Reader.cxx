@@ -20,6 +20,7 @@
 #include <Geom_CartesianPoint.hxx>
 #include <Geom_Plane.hxx>
 #include <Interface_EntityIterator.hxx>
+#include <Interface_Static.hxx>
 #include <StepData_StepModel.hxx>
 #include <HeaderSection_FileSchema.hxx>
 #include <Message_ProgressScope.hxx>
@@ -553,13 +554,20 @@ bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  reader
     }
     reader.TransferOneRoot(nroot, aPSRoot.Next());
   }
-  else
+  else if (Interface_Static::IVal("read.step.parallel.healing") == 0)
   {
+    // Classic mode: shapes are healed inline, one by one, during translation.
     Message_ProgressScope aPS(aPSRoot.Next(), nullptr, num);
     for (i = 1; i <= num && aPS.More(); i++)
     {
       reader.TransferOneRoot(i, aPS.Next());
     }
+  }
+  else
+  {
+    // Deferred mode batches per-shape healing across all roots and runs it at
+    // the end, in parallel when "read.step.parallel.healing" is On.
+    reader.TransferRootsDeferred(aPSRoot.Next());
   }
   if (aPSRoot.UserBreak())
   {

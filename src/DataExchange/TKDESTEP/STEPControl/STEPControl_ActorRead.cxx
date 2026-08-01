@@ -122,6 +122,16 @@
 #include <UnitsMethods.hxx>
 #include <XSAlgo.hxx>
 #include <XSAlgo_ShapeProcessor.hxx>
+#include <BRepTools_ReShape.hxx>
+#include <Interface_Static.hxx>
+#include <Message.hxx>
+#include <Message_Msg.hxx>
+#include <Message_PrinterToReport.hxx>
+#include <Message_Report.hxx>
+#include <OSD_Parallel.hxx>
+#include <ShapeExtend.hxx>
+#include <ShapeExtend_MsgRegistrator.hxx>
+#include <ShapeProcess_ShapeContext.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentationRelationship.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentation.hxx>
 #include <StepRepr_MechanicalDesignAndDraughtingRelationship.hxx>
@@ -1937,10 +1947,24 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
       XSAlgo_ShapeProcessor::ParameterMap aParameters = GetShapeFixParameters();
       XSAlgo_ShapeProcessor::SetParameter("FixShape.Tolerance3d", myPrecision, true, aParameters);
       XSAlgo_ShapeProcessor::SetParameter("FixShape.MaxTolerance3d", myMaxTol, true, aParameters);
-      XSAlgo_ShapeProcessor aShapeProcessor(aParameters);
-      mappedShape =
-        aShapeProcessor.ProcessShape(mappedShape, GetProcessingFlags().first, aPS.Next());
-      aShapeProcessor.MergeTransferInfo(TP, nbTPitems);
+      if (myDeferProcessing)
+      {
+        // Healing is batched: bind the raw shape now; FlushDeferredProcessing() heals
+        // it (possibly in parallel with its siblings) and rewrites every binder that
+        // referenced it, including parent compounds assembled meanwhile.
+        DeferredHealing aDeferred;
+        aDeferred.Shape      = mappedShape;
+        aDeferred.Parameters = aParameters;
+        aDeferred.Flags      = GetProcessingFlags().first;
+        myDeferredHealings.push_back(std::move(aDeferred));
+      }
+      else
+      {
+        XSAlgo_ShapeProcessor aShapeProcessor(aParameters);
+        mappedShape =
+          aShapeProcessor.ProcessShape(mappedShape, GetProcessingFlags().first, aPS.Next());
+        aShapeProcessor.MergeTransferInfo(TP, nbTPitems);
+      }
     }
   }
   found = !mappedShape.IsNull();
@@ -2154,8 +2178,6 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
       {
         sb->SetResult(shape);
       }
-
-      aShapeProcessor.MergeTransferInfo(TP, nbTPitems);
     }
 
     if (oldSRContext.IsNull() && !mySRContext.IsNull())
@@ -2726,4 +2748,169 @@ TopoDS_Shape STEPControl_ActorRead::TransferRelatedSRR(
     }
   }
   return aResult;
+}
+
+//=================================================================================================
+
+void STEPControl_ActorRead::SetDeferredProcessing(const bool theToDefer)
+{
+  myDeferProcessing = theToDefer;
+}
+
+//=================================================================================================
+
+void STEPControl_ActorRead::FlushDeferredProcessing(
+  const occ::handle<Transfer_TransientProcess>& theTP,
+  const Message_ProgressRange&                  theProgress)
+{
+  if (myDeferredHealings.empty())
+  {
+    return;
+  }
+  std::vector<DeferredHealing> aHealings;
+  aHealings.swap(myDeferredHealings);
+
+  // Make sure every lazily-created global registry (shape-process operators,
+  // message files) is initialized before worker threads may first-touch them.
+  XSAlgo::Init();
+  ShapeExtend::Init();
+
+  const bool aIsParallel =
+    aHealings.size() > 1 && Interface_Static::IVal("read.step.parallel.healing") == 2;
+
+  // Distribute progress ranges on this thread; each task consumes only its own range.
+  Message_ProgressScope              aPS(theProgress, "Shape healing", (double)aHealings.size());
+  std::vector<Message_ProgressRange> aRanges;
+  aRanges.reserve(aHealings.size());
+  for (size_t i = 0; i < aHealings.size(); ++i)
+  {
+    aRanges.push_back(aPS.Next());
+  }
+
+  // Heal every deferred shape; the default messenger is not thread-safe, so each
+  // task reports into its own Message_Report, replayed serially afterwards.
+  std::vector<occ::handle<Message_Report>> aReports(aHealings.size());
+  OSD_Parallel::For(
+    0,
+    (int)aHealings.size(),
+    [&](const int theIndex) {
+      DeferredHealing& aHealing = aHealings[theIndex];
+      aReports[theIndex]        = new Message_Report();
+      occ::handle<Message_PrinterToReport> aPrinter = new Message_PrinterToReport();
+      aPrinter->SetReport(aReports[theIndex]);
+      occ::handle<Message_Messenger> aMessenger = new Message_Messenger();
+      aMessenger->RemovePrinters(STANDARD_TYPE(Message_Printer));
+      aMessenger->AddPrinter(aPrinter);
+
+      XSAlgo_ShapeProcessor aProcessor(aHealing.Parameters);
+      aProcessor.SetContextMessenger(aMessenger);
+      aHealing.Result  = aProcessor.ProcessShape(aHealing.Shape, aHealing.Flags, aRanges[theIndex]);
+      aHealing.Context = aProcessor.GetContext();
+    },
+    !aIsParallel);
+
+  for (const occ::handle<Message_Report>& aReport : aReports)
+  {
+    if (!aReport.IsNull())
+    {
+      aReport->SendMessages(Message::DefaultMessenger());
+    }
+  }
+
+  // Combine every healing's modifications. First-wins keeps the (deterministic)
+  // record order authoritative should two healings ever touch the same shape.
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>              aModified;
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<Message_Msg>, TopTools_ShapeMapHasher>
+    aMessages;
+  for (const DeferredHealing& aHealing : aHealings)
+  {
+    if (aHealing.Context.IsNull())
+    {
+      continue;
+    }
+    for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIter(
+           aHealing.Context->Map());
+         anIter.More();
+         anIter.Next())
+    {
+      if (!aModified.IsBound(anIter.Key()))
+      {
+        aModified.Bind(anIter.Key(), anIter.Value());
+      }
+    }
+    if (!aHealing.Result.IsNull() && aHealing.Result != aHealing.Shape
+        && !aModified.IsBound(aHealing.Shape))
+    {
+      aModified.Bind(aHealing.Shape, aHealing.Result);
+    }
+    const occ::handle<ShapeExtend_MsgRegistrator>& aRegistrator = aHealing.Context->Messages();
+    if (!aRegistrator.IsNull())
+    {
+      for (NCollection_DataMap<TopoDS_Shape,
+                               NCollection_List<Message_Msg>,
+                               TopTools_ShapeMapHasher>::Iterator aMsgIter(
+             aRegistrator->MapShape());
+           aMsgIter.More();
+           aMsgIter.Next())
+      {
+        if (!aMessages.IsBound(aMsgIter.Key()))
+        {
+          aMessages.Bind(aMsgIter.Key(), aMsgIter.Value());
+        }
+      }
+    }
+  }
+  if (aModified.IsEmpty())
+  {
+    return;
+  }
+
+  // Unlike the inline path, parent shapes (representation compounds, assemblies)
+  // were built from the raw shapes before healing ran, so a plain edge-level
+  // rewrite is not enough: rebuild any binder shape containing a replaced
+  // sub-shape at any level. A single location-aware ReShape composes location
+  // and orientation of every occurrence and memoizes across binders, which
+  // also keeps the rewritten instances identical wherever they are shared
+  // (the CAF assembly detection matches shapes by identity).
+  BRepTools_ReShape aReShaper;
+  aReShaper.ModeConsiderLocation() = true;
+  for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIter(
+         aModified);
+       anIter.More();
+       anIter.Next())
+  {
+    if (anIter.Value().IsNull())
+    {
+      aReShaper.Remove(anIter.Key());
+    }
+    else
+    {
+      aReShaper.Replace(anIter.Key(), anIter.Value());
+    }
+  }
+  for (int i = 1; i <= theTP->NbMapped(); ++i)
+  {
+    occ::handle<TransferBRep_ShapeBinder> aShapeBinder =
+      occ::down_cast<TransferBRep_ShapeBinder>(theTP->MapItem(i));
+    if (aShapeBinder.IsNull() || aShapeBinder->Result().IsNull())
+    {
+      continue;
+    }
+    const TopoDS_Shape anOriginalShape = aShapeBinder->Result();
+    const TopoDS_Shape aReshapedShape  = aReShaper.Apply(anOriginalShape);
+    if (aReshapedShape != anOriginalShape)
+    {
+      aShapeBinder->SetResult(aReshapedShape);
+    }
+    if (const NCollection_List<Message_Msg>* aShapeMessages = aMessages.Seek(anOriginalShape))
+    {
+      for (NCollection_List<Message_Msg>::Iterator aMsgIter(*aShapeMessages); aMsgIter.More();
+           aMsgIter.Next())
+      {
+        const Message_Msg& aMessage = aMsgIter.Value();
+        aShapeBinder->AddWarning(TCollection_AsciiString(aMessage.Value()).ToCString(),
+                                 TCollection_AsciiString(aMessage.Original()).ToCString());
+      }
+    }
+  }
 }

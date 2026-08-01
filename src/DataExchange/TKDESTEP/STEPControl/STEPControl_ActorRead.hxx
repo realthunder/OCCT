@@ -31,6 +31,9 @@
 #include <Message_ProgressRange.hxx>
 #include <Interface_InterfaceModel.hxx>
 
+#include <vector>
+
+class ShapeProcess_ShapeContext;
 class StepRepr_Representation;
 class Standard_Transient;
 class Transfer_Binder;
@@ -113,6 +116,17 @@ public:
                                     const occ::handle<Transfer_TransientProcess>&           TP,
                                     gp_Trsf&                                                Trsf,
                                     const StepData_Factors& theLocalFactors = StepData_Factors());
+
+  //! While enabled, per-solid shape healing is accumulated instead of run inline;
+  //! binders temporarily hold unhealed shapes until FlushDeferredProcessing().
+  Standard_EXPORT void SetDeferredProcessing(const bool theToDefer) override;
+
+  //! Heals all accumulated shapes (in parallel when "read.step.parallel.healing"
+  //! is enabled) and rewrites every affected binder of @p theTP, including parent
+  //! compounds assembled from unhealed shapes.
+  Standard_EXPORT void FlushDeferredProcessing(
+    const occ::handle<Transfer_TransientProcess>& theTP,
+    const Message_ProgressRange&                  theProgress) override;
 
   DEFINE_STANDARD_RTTIEXT(STEPControl_ActorRead, Transfer_ActorOfTransientProcess)
 
@@ -224,11 +238,24 @@ private:
                        Message_ProgressScope&                            thePS);
 
 private:
+  //! One shape whose healing was deferred by SetDeferredProcessing(true).
+  struct DeferredHealing
+  {
+    TopoDS_Shape                           Shape;      //!< Unhealed shape (as bound in the TP).
+    XSAlgo_ShapeProcessor::ParameterMap    Parameters; //!< Snapshot of healing parameters.
+    ShapeProcess::OperationsFlags          Flags;      //!< Snapshot of operations to perform.
+    TopoDS_Shape                           Result;     //!< Healed shape (set by the flush).
+    occ::handle<ShapeProcess_ShapeContext> Context;    //!< Healing context (set by the flush).
+  };
+
+private:
   StepToTopoDS_NMTool                   myNMTool;
   double                                myPrecision;
   double                                myMaxTol;
   occ::handle<StepRepr_Representation>  mySRContext;
   occ::handle<Interface_InterfaceModel> myModel;
+  std::vector<DeferredHealing>          myDeferredHealings;
+  bool                                  myDeferProcessing = false;
 };
 
 #endif // _STEPControl_ActorRead_HeaderFile

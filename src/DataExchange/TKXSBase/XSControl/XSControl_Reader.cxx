@@ -299,6 +299,61 @@ int XSControl_Reader::TransferRoots(const Message_ProgressRange& theProgress)
 
 //=================================================================================================
 
+int XSControl_Reader::TransferRootsDeferred(const Message_ProgressRange& theProgress)
+{
+  NbRootsForTransfer();
+
+  const occ::handle<XSControl_TransferReader>& aTransferReader = thesession->TransferReader();
+  aTransferReader->BeginTransfer();
+  InitializeMissingParameters();
+  ClearShapes();
+
+  const occ::handle<Transfer_ActorOfTransientProcess>& anActor = aTransferReader->Actor();
+  if (!anActor.IsNull())
+  {
+    anActor->SetDeferredProcessing(true);
+  }
+
+  // Translation and the deferred flush (dominated by shape healing) are of
+  // comparable cost; give each its own half of the progress range.
+  Message_ProgressScope aScope(theProgress, nullptr, 2);
+  Message_ProgressScope aProgressScope(aScope.Next(), "Root", static_cast<double>(theroots.Size()));
+  NCollection_Sequence<occ::handle<Standard_Transient>> aTransferred;
+  for (size_t i = 1; i <= theroots.Size() && aProgressScope.More(); i++)
+  {
+    occ::handle<Standard_Transient> aStart = theroots.Value(i);
+    // rec=false: recording would snapshot the binder's shape before the deferred
+    // flush rewrites it; results are recorded after the flush instead.
+    if (aTransferReader->TransferOne(aStart, false, aProgressScope.Next()) == 0)
+    {
+      continue;
+    }
+    aTransferred.Append(aStart);
+  }
+
+  // Result shapes must not be consumed before the flush: binders may still hold
+  // unprocessed shapes.
+  if (!anActor.IsNull())
+  {
+    anActor->FlushDeferredProcessing(aTransferReader->TransientProcess(), aScope.Next());
+    anActor->SetDeferredProcessing(false);
+  }
+
+  for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator anIter(aTransferred);
+       anIter.More();
+       anIter.Next())
+  {
+    aTransferReader->RecordResult(anIter.Value());
+    const TopoDS_Shape aShape = aTransferReader->ShapeResult(anIter.Value());
+    // Null shapes are allowed intentionally.
+    // SMH May 00: allow empty shapes (STEP CAX-IF, external references)
+    theshapes.Append(aShape);
+  }
+  return aTransferred.Size();
+}
+
+//=================================================================================================
+
 void XSControl_Reader::ClearShapes()
 {
   theshapes.Clear();

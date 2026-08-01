@@ -327,6 +327,16 @@ STEPControl_Controller::STEPControl_Controller()
     Interface_Static::Init("step", "read.step.tessellated", '&', "eval OnNoBRep"); // 2
     Interface_Static::SetCVal("read.step.tessellated", "On");
 
+    // Shape healing of translated shapes: Off = inline per shape (classic),
+    // Serial = deferred to one batch at the end of the transfer, On = deferred
+    // batch executed in parallel (see XSControl_Reader::TransferRootsDeferred)
+    Interface_Static::Init("step", "read.step.parallel.healing", 'e', "");
+    Interface_Static::Init("step", "read.step.parallel.healing", '&', "enum 0");
+    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval Off");    // 0
+    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval Serial"); // 1
+    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval On");     // 2
+    Interface_Static::SetCVal("read.step.parallel.healing", "On");
+
     // Tessellated geometry writing: Off by default
     Interface_Static::Init("step", "write.step.tessellated", 'e', "");
     Interface_Static::Init("step", "write.step.tessellated", '&', "enum 0");

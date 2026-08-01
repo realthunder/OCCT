@@ -23,6 +23,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 
+class Message_Messenger;
 class ShapeProcess_ShapeContext;
 class ShapeExtend_MsgRegistrator;
 class Transfer_TransientProcess;
@@ -67,6 +68,15 @@ public:
   //! Only valid after the ProcessShape() method was called.
   //! @return Shape context.
   occ::handle<ShapeProcess_ShapeContext> GetContext() { return myContext; }
+
+  //! Set the messenger to be used by the processing context instead of the
+  //! default one. Needed when ProcessShape() runs on a worker thread: the
+  //! default messenger is not thread-safe, so each thread must report into
+  //! its own collector.
+  void SetContextMessenger(const occ::handle<Message_Messenger>& theMessenger)
+  {
+    myMessenger = theMessenger;
+  }
 
   //! Merge the results of the shape processing with the transfer process.
   //! @param theTransientProcess Transfer process to merge with.
@@ -205,6 +215,7 @@ private:
 private:
   ParameterMap                           myParameters; //!< Parameters to be used in the processing.
   occ::handle<ShapeProcess_ShapeContext> myContext;    //!< Shape context.
+  occ::handle<Message_Messenger> myMessenger; //!< Optional per-instance messenger for the context.
 };
 
 #endif // _XSAlgo_ShapeProcessor_HeaderFile
