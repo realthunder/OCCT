@@ -38,6 +38,7 @@
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_Map.hxx>
 
+#include <cstdio>
 #include <mutex>
 
 //! Functor for multi-threaded execution.
@@ -83,6 +84,7 @@ public:
             if (ste != BRepCheck_NoError)
             {
               aResEdge->SetStatus(ste);
+              fprintf(stderr, "%d: %d\n", __LINE__, ste);
             }
           }
           catch (Standard_Failure const& anException)
@@ -91,6 +93,7 @@ public:
             if (!aResult.IsNull())
             {
               aResult->SetFailStatus(aShape);
+              fprintf(stderr, "%d\n", __LINE__);
             }
           }
 
@@ -113,11 +116,13 @@ public:
               if (!aResult.IsNull())
               {
                 aResult->SetFailStatus(aShape);
+                fprintf(stderr, "%d\n", __LINE__);
               }
 
               if (!aResOfVertex.IsNull())
               {
                 aResOfVertex->SetFailStatus(aVertex);
+                fprintf(stderr, "%d\n", __LINE__);
                 aResOfVertex->SetFailStatus(aShape);
               }
             }
@@ -146,10 +151,12 @@ public:
               if (!aResult.IsNull())
               {
                 aResult->SetFailStatus(aShape);
+                fprintf(stderr, "%d\n", __LINE__);
               }
               if (!aFaceVertexRes.IsNull())
               {
                 aFaceVertexRes->SetFailStatus(exp.Current());
+                fprintf(stderr, "%d\n", __LINE__);
                 aFaceVertexRes->SetFailStatus(aShape);
               }
             }
@@ -200,10 +207,12 @@ public:
               if (!aResult.IsNull())
               {
                 aResult->SetFailStatus(aShape);
+                fprintf(stderr, "%d\n", __LINE__);
               }
               if (!aFaceEdgeRes.IsNull())
               {
                 aFaceEdgeRes->SetFailStatus(exp.Current());
+                fprintf(stderr, "%d\n", __LINE__);
                 aFaceEdgeRes->SetFailStatus(aShape);
               }
             }
@@ -248,10 +257,12 @@ public:
               if (!aResult.IsNull())
               {
                 aResult->SetFailStatus(aShape);
+                fprintf(stderr, "%d\n", __LINE__);
               }
               if (!aFaceWireRes.IsNull())
               {
                 aFaceWireRes->SetFailStatus(exp.Current());
+                fprintf(stderr, "%d\n", __LINE__);
                 aFaceWireRes->SetFailStatus(aShape);
               }
             }
@@ -264,6 +275,7 @@ public:
             if (isInvalidTolerance)
             {
               aFaceRes->SetStatus(BRepCheck_InvalidToleranceValue);
+              fprintf(stderr, "%d\n", __LINE__);
             }
             else if (performwire)
             {
@@ -287,6 +299,7 @@ public:
             if (!aResult.IsNull())
             {
               aResult->SetFailStatus(aShape);
+              fprintf(stderr, "%d\n", __LINE__);
             }
 
             for (exp.Init(aShape, TopAbs_WIRE); exp.More(); exp.Next())
@@ -295,6 +308,7 @@ public:
               if (!aFaceCatchRes.IsNull())
               {
                 aFaceCatchRes->SetFailStatus(exp.Current());
+                fprintf(stderr, "%d\n", __LINE__);
                 aFaceCatchRes->SetFailStatus(aShape);
                 aResult->SetFailStatus(exp.Current());
               }
@@ -322,10 +336,12 @@ public:
               if (!aResult.IsNull())
               {
                 aResult->SetFailStatus(aShape);
+                fprintf(stderr, "%d\n", __LINE__);
               }
               if (!aSolidRes.IsNull())
               {
                 aSolidRes->SetFailStatus(exp.Current());
+                fprintf(stderr, "%d\n", __LINE__);
                 aSolidRes->SetFailStatus(aShape);
               }
             }

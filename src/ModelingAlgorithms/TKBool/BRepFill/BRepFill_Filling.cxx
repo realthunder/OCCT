@@ -122,7 +122,6 @@ static TopoDS_Wire WireFromList(NCollection_List<TopoDS_Shape>& Edges)
           anEdge.Reverse();
           V2 = V3;
         }
-        found = true;
         break;
       }
     }

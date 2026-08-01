@@ -58,6 +58,22 @@ public:
                                TopTools_ShapeMapHasher>&                 theDMVV,
     const Message_ProgressRange&                                         theRange);
 
+  //! Same as above, but if <ContextFaces> is not null, skips intersection
+  //! of edge pairs both belonging to the context faces.
+  Standard_EXPORT static void Compute(
+    const occ::handle<BRepAlgo_AsDes>&                                   AsDes,
+    const TopoDS_Face&                                                   F,
+    const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& NewEdges,
+    const double                                                         Tol,
+    const NCollection_DataMap<TopoDS_Shape,
+                              NCollection_List<TopoDS_Shape>,
+                              TopTools_ShapeMapHasher>&                  theEdgeIntEdges,
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>&                 theDMVV,
+    const Message_ProgressRange&                                         theRange,
+    const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>* ContextFaces);
+
   //! Computes the intersection between the offset edges of the <FI>.
   //! All intersection vertices will be stored in AsDes2d.
   //! When all faces of the shape are treated the intersection vertices
@@ -66,6 +82,27 @@ public:
   Standard_EXPORT static bool ConnexIntByInt(
     const TopoDS_Face&                                                              FI,
     BRepOffset_Offset&                                                              OFI,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&       MES,
+    const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& Build,
+    const occ::handle<BRepAlgo_AsDes>&                                              theAsDes,
+    const occ::handle<BRepAlgo_AsDes>&                                              AsDes2d,
+    const double                                                                    Offset,
+    const double                                                                    Tol,
+    const BRepOffset_Analyse&                                                       Analyse,
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>&                  FacesWithVerts,
+    BRepAlgo_Image&                                                                 theImageVV,
+    NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+                                                         theEdgeIntEdges,
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>& theDMVV,
+    const Message_ProgressRange&                         theRange);
+
+  //! Same as above, but with an optional offset face maker <OFI>.
+  //! When <OFI> is null the offset edges are the face edges themselves.
+  Standard_EXPORT static bool ConnexIntByInt(
+    const TopoDS_Face&                                                              FI,
+    const BRepOffset_Offset*                                                        OFI,
     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&       MES,
     const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& Build,
     const occ::handle<BRepAlgo_AsDes>&                                              theAsDes,
@@ -91,6 +128,22 @@ public:
   Standard_EXPORT static void ConnexIntByIntInVert(
     const TopoDS_Face&                                                              FI,
     BRepOffset_Offset&                                                              OFI,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&       MES,
+    const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& Build,
+    const occ::handle<BRepAlgo_AsDes>&                                              AsDes,
+    const occ::handle<BRepAlgo_AsDes>&                                              AsDes2d,
+    const double                                                                    Tol,
+    const BRepOffset_Analyse&                                                       Analyse,
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>&                            theDMVV,
+    const Message_ProgressRange&                                                    theRange);
+
+  //! Same as above, but with an optional offset face maker <OFI>.
+  //! When <OFI> is null the offset edges are the face edges themselves.
+  Standard_EXPORT static void ConnexIntByIntInVert(
+    const TopoDS_Face&                                                              FI,
+    const BRepOffset_Offset*                                                        OFI,
     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&       MES,
     const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& Build,
     const occ::handle<BRepAlgo_AsDes>&                                              AsDes,

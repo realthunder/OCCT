@@ -19,6 +19,7 @@
 
 #include <Standard.hxx>
 #include <Standard_DefineAlloc.hxx>
+#include <Standard_Handle.hxx>
 
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
@@ -27,6 +28,7 @@
 #include <NCollection_DataMap.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <BRepAlgo_Image.hxx>
+class BRepAlgo_AsDes;
 class TopoDS_Edge;
 
 //! Builds the loops from a set of edges on a face.
@@ -57,6 +59,12 @@ public:
   //! Make loops.
   Standard_EXPORT void Perform();
 
+  //! Make loops, additionally checking for intersecting edges (used when
+  //! making thick solid with concave removed faces).
+  Standard_EXPORT void Perform(
+    const NCollection_List<TopoDS_Shape>* ContextFaces,
+    const occ::handle<BRepAlgo_AsDes>&    AsDes = occ::handle<BRepAlgo_AsDes>());
+
   //! Update VE map according to Image Vertex - Vertex
   Standard_EXPORT void UpdateVEmap(NCollection_IndexedDataMap<TopoDS_Shape,
                                                               NCollection_List<TopoDS_Shape>,
@@ -84,6 +92,13 @@ public:
   //! it can be an empty list.
   Standard_EXPORT const NCollection_List<TopoDS_Shape>& NewEdges(const TopoDS_Edge& E) const;
 
+  //! Returns the map edge => list of cut edges.
+  const NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+    CutEdges() const
+  {
+    return myCutEdges;
+  }
+
   //! Returns the datamap of vertices with their substitutes.
   Standard_EXPORT void GetVerticesForSubstitute(
     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& VerVerMap) const;
@@ -98,6 +113,13 @@ public:
   double GetTolConf() const { return myTolConf; }
 
 private:
+  void CutEdge(const TopoDS_Edge&                    E,
+               const NCollection_List<TopoDS_Shape>& VonE,
+               NCollection_List<TopoDS_Shape>&       NE,
+               bool                                  KeepAll) const;
+
+  void FindLoop();
+
   TopoDS_Face                    myFace;
   NCollection_List<TopoDS_Shape> myConstEdges;
   NCollection_List<TopoDS_Shape> myEdges;
@@ -110,6 +132,20 @@ private:
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> myVerticesForSubstitute;
   BRepAlgo_Image                                                           myImageVV;
   double                                                                   myTolConf;
+};
+
+//! Helper class to enable collecting intersecting concave edges found when
+//! building loop
+class BRepAlgo_LoopIntersectingEdgeMap
+{
+public:
+  Standard_EXPORT BRepAlgo_LoopIntersectingEdgeMap();
+  Standard_EXPORT ~BRepAlgo_LoopIntersectingEdgeMap();
+
+  Standard_EXPORT static NCollection_DataMap<TopoDS_Shape,
+                                             NCollection_List<TopoDS_Shape>,
+                                             TopTools_ShapeMapHasher>&
+    EdgeMap();
 };
 
 #endif // _BRepAlgo_Loop_HeaderFile

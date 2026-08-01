@@ -22,7 +22,13 @@
 #include <Standard_Handle.hxx>
 
 #include <Standard_OStream.hxx>
-class TopoDS_Shape;
+
+#include <TopoDS_Shape.hxx>
+#include <NCollection_List.hxx>
+#include <NCollection_Sequence.hxx>
+#include <NCollection_Map.hxx>
+#include <NCollection_IndexedMap.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 
 //! The TopTools package provides utilities for the
 //! topological data structure.
@@ -80,5 +86,53 @@ public:
   //! position.
   Standard_EXPORT static void Dummy(const int I);
 };
+
+extern "C"
+{
+  typedef bool FuncShowTopoShape(const char* Key, int line, const TopoDS_Shape& s, const char* name);
+  Standard_EXPORT int SetFuncShowTopoShape(FuncShowTopoShape* func);
+}
+
+Standard_EXPORT void ShowTopoShape(const char*         Key,
+                                   int                 line,
+                                   const TopoDS_Shape& S,
+                                   const char*         Name,
+                                   bool                Oriented = false);
+Standard_EXPORT void ShowTopoShape(const char*         Key,
+                                   int                 line,
+                                   const TopoDS_Shape& S,
+                                   const char*         Name,
+                                   const TopoDS_Shape&,
+                                   bool Oriented = false);
+Standard_EXPORT void ShowTopoShape(const char*         Key,
+                                   int                 line,
+                                   const TopoDS_Shape& S,
+                                   const char*         Name,
+                                   const NCollection_List<TopoDS_Shape>&,
+                                   bool Oriented = false);
+Standard_EXPORT void ShowTopoShape(const char*         Key,
+                                   int                 line,
+                                   const TopoDS_Shape& S,
+                                   const char*         Name,
+                                   const NCollection_Sequence<TopoDS_Shape>&,
+                                   bool Oriented = false);
+Standard_EXPORT void ShowTopoShape(const char*         Key,
+                                   int                 line,
+                                   const TopoDS_Shape& S,
+                                   const char*         Name,
+                                   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>&,
+                                   bool Oriented = false);
+Standard_EXPORT void ShowTopoShape(const char*         Key,
+                                   int                 line,
+                                   const TopoDS_Shape& S,
+                                   const char*         Name,
+                                   const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>&,
+                                   bool Oriented = false);
+
+#define SHOW_TOPO_SHAPE(_S, ...)                                                                   \
+  do                                                                                               \
+  {                                                                                                \
+    ShowTopoShape(__FILE__, __LINE__, _S, ##__VA_ARGS__);                                          \
+  } while (0)
 
 #endif // _TopTools_HeaderFile

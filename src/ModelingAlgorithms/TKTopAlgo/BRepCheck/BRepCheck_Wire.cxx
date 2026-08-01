@@ -59,6 +59,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <TopTools.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_DataMap.hxx>
 #include <NCollection_IndexedDataMap.hxx>
@@ -249,6 +250,10 @@ void BRepCheck_Wire::InContext(const TopoDS_Shape& S)
         break;
       }
       st = Closed2d(TopoDS::Face(S));
+      if (st != BRepCheck_NoError)
+      {
+        break;
+      }
       break;
     }
     default: {
@@ -996,6 +1001,11 @@ BRepCheck_Status BRepCheck_Wire::Orientation(const TopoDS_Face& F, const bool Up
       else if (!Changedesens)
       { // nbconnex == 0
         theOstat = BRepCheck_NotClosed;
+        if (!VL.IsNull())
+        {
+          SHOW_TOPO_SHAPE(VL, "NotClosedV");
+          SHOW_TOPO_SHAPE(myShape, "NotClosedW");
+        }
         if (Update)
         {
           BRepCheck::Add(aStatusList, theOstat);
