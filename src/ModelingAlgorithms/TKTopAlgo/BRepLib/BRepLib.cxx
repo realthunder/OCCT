@@ -2538,6 +2538,20 @@ void BRepLib::EncodeRegularity(const TopoDS_Shape& S, const double TolAng)
 
 //=======================================================================
 // function : EncodeRegularity
+// purpose  : code the regularities on all edges of the shape that were not
+//            already encoded through the given map, which is the very map a
+//            single call keeps to itself, handed to the caller instead.
+//=======================================================================
+
+void BRepLib::EncodeRegularity(const TopoDS_Shape&                                     S,
+                               const double                                            TolAng,
+                               NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed)
+{
+  ::EncodeRegularity(S, TolAng, theProcessed);
+}
+
+//=======================================================================
+// function : EncodeRegularity
 // purpose  : code the regularities on all edges in the list that do not
 //            have it, and which are boundary of two faces on the shape.
 //=======================================================================

@@ -284,6 +284,15 @@ void ShapeFix::EncodeRegularity(const TopoDS_Shape& shape, const double tolang)
 
 //=================================================================================================
 
+void ShapeFix::EncodeRegularity(const TopoDS_Shape&                                     shape,
+                                const double                                            tolang,
+                                NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed)
+{
+  BRepLib::EncodeRegularity(shape, tolang, theProcessed);
+}
+
+//=================================================================================================
+
 TopoDS_Shape ShapeFix::RemoveSmallEdges(TopoDS_Shape&                    Shape,
                                         const double                     Tolerance,
                                         occ::handle<ShapeBuild_ReShape>& context)

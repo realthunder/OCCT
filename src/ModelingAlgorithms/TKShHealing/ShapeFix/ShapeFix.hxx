@@ -25,6 +25,9 @@
 
 #include <ShapeExtend_BasicMsgRegistrator.hxx>
 #include <Message_ProgressRange.hxx>
+#include <NCollection_Map.hxx>
+#include <TopoDS_Shape.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 
 class TopoDS_Shape;
 class ShapeExtend_BasicMsgRegistrator;
@@ -64,6 +67,16 @@ public:
   //! is processed only once
   Standard_EXPORT static void EncodeRegularity(const TopoDS_Shape& shape,
                                                const double        tolang = 1.0e-10);
+
+  //! Runs EncodeRegularity from BRepLib over a series of shapes that may
+  //! share components - the parts of an assembly and then the assembly - so
+  //! that a component shared between them is processed only once. The map
+  //! carries what has been processed from one call to the next and is the
+  //! caller's to keep for as long as the shapes live.
+  Standard_EXPORT static void EncodeRegularity(
+    const TopoDS_Shape&                                     shape,
+    const double                                            tolang,
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed);
 
   //! Removes edges which are less than given tolerance from shape
   //! with help of ShapeFix_Wire::FixSmall()

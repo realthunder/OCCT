@@ -49,9 +49,28 @@
 #include <XSControl_TransferReader.hxx>
 #include <XSControl_Utils.hxx>
 #include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <OSD_Timer.hxx>
 
 #include <cstdio>
 IMPLEMENT_STANDARD_RTTIEXT(XSControl_TransferReader, Standard_Transient)
+
+namespace
+{
+//! What ShapeResult() has already encoded the regularity of, and the model
+//! those shapes were read from. A progressive transfer asks for its results
+//! piece by piece and then for the whole - every component of an assembly,
+//! then the assembly itself - and encoding walks each face and edge it is
+//! given, so without this the parts of a file are encoded twice over, which
+//! on a large assembly costs as much as the second pass takes.
+//!
+//! Held here rather than in the reader to keep the class layout unchanged;
+//! reading results is the transferring thread's own business, so one set per
+//! thread is enough. Cleared as soon as another model is read through it, so
+//! the shapes are not kept alive past their transfer.
+thread_local occ::handle<Interface_InterfaceModel>                  THE_ENCODED_MODEL;
+thread_local NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> THE_ENCODED_SHAPES;
+} // namespace
 
 //=================================================================================================
 
@@ -150,6 +169,13 @@ void XSControl_TransferReader::Clear(const int mode)
   {
     myResults.Clear();
     myShapeResult.Nullify();
+    if (!myModel.IsNull() && THE_ENCODED_MODEL == myModel)
+    {
+      // The results those shapes came with are gone; whatever is transferred
+      // next is encoded afresh.
+      THE_ENCODED_MODEL.Nullify();
+      THE_ENCODED_SHAPES.Clear();
+    }
   }
   if (mode & 2)
   {
@@ -449,7 +475,17 @@ TopoDS_Shape XSControl_TransferReader::ShapeResult(const occ::handle<Standard_Tr
   {
     return sh;
   }
-  ShapeFix::EncodeRegularity(sh, tolang);
+  // Reported because this walks every face of the result, however large, and
+  // is easily the most expensive thing a caller asking for a result pays for.
+  OSD_Timer aTimer;
+  aTimer.Start();
+  if (THE_ENCODED_MODEL != myModel)
+  {
+    THE_ENCODED_MODEL = myModel;
+    THE_ENCODED_SHAPES.Clear();
+  }
+  ShapeFix::EncodeRegularity(sh, tolang, THE_ENCODED_SHAPES);
+  Message::SendTrace() << "      ...    Encode regularity : " << aTimer.ElapsedTime() << " s";
   return sh;
 }
 

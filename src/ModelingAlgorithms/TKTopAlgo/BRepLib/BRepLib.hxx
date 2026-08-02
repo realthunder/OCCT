@@ -29,6 +29,8 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Shape.hxx>
 #include <NCollection_List.hxx>
+#include <NCollection_Map.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 
 class Geom2d_Curve;
 class Adaptor3d_Curve;
@@ -237,6 +239,18 @@ public:
   //! is done.
   Standard_EXPORT static void EncodeRegularity(const TopoDS_Shape& S,
                                                const double        TolAng = 1.0e-10);
+
+  //! Encodes the Regularity of edges on a Shape, skipping the shapes of
+  //! <theProcessed> and adding to it every shape encoded on the way, so that
+  //! a caller encoding overlapping shapes one after another - the parts of an
+  //! assembly, then the assembly itself - pays for each of them once. Shapes
+  //! are told apart by their location-free selves, the way a single call
+  //! already avoids encoding a shape twice.
+  //! Warning: <TolAng> is an angular tolerance, expressed in Rad.
+  Standard_EXPORT static void EncodeRegularity(
+    const TopoDS_Shape&                                     S,
+    const double                                            TolAng,
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed);
 
   //! Encodes the Regularity of edges in list <LE> on the shape <S>
   //! Warning: <TolAng> is an angular tolerance, expressed in Rad.
