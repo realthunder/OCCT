@@ -89,22 +89,6 @@ public:
     return myShapeProcFlags;
   }
 
-  //! Enables or disables deferred shape post-processing (e.g. shape healing).
-  //! While enabled, the actor may accumulate per-shape processing work instead of
-  //! performing it inline; the caller must invoke FlushDeferredProcessing() once
-  //! the batch of transfers is complete, before consuming any result shape.
-  //! Default implementation does nothing (no deferred processing supported).
-  virtual void SetDeferredProcessing(const bool theToDefer) { (void)theToDefer; }
-
-  //! Performs any accumulated deferred processing and updates the binders of
-  //! @p theTP accordingly. Default implementation does nothing.
-  virtual void FlushDeferredProcessing(const occ::handle<Transfer_TransientProcess>& theTP,
-                                       const Message_ProgressRange&                  theProgress)
-  {
-    (void)theTP;
-    (void)theProgress;
-  }
-
   DEFINE_STANDARD_RTTIEXT(Transfer_ActorOfTransientProcess, Transfer_ActorOfProcessForTransient)
 
 private:

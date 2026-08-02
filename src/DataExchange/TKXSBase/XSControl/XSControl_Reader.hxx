@@ -198,31 +198,6 @@ public:
   Standard_EXPORT int TransferRoots(
     const Message_ProgressRange& theProgress = Message_ProgressRange());
 
-  //! Same as TransferRoots(), but runs the whole batch with the actor's deferred
-  //! post-processing enabled: per-shape work such as shape healing is accumulated
-  //! during translation and flushed once at the end (possibly in parallel), and
-  //! result shapes are extracted only after the flush. Falls back to plain
-  //! sequential behavior with an actor that does not support deferral.
-  //! @param theFirst rank of the first root to transfer (1-based); values below 1
-  //!        are clamped to 1.
-  //! @param theLast rank of the last root to transfer; 0 (default) or values
-  //!        beyond the root count mean "up to the last root".
-  //! Warning - This function clears existing output shapes first.
-  Standard_EXPORT int TransferRootsDeferred(
-    const Message_ProgressRange& theProgress = Message_ProgressRange(),
-    const int                    theFirst    = 1,
-    const int                    theLast     = 0);
-
-  //! Same as TransferRootsDeferred(), but for an arbitrary list of entities
-  //! instead of a range of roots - a progressive import can hand over the
-  //! components of one root this way, since a component entity translated on
-  //! its own binds its result in the transfer process and the owning root
-  //! reuses that binder instead of translating the component again.
-  //! Warning - This function clears existing output shapes first.
-  Standard_EXPORT int TransferListDeferred(
-    const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theList,
-    const Message_ProgressRange& theProgress = Message_ProgressRange());
-
   //! Clears the list of shapes that
   //! may have accumulated in calls to TransferOne or TransferRoot.C
   Standard_EXPORT void ClearShapes();
@@ -367,7 +342,7 @@ protected:
     return ShapeProcess::OperationsFlags();
   }
 
-private:
+protected:
   //! Returns the Actor for the Transfer of an Entity.
   //! This Actor is used by the Reader to perform the Transfer.
   //! @return the Actor for the Transfer of an Entity. May be nullptr.
@@ -376,14 +351,6 @@ private:
   //! If parameters haven't yet been provided, initializes them with default values
   //! provided by GetDefaultShapeFixParameters() method.
   void InitializeMissingParameters();
-
-  //! Translates the given entities with the actor's deferred post-processing
-  //! enabled, flushes it once, and only then records and collects the results.
-  //! Shared implementation of TransferRootsDeferred() and TransferListDeferred().
-  //! @param theScopeName progress scope name of the translation half, may be null.
-  int transferDeferred(const NCollection_Sequence<occ::handle<Standard_Transient>>& theEntities,
-                       const char*                                                 theScopeName,
-                       const Message_ProgressRange&                                theProgress);
 
 protected:
   bool                                                  therootsta;

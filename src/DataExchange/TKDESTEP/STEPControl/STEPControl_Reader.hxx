@@ -25,6 +25,7 @@
 #include <Standard_Integer.hxx>
 #include <DESTEP_Parameters.hxx>
 #include <TCollection_AsciiString.hxx>
+#include <NCollection_HSequence.hxx>
 #include <NCollection_Sequence.hxx>
 #include <NCollection_Array1.hxx>
 class XSControl_WorkSession;
@@ -128,6 +129,31 @@ public:
   //! Performs only if a model is not NULL
   Standard_EXPORT double SystemLengthUnit() const;
 
+  //! Same as TransferRoots(), but runs the whole batch with the actor's deferred
+  //! post-processing enabled: per-shape work such as shape healing is accumulated
+  //! during translation and flushed once at the end (possibly in parallel), and
+  //! result shapes are extracted only after the flush. Falls back to plain
+  //! sequential behavior with an actor that does not support deferral.
+  //! @param theFirst rank of the first root to transfer (1-based); values below 1
+  //!        are clamped to 1.
+  //! @param theLast rank of the last root to transfer; 0 (default) or values
+  //!        beyond the root count mean "up to the last root".
+  //! Warning - This function clears existing output shapes first.
+  Standard_EXPORT int TransferRootsDeferred(
+    const Message_ProgressRange& theProgress = Message_ProgressRange(),
+    const int                    theFirst    = 1,
+    const int                    theLast     = 0);
+
+  //! Same as TransferRootsDeferred(), but for an arbitrary list of entities
+  //! instead of a range of roots - a progressive import can hand over the
+  //! components of one root this way, since a component entity translated on
+  //! its own binds its result in the transfer process and the owning root
+  //! reuses that binder instead of translating the component again.
+  //! Warning - This function clears existing output shapes first.
+  Standard_EXPORT int TransferListDeferred(
+    const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theList,
+    const Message_ProgressRange& theProgress = Message_ProgressRange());
+
 protected:
   //! Returns default parameters for shape fixing.
   //! This method is used by the base class to get default parameters for shape fixing.
@@ -139,6 +165,16 @@ protected:
   Standard_EXPORT ShapeProcess::OperationsFlags GetDefaultShapeProcessFlags() const override;
 
 private:
+  //! Translates the given entities with the actor's deferred post-processing
+  //! enabled, flushes it once, and only then records and collects the results.
+  //! Shared implementation of TransferRootsDeferred() and TransferListDeferred().
+  //! Lives here rather than on XSControl_Reader because only the STEP actor
+  //! supports deferral, which keeps the generic base classes untouched.
+  //! @param theScopeName progress scope name of the translation half, may be null.
+  int transferDeferred(const NCollection_Sequence<occ::handle<Standard_Transient>>& theEntities,
+                       const char*                                                 theScopeName,
+                       const Message_ProgressRange&                                theProgress);
+
   //! Returns units for length, angle and solidangle for shape representations
   Standard_EXPORT bool findUnits(const occ::handle<StepRepr_RepresentationContext>& theReprContext,
                                  NCollection_Array1<TCollection_AsciiString>&       theNameUnits,

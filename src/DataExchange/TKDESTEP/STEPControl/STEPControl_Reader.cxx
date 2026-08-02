@@ -36,6 +36,8 @@
 #include <STEPConstruct_UnitContext.hxx>
 #include <STEPControl_Controller.hxx>
 #include <STEPControl_Reader.hxx>
+
+#include <STEPControl_ActorRead.hxx>
 #include <StepData_StepModel.hxx>
 #include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
@@ -746,6 +748,112 @@ void STEPControl_Reader::FileUnits(
       }
     }
   }
+}
+
+//=================================================================================================
+
+int STEPControl_Reader::TransferRootsDeferred(const Message_ProgressRange& theProgress,
+                                            const int                    theFirst,
+                                            const int                    theLast)
+{
+  NbRootsForTransfer();
+
+  const size_t aFirst = static_cast<size_t>(std::max(theFirst, 1));
+  const size_t aLast  = (theLast < 1 || static_cast<size_t>(theLast) > theroots.Size())
+                          ? theroots.Size()
+                          : static_cast<size_t>(theLast);
+
+  NCollection_Sequence<occ::handle<Standard_Transient>> aBatch;
+  for (size_t i = aFirst; i <= aLast; i++)
+  {
+    aBatch.Append(theroots.Value(i));
+  }
+  return transferDeferred(aBatch, "Root", theProgress);
+}
+
+//=================================================================================================
+
+int STEPControl_Reader::TransferListDeferred(
+  const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theList,
+  const Message_ProgressRange&                                               theProgress)
+{
+  if (theList.IsNull())
+  {
+    return 0;
+  }
+
+  NCollection_Sequence<occ::handle<Standard_Transient>> aBatch;
+  for (size_t i = 1; i <= theList->Size(); i++)
+  {
+    aBatch.Append(theList->Value(i));
+  }
+  return transferDeferred(aBatch, nullptr, theProgress);
+}
+
+//=================================================================================================
+
+int STEPControl_Reader::transferDeferred(
+  const NCollection_Sequence<occ::handle<Standard_Transient>>& theEntities,
+  const char*                                                  theScopeName,
+  const Message_ProgressRange&                                 theProgress)
+{
+  const occ::handle<XSControl_TransferReader>& aTransferReader = WS()->TransferReader();
+  aTransferReader->BeginTransfer();
+  InitializeMissingParameters();
+  ClearShapes();
+
+  // Deferral is a STEP-actor feature; anything else transfers as usual.
+  occ::handle<STEPControl_ActorRead> anActor =
+    occ::down_cast<STEPControl_ActorRead>(aTransferReader->Actor());
+  if (!anActor.IsNull())
+  {
+    anActor->SetDeferredProcessing(true);
+  }
+
+  // Translation and the deferred flush (dominated by shape healing) are of
+  // comparable cost; give each its own half of the progress range.
+  Message_ProgressScope aScope(theProgress, nullptr, 2);
+  // A null name has to reach the dedicated overload; a const char* variable
+  // would resolve to the string constructor and throw on the null pointer.
+  Message_ProgressScope aProgressScope(aScope.Next(),
+                                       nullptr,
+                                       static_cast<double>(theEntities.Size()));
+  if (theScopeName != nullptr)
+  {
+    aProgressScope.SetName(theScopeName);
+  }
+  NCollection_Sequence<occ::handle<Standard_Transient>> aTransferred;
+  for (size_t i = 1; i <= theEntities.Size() && aProgressScope.More(); i++)
+  {
+    occ::handle<Standard_Transient> aStart = theEntities.Value(i);
+    // rec=false: recording would snapshot the binder's shape before the deferred
+    // flush rewrites it; results are recorded after the flush instead.
+    if (aTransferReader->TransferOne(aStart, false, aProgressScope.Next()) == 0)
+    {
+      continue;
+    }
+    aTransferred.Append(aStart);
+  }
+
+  // Result shapes must not be consumed before the flush: binders may still hold
+  // unprocessed shapes.
+  if (!anActor.IsNull())
+  {
+    anActor->FlushDeferredProcessing(aTransferReader->TransientProcess(), aScope.Next());
+    anActor->SetDeferredProcessing(false);
+  }
+
+  for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator anIter(aTransferred);
+       anIter.More();
+       anIter.Next())
+  {
+    aTransferReader->RecordResult(anIter.Value());
+    const TopoDS_Shape aShape = aTransferReader->ShapeResult(anIter.Value());
+    // Null shapes are allowed intentionally.
+    // SMH May 00: allow empty shapes (STEP CAX-IF, external references)
+    Shapes().Append(aShape);
+  }
+  return aTransferred.Size();
 }
 
 //=================================================================================================

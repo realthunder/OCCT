@@ -223,6 +223,24 @@ namespace
 // this is very specific info to do so...
 bool NM_DETECTED = false;
 
+//! One shape whose healing was deferred by SetDeferredProcessing(true).
+struct DeferredHealing
+{
+  TopoDS_Shape                           Shape;      //!< Unhealed shape (as bound in the TP).
+  XSAlgo_ShapeProcessor::ParameterMap    Parameters; //!< Snapshot of healing parameters.
+  ShapeProcess::OperationsFlags          Flags;      //!< Snapshot of operations to perform.
+  TopoDS_Shape                           Result;     //!< Healed shape (set by the flush).
+  occ::handle<ShapeProcess_ShapeContext> Context;    //!< Healing context (set by the flush).
+  //! Messages the healing reported; the default messenger is not thread safe,
+  //! so each one is collected apart and replayed serially by the flush.
+  occ::handle<Message_Report>            Report;
+  bool                                   IsHealed = false; //!< Already processed by the pool.
+};
+
+//! Heals one deferred shape in place. Touches nothing but its own entry, so it
+//! is callable from a worker thread.
+void healOne(DeferredHealing& theHealing, const Message_ProgressRange& theProgress);
+
 //! Workers that run a task over items handed to them one at a time, so that
 //! the thread producing the items carries on meanwhile. Used to heal shapes
 //! while the translation that produced them keeps going ("heal ahead"), which
@@ -323,6 +341,29 @@ private:
 //! the actor keeps the actor's layout untouched, and lets two readers running
 //! on two threads have one pool each.
 thread_local occ::handle<STEPControl_HealPipeline> THE_HEAL_PIPELINE;
+
+//! Shapes whose healing this thread has deferred, in translation order. Held by
+//! pointer so the heal-ahead workers may keep referring to entries while
+//! translation appends more.
+thread_local std::vector<std::unique_ptr<DeferredHealing>> THE_DEFERRED_HEALINGS;
+
+//! Whether this thread is accumulating healings instead of running them inline.
+thread_local bool THE_DEFER_PROCESSING = false;
+
+//! How many binders the previous flush of this process already rewrote. A
+//! streamed transfer flushes once per batch, and every binder from an earlier
+//! batch holds a healed shape by then, so the rewrite only has to walk what the
+//! current batch added.
+thread_local int THE_FLUSHED_BINDERS = 0;
+
+//! The process the count above belongs to.
+thread_local occ::handle<Transfer_TransientProcess> THE_FLUSHED_PROCESS;
+
+//! Starts the workers that heal shapes as translation hands them over.
+void startHealPool();
+
+//! Blocks until every submitted healing has finished, then stops the workers.
+void stopHealPool();
 } // namespace
 
 // ============================================================================
@@ -2054,7 +2095,7 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
       XSAlgo_ShapeProcessor::ParameterMap aParameters = GetShapeFixParameters();
       XSAlgo_ShapeProcessor::SetParameter("FixShape.Tolerance3d", myPrecision, true, aParameters);
       XSAlgo_ShapeProcessor::SetParameter("FixShape.MaxTolerance3d", myMaxTol, true, aParameters);
-      if (myDeferProcessing)
+      if (THE_DEFER_PROCESSING)
       {
         // Healing is batched: bind the raw shape now; FlushDeferredProcessing() heals
         // it (possibly in parallel with its siblings) and rewrites every binder that
@@ -2064,7 +2105,7 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
         aDeferred->Parameters = aParameters;
         aDeferred->Flags      = GetProcessingFlags().first;
         DeferredHealing* aQueued = aDeferred.get();
-        myDeferredHealings.push_back(std::move(aDeferred));
+        THE_DEFERRED_HEALINGS.push_back(std::move(aDeferred));
         if (!THE_HEAL_PIPELINE.IsNull())
         {
           // Heal-ahead: hand the shape over now, so it is healed while this
@@ -2869,7 +2910,7 @@ TopoDS_Shape STEPControl_ActorRead::TransferRelatedSRR(
 
 void STEPControl_ActorRead::SetDeferredProcessing(const bool theToDefer)
 {
-  myDeferProcessing = theToDefer;
+  THE_DEFER_PROCESSING = theToDefer;
   if (theToDefer)
   {
     startHealPool();
@@ -2882,8 +2923,9 @@ void STEPControl_ActorRead::SetDeferredProcessing(const bool theToDefer)
 
 //=================================================================================================
 
-void STEPControl_ActorRead::healOne(DeferredHealing&             theHealing,
-                                    const Message_ProgressRange& theProgress)
+namespace
+{
+void healOne(DeferredHealing& theHealing, const Message_ProgressRange& theProgress)
 {
   theHealing.Report                            = new Message_Report();
   occ::handle<Message_PrinterToReport> aPrinter = new Message_PrinterToReport();
@@ -2901,7 +2943,7 @@ void STEPControl_ActorRead::healOne(DeferredHealing&             theHealing,
 
 //=================================================================================================
 
-void STEPControl_ActorRead::startHealPool()
+void startHealPool()
 {
   if (!THE_HEAL_PIPELINE.IsNull() || Interface_Static::IVal("read.step.parallel.healing") != 3)
   {
@@ -2932,7 +2974,7 @@ void STEPControl_ActorRead::startHealPool()
 
 //=================================================================================================
 
-void STEPControl_ActorRead::stopHealPool()
+void stopHealPool()
 {
   if (THE_HEAL_PIPELINE.IsNull())
   {
@@ -2941,6 +2983,7 @@ void STEPControl_ActorRead::stopHealPool()
   THE_HEAL_PIPELINE->Drain();
   THE_HEAL_PIPELINE.Nullify();
 }
+} // namespace
 
 //=================================================================================================
 
@@ -2952,12 +2995,12 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
   // translation just finished; wait for them before touching the entries.
   stopHealPool();
 
-  if (myDeferredHealings.empty())
+  if (THE_DEFERRED_HEALINGS.empty())
   {
     return;
   }
   std::vector<std::unique_ptr<DeferredHealing>> aHealings;
-  aHealings.swap(myDeferredHealings);
+  aHealings.swap(THE_DEFERRED_HEALINGS);
 
   // Make sure every lazily-created global registry (shape-process operators,
   // message files) is initialized before worker threads may first-touch them.
@@ -3080,13 +3123,13 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
   // Binders bound before the previous flush of this same process were
   // rewritten then and already hold healed shapes; a streamed transfer
   // flushes once per batch and would otherwise walk them all over again.
-  if (myFlushedProcess != theTP)
+  if (THE_FLUSHED_PROCESS != theTP)
   {
-    myFlushedProcess = theTP;
-    myFlushedBinders = 0;
+    THE_FLUSHED_PROCESS = theTP;
+    THE_FLUSHED_BINDERS = 0;
   }
-  const int aFirstBinder = myFlushedBinders + 1;
-  myFlushedBinders       = theTP->NbMapped();
+  const int aFirstBinder = THE_FLUSHED_BINDERS + 1;
+  THE_FLUSHED_BINDERS       = theTP->NbMapped();
   for (int i = aFirstBinder; i <= theTP->NbMapped(); ++i)
   {
     occ::handle<TransferBRep_ShapeBinder> aShapeBinder =

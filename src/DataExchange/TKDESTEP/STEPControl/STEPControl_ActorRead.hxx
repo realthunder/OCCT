@@ -31,10 +31,7 @@
 #include <Message_ProgressRange.hxx>
 #include <Interface_InterfaceModel.hxx>
 
-#include <memory>
-#include <vector>
 
-class Message_Report;
 class ShapeProcess_ShapeContext;
 class StepRepr_Representation;
 class Standard_Transient;
@@ -121,14 +118,17 @@ public:
 
   //! While enabled, per-solid shape healing is accumulated instead of run inline;
   //! binders temporarily hold unhealed shapes until FlushDeferredProcessing().
-  Standard_EXPORT void SetDeferredProcessing(const bool theToDefer) override;
+  //! The state behind this belongs to the calling thread, which is the one that
+  //! translates and then flushes, so that this class keeps the layout it has
+  //! upstream.
+  Standard_EXPORT void SetDeferredProcessing(const bool theToDefer);
 
   //! Heals all accumulated shapes (in parallel when "read.step.parallel.healing"
   //! is enabled) and rewrites every affected binder of @p theTP, including parent
   //! compounds assembled from unhealed shapes.
   Standard_EXPORT void FlushDeferredProcessing(
     const occ::handle<Transfer_TransientProcess>& theTP,
-    const Message_ProgressRange&                  theProgress) override;
+    const Message_ProgressRange&                  theProgress);
 
   DEFINE_STANDARD_RTTIEXT(STEPControl_ActorRead, Transfer_ActorOfTransientProcess)
 
@@ -240,47 +240,11 @@ private:
                        Message_ProgressScope&                            thePS);
 
 private:
-  //! One shape whose healing was deferred by SetDeferredProcessing(true).
-  struct DeferredHealing
-  {
-    TopoDS_Shape                           Shape;      //!< Unhealed shape (as bound in the TP).
-    XSAlgo_ShapeProcessor::ParameterMap    Parameters; //!< Snapshot of healing parameters.
-    ShapeProcess::OperationsFlags          Flags;      //!< Snapshot of operations to perform.
-    TopoDS_Shape                           Result;     //!< Healed shape (set by the flush).
-    occ::handle<ShapeProcess_ShapeContext> Context;    //!< Healing context (set by the flush).
-    //! Messages the healing reported; the default messenger is not thread safe,
-    //! so each one is collected apart and replayed serially by the flush.
-    occ::handle<Message_Report>            Report;
-    bool                                   IsHealed = false; //!< Already processed by the pool.
-  };
-
-  //! Heals one deferred shape in place. Touches nothing but its own entry, so
-  //! it is callable from a worker thread.
-  static void healOne(DeferredHealing& theHealing, const Message_ProgressRange& theProgress);
-
-  //! Starts the workers that heal shapes as translation hands them over.
-  void startHealPool();
-
-  //! Blocks until every submitted healing has finished, then stops the workers.
-  void stopHealPool();
-
-private:
   StepToTopoDS_NMTool                   myNMTool;
   double                                myPrecision;
   double                                myMaxTol;
   occ::handle<StepRepr_Representation>  mySRContext;
   occ::handle<Interface_InterfaceModel> myModel;
-  //! Held by pointer: the heal-ahead workers keep referring to entries while
-  //! translation appends more, which reallocation would otherwise invalidate.
-  std::vector<std::unique_ptr<DeferredHealing>> myDeferredHealings;
-  bool                                  myDeferProcessing = false;
-  //! How many binders the previous flush of this process already rewrote. A
-  //! streamed transfer flushes once per batch, and every binder from an
-  //! earlier batch holds a healed shape by then, so the rewrite only has to
-  //! walk what the current batch added.
-  int                                   myFlushedBinders = 0;
-  //! The process the count above belongs to.
-  occ::handle<Transfer_TransientProcess> myFlushedProcess;
 };
 
 #endif // _STEPControl_ActorRead_HeaderFile
