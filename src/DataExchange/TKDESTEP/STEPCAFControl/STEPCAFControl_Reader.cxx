@@ -1922,6 +1922,15 @@ static void SetStyle(
         STEPConstruct_Tool aTool(theWS);
         TDF_Label          aShLab =
           STEPCAFControl_Reader::FindInstance(NAUO, theCTool->ShapeTool(), aTool, theMap);
+        // The instance need not be in the document: a streamed transfer reads
+        // the styles of every batch against the shapes translated so far, so a
+        // style naming a component of a later batch finds nothing yet. That is
+        // the same "not this sharing" case as a null shape just below, and the
+        // component gets its style when the batch carrying it is read.
+        if (aShLab.IsNull())
+        {
+          continue;
+        }
         aSh = theCTool->ShapeTool()->GetShape(aShLab);
         if (!aSh.IsNull())
         {
