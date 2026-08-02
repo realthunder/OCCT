@@ -16,6 +16,7 @@
 #include <ShapeProcess.hxx>
 
 #include <NCollection_DataMap.hxx>
+#include <Message.hxx>
 #include <Message_Messenger.hxx>
 #include <Message_Msg.hxx>
 #include <Message_ProgressScope.hxx>
@@ -24,6 +25,7 @@
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
 #include <TCollection_AsciiString.hxx>
+#include <OSD_Timer.hxx>
 #include <NCollection_Sequence.hxx>
 
 static NCollection_DataMap<TCollection_AsciiString, occ::handle<ShapeProcess_Operator>>
@@ -211,7 +213,13 @@ bool ShapeProcess::Perform(const occ::handle<ShapeProcess_Context>& theContext,
     const char*                               anOperationName = anOperator.first;
     const occ::handle<ShapeProcess_Operator>& anOperation     = anOperator.second;
     Message_ProgressRange                     aProgressRange  = aProgressScope.Next();
-    ScopeLock anOperationScope(*theContext, anOperationName); // Set operation scope.
+    ScopeLock  anOperationScope(*theContext, anOperationName); // Set operation scope.
+    const bool aIsTimed = Message::IsAccepted(Message_Trace, theContext->Messenger());
+    OSD_Timer  aTimer;
+    if (aIsTimed)
+    {
+      aTimer.Start();
+    }
     try
     {
       OCC_CATCH_SIGNALS;
@@ -223,6 +231,20 @@ bool ShapeProcess::Perform(const occ::handle<ShapeProcess_Context>& theContext,
       aMessage << anOperationName << anException.what();
       theContext->Messenger()->Send(aMessage, Message_Alarm);
     }
+    // Healing one shape can take longer than everything else a reader does,
+    // and it is always one or two of these operators that it goes on.
+    // Reported through the context's own messenger, which is what a shape
+    // healed on a worker thread reports to.
+    if (!aIsTimed)
+    {
+      continue;
+    }
+    TCollection_AsciiString aTiming("      ...    Healing operator '");
+    aTiming += anOperationName;
+    aTiming += "' : ";
+    aTiming += TCollection_AsciiString(aTimer.ElapsedTime());
+    aTiming += " s";
+    theContext->Messenger()->Send(aTiming, Message_Trace);
   }
   return anIsAnySuccess;
 }

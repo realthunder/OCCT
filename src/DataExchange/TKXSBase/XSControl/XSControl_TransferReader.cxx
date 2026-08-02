@@ -477,15 +477,22 @@ TopoDS_Shape XSControl_TransferReader::ShapeResult(const occ::handle<Standard_Tr
   }
   // Reported because this walks every face of the result, however large, and
   // is easily the most expensive thing a caller asking for a result pays for.
-  OSD_Timer aTimer;
-  aTimer.Start();
+  const bool aIsTimed = Message::IsAccepted(Message_Trace);
+  OSD_Timer  aTimer;
+  if (aIsTimed)
+  {
+    aTimer.Start();
+  }
   if (THE_ENCODED_MODEL != myModel)
   {
     THE_ENCODED_MODEL = myModel;
     THE_ENCODED_SHAPES.Clear();
   }
   ShapeFix::EncodeRegularity(sh, tolang, THE_ENCODED_SHAPES);
-  Message::SendTrace() << "      ...    Encode regularity : " << aTimer.ElapsedTime() << " s";
+  if (aIsTimed)
+  {
+    Message::SendTrace() << "      ...    Encode regularity : " << aTimer.ElapsedTime() << " s";
+  }
   return sh;
 }
 

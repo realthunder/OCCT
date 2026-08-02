@@ -16,6 +16,7 @@
 
 #include <Message.hxx>
 #include <Message_Messenger.hxx>
+#include <Message_Printer.hxx>
 #include <Message_Report.hxx>
 #include <TCollection_AsciiString.hxx>
 
@@ -44,6 +45,30 @@ const occ::handle<Message_Messenger>& Message::DefaultMessenger()
 {
   static occ::handle<Message_Messenger> aMessenger = new Message_Messenger;
   return aMessenger;
+}
+
+//=================================================================================================
+
+bool Message::IsAccepted(const Message_Gravity                 theGravity,
+                         const occ::handle<Message_Messenger>& theMessenger)
+{
+  const occ::handle<Message_Messenger>& aMessenger =
+    theMessenger.IsNull() ? DefaultMessenger() : theMessenger;
+  if (aMessenger.IsNull())
+  {
+    return false;
+  }
+  for (NCollection_Sequence<occ::handle<Message_Printer>>::Iterator anIter(aMessenger->Printers());
+       anIter.More();
+       anIter.Next())
+  {
+    // The same test Message_Printer::Send() makes before printing anything.
+    if (!anIter.Value().IsNull() && theGravity >= anIter.Value()->GetTraceLevel())
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 //=================================================================================================

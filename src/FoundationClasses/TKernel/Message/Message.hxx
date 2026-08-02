@@ -49,6 +49,14 @@ public:
   //! @endcode
   Standard_EXPORT static const occ::handle<Message_Messenger>& DefaultMessenger();
 
+  //! Returns true if any printer of theMessenger - the default one when it is
+  //! null - would print a message of theGravity. Preparing a message can cost
+  //! more than sending it (timing something, counting it, formatting it), and
+  //! a caller may skip all of that for a message nothing would print.
+  Standard_EXPORT static bool IsAccepted(const Message_Gravity                 theGravity,
+                                         const occ::handle<Message_Messenger>& theMessenger =
+                                           occ::handle<Message_Messenger>());
+
 public:
   //!@name Short-cuts to DefaultMessenger
 

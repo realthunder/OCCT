@@ -2933,6 +2933,13 @@ void healOne(DeferredHealing& theHealing, const Message_ProgressRange& theProgre
   theHealing.Report                            = new Message_Report();
   occ::handle<Message_PrinterToReport> aPrinter = new Message_PrinterToReport();
   aPrinter->SetReport(theHealing.Report);
+  // Capture what the healing traces as well, but only when the messenger the
+  // flush replays into would print it; otherwise every healing would prepare
+  // messages that are thrown away on arrival.
+  if (Message::IsAccepted(Message_Trace))
+  {
+    aPrinter->SetTraceLevel(Message_Trace);
+  }
   occ::handle<Message_Messenger> aMessenger = new Message_Messenger();
   aMessenger->RemovePrinters(STANDARD_TYPE(Message_Printer));
   aMessenger->AddPrinter(aPrinter);
@@ -3052,13 +3059,42 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
     !aIsParallel);
 
   // A batch is only as fast as its slowest shape, so the profile - not just
-  // the total - is what says whether more parallelism can still help.
+  // the total - is what says whether more parallelism can still help. Counting
+  // what the slowest shape is made of walks it three times, so none of this is
+  // done unless it is going to be printed.
+  if (Message::IsAccepted(Message_Trace))
   {
-    double aSum = 0.0, aMax = 0.0;
+    double                 aSum = 0.0, aMax = 0.0;
+    const DeferredHealing* aWorst = nullptr;
     for (const std::unique_ptr<DeferredHealing>& aHealing : aHealings)
     {
       aSum += aHealing->Seconds;
-      aMax = std::max(aMax, aHealing->Seconds);
+      if (aHealing->Seconds > aMax)
+      {
+        aMax   = aHealing->Seconds;
+        aWorst = aHealing.get();
+      }
+    }
+    if (aWorst != nullptr)
+    {
+      // What the shape that gated the batch is made of, since a batch cannot
+      // finish before it and only its own contents could be spread further.
+      int aNbSolids = 0, aNbFaces = 0, aNbEdges = 0;
+      for (TopExp_Explorer anExp(aWorst->Shape, TopAbs_SOLID); anExp.More(); anExp.Next())
+      {
+        ++aNbSolids;
+      }
+      for (TopExp_Explorer anExp(aWorst->Shape, TopAbs_FACE); anExp.More(); anExp.Next())
+      {
+        ++aNbFaces;
+      }
+      for (TopExp_Explorer anExp(aWorst->Shape, TopAbs_EDGE); anExp.More(); anExp.Next())
+      {
+        ++aNbEdges;
+      }
+      Message::SendTrace() << "      ...    Healing flush : the longest shape took " << aMax
+                           << " s for " << aNbSolids << " solids, " << aNbFaces << " faces, "
+                           << aNbEdges << " edges";
     }
     Message::SendTrace() << "      ...    Healing flush : " << aHealings.size() << " shapes ("
                          << aPending.size() << " left to this flush, "

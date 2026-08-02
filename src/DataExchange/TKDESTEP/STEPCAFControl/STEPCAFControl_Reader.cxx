@@ -260,9 +260,12 @@ class TransferPass
 {
 public:
   explicit TransferPass(const char* theName)
-      : myName(theName)
+      : myName(Message::IsAccepted(Message_Trace) ? theName : nullptr)
   {
-    myTimer.Start();
+    if (myName != nullptr)
+    {
+      myTimer.Start();
+    }
   }
 
   ~TransferPass() { Report(); }
