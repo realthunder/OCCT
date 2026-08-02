@@ -245,9 +245,45 @@
 #include <Transfer_ActorOfTransientProcess.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <OSD_Timer.hxx>
 
 namespace
 {
+//! Times one pass of a transfer and reports it on the trace stream, the way
+//! StepFile_Read reports its parse phases. A transfer is a sequence of
+//! whole-model passes, and which of them a slow import spends its time in is
+//! not otherwise visible without a special build. Filtered out - and so free
+//! but for the clock itself - unless a printer accepts Message_Trace.
+class TransferPass
+{
+public:
+  explicit TransferPass(const char* theName)
+      : myName(theName)
+  {
+    myTimer.Start();
+  }
+
+  ~TransferPass() { Report(); }
+
+  //! Reports the time elapsed so far, for a pass that is not a whole scope.
+  void Report()
+  {
+    if (myName == nullptr)
+    {
+      return;
+    }
+    Message::SendTrace() << "      ...    Transfer pass '" << myName << "' : " << myTimer.ElapsedTime()
+                         << " s";
+    myName = nullptr;
+  }
+
+private:
+  const char* myName;
+  OSD_Timer   myTimer;
+};
+
 // Returns a MeasureWithUnit from the given Standard_Transient object.
 // If the object is a StepRepr_ReprItemAndMeasureWithUnit, it retrieves
 // the MeasureWithUnit from it. If it is a StepBasic_MeasureWithUnit,
@@ -1016,6 +1052,7 @@ bool STEPCAFControl_Reader::Transfer(
 
   Message_ProgressScope aPSRoot(theProgress, nullptr, 2);
 
+  TransferPass aTranslatePass("translate");
   if (!theEntities.IsNull() && !theEntities->IsEmpty())
   {
     // A batch of components of a root rather than a batch of roots: their
@@ -1056,6 +1093,7 @@ bool STEPCAFControl_Reader::Transfer(
     // the end, in parallel when "read.step.parallel.healing" is On.
     reader.TransferRootsDeferred(aPSRoot.Next());
   }
+  aTranslatePass.Report();
   if (aPSRoot.UserBreak())
   {
     return false;
@@ -1066,6 +1104,8 @@ bool STEPCAFControl_Reader::Transfer(
   {
     return false;
   }
+
+  TransferPass aScanPass("shape map + entity scan");
 
   // Fill a map of (top-level) shapes resulting from that transfer
   // Only these shapes will be considered further
@@ -1132,6 +1172,9 @@ bool STEPCAFControl_Reader::Transfer(
       }
     }
   }
+
+  aScanPass.Report();
+  TransferPass aExternPass("extern refs");
 
   // get file name and directory name of the main file
   OSD_Path                mainfile(reader.WS()->LoadedFile());
@@ -1234,21 +1277,26 @@ bool STEPCAFControl_Reader::Transfer(
     PDFileMap.Bind(PD, EF);
   }
 
+  aExternPass.Report();
+
   // and insert them to the document
   occ::handle<XCAFDoc_ShapeTool> STool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
   if (STool.IsNull())
   {
     return false;
   }
-  if (asOne)
   {
-    Lseq.Append(AddShape(reader.OneShape(), STool, NewShapesMap, ShapePDMap, PDFileMap));
-  }
-  else
-  {
-    for (i = 1; i <= num; i++)
+    TransferPass aAddPass("add shapes");
+    if (asOne)
     {
-      Lseq.Append(AddShape(reader.Shape(i), STool, NewShapesMap, ShapePDMap, PDFileMap));
+      Lseq.Append(AddShape(reader.OneShape(), STool, NewShapesMap, ShapePDMap, PDFileMap));
+    }
+    else
+    {
+      for (i = 1; i <= num; i++)
+      {
+        Lseq.Append(AddShape(reader.Shape(i), STool, NewShapesMap, ShapePDMap, PDFileMap));
+      }
     }
   }
 
@@ -1263,69 +1311,85 @@ bool STEPCAFControl_Reader::Transfer(
   // read colors
   if (GetColorMode())
   {
+    TransferPass aPass("colors");
     ReadColors(reader.WS(), doc, aLocalFactors);
   }
 
   // read names
   if (aReadAll && GetNameMode())
   {
+    TransferPass aPass("names");
     ReadNames(reader.WS(), doc, PDFileMap);
   }
 
   // read validation props
   if (aReadAll && GetPropsMode())
   {
+    TransferPass aPass("validation props");
     ReadValProps(reader.WS(), doc, PDFileMap, aLocalFactors);
   }
 
   // read layers
   if (aReadAll && GetLayerMode())
   {
+    TransferPass aPass("layers");
     ReadLayers(reader.WS(), doc);
   }
 
   // read SHUO entities from STEP model
   if (GetSHUOMode())
   {
+    TransferPass aPass("SHUOs");
     ReadSHUOs(reader.WS(), doc, PDFileMap);
   }
 
   // read GDT entities from STEP model
   if (aReadAll && GetGDTMode())
   {
+    TransferPass aPass("GDTs");
     ReadGDTs(reader.WS(), doc, aLocalFactors);
   }
 
   // read Material entities from STEP model
   if (aReadAll && GetMatMode())
   {
+    TransferPass aPass("materials");
     ReadMaterials(reader.WS(), doc, SeqPDS, aLocalFactors);
   }
 
   // read View entities from STEP model
   if (aReadAll && GetViewMode())
   {
+    TransferPass aPass("views");
     ReadViews(reader.WS(), doc, aLocalFactors);
   }
 
   // read metadata
   if (aReadAll && GetMetaMode())
   {
+    TransferPass aPass("metadata");
     ReadMetadata(reader.WS(), doc, aLocalFactors);
   }
 
   // read product metadata
   if (aReadAll && GetProductMetaMode())
   {
+    TransferPass aPass("product metadata");
     ReadProductMetadata(reader.WS(), doc);
   }
 
-  // Expand resulting CAF structure for sub-shapes (optionally with their
-  // names) if requested
-  ExpandSubShapes(STool, ShapePDMap);
+  {
+    // Expand resulting CAF structure for sub-shapes (optionally with their
+    // names) if requested
+    TransferPass aPass("expand sub-shapes");
+    ExpandSubShapes(STool, ShapePDMap);
+  }
 
-  // Update assembly compounds
-  STool->UpdateAssemblies();
+  {
+    // Update assembly compounds
+    TransferPass aPass("update assemblies");
+    STool->UpdateAssemblies();
+  }
   return true;
 }
 

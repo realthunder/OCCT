@@ -235,6 +235,9 @@ struct DeferredHealing
   //! so each one is collected apart and replayed serially by the flush.
   occ::handle<Message_Report>            Report;
   bool                                   IsHealed = false; //!< Already processed by the pool.
+  //! What healing this one shape took. One shape can dominate a whole batch,
+  //! which only the individual times show; reported on the trace stream.
+  double                                 Seconds  = 0.0;
 };
 
 //! Heals one deferred shape in place. Touches nothing but its own entry, so it
@@ -2934,11 +2937,14 @@ void healOne(DeferredHealing& theHealing, const Message_ProgressRange& theProgre
   aMessenger->RemovePrinters(STANDARD_TYPE(Message_Printer));
   aMessenger->AddPrinter(aPrinter);
 
+  OSD_Timer aTimer;
+  aTimer.Start();
   XSAlgo_ShapeProcessor aProcessor(theHealing.Parameters);
   // Per-thread, so it must be cleared again: this thread goes on to other work.
   XSAlgo_ShapeProcessor::SetContextMessenger(aMessenger);
   theHealing.Result   = aProcessor.ProcessShape(theHealing.Shape, theHealing.Flags, theProgress);
   theHealing.Context  = aProcessor.GetContext();
+  theHealing.Seconds  = aTimer.ElapsedTime();
   theHealing.IsHealed = true;
   XSAlgo_ShapeProcessor::SetContextMessenger(occ::handle<Message_Messenger>());
 }
@@ -2995,7 +3001,10 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
 {
   // Heal-ahead workers may still be busy with shapes handed over during the
   // translation just finished; wait for them before touching the entries.
+  OSD_Timer aFlushTimer;
+  aFlushTimer.Start();
   stopHealPool();
+  const double aWaited = aFlushTimer.ElapsedTime();
 
   if (THE_DEFERRED_HEALINGS.empty())
   {
@@ -3041,6 +3050,22 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
       healOne(*aHealings[aPending[theIndex]], aRanges[theIndex]);
     },
     !aIsParallel);
+
+  // A batch is only as fast as its slowest shape, so the profile - not just
+  // the total - is what says whether more parallelism can still help.
+  {
+    double aSum = 0.0, aMax = 0.0;
+    for (const std::unique_ptr<DeferredHealing>& aHealing : aHealings)
+    {
+      aSum += aHealing->Seconds;
+      aMax = std::max(aMax, aHealing->Seconds);
+    }
+    Message::SendTrace() << "      ...    Healing flush : " << aHealings.size() << " shapes ("
+                         << aPending.size() << " left to this flush, "
+                         << (aIsParallel ? "parallel" : "serial") << "), waited " << aWaited
+                         << " s, healing " << aSum << " s summed, " << aMax
+                         << " s the longest, " << aFlushTimer.ElapsedTime() << " s so far";
+  }
 
   for (const std::unique_ptr<DeferredHealing>& aHealing : aHealings)
   {
@@ -3157,4 +3182,6 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
       }
     }
   }
+  Message::SendTrace() << "      ...    Healing flush : rewrote binders " << aFirstBinder << ".."
+                       << theTP->NbMapped() << ", " << aFlushTimer.ElapsedTime() << " s in all";
 }
