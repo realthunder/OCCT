@@ -337,6 +337,15 @@ STEPControl_Controller::STEPControl_Controller()
     Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval On");     // 2
     Interface_Static::SetCVal("read.step.parallel.healing", "On");
 
+    // Parsing of the file itself: On cuts the DATA section into record-aligned
+    // chunks scanned in parallel (see StepFile_Read), Off keeps one pass over
+    // the whole file. A file that cannot be cut safely falls back on its own.
+    Interface_Static::Init("step", "read.step.parallel.parse", 'e', "");
+    Interface_Static::Init("step", "read.step.parallel.parse", '&', "enum 0");
+    Interface_Static::Init("step", "read.step.parallel.parse", '&', "eval Off"); // 0
+    Interface_Static::Init("step", "read.step.parallel.parse", '&', "eval On");  // 1
+    Interface_Static::SetCVal("read.step.parallel.parse", "On");
+
     // Tessellated geometry writing: Off by default
     Interface_Static::Init("step", "write.step.tessellated", 'e', "");
     Interface_Static::Init("step", "write.step.tessellated", '&', "enum 0");
