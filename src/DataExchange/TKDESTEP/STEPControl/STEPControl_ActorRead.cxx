@@ -129,6 +129,12 @@
 #include <Message_PrinterToReport.hxx>
 #include <Message_Report.hxx>
 #include <OSD_Parallel.hxx>
+
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <thread>
 #include <ShapeExtend.hxx>
 #include <ShapeExtend_MsgRegistrator.hxx>
 #include <ShapeProcess_ShapeContext.hxx>
@@ -216,6 +222,107 @@ namespace
 // The better way is to pass this information via binder or via TopoDS_Shape itself, however,
 // this is very specific info to do so...
 bool NM_DETECTED = false;
+
+//! Workers that run a task over items handed to them one at a time, so that
+//! the thread producing the items carries on meanwhile. Used to heal shapes
+//! while the translation that produced them keeps going ("heal ahead"), which
+//! otherwise take turns: translation leaves the cores idle, healing leaves
+//! the reader idle.
+//!
+//! Items are only ever read through the pointer handed to Submit(), never
+//! looked up again, so the producer may keep growing its own storage.
+class STEPControl_HealPipeline : public Standard_Transient
+{
+public:
+  //! Starts the workers. One core is left to the producer that feeds them.
+  STEPControl_HealPipeline(const std::function<void(void*)>& theTask)
+      : myTask(theTask)
+  {
+    const int aNbThreads = std::max(1, OSD_Parallel::NbLogicalProcessors() - 1);
+    myThreads.reserve(aNbThreads);
+    for (int i = 0; i < aNbThreads; ++i)
+    {
+      myThreads.emplace_back([this]() { worker(); });
+    }
+  }
+
+  //! Queues one item. The pointer must stay valid until Drain() returns.
+  void Submit(void* theItem)
+  {
+    {
+      std::unique_lock<std::mutex> aLock(myMutex);
+      myQueue.push_back(theItem);
+      ++myRunning;
+    }
+    myReady.notify_one();
+  }
+
+  //! Waits for everything submitted, then stops the workers.
+  void Drain()
+  {
+    if (myThreads.empty())
+    {
+      return;
+    }
+    {
+      std::unique_lock<std::mutex> aLock(myMutex);
+      myIdle.wait(aLock, [this]() { return myRunning == 0; });
+      myIsClosing = true;
+    }
+    myReady.notify_all();
+    for (std::thread& aThread : myThreads)
+    {
+      if (aThread.joinable())
+      {
+        aThread.join();
+      }
+    }
+    myThreads.clear();
+  }
+
+  ~STEPControl_HealPipeline() override { Drain(); }
+
+private:
+  void worker()
+  {
+    for (;;)
+    {
+      std::unique_lock<std::mutex> aLock(myMutex);
+      myReady.wait(aLock, [this]() { return myIsClosing || !myQueue.empty(); });
+      if (myQueue.empty())
+      {
+        return; // closing, and nothing left
+      }
+      void* anItem = myQueue.front();
+      myQueue.pop_front();
+      aLock.unlock();
+
+      myTask(anItem);
+
+      aLock.lock();
+      --myRunning;
+      aLock.unlock();
+      myIdle.notify_all();
+    }
+  }
+
+private:
+  std::function<void(void*)> myTask;
+  std::vector<std::thread>   myThreads;
+  std::mutex                 myMutex;
+  std::condition_variable    myReady;     //!< Work queued, or closing.
+  std::condition_variable    myIdle;      //!< One item finished.
+  std::deque<void*>          myQueue;
+  size_t                     myRunning   = 0; //!< Queued or in flight.
+  bool                       myIsClosing = false;
+};
+
+//! The heal-ahead workers belong to the thread driving the transfer:
+//! SetDeferredProcessing(), the translation that hands shapes over and the
+//! flush that waits for them all run on it. Holding them here rather than in
+//! the actor keeps the actor's layout untouched, and lets two readers running
+//! on two threads have one pool each.
+thread_local occ::handle<STEPControl_HealPipeline> THE_HEAL_PIPELINE;
 } // namespace
 
 // ============================================================================
@@ -1952,11 +2059,19 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
         // Healing is batched: bind the raw shape now; FlushDeferredProcessing() heals
         // it (possibly in parallel with its siblings) and rewrites every binder that
         // referenced it, including parent compounds assembled meanwhile.
-        DeferredHealing aDeferred;
-        aDeferred.Shape      = mappedShape;
-        aDeferred.Parameters = aParameters;
-        aDeferred.Flags      = GetProcessingFlags().first;
+        std::unique_ptr<DeferredHealing> aDeferred(new DeferredHealing());
+        aDeferred->Shape      = mappedShape;
+        aDeferred->Parameters = aParameters;
+        aDeferred->Flags      = GetProcessingFlags().first;
+        DeferredHealing* aQueued = aDeferred.get();
         myDeferredHealings.push_back(std::move(aDeferred));
+        if (!THE_HEAL_PIPELINE.IsNull())
+        {
+          // Heal-ahead: hand the shape over now, so it is healed while this
+          // thread goes on translating the next one. Whatever is still in
+          // flight is waited for by the flush.
+          THE_HEAL_PIPELINE->Submit(aQueued);
+        }
       }
       else
       {
@@ -2755,6 +2870,76 @@ TopoDS_Shape STEPControl_ActorRead::TransferRelatedSRR(
 void STEPControl_ActorRead::SetDeferredProcessing(const bool theToDefer)
 {
   myDeferProcessing = theToDefer;
+  if (theToDefer)
+  {
+    startHealPool();
+  }
+  else
+  {
+    stopHealPool();
+  }
+}
+
+//=================================================================================================
+
+void STEPControl_ActorRead::healOne(DeferredHealing&             theHealing,
+                                    const Message_ProgressRange& theProgress)
+{
+  theHealing.Report                            = new Message_Report();
+  occ::handle<Message_PrinterToReport> aPrinter = new Message_PrinterToReport();
+  aPrinter->SetReport(theHealing.Report);
+  occ::handle<Message_Messenger> aMessenger = new Message_Messenger();
+  aMessenger->RemovePrinters(STANDARD_TYPE(Message_Printer));
+  aMessenger->AddPrinter(aPrinter);
+
+  XSAlgo_ShapeProcessor aProcessor(theHealing.Parameters);
+  aProcessor.SetContextMessenger(aMessenger);
+  theHealing.Result   = aProcessor.ProcessShape(theHealing.Shape, theHealing.Flags, theProgress);
+  theHealing.Context  = aProcessor.GetContext();
+  theHealing.IsHealed = true;
+}
+
+//=================================================================================================
+
+void STEPControl_ActorRead::startHealPool()
+{
+  if (!THE_HEAL_PIPELINE.IsNull() || Interface_Static::IVal("read.step.parallel.healing") != 3)
+  {
+    // Already running - a nested transfer on this thread reuses the outer pool
+    // rather than taking it over - or this mode heals in one batch instead.
+    return;
+  }
+  // Every lazily-created global registry (shape-process operators, message
+  // files) has to exist before the workers may first-touch it.
+  XSAlgo::Init();
+  ShapeExtend::Init();
+
+  THE_HEAL_PIPELINE = new STEPControl_HealPipeline([](void* theItem) {
+    DeferredHealing* aHealing = static_cast<DeferredHealing*>(theItem);
+    try
+    {
+      OCC_CATCH_SIGNALS
+      healOne(*aHealing, Message_ProgressRange());
+    }
+    catch (Standard_Failure const&)
+    {
+      // Leave it unhealed; the flush treats it as a shape that needs no
+      // rewriting, exactly as the inline path does on a failed healing.
+      aHealing->IsHealed = true;
+    }
+  });
+}
+
+//=================================================================================================
+
+void STEPControl_ActorRead::stopHealPool()
+{
+  if (THE_HEAL_PIPELINE.IsNull())
+  {
+    return;
+  }
+  THE_HEAL_PIPELINE->Drain();
+  THE_HEAL_PIPELINE.Nullify();
 }
 
 //=================================================================================================
@@ -2763,11 +2948,15 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
   const occ::handle<Transfer_TransientProcess>& theTP,
   const Message_ProgressRange&                  theProgress)
 {
+  // Heal-ahead workers may still be busy with shapes handed over during the
+  // translation just finished; wait for them before touching the entries.
+  stopHealPool();
+
   if (myDeferredHealings.empty())
   {
     return;
   }
-  std::vector<DeferredHealing> aHealings;
+  std::vector<std::unique_ptr<DeferredHealing>> aHealings;
   aHealings.swap(myDeferredHealings);
 
   // Make sure every lazily-created global registry (shape-process operators,
@@ -2775,45 +2964,44 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
   XSAlgo::Init();
   ShapeExtend::Init();
 
+  // Whatever the pool already healed is skipped here; only a non-pipelined mode
+  // (or a shape queued after the pool stopped) still has work left.
+  std::vector<int> aPending;
+  for (size_t i = 0; i < aHealings.size(); ++i)
+  {
+    if (!aHealings[i]->IsHealed)
+    {
+      aPending.push_back((int)i);
+    }
+  }
+
   const bool aIsParallel =
-    aHealings.size() > 1 && Interface_Static::IVal("read.step.parallel.healing") == 2;
+    aPending.size() > 1 && Interface_Static::IVal("read.step.parallel.healing") >= 2;
 
   // Distribute progress ranges on this thread; each task consumes only its own range.
-  Message_ProgressScope              aPS(theProgress, "Shape healing", (double)aHealings.size());
+  Message_ProgressScope              aPS(theProgress, "Shape healing", (double)aPending.size());
   std::vector<Message_ProgressRange> aRanges;
-  aRanges.reserve(aHealings.size());
-  for (size_t i = 0; i < aHealings.size(); ++i)
+  aRanges.reserve(aPending.size());
+  for (size_t i = 0; i < aPending.size(); ++i)
   {
     aRanges.push_back(aPS.Next());
   }
 
-  // Heal every deferred shape; the default messenger is not thread-safe, so each
-  // task reports into its own Message_Report, replayed serially afterwards.
-  std::vector<occ::handle<Message_Report>> aReports(aHealings.size());
+  // Heal every shape still deferred; the default messenger is not thread-safe,
+  // so each task reports into its own Message_Report, replayed serially below.
   OSD_Parallel::For(
     0,
-    (int)aHealings.size(),
+    (int)aPending.size(),
     [&](const int theIndex) {
-      DeferredHealing& aHealing = aHealings[theIndex];
-      aReports[theIndex]        = new Message_Report();
-      occ::handle<Message_PrinterToReport> aPrinter = new Message_PrinterToReport();
-      aPrinter->SetReport(aReports[theIndex]);
-      occ::handle<Message_Messenger> aMessenger = new Message_Messenger();
-      aMessenger->RemovePrinters(STANDARD_TYPE(Message_Printer));
-      aMessenger->AddPrinter(aPrinter);
-
-      XSAlgo_ShapeProcessor aProcessor(aHealing.Parameters);
-      aProcessor.SetContextMessenger(aMessenger);
-      aHealing.Result  = aProcessor.ProcessShape(aHealing.Shape, aHealing.Flags, aRanges[theIndex]);
-      aHealing.Context = aProcessor.GetContext();
+      healOne(*aHealings[aPending[theIndex]], aRanges[theIndex]);
     },
     !aIsParallel);
 
-  for (const occ::handle<Message_Report>& aReport : aReports)
+  for (const std::unique_ptr<DeferredHealing>& aHealing : aHealings)
   {
-    if (!aReport.IsNull())
+    if (!aHealing->Report.IsNull())
     {
-      aReport->SendMessages(Message::DefaultMessenger());
+      aHealing->Report->SendMessages(Message::DefaultMessenger());
     }
   }
 
@@ -2822,8 +3010,9 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>              aModified;
   NCollection_DataMap<TopoDS_Shape, NCollection_List<Message_Msg>, TopTools_ShapeMapHasher>
     aMessages;
-  for (const DeferredHealing& aHealing : aHealings)
+  for (const std::unique_ptr<DeferredHealing>& aHealingPtr : aHealings)
   {
+    const DeferredHealing& aHealing = *aHealingPtr;
     if (aHealing.Context.IsNull())
     {
       continue;

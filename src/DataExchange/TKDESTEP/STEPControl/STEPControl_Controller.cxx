@@ -329,13 +329,16 @@ STEPControl_Controller::STEPControl_Controller()
 
     // Shape healing of translated shapes: Off = inline per shape (classic),
     // Serial = deferred to one batch at the end of the transfer, On = deferred
-    // batch executed in parallel (see XSControl_Reader::TransferRootsDeferred)
+    // batch executed in parallel (see XSControl_Reader::TransferRootsDeferred),
+    // Pipeline = healed by workers as translation hands each shape over, so the
+    // two overlap instead of taking turns.
     Interface_Static::Init("step", "read.step.parallel.healing", 'e', "");
     Interface_Static::Init("step", "read.step.parallel.healing", '&', "enum 0");
-    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval Off");    // 0
-    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval Serial"); // 1
-    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval On");     // 2
-    Interface_Static::SetCVal("read.step.parallel.healing", "On");
+    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval Off");      // 0
+    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval Serial");   // 1
+    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval On");       // 2
+    Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval Pipeline"); // 3
+    Interface_Static::SetCVal("read.step.parallel.healing", "Pipeline");
 
     // Parsing of the file itself: On cuts the DATA section into record-aligned
     // chunks scanned in parallel (see StepFile_Read), Off keeps one pass over

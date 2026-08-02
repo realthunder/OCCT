@@ -31,8 +31,10 @@
 #include <Message_ProgressRange.hxx>
 #include <Interface_InterfaceModel.hxx>
 
+#include <memory>
 #include <vector>
 
+class Message_Report;
 class ShapeProcess_ShapeContext;
 class StepRepr_Representation;
 class Standard_Transient;
@@ -246,7 +248,21 @@ private:
     ShapeProcess::OperationsFlags          Flags;      //!< Snapshot of operations to perform.
     TopoDS_Shape                           Result;     //!< Healed shape (set by the flush).
     occ::handle<ShapeProcess_ShapeContext> Context;    //!< Healing context (set by the flush).
+    //! Messages the healing reported; the default messenger is not thread safe,
+    //! so each one is collected apart and replayed serially by the flush.
+    occ::handle<Message_Report>            Report;
+    bool                                   IsHealed = false; //!< Already processed by the pool.
   };
+
+  //! Heals one deferred shape in place. Touches nothing but its own entry, so
+  //! it is callable from a worker thread.
+  static void healOne(DeferredHealing& theHealing, const Message_ProgressRange& theProgress);
+
+  //! Starts the workers that heal shapes as translation hands them over.
+  void startHealPool();
+
+  //! Blocks until every submitted healing has finished, then stops the workers.
+  void stopHealPool();
 
 private:
   StepToTopoDS_NMTool                   myNMTool;
@@ -254,7 +270,9 @@ private:
   double                                myMaxTol;
   occ::handle<StepRepr_Representation>  mySRContext;
   occ::handle<Interface_InterfaceModel> myModel;
-  std::vector<DeferredHealing>          myDeferredHealings;
+  //! Held by pointer: the heal-ahead workers keep referring to entries while
+  //! translation appends more, which reallocation would otherwise invalidate.
+  std::vector<std::unique_ptr<DeferredHealing>> myDeferredHealings;
   bool                                  myDeferProcessing = false;
   //! How many binders the previous flush of this process already rewrote. A
   //! streamed transfer flushes once per batch, and every binder from an
