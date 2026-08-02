@@ -356,14 +356,25 @@ protected:
   //! them into assembly. Fills sequence of produced labels
   //! If theEntities is given and not empty, those entities are translated
   //! instead of any root range (num and theLastNum are then ignored).
+  Standard_EXPORT bool Transfer(STEPControl_Reader&                  rd,
+                                const int                            num,
+                                const occ::handle<TDocStd_Document>& doc,
+                                NCollection_Sequence<TDF_Label>&     Lseq,
+                                const bool                           asOne = false,
+                                const Message_ProgressRange& theProgress = Message_ProgressRange());
+
+  //! Same, for a range of roots or an explicit list of entities. A separate
+  //! overload so that the signature above keeps the form - and so the symbol -
+  //! it has upstream. theLastNum is not defaulted, which is what keeps a call
+  //! with the older argument list unambiguous.
   Standard_EXPORT bool Transfer(
     STEPControl_Reader&                  rd,
     const int                            num,
     const occ::handle<TDocStd_Document>& doc,
     NCollection_Sequence<TDF_Label>&     Lseq,
-    const bool                           asOne       = false,
-    const Message_ProgressRange&         theProgress = Message_ProgressRange(),
-    const int                            theLastNum  = 0,
+    const bool                           asOne,
+    const Message_ProgressRange&         theProgress,
+    const int                            theLastNum,
     const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theEntities = {});
 
   //! Add a shape to a document

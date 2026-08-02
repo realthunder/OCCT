@@ -2935,10 +2935,12 @@ void healOne(DeferredHealing& theHealing, const Message_ProgressRange& theProgre
   aMessenger->AddPrinter(aPrinter);
 
   XSAlgo_ShapeProcessor aProcessor(theHealing.Parameters);
-  aProcessor.SetContextMessenger(aMessenger);
+  // Per-thread, so it must be cleared again: this thread goes on to other work.
+  XSAlgo_ShapeProcessor::SetContextMessenger(aMessenger);
   theHealing.Result   = aProcessor.ProcessShape(theHealing.Shape, theHealing.Flags, theProgress);
   theHealing.Context  = aProcessor.GetContext();
   theHealing.IsHealed = true;
+  XSAlgo_ShapeProcessor::SetContextMessenger(occ::handle<Message_Messenger>());
 }
 
 //=================================================================================================

@@ -69,14 +69,14 @@ public:
   //! @return Shape context.
   occ::handle<ShapeProcess_ShapeContext> GetContext() { return myContext; }
 
-  //! Set the messenger to be used by the processing context instead of the
-  //! default one. Needed when ProcessShape() runs on a worker thread: the
-  //! default messenger is not thread-safe, so each thread must report into
-  //! its own collector.
-  void SetContextMessenger(const occ::handle<Message_Messenger>& theMessenger)
-  {
-    myMessenger = theMessenger;
-  }
+  //! Set the messenger the processing context should report to instead of the
+  //! default one, for this thread. Needed when ProcessShape() runs on a worker
+  //! thread: the default messenger is not thread-safe, so each thread must
+  //! collect its own messages. Passing a null handle restores the default.
+  //! Thread-local rather than per-instance so that this class keeps the size it
+  //! has upstream.
+  Standard_EXPORT static void SetContextMessenger(
+    const occ::handle<Message_Messenger>& theMessenger);
 
   //! Merge the results of the shape processing with the transfer process.
   //! @param theTransientProcess Transfer process to merge with.
@@ -215,7 +215,6 @@ private:
 private:
   ParameterMap                           myParameters; //!< Parameters to be used in the processing.
   occ::handle<ShapeProcess_ShapeContext> myContext;    //!< Shape context.
-  occ::handle<Message_Messenger> myMessenger; //!< Optional per-instance messenger for the context.
 };
 
 #endif // _XSAlgo_ShapeProcessor_HeaderFile

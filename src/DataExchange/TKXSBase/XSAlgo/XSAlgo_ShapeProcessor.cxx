@@ -74,14 +74,30 @@ TopoDS_Shape XSAlgo_ShapeProcessor::ProcessShape(const TopoDS_Shape&            
                                                                       : theShape;
 }
 
+namespace
+{
+//! Messenger the processing context of this thread reports to, if any. Kept
+//! here rather than in the class so that XSAlgo_ShapeProcessor keeps the size
+//! it has upstream; a worker thread sets its own before processing a shape.
+thread_local occ::handle<Message_Messenger> THE_CONTEXT_MESSENGER;
+} // namespace
+
+//=============================================================================
+
+void XSAlgo_ShapeProcessor::SetContextMessenger(
+  const occ::handle<Message_Messenger>& theMessenger)
+{
+  THE_CONTEXT_MESSENGER = theMessenger;
+}
+
 //=============================================================================
 
 void XSAlgo_ShapeProcessor::initializeContext(const TopoDS_Shape& theShape)
 {
   myContext = new ShapeProcess_ShapeContext(theShape, nullptr);
-  if (!myMessenger.IsNull())
+  if (!THE_CONTEXT_MESSENGER.IsNull())
   {
-    myContext->SetMessenger(myMessenger);
+    myContext->SetMessenger(THE_CONTEXT_MESSENGER);
   }
   for (XSAlgo_ShapeProcessor::ParameterMap::Iterator aParameterIter(myParameters);
        aParameterIter.More();

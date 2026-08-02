@@ -979,6 +979,18 @@ void STEPCAFControl_Reader::prepareUnits(const occ::handle<StepData_StepModel>& 
 
 //=================================================================================================
 
+bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  rd,
+                                    const int                            num,
+                                    const occ::handle<TDocStd_Document>& doc,
+                                    NCollection_Sequence<TDF_Label>&     Lseq,
+                                    const bool                           asOne,
+                                    const Message_ProgressRange&         theProgress)
+{
+  return Transfer(rd, num, doc, Lseq, asOne, theProgress, 0, nullptr);
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Reader::Transfer(
   STEPControl_Reader&                                                       reader,
   const int                                                                 nroot,
