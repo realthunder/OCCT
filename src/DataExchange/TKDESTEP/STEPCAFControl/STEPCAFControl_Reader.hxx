@@ -18,6 +18,8 @@
 
 #include <STEPControl_Reader.hxx>
 #include <NCollection_LinearVector.hxx>
+#include <gp_Trsf.hxx>
+#include <TCollection_AsciiString.hxx>
 #include <StepData_Factors.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <TDF_Label.hxx>
@@ -66,6 +68,25 @@ class STEPCAFControl_Reader
 {
 public:
   DEFINE_STANDARD_ALLOC
+
+  //! One occurrence of the assembly tree returned by RootAssemblyTree(): a
+  //! component, the node of the component owning it, and the placement that
+  //! component receives inside its owner.
+  struct AssemblyNode
+  {
+    //! The next-assembly-usage-occurrence this node stands for.
+    occ::handle<Standard_Transient> Component;
+    //! Index of the owning node in the returned sequence, 0 for a component
+    //! of the root itself.
+    int Parent = 0;
+    //! Placement of the component inside its owner, as the transfer applies
+    //! it (already inverted where the relationship reverses the occurrence).
+    gp_Trsf Location;
+    //! Whether the component is an assembly, i.e. has components of its own.
+    bool IsAssembly = false;
+    //! Name of the component's product, read from the product structure.
+    TCollection_AsciiString Name;
+  };
 
 public:
   //! Creates a reader with an empty
@@ -145,6 +166,31 @@ public:
     const int                                                            num,
     occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theUnique,
     occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theShared);
+
+  //! Lists the assembly tree of the root of rank num, without translating
+  //! anything: the components of the root, of their own components and so on,
+  //! each with the placement it receives in its owner and the name of its
+  //! product, all read from the STEP product structure. Only occurrences an
+  //! importer may hand over on their own are reported - a component whose
+  //! product occurs more than once in the tree, or whose representation is
+  //! shared with a sibling, is left out together with everything below it,
+  //! because interpreting those needs the whole child list; so is an assembly
+  //! that resolves to fewer than two distinct representations, which an
+  //! importer reducing objects may not keep as a container of its own.
+  //! Nodes come in breadth-first order, an owner always before its
+  //! components. Returns the number of nodes, 0 when the root is not a
+  //! streamable assembly.
+  //! The document is only read for the length unit the placements are
+  //! expressed in, the one the transfer into it will use.
+  Standard_EXPORT int RootAssemblyTree(const int                            num,
+                                       const occ::handle<TDocStd_Document>& doc,
+                                       NCollection_Sequence<AssemblyNode>&  theNodes);
+
+  //! Returns the shape a component transferred by TransferComponents() was
+  //! translated to - the located copy that appears among the free shapes of
+  //! the document - or a null shape when it was not translated.
+  Standard_EXPORT TopoDS_Shape ComponentShape(
+    const occ::handle<Standard_Transient>& theComponent) const;
 
   //! Translates the given entities - components of a root obtained from
   //! RootComponents() - into the document, like TransferRootRange() does for

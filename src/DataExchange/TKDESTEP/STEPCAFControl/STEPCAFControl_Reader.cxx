@@ -188,6 +188,9 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Iterator.hxx>
+#include <STEPConstruct_Assembly.hxx>
+#include <StepShape_ContextDependentShapeRepresentation.hxx>
+#include <StepRepr_RepresentationRelationship.hxx>
 #include <Transfer_Binder.hxx>
 #include <Transfer_TransientProcess.hxx>
 #include <TransferBRep.hxx>
@@ -434,6 +437,62 @@ static occ::handle<Standard_Transient> productRepresentation(
 
 //=================================================================================================
 
+//! Fills the components of a product definition - the assembly usage
+//! occurrences it relates - in file order. They are reachable either directly
+//! or through the shape definition of the product (STEPControl_ActorRead walks
+//! the same two ways).
+static void productComponents(
+  const Interface_Graph&                                                   theGraph,
+  const occ::handle<StepBasic_ProductDefinition>&                          thePD,
+  NCollection_Sequence<occ::handle<StepRepr_NextAssemblyUsageOccurrence>>& theNAUOs)
+{
+  NCollection_Map<occ::handle<Standard_Transient>> aSeen;
+  for (Interface_EntityIterator aSubs = theGraph.Sharings(thePD); aSubs.More(); aSubs.Next())
+  {
+    occ::handle<StepRepr_NextAssemblyUsageOccurrence> aNAUO =
+      occ::down_cast<StepRepr_NextAssemblyUsageOccurrence>(aSubs.Value());
+    occ::handle<StepRepr_ProductDefinitionShape> aPDS =
+      occ::down_cast<StepRepr_ProductDefinitionShape>(aSubs.Value());
+    if (!aPDS.IsNull())
+    {
+      for (Interface_EntityIterator aSubs1 = theGraph.Sharings(aPDS); aSubs1.More(); aSubs1.Next())
+      {
+        occ::handle<StepRepr_NextAssemblyUsageOccurrence> aSubNAUO =
+          occ::down_cast<StepRepr_NextAssemblyUsageOccurrence>(aSubs1.Value());
+        if (!aSubNAUO.IsNull() && thePD == aSubNAUO->RelatingProductDefinition()
+            && aSeen.Add(aSubNAUO))
+        {
+          theNAUOs.Append(aSubNAUO);
+        }
+      }
+      continue;
+    }
+    if (!aNAUO.IsNull() && thePD == aNAUO->RelatingProductDefinition() && aSeen.Add(aNAUO))
+    {
+      theNAUOs.Append(aNAUO);
+    }
+  }
+}
+
+//! Returns what a component translates to as far as an importer reducing
+//! objects is concerned: the representation of its product, or the product
+//! itself when it has none. Components of one assembly answering the same key
+//! are the instances such an importer merges into a single array.
+static occ::handle<Standard_Transient> componentKey(
+  const Interface_Graph&                                   theGraph,
+  const occ::handle<StepRepr_NextAssemblyUsageOccurrence>& theNAUO)
+{
+  occ::handle<StepBasic_ProductDefinition> aChild = theNAUO->RelatedProductDefinition();
+  if (aChild.IsNull())
+  {
+    return occ::handle<Standard_Transient>();
+  }
+  occ::handle<Standard_Transient> aKey = productRepresentation(theGraph, aChild);
+  return aKey.IsNull() ? occ::handle<Standard_Transient>(aChild) : aKey;
+}
+
+//=================================================================================================
+
 int STEPCAFControl_Reader::RootComponents(
   const int                                                            num,
   occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theUnique,
@@ -450,36 +509,8 @@ int STEPCAFControl_Reader::RootComponents(
   }
   const Interface_Graph& aGraph = myReader.WS()->Graph();
 
-  // The components of a product definition are the assembly usage occurrences
-  // it relates, reachable either directly or through its shape definition
-  // (STEPControl_ActorRead walks the same two ways).
   NCollection_Sequence<occ::handle<StepRepr_NextAssemblyUsageOccurrence>> aNAUOs;
-  NCollection_Map<occ::handle<Standard_Transient>>                        aSeen;
-  for (Interface_EntityIterator aSubs = aGraph.Sharings(aPD); aSubs.More(); aSubs.Next())
-  {
-    occ::handle<StepRepr_NextAssemblyUsageOccurrence> aNAUO =
-      occ::down_cast<StepRepr_NextAssemblyUsageOccurrence>(aSubs.Value());
-    occ::handle<StepRepr_ProductDefinitionShape> aPDS =
-      occ::down_cast<StepRepr_ProductDefinitionShape>(aSubs.Value());
-    if (!aPDS.IsNull())
-    {
-      for (Interface_EntityIterator aSubs1 = aGraph.Sharings(aPDS); aSubs1.More(); aSubs1.Next())
-      {
-        occ::handle<StepRepr_NextAssemblyUsageOccurrence> aSubNAUO =
-          occ::down_cast<StepRepr_NextAssemblyUsageOccurrence>(aSubs1.Value());
-        if (!aSubNAUO.IsNull() && aPD == aSubNAUO->RelatingProductDefinition()
-            && aSeen.Add(aSubNAUO))
-        {
-          aNAUOs.Append(aSubNAUO);
-        }
-      }
-      continue;
-    }
-    if (!aNAUO.IsNull() && aPD == aNAUO->RelatingProductDefinition() && aSeen.Add(aNAUO))
-    {
-      aNAUOs.Append(aNAUO);
-    }
-  }
+  productComponents(aGraph, aPD, aNAUOs);
   if (aNAUOs.IsEmpty())
   {
     return 0;
@@ -497,16 +528,7 @@ int STEPCAFControl_Reader::RootComponents(
        anIter.More();
        anIter.Next())
   {
-    occ::handle<StepBasic_ProductDefinition> aChild = anIter.Value()->RelatedProductDefinition();
-    occ::handle<Standard_Transient>          aKey;
-    if (!aChild.IsNull())
-    {
-      aKey = productRepresentation(aGraph, aChild);
-      if (aKey.IsNull())
-      {
-        aKey = aChild;
-      }
-    }
+    const occ::handle<Standard_Transient> aKey = componentKey(aGraph, anIter.Value());
     aKeys.Append(aKey);
     if (!aKey.IsNull())
     {
@@ -521,7 +543,7 @@ int STEPCAFControl_Reader::RootComponents(
     }
   }
 
-  for (int i = 1; i <= aNAUOs.Size(); i++)
+  for (int i = 1; i <= int(aNAUOs.Size()); i++)
   {
     const occ::handle<Standard_Transient>& aKey = aKeys.Value(i);
     // An unresolved component goes to the final pass as well: nothing is
@@ -536,6 +558,276 @@ int STEPCAFControl_Reader::RootComponents(
     }
   }
   return aNAUOs.Size();
+}
+
+//=================================================================================================
+
+//! Computes the placement a component receives inside the assembly relating
+//! it, the way STEPControl_ActorRead applies it when translating the
+//! occurrence, but without translating anything.
+static void componentLocation(
+  const Interface_Graph&                                   theGraph,
+  const occ::handle<Transfer_TransientProcess>&            theTP,
+  STEPControl_ActorRead&                                   theActor,
+  const StepData_Factors&                                  theFactors,
+  const occ::handle<StepRepr_NextAssemblyUsageOccurrence>& theNAUO,
+  gp_Trsf&                                                 theTrsf)
+{
+  for (Interface_EntityIterator aSubs = theGraph.Sharings(theNAUO); aSubs.More(); aSubs.Next())
+  {
+    occ::handle<StepRepr_ProductDefinitionShape> aPDS =
+      occ::down_cast<StepRepr_ProductDefinitionShape>(aSubs.Value());
+    if (aPDS.IsNull())
+    {
+      continue;
+    }
+    for (Interface_EntityIterator aSubs1 = theGraph.Sharings(aPDS); aSubs1.More(); aSubs1.Next())
+    {
+      occ::handle<StepShape_ContextDependentShapeRepresentation> aCDSR =
+        occ::down_cast<StepShape_ContextDependentShapeRepresentation>(aSubs1.Value());
+      if (aCDSR.IsNull())
+      {
+        continue;
+      }
+      occ::handle<StepRepr_RepresentationRelationship> aRR = aCDSR->RepresentationRelation();
+      if (aRR.IsNull())
+      {
+        continue;
+      }
+      gp_Trsf aTrsf;
+      if (theActor.ComputeSRRWT(aRR, theTP, aTrsf, theFactors))
+      {
+        theTrsf = STEPConstruct_Assembly::CheckSRRReversesNAUO(theGraph, aCDSR) ? aTrsf.Inverted()
+                                                                               : aTrsf;
+      }
+      return;
+    }
+  }
+}
+
+//! Returns the name of the product a component relates.
+static TCollection_AsciiString componentName(
+  const occ::handle<StepRepr_NextAssemblyUsageOccurrence>& theNAUO)
+{
+  occ::handle<StepBasic_ProductDefinition> aChild = theNAUO->RelatedProductDefinition();
+  if (aChild.IsNull() || aChild->Formation().IsNull()
+      || aChild->Formation()->OfProduct().IsNull()
+      || aChild->Formation()->OfProduct()->Name().IsNull())
+  {
+    return TCollection_AsciiString();
+  }
+  return TCollection_AsciiString(aChild->Formation()->OfProduct()->Name()->String());
+}
+
+//=================================================================================================
+
+int STEPCAFControl_Reader::RootAssemblyTree(const int                            num,
+                                            const occ::handle<TDocStd_Document>& doc,
+                                            NCollection_Sequence<AssemblyNode>&  theNodes)
+{
+  theNodes.Clear();
+
+  occ::handle<StepBasic_ProductDefinition> aRootPD =
+    occ::down_cast<StepBasic_ProductDefinition>(myReader.RootForTransfer(num));
+  if (aRootPD.IsNull() || myReader.WS().IsNull())
+  {
+    return 0;
+  }
+  const Interface_Graph&                       aGraph = myReader.WS()->Graph();
+  const occ::handle<Transfer_TransientProcess>& aTP =
+    myReader.WS()->TransferReader()->TransientProcess();
+  if (aTP.IsNull())
+  {
+    return 0;
+  }
+
+  // How often a product occurs anywhere in the tree. An occurrence of a
+  // product used more than once is not reported: its shape is translated once
+  // and the further occurrences become references to it, which is a decision
+  // for the pass that sees the whole tree. Expanding each product once is
+  // enough for that count - a product only reachable through a repeated one
+  // is below a node that is not reported anyway.
+  NCollection_DataMap<occ::handle<Standard_Transient>, int>                aUses;
+  NCollection_Sequence<occ::handle<StepBasic_ProductDefinition>>           aPending;
+  NCollection_Map<occ::handle<Standard_Transient>>                         aExpanded;
+  NCollection_Sequence<occ::handle<StepRepr_NextAssemblyUsageOccurrence>>  aNAUOs;
+  aPending.Append(aRootPD);
+  aExpanded.Add(aRootPD);
+  while (!aPending.IsEmpty())
+  {
+    const occ::handle<StepBasic_ProductDefinition> aPD = aPending.First();
+    aPending.Remove(1);
+    aNAUOs.Clear();
+    productComponents(aGraph, aPD, aNAUOs);
+    for (int i = 1; i <= int(aNAUOs.Size()); i++)
+    {
+      occ::handle<StepBasic_ProductDefinition> aChild = aNAUOs.Value(i)->RelatedProductDefinition();
+      if (aChild.IsNull())
+      {
+        continue;
+      }
+      if (int* aCount = aUses.ChangeSeek(aChild))
+      {
+        ++(*aCount);
+      }
+      else
+      {
+        aUses.Bind(aChild, 1);
+      }
+      if (aExpanded.Add(aChild))
+      {
+        aPending.Append(aChild);
+      }
+    }
+  }
+
+  StepData_Factors aFactors;
+  prepareUnits(occ::down_cast<StepData_StepModel>(myReader.Model()), doc, aFactors);
+  XSAlgo_ShapeProcessor::PrepareForTransfer();
+  STEPControl_ActorRead anActor(aTP->Model());
+
+  // Walk the tree breadth first, reporting the occurrences that may be handed
+  // over on their own, and following those of them that are assemblies. An
+  // occurrence below an unreported one is unreachable and stays out with it.
+  NCollection_Sequence<occ::handle<StepBasic_ProductDefinition>> aQueue;
+  NCollection_Sequence<int>                                      aQueueOwner;
+  aQueue.Append(aRootPD);
+  aQueueOwner.Append(0);
+  while (!aQueue.IsEmpty())
+  {
+    const occ::handle<StepBasic_ProductDefinition> aPD    = aQueue.First();
+    const int                                      anOwner = aQueueOwner.First();
+    aQueue.Remove(1);
+    aQueueOwner.Remove(1);
+
+    aNAUOs.Clear();
+    productComponents(aGraph, aPD, aNAUOs);
+
+    // Components of this assembly resolving to one representation are the
+    // instances a reducing importer merges: they need the whole child list.
+    NCollection_DataMap<occ::handle<Standard_Transient>, int> aCounts;
+    NCollection_Sequence<occ::handle<Standard_Transient>>     aKeys;
+    for (int i = 1; i <= int(aNAUOs.Size()); i++)
+    {
+      const occ::handle<Standard_Transient> aKey = componentKey(aGraph, aNAUOs.Value(i));
+      aKeys.Append(aKey);
+      if (aKey.IsNull())
+      {
+        continue;
+      }
+      if (int* aCount = aCounts.ChangeSeek(aKey))
+      {
+        ++(*aCount);
+      }
+      else
+      {
+        aCounts.Bind(aKey, 1);
+      }
+    }
+
+    for (int i = 1; i <= int(aNAUOs.Size()); i++)
+    {
+      const occ::handle<StepRepr_NextAssemblyUsageOccurrence>& aNAUO  = aNAUOs.Value(i);
+      const occ::handle<Standard_Transient>&                   aKey   = aKeys.Value(i);
+      occ::handle<StepBasic_ProductDefinition>                 aChild = aNAUO->RelatedProductDefinition();
+      if (aChild.IsNull() || aKey.IsNull() || aCounts.Find(aKey) != 1 || aUses.Find(aChild) != 1)
+      {
+        continue;
+      }
+
+      NCollection_Sequence<occ::handle<StepRepr_NextAssemblyUsageOccurrence>> aSubNAUOs;
+      productComponents(aGraph, aChild, aSubNAUOs);
+      const bool isAssembly = !aSubNAUOs.IsEmpty();
+      if (isAssembly)
+      {
+        // An assembly is only reported when the pass over the whole tree is
+        // bound to keep it as a container: an importer reducing objects
+        // dissolves an assembly resolving to a single representation into
+        // that one child, which a container handed over early could not
+        // follow.
+        NCollection_Map<occ::handle<Standard_Transient>> aSubKeys;
+        for (int j = 1; j <= int(aSubNAUOs.Size()); j++)
+        {
+          const occ::handle<Standard_Transient> aSubKey = componentKey(aGraph, aSubNAUOs.Value(j));
+          if (!aSubKey.IsNull())
+          {
+            aSubKeys.Add(aSubKey);
+          }
+        }
+        if (aSubKeys.Extent() < 2)
+        {
+          continue;
+        }
+      }
+
+      AssemblyNode aNode;
+      aNode.Component  = aNAUO;
+      aNode.Parent     = anOwner;
+      aNode.IsAssembly = isAssembly;
+      aNode.Name       = componentName(aNAUO);
+      componentLocation(aGraph, aTP, anActor, aFactors, aNAUO, aNode.Location);
+      theNodes.Append(aNode);
+      if (isAssembly)
+      {
+        aQueue.Append(aChild);
+        aQueueOwner.Append(theNodes.Size());
+      }
+    }
+  }
+
+  // An assembly with nothing of its own to report is dropped: no component
+  // would reach the caller through it, and what it holds is the only thing
+  // that identifies it once it translates.
+  const int                          aNb = int(theNodes.Size());
+  std::vector<char>                  aFertile(aNb + 1, 0);
+  std::vector<int>                   aNewIndex(aNb + 1, 0);
+  for (int i = aNb; i >= 1; i--)
+  {
+    const AssemblyNode& aNode = theNodes.Value(i);
+    if (!aNode.IsAssembly || aFertile[i])
+    {
+      aFertile[aNode.Parent] = 1;
+    }
+  }
+  NCollection_Sequence<AssemblyNode> aKept;
+  for (int i = 1; i <= aNb; i++)
+  {
+    const AssemblyNode& aNode = theNodes.Value(i);
+    if (aNode.IsAssembly && !aFertile[i])
+    {
+      continue;
+    }
+    // An owner precedes what it holds, so its new index is known by now; a
+    // component of a dropped owner goes with it.
+    if (aNode.Parent > 0 && aNewIndex[aNode.Parent] == 0)
+    {
+      continue;
+    }
+    AssemblyNode aKeptNode = aNode;
+    aKeptNode.Parent       = aNode.Parent > 0 ? aNewIndex[aNode.Parent] : 0;
+    aKept.Append(aKeptNode);
+    aNewIndex[i] = int(aKept.Size());
+  }
+  theNodes = aKept;
+  return int(theNodes.Size());
+}
+
+//=================================================================================================
+
+TopoDS_Shape STEPCAFControl_Reader::ComponentShape(
+  const occ::handle<Standard_Transient>& theComponent) const
+{
+  if (theComponent.IsNull() || myReader.WS().IsNull())
+  {
+    return TopoDS_Shape();
+  }
+  const occ::handle<Transfer_TransientProcess>& aTP =
+    myReader.WS()->TransferReader()->TransientProcess();
+  if (aTP.IsNull())
+  {
+    return TopoDS_Shape();
+  }
+  return TransferBRep::ShapeResult(aTP->Find(theComponent));
 }
 
 //=================================================================================================
