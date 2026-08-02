@@ -403,6 +403,158 @@ bool STEPCAFControl_Reader::Transfer(const occ::handle<TDocStd_Document>& doc,
 
 //=================================================================================================
 
+//! Returns the shape representation the product definition is defined by, or
+//! a null handle when the product has no own shape representation. Two
+//! components sharing one representation translate to one and the same shape,
+//! which is what makes them mergeable instances for an importer.
+static occ::handle<Standard_Transient> productRepresentation(
+  const Interface_Graph&                          theGraph,
+  const occ::handle<StepBasic_ProductDefinition>& thePD)
+{
+  for (Interface_EntityIterator aSubs = theGraph.Sharings(thePD); aSubs.More(); aSubs.Next())
+  {
+    occ::handle<StepRepr_ProductDefinitionShape> aPDS =
+      occ::down_cast<StepRepr_ProductDefinitionShape>(aSubs.Value());
+    if (aPDS.IsNull())
+    {
+      continue;
+    }
+    for (Interface_EntityIterator aSubs1 = theGraph.Sharings(aPDS); aSubs1.More(); aSubs1.Next())
+    {
+      occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR =
+        occ::down_cast<StepShape_ShapeDefinitionRepresentation>(aSubs1.Value());
+      if (!aSDR.IsNull() && !aSDR->UsedRepresentation().IsNull())
+      {
+        return aSDR->UsedRepresentation();
+      }
+    }
+  }
+  return occ::handle<Standard_Transient>();
+}
+
+//=================================================================================================
+
+int STEPCAFControl_Reader::RootComponents(
+  const int                                                            num,
+  occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theUnique,
+  occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theShared)
+{
+  theUnique = new NCollection_HSequence<occ::handle<Standard_Transient>>;
+  theShared = new NCollection_HSequence<occ::handle<Standard_Transient>>;
+
+  occ::handle<StepBasic_ProductDefinition> aPD =
+    occ::down_cast<StepBasic_ProductDefinition>(myReader.RootForTransfer(num));
+  if (aPD.IsNull() || myReader.WS().IsNull())
+  {
+    return 0;
+  }
+  const Interface_Graph& aGraph = myReader.WS()->Graph();
+
+  // The components of a product definition are the assembly usage occurrences
+  // it relates, reachable either directly or through its shape definition
+  // (STEPControl_ActorRead walks the same two ways).
+  NCollection_Sequence<occ::handle<StepRepr_NextAssemblyUsageOccurrence>> aNAUOs;
+  NCollection_Map<occ::handle<Standard_Transient>>                        aSeen;
+  for (Interface_EntityIterator aSubs = aGraph.Sharings(aPD); aSubs.More(); aSubs.Next())
+  {
+    occ::handle<StepRepr_NextAssemblyUsageOccurrence> aNAUO =
+      occ::down_cast<StepRepr_NextAssemblyUsageOccurrence>(aSubs.Value());
+    occ::handle<StepRepr_ProductDefinitionShape> aPDS =
+      occ::down_cast<StepRepr_ProductDefinitionShape>(aSubs.Value());
+    if (!aPDS.IsNull())
+    {
+      for (Interface_EntityIterator aSubs1 = aGraph.Sharings(aPDS); aSubs1.More(); aSubs1.Next())
+      {
+        occ::handle<StepRepr_NextAssemblyUsageOccurrence> aSubNAUO =
+          occ::down_cast<StepRepr_NextAssemblyUsageOccurrence>(aSubs1.Value());
+        if (!aSubNAUO.IsNull() && aPD == aSubNAUO->RelatingProductDefinition()
+            && aSeen.Add(aSubNAUO))
+        {
+          aNAUOs.Append(aSubNAUO);
+        }
+      }
+      continue;
+    }
+    if (!aNAUO.IsNull() && aPD == aNAUO->RelatingProductDefinition() && aSeen.Add(aNAUO))
+    {
+      aNAUOs.Append(aNAUO);
+    }
+  }
+  if (aNAUOs.IsEmpty())
+  {
+    return 0;
+  }
+
+  // Count the components per translated result: components of one root that
+  // resolve to the same product (or to the same shape representation, as
+  // distinct products may share one) yield the same shape, and an importer
+  // reducing objects merges those siblings into a single array. Reporting
+  // them apart lets the caller keep that decision for a final pass.
+  NCollection_DataMap<occ::handle<Standard_Transient>, int> aCounts;
+  NCollection_Sequence<occ::handle<Standard_Transient>>     aKeys;
+  for (NCollection_Sequence<occ::handle<StepRepr_NextAssemblyUsageOccurrence>>::Iterator anIter(
+         aNAUOs);
+       anIter.More();
+       anIter.Next())
+  {
+    occ::handle<StepBasic_ProductDefinition> aChild = anIter.Value()->RelatedProductDefinition();
+    occ::handle<Standard_Transient>          aKey;
+    if (!aChild.IsNull())
+    {
+      aKey = productRepresentation(aGraph, aChild);
+      if (aKey.IsNull())
+      {
+        aKey = aChild;
+      }
+    }
+    aKeys.Append(aKey);
+    if (!aKey.IsNull())
+    {
+      if (int* aCount = aCounts.ChangeSeek(aKey))
+      {
+        ++(*aCount);
+      }
+      else
+      {
+        aCounts.Bind(aKey, 1);
+      }
+    }
+  }
+
+  for (int i = 1; i <= aNAUOs.Size(); i++)
+  {
+    const occ::handle<Standard_Transient>& aKey = aKeys.Value(i);
+    // An unresolved component goes to the final pass as well: nothing is
+    // known about how it will translate.
+    if (!aKey.IsNull() && aCounts.Find(aKey) == 1)
+    {
+      theUnique->Append(occ::handle<Standard_Transient>(aNAUOs.Value(i)));
+    }
+    else
+    {
+      theShared->Append(occ::handle<Standard_Transient>(aNAUOs.Value(i)));
+    }
+  }
+  return aNAUOs.Size();
+}
+
+//=================================================================================================
+
+bool STEPCAFControl_Reader::TransferComponents(
+  const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theEntities,
+  const occ::handle<TDocStd_Document>&                                       doc,
+  const Message_ProgressRange&                                               theProgress)
+{
+  if (theEntities.IsNull() || theEntities->IsEmpty())
+  {
+    return false;
+  }
+  NCollection_Sequence<TDF_Label> Lseq;
+  return Transfer(myReader, 0, doc, Lseq, false, theProgress, 0, theEntities);
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Reader::Perform(const char* const                    filename,
                                     const occ::handle<TDocStd_Document>& doc,
                                     const Message_ProgressRange&         theProgress)
@@ -535,13 +687,15 @@ void STEPCAFControl_Reader::prepareUnits(const occ::handle<StepData_StepModel>& 
 
 //=================================================================================================
 
-bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  reader,
-                                     const int                            nroot,
-                                     const occ::handle<TDocStd_Document>& doc,
-                                     NCollection_Sequence<TDF_Label>&     Lseq,
-                                     const bool                           asOne,
-                                     const Message_ProgressRange&         theProgress,
-                                     const int                            theLastNum)
+bool STEPCAFControl_Reader::Transfer(
+  STEPControl_Reader&                                                       reader,
+  const int                                                                 nroot,
+  const occ::handle<TDocStd_Document>&                                      doc,
+  NCollection_Sequence<TDF_Label>&                                          Lseq,
+  const bool                                                                asOne,
+  const Message_ProgressRange&                                              theProgress,
+  const int                                                                 theLastNum,
+  const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theEntities)
 {
   reader.ClearShapes();
   occ::handle<StepData_StepModel> aModel = occ::down_cast<StepData_StepModel>(reader.Model());
@@ -558,7 +712,14 @@ bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  reader
 
   Message_ProgressScope aPSRoot(theProgress, nullptr, 2);
 
-  if (nroot)
+  if (!theEntities.IsNull() && !theEntities->IsEmpty())
+  {
+    // A batch of components of a root rather than a batch of roots: their
+    // results are bound in the transfer process just the same, so the owning
+    // root translates them only once, whenever it comes.
+    reader.TransferListDeferred(theEntities, aPSRoot.Next());
+  }
+  else if (nroot)
   {
     if (nroot > num)
     {
@@ -787,6 +948,14 @@ bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  reader
     }
   }
 
+  // A batch of components is an intermediate step: the owning root still has
+  // to come and runs every pass over the whole session again. Since each pass
+  // scans the entire model, only the ones an importer must have to interpret
+  // a shape as such - the styles, and the usage overrides that qualify them -
+  // are worth paying for once per batch; the rest, names included, land with
+  // the root.
+  const bool aReadAll = theEntities.IsNull() || theEntities->IsEmpty();
+
   // read colors
   if (GetColorMode())
   {
@@ -794,19 +963,19 @@ bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  reader
   }
 
   // read names
-  if (GetNameMode())
+  if (aReadAll && GetNameMode())
   {
     ReadNames(reader.WS(), doc, PDFileMap);
   }
 
   // read validation props
-  if (GetPropsMode())
+  if (aReadAll && GetPropsMode())
   {
     ReadValProps(reader.WS(), doc, PDFileMap, aLocalFactors);
   }
 
   // read layers
-  if (GetLayerMode())
+  if (aReadAll && GetLayerMode())
   {
     ReadLayers(reader.WS(), doc);
   }
@@ -818,31 +987,31 @@ bool STEPCAFControl_Reader::Transfer(STEPControl_Reader&                  reader
   }
 
   // read GDT entities from STEP model
-  if (GetGDTMode())
+  if (aReadAll && GetGDTMode())
   {
     ReadGDTs(reader.WS(), doc, aLocalFactors);
   }
 
   // read Material entities from STEP model
-  if (GetMatMode())
+  if (aReadAll && GetMatMode())
   {
     ReadMaterials(reader.WS(), doc, SeqPDS, aLocalFactors);
   }
 
   // read View entities from STEP model
-  if (GetViewMode())
+  if (aReadAll && GetViewMode())
   {
     ReadViews(reader.WS(), doc, aLocalFactors);
   }
 
   // read metadata
-  if (GetMetaMode())
+  if (aReadAll && GetMetaMode())
   {
     ReadMetadata(reader.WS(), doc, aLocalFactors);
   }
 
   // read product metadata
-  if (GetProductMetaMode())
+  if (aReadAll && GetProductMetaMode())
   {
     ReadProductMetadata(reader.WS(), doc);
   }

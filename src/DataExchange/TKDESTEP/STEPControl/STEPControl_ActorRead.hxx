@@ -256,6 +256,13 @@ private:
   occ::handle<Interface_InterfaceModel> myModel;
   std::vector<DeferredHealing>          myDeferredHealings;
   bool                                  myDeferProcessing = false;
+  //! How many binders the previous flush of this process already rewrote. A
+  //! streamed transfer flushes once per batch, and every binder from an
+  //! earlier batch holds a healed shape by then, so the rewrite only has to
+  //! walk what the current batch added.
+  int                                   myFlushedBinders = 0;
+  //! The process the count above belongs to.
+  occ::handle<Transfer_TransientProcess> myFlushedProcess;
 };
 
 #endif // _STEPControl_ActorRead_HeaderFile

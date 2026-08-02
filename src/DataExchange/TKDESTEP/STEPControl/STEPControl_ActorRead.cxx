@@ -2888,7 +2888,17 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
       aReShaper.Replace(anIter.Key(), anIter.Value());
     }
   }
-  for (int i = 1; i <= theTP->NbMapped(); ++i)
+  // Binders bound before the previous flush of this same process were
+  // rewritten then and already hold healed shapes; a streamed transfer
+  // flushes once per batch and would otherwise walk them all over again.
+  if (myFlushedProcess != theTP)
+  {
+    myFlushedProcess = theTP;
+    myFlushedBinders = 0;
+  }
+  const int aFirstBinder = myFlushedBinders + 1;
+  myFlushedBinders       = theTP->NbMapped();
+  for (int i = aFirstBinder; i <= theTP->NbMapped(); ++i)
   {
     occ::handle<TransferBRep_ShapeBinder> aShapeBinder =
       occ::down_cast<TransferBRep_ShapeBinder>(theTP->MapItem(i));

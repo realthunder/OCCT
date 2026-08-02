@@ -132,6 +132,31 @@ public:
     const occ::handle<TDocStd_Document>& doc,
     const Message_ProgressRange&         theProgress = Message_ProgressRange());
 
+  //! Lists the assembly components of the root of rank num, in file order,
+  //! without translating anything: the components are found by walking the
+  //! STEP product structure (the next-assembly-usage-occurrences the root's
+  //! product definition relates). Components that share a product definition
+  //! with another component of the same root - the instances a reducing
+  //! importer would merge into an array - are reported through theShared
+  //! instead of theUnique, so a caller may stream the unique ones and leave
+  //! the shared ones to a final pass. Returns the total component count, 0
+  //! when the root is not an assembly.
+  Standard_EXPORT int RootComponents(
+    const int                                                            num,
+    occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theUnique,
+    occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theShared);
+
+  //! Translates the given entities - components of a root obtained from
+  //! RootComponents() - into the document, like TransferRootRange() does for
+  //! a batch of roots. The components appear as free shapes of the document
+  //! until the owning root is transferred, which then reuses their translated
+  //! results and gathers their labels under the assembly.
+  //! Returns True if succeeded.
+  Standard_EXPORT bool TransferComponents(
+    const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theEntities,
+    const occ::handle<TDocStd_Document>&                                       doc,
+    const Message_ProgressRange& theProgress = Message_ProgressRange());
+
   //! Translates currently loaded STEP file into the document
   //! Returns True if succeeded, and False in case of fail
   //! Provided for use like single-file reader
@@ -283,13 +308,17 @@ protected:
   //! Returns True if succeeded, and False in case of fail
   //! If asOne is True, in case of multiple results composes
   //! them into assembly. Fills sequence of produced labels
-  Standard_EXPORT bool Transfer(STEPControl_Reader&                  rd,
-                                const int                            num,
-                                const occ::handle<TDocStd_Document>& doc,
-                                NCollection_Sequence<TDF_Label>&     Lseq,
-                                const bool                           asOne       = false,
-                                const Message_ProgressRange&         theProgress = Message_ProgressRange(),
-                                const int                            theLastNum  = 0);
+  //! If theEntities is given and not empty, those entities are translated
+  //! instead of any root range (num and theLastNum are then ignored).
+  Standard_EXPORT bool Transfer(
+    STEPControl_Reader&                  rd,
+    const int                            num,
+    const occ::handle<TDocStd_Document>& doc,
+    NCollection_Sequence<TDF_Label>&     Lseq,
+    const bool                           asOne       = false,
+    const Message_ProgressRange&         theProgress = Message_ProgressRange(),
+    const int                            theLastNum  = 0,
+    const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theEntities = {});
 
   //! Add a shape to a document
   //! Depending on a case, this shape can be added as one, or
