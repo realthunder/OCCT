@@ -50,6 +50,16 @@ void Interface_Static::Standards()
   //  negative or null : do nothing. positive : let's go
   Interface_Static::Init("XSTEP", "read.encoderegularity.angle", 'r', "0.01");
 
+  //   encode regularity on several threads
+  //  Deciding which edges to encode stays serial; what is spread is the
+  //  computation over each edge's two surfaces, which is nearly all of the
+  //  cost and is independent between edges. Off restores the serial walk.
+  Interface_Static::Init("XSTEP", "read.encoderegularity.parallel", 'e', "");
+  Interface_Static::Init("XSTEP", "read.encoderegularity.parallel", '&', "enum 0");
+  Interface_Static::Init("XSTEP", "read.encoderegularity.parallel", '&', "eval Off"); // 0
+  Interface_Static::Init("XSTEP", "read.encoderegularity.parallel", '&', "eval On");  // 1
+  Interface_Static::SetCVal("read.encoderegularity.parallel", "On");
+
   //   compute surface curves
   //  0 : by default. 2 : keep only 2D. 3 : keep only 3D
   // gka S4054

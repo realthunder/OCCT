@@ -247,10 +247,17 @@ public:
   //! are told apart by their location-free selves, the way a single call
   //! already avoids encoding a shape twice.
   //! Warning: <TolAng> is an angular tolerance, expressed in Rad.
+  //!
+  //! With <theIsParallel>, the edges are encoded on several threads. Deciding
+  //! which edges to encode stays serial; what is spread is the computation
+  //! over each edge's two surfaces, which is nearly all of the cost and is
+  //! independent between edges. Only worth asking for from a caller that is
+  //! not already running on several threads itself.
   Standard_EXPORT static void EncodeRegularity(
     const TopoDS_Shape&                                     S,
     const double                                            TolAng,
-    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed);
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed,
+    const bool                                              theIsParallel = false);
 
   //! Encodes the Regularity of edges in list <LE> on the shape <S>
   //! Warning: <TolAng> is an angular tolerance, expressed in Rad.
