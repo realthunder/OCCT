@@ -23,7 +23,7 @@ are maintained; a fix that matters to released packages may need doing twice.
 To regenerate the raw lists behind this document:
 
 ```
-git log --oneline V8.0.1..LinkVibe-801     # 30 commits
+git log --oneline V8.0.1..LinkVibe-801     # 32 commits
 git log --oneline V7_7_2..LinkVibe         # 28 commits
 git diff --stat V8.0.1..LinkVibe-801 -- src/
 ```
@@ -117,6 +117,19 @@ goes through `ShapeFix::EncodeRegularity`, which walks each face and edge of it.
   claiming the parts first — encoding writes continuity onto edges that an assembly and its
   parts, or one component used twice, share. *FGC-9 streamed transfer 66.6 s → 53.7 s; the
   reading thread's own encoding 17.5 s → 0 s.*
+- `e3f8b4a3cf`: whatever the workers did *not* encode is now encoded on several threads.
+  The edges bounding two faces are collected first, then the continuity across each is
+  computed in parallel — that computation is nearly all of the cost, is the same for every
+  edge, and writes only to its own edge. Tasks are grouped by edge, since one edge reachable
+  through two faces yields two tasks writing one list, and a group keeps its collection
+  order, so the outcome matches a serial run. *FGC-9 one-shot 68.3 s → 52.5 s, the encoding
+  itself 19.2 s → 3.7 s.* This is what a **one-shot or headless** read gains; where the
+  workers already encode — the default for a streamed read — there is nothing left to do.
+
+  Note the deliberate asymmetry: only the overload taking a caller's processed-map spreads,
+  and only when asked. The plain entry points stay serial, because they are called from
+  algorithms that may be running on several threads already — fanning out again there is
+  exactly what made the abandoned parallel-pcurve experiment *slower* than serial.
 
 **Crash and correctness fixes found along the way** — `18fd4542b0`, a style naming a
 component of a later batch produced an empty label that `GetShape()` threw on, killing a
@@ -144,6 +157,7 @@ suspect result.
 | `read.step.parallel.parse` | `Off`, `On` | `On` | Chunked parallel scan of the DATA section. |
 | `read.step.parallel.healing` | `Off`, `Serial`, `On`, `Pipeline` | `Pipeline` | `Off` = classic inline per shape; `Serial` = deferred to one batch at the end; `On` = that batch in parallel; `Pipeline` = healed by workers as translation hands each shape over. |
 | `read.step.parallel.encoding` | `Off`, `On` | `On` | Regularity encoded by the healing worker instead of by whoever asks for the result. Only bites when healing pipelines. |
+| `read.encoderegularity.parallel` | `Off`, `On` | `On` | The reader's own regularity encoding spread over threads. In the `XSTEP` group, beside the existing `read.encoderegularity.angle`, so it covers every format reading through `XSControl_TransferReader`. Only bites where the healing workers did not already encode. |
 
 ### New public API
 
@@ -169,8 +183,9 @@ void FlushDeferredProcessing(tp, progress);
 // Supporting
 static void XSAlgo_ShapeProcessor::SetContextMessenger(messenger);   // thread-local
 static void XSControl_TransferReader::NoteEncodedRegularity(model, shapes);
-static void BRepLib::EncodeRegularity(shape, tolAng, processed);     // caller-owned map
-static void ShapeFix::EncodeRegularity(shape, tolAng, processed);    //   "
+static void BRepLib::EncodeRegularity(shape, tolAng, processed, isParallel = false);
+static void ShapeFix::EncodeRegularity(shape, tolAng, processed, isParallel = false);
+//   caller-owned processed-map; isParallel spreads the per-edge encoding
 static bool Message::IsAccepted(gravity, messenger);
 ```
 
@@ -294,6 +309,8 @@ e8262e31a7  Report what a transfer's healing spends, when anyone is listening
 18fd4542b0  STEP: let a style name a component that has not arrived yet
 77a6bfb46a  STEP: survive an oriented_closed_shell with no element
 cfa9bb392f  Encode a streamed shape's regularity where it is healed
+5522514d8a  Say what this fork changes
+e3f8b4a3cf  Encode the regularity of a shape's edges on several threads
 ```
 
 ### `LinkVibe` (over `V7_7_2`), oldest first
