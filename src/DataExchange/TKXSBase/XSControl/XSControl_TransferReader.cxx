@@ -498,6 +498,29 @@ TopoDS_Shape XSControl_TransferReader::ShapeResult(const occ::handle<Standard_Tr
 
 //=================================================================================================
 
+void XSControl_TransferReader::NoteEncodedRegularity(
+  const occ::handle<Interface_InterfaceModel>&                  theModel,
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theShapes)
+{
+  if (theShapes.IsEmpty())
+  {
+    return;
+  }
+  if (THE_ENCODED_MODEL != theModel)
+  {
+    THE_ENCODED_MODEL = theModel;
+    THE_ENCODED_SHAPES.Clear();
+  }
+  for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIter(theShapes);
+       anIter.More();
+       anIter.Next())
+  {
+    THE_ENCODED_SHAPES.Add(anIter.Value());
+  }
+}
+
+//=================================================================================================
+
 bool XSControl_TransferReader::ClearResult(const occ::handle<Standard_Transient>& ent,
                                            const int                              mode)
 {
