@@ -67,6 +67,13 @@ occ::handle<NCollection_HArray1<occ::handle<StepShape_Face>>> StepShape_Oriented
   // WARNING : the field is redefined.
   // method body is not yet automatically wrote
   // Attention, cette modif. est juste pour la compilation
+  // The element is null when the file named a closed_shell_element that could
+  // not be read as one; RWStepShape_RWOrientedClosedShell discards the status
+  // and initialises us anyway, so every redefined accessor has to tolerate it.
+  if (closedShellElement.IsNull())
+  {
+    return {};
+  }
   return closedShellElement->CfsFaces();
 }
 
@@ -75,6 +82,10 @@ occ::handle<StepShape_Face> StepShape_OrientedClosedShell::CfsFacesValue(const i
   // WARNING : the field is redefined.
   // method body is not yet automatically wrote
   // Attention, cette modif. est juste pour la compilation
+  if (closedShellElement.IsNull())
+  {
+    return {};
+  }
   return closedShellElement->CfsFacesValue(num);
 }
 
@@ -83,5 +94,9 @@ int StepShape_OrientedClosedShell::NbCfsFaces() const
   // WARNING : the field is redefined.
   // method body is not yet automatically wrote
   // Attention, cette modif. est juste pour la compilation
+  if (closedShellElement.IsNull())
+  {
+    return 0;
+  }
   return closedShellElement->NbCfsFaces();
 }
