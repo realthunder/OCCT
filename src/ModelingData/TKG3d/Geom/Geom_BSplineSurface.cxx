@@ -169,8 +169,11 @@ Geom_BSplineSurface::Geom_BSplineSurface(const Geom_BSplineSurface& theOther)
       myVKnotSet(theOther.myVKnotSet),
       myUSmooth(theOther.myUSmooth),
       myVSmooth(theOther.myVSmooth),
-      myUMaxDerivInv(theOther.myUMaxDerivInv),
-      myVMaxDerivInv(theOther.myVMaxDerivInv),
+      // Relaxed: the source may be computing its cache concurrently
+      // (that read raced under TSan). The flag stays false here, so
+      // the copied values are never trusted -- only re-derived.
+      myUMaxDerivInv(theOther.myUMaxDerivInv.load(std::memory_order_relaxed)),
+      myVMaxDerivInv(theOther.myVMaxDerivInv.load(std::memory_order_relaxed)),
       myMaxDerivInvOk(false)
 {
 }

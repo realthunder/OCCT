@@ -678,18 +678,24 @@ void Geom2d_BezierCurve::Transform(const gp_Trsf2d& T)
 
 void Geom2d_BezierCurve::Resolution(const double ToleranceUV, double& UTolerance)
 {
-  if (!myMaxDerivInvOk)
+  // Concurrent callers race on the lazy cache (parallel tessellation
+  // reads pcurves shared across edges): compute into a local, publish
+  // the value before the flag. A duplicate computation is
+  // deterministic and stores the same value.
+  if (!myMaxDerivInvOk.load(std::memory_order_acquire))
   {
+    double aMaxDerivInv = 0.0;
     BSplCLib::Resolution(myPoles,
                          Weights(),
                          myPoles.Length(),
                          KnotSequence(),
                          Degree(),
                          1.,
-                         myMaxDerivInv);
-    myMaxDerivInvOk = true;
+                         aMaxDerivInv);
+    myMaxDerivInv.store(aMaxDerivInv, std::memory_order_relaxed);
+    myMaxDerivInvOk.store(true, std::memory_order_release);
   }
-  UTolerance = ToleranceUV * myMaxDerivInv;
+  UTolerance = ToleranceUV * myMaxDerivInv.load(std::memory_order_relaxed);
 }
 
 //=================================================================================================

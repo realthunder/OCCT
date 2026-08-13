@@ -25,6 +25,8 @@
 #include <GeomAbs_Shape.hxx>
 #include <BSplCLib.hxx>
 
+#include <atomic>
+
 class gp_Trsf;
 class Geom_Geometry;
 
@@ -362,8 +364,12 @@ private:
   occ::handle<GeomEval_RepCurveDesc::Base> myEvalRep;
   bool                                     myRational      = false;
   bool                                     myClosed        = false;
-  double                                   myMaxDerivInv   = 0.0;
-  bool                                     myMaxDerivInvOk = false;
+  // Lazily filled by Resolution(), which runs concurrently from
+  // parallel tessellation threads sharing one curve. The value must be
+  // published (relaxed) BEFORE the release-store of the flag, and only
+  // trusted after an acquire-load of the flag returns true.
+  std::atomic<double>                      myMaxDerivInv{0.0};
+  std::atomic<bool>                        myMaxDerivInvOk{false};
 };
 
 #endif // _Geom_BezierCurve_HeaderFile

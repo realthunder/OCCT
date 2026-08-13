@@ -27,6 +27,9 @@
 #include <NCollection_Array2.hxx>
 #include <NCollection_Array1.hxx>
 #include <Geom_BoundedSurface.hxx>
+
+#include <atomic>
+
 class Geom_Curve;
 class gp_Trsf;
 class Geom_Geometry;
@@ -1315,9 +1318,13 @@ private:
   GeomAbs_BSplKnotDistribution               myVKnotSet      = GeomAbs_NonUniform;
   GeomAbs_Shape                              myUSmooth       = GeomAbs_C0;
   GeomAbs_Shape                              myVSmooth       = GeomAbs_C0;
-  double                                     myUMaxDerivInv  = 0.0;
-  double                                     myVMaxDerivInv  = 0.0;
-  bool                                       myMaxDerivInvOk = false;
+  // Lazily filled by Resolution(), which runs concurrently from
+  // parallel tessellation threads sharing one surface. Both values
+  // must be published (relaxed) BEFORE the release-store of the flag,
+  // and only trusted after an acquire-load of the flag returns true.
+  std::atomic<double>                        myUMaxDerivInv{0.0};
+  std::atomic<double>                        myVMaxDerivInv{0.0};
+  std::atomic<bool>                          myMaxDerivInvOk{false};
 };
 
 #endif // _Geom_BSplineSurface_HeaderFile

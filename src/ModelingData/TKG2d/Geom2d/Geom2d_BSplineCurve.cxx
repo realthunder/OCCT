@@ -126,7 +126,10 @@ Geom2d_BSplineCurve::Geom2d_BSplineCurve(const Geom2d_BSplineCurve& theOther)
       myRational(theOther.myRational),
       myKnotSet(theOther.myKnotSet),
       mySmooth(theOther.mySmooth),
-      myMaxDerivInv(theOther.myMaxDerivInv),
+      // Relaxed: the source may be computing its cache concurrently
+      // (the 3D twin of that read raced under TSan). The flag stays
+      // false here, so the copied value is never trusted.
+      myMaxDerivInv(theOther.myMaxDerivInv.load(std::memory_order_relaxed)),
       myMaxDerivInvOk(false)
 {
 }

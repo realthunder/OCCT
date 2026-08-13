@@ -26,6 +26,9 @@
 #include <gp_Pnt2d.hxx>
 #include <NCollection_Array1.hxx>
 #include <Geom2d_BoundedCurve.hxx>
+
+#include <atomic>
+
 class gp_Trsf2d;
 class Geom2d_Geometry;
 
@@ -878,8 +881,12 @@ private:
   bool                                       myRational      = false;
   GeomAbs_BSplKnotDistribution               myKnotSet       = GeomAbs_NonUniform;
   GeomAbs_Shape                              mySmooth        = GeomAbs_C0;
-  double                                     myMaxDerivInv   = 0.0;
-  bool                                       myMaxDerivInvOk = false;
+  // Lazily filled by Resolution(), which runs concurrently from
+  // parallel tessellation threads sharing one pcurve. The value must
+  // be published (relaxed) BEFORE the release-store of the flag, and
+  // only trusted after an acquire-load of the flag returns true.
+  std::atomic<double>                        myMaxDerivInv{0.0};
+  std::atomic<bool>                          myMaxDerivInvOk{false};
 };
 
 #endif // _Geom2d_BSplineCurve_HeaderFile

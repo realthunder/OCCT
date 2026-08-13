@@ -763,8 +763,13 @@ void Geom2d_BSplineCurve::LocateU(const double U,
 
 void Geom2d_BSplineCurve::Resolution(const double ToleranceUV, double& UTolerance)
 {
-  if (!myMaxDerivInvOk)
+  // Concurrent callers race on the lazy cache (parallel tessellation
+  // reads pcurves shared across edges): compute into a local, publish
+  // the value before the flag. A duplicate computation is
+  // deterministic and stores the same value.
+  if (!myMaxDerivInvOk.load(std::memory_order_acquire))
   {
+    double aMaxDerivInv = 0.0;
     if (myPeriodic)
     {
       int NbKnots, NbPoles;
@@ -788,7 +793,7 @@ void Geom2d_BSplineCurve::Resolution(const double ToleranceUV, double& UToleranc
                            myFlatKnots,
                            myDeg,
                            1.,
-                           myMaxDerivInv);
+                           aMaxDerivInv);
     }
     else
     {
@@ -798,9 +803,10 @@ void Geom2d_BSplineCurve::Resolution(const double ToleranceUV, double& UToleranc
                            myFlatKnots,
                            myDeg,
                            1.,
-                           myMaxDerivInv);
+                           aMaxDerivInv);
     }
-    myMaxDerivInvOk = true;
+    myMaxDerivInv.store(aMaxDerivInv, std::memory_order_relaxed);
+    myMaxDerivInvOk.store(true, std::memory_order_release);
   }
-  UTolerance = ToleranceUV * myMaxDerivInv;
+  UTolerance = ToleranceUV * myMaxDerivInv.load(std::memory_order_relaxed);
 }

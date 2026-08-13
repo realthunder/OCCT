@@ -386,8 +386,11 @@ Geom_BezierSurface::Geom_BezierSurface(const Geom_BezierSurface& theOther)
       myEvalRep(GeomEval_RepUtils::CloneSurfaceDesc(theOther.myEvalRep)),
       myURational(theOther.myURational),
       myVRational(theOther.myVRational),
-      myUMaxDerivInv(theOther.myUMaxDerivInv),
-      myVMaxDerivInv(theOther.myVMaxDerivInv),
+      // Relaxed: the source may be computing its cache concurrently
+      // (that read raced under TSan). The flag stays false here, so
+      // the copied values are never trusted -- only re-derived.
+      myUMaxDerivInv(theOther.myUMaxDerivInv.load(std::memory_order_relaxed)),
+      myVMaxDerivInv(theOther.myVMaxDerivInv.load(std::memory_order_relaxed)),
       myMaxDerivInvOk(false)
 {
 }
@@ -1992,8 +1995,14 @@ void Geom_BezierSurface::Resolution(const double Tolerance3D,
                                     double&      UTolerance,
                                     double&      VTolerance)
 {
-  if (!myMaxDerivInvOk)
+  // Concurrent callers race on the lazy cache (parallel tessellation
+  // shares one surface across faces): compute into locals, publish
+  // both values before the flag. A duplicate computation is
+  // deterministic and stores the same values.
+  if (!myMaxDerivInvOk.load(std::memory_order_acquire))
   {
+    double aUMaxDerivInv = 0.0;
+    double aVMaxDerivInv = 0.0;
     if (myURational || myVRational)
     {
       BSplSLib::Resolution(myPoles,
@@ -2009,8 +2018,8 @@ void Geom_BezierSurface::Resolution(const double Tolerance3D,
                            false,
                            false,
                            1.,
-                           myUMaxDerivInv,
-                           myVMaxDerivInv);
+                           aUMaxDerivInv,
+                           aVMaxDerivInv);
     }
     else
     {
@@ -2027,13 +2036,15 @@ void Geom_BezierSurface::Resolution(const double Tolerance3D,
                            false,
                            false,
                            1.,
-                           myUMaxDerivInv,
-                           myVMaxDerivInv);
+                           aUMaxDerivInv,
+                           aVMaxDerivInv);
     }
-    myMaxDerivInvOk = true;
+    myUMaxDerivInv.store(aUMaxDerivInv, std::memory_order_relaxed);
+    myVMaxDerivInv.store(aVMaxDerivInv, std::memory_order_relaxed);
+    myMaxDerivInvOk.store(true, std::memory_order_release);
   }
-  UTolerance = Tolerance3D * myUMaxDerivInv;
-  VTolerance = Tolerance3D * myVMaxDerivInv;
+  UTolerance = Tolerance3D * myUMaxDerivInv.load(std::memory_order_relaxed);
+  VTolerance = Tolerance3D * myVMaxDerivInv.load(std::memory_order_relaxed);
 }
 
 //=================================================================================================

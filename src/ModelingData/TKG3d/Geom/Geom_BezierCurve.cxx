@@ -742,19 +742,25 @@ void Geom_BezierCurve::Transform(const gp_Trsf& T)
 
 void Geom_BezierCurve::Resolution(const double Tolerance3D, double& UTolerance)
 {
-  if (!myMaxDerivInvOk)
+  // Concurrent callers race on the lazy cache (parallel tessellation
+  // shares one curve across edges): compute into a local, publish the
+  // value before the flag. A duplicate computation is deterministic
+  // and stores the same value.
+  if (!myMaxDerivInvOk.load(std::memory_order_acquire))
   {
-    const int aDeg = myPoles.Length() - 1;
+    const int aDeg          = myPoles.Length() - 1;
+    double    aMaxDerivInv  = 0.0;
     BSplCLib::Resolution(myPoles,
                          Weights(),
                          myPoles.Length(),
                          KnotSequence(),
                          aDeg,
                          1.,
-                         myMaxDerivInv);
-    myMaxDerivInvOk = true;
+                         aMaxDerivInv);
+    myMaxDerivInv.store(aMaxDerivInv, std::memory_order_relaxed);
+    myMaxDerivInvOk.store(true, std::memory_order_release);
   }
-  UTolerance = Tolerance3D * myMaxDerivInv;
+  UTolerance = Tolerance3D * myMaxDerivInv.load(std::memory_order_relaxed);
 }
 
 //=================================================================================================

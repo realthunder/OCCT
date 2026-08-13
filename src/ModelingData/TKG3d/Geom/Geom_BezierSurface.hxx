@@ -26,6 +26,8 @@
 #include <GeomAbs_Shape.hxx>
 #include <BSplSLib.hxx>
 
+#include <atomic>
+
 class Geom_Curve;
 class gp_Trsf;
 class Geom_Geometry;
@@ -635,9 +637,13 @@ private:
   occ::handle<GeomEval_RepSurfaceDesc::Base> myEvalRep;
   bool                                       myURational     = false;
   bool                                       myVRational     = false;
-  double                                     myUMaxDerivInv  = 0.0;
-  double                                     myVMaxDerivInv  = 0.0;
-  bool                                       myMaxDerivInvOk = false;
+  // Lazily filled by Resolution(), which runs concurrently from
+  // parallel tessellation threads sharing one surface. Both values
+  // must be published (relaxed) BEFORE the release-store of the flag,
+  // and only trusted after an acquire-load of the flag returns true.
+  std::atomic<double>                        myUMaxDerivInv{0.0};
+  std::atomic<double>                        myVMaxDerivInv{0.0};
+  std::atomic<bool>                          myMaxDerivInvOk{false};
 };
 
 #endif // _Geom_BezierSurface_HeaderFile

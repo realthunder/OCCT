@@ -26,6 +26,9 @@
 #include <gp_Pnt.hxx>
 #include <NCollection_Array1.hxx>
 #include <Geom_BoundedCurve.hxx>
+
+#include <atomic>
+
 class gp_Trsf;
 class Geom_Geometry;
 
@@ -847,8 +850,12 @@ private:
   bool                                     myRational      = false;
   GeomAbs_BSplKnotDistribution             myKnotSet       = GeomAbs_NonUniform;
   GeomAbs_Shape                            mySmooth        = GeomAbs_C0;
-  double                                   myMaxDerivInv   = 0.0;
-  bool                                     myMaxDerivInvOk = false;
+  // Lazily filled by Resolution(), which runs concurrently from
+  // parallel tessellation threads sharing one curve. The value must be
+  // published (relaxed) BEFORE the release-store of the flag, and only
+  // trusted after an acquire-load of the flag returns true.
+  std::atomic<double>                      myMaxDerivInv{0.0};
+  std::atomic<bool>                        myMaxDerivInvOk{false};
 };
 
 #endif // _Geom_BSplineCurve_HeaderFile

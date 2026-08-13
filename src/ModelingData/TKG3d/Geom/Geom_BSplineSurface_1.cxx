@@ -2198,8 +2198,14 @@ void Geom_BSplineSurface::Resolution(const double Tolerance3D,
                                      double&      UTolerance,
                                      double&      VTolerance)
 {
-  if (!myMaxDerivInvOk)
+  // Concurrent callers race on the lazy cache (parallel tessellation
+  // shares one surface across faces): compute into locals, publish
+  // both values before the flag. A duplicate computation is
+  // deterministic and stores the same values.
+  if (!myMaxDerivInvOk.load(std::memory_order_acquire))
   {
+    double aUMaxDerivInv = 0.0;
+    double aVMaxDerivInv = 0.0;
     BSplSLib::Resolution(myPoles,
                          Weights(),
                          myUKnots,
@@ -2213,10 +2219,12 @@ void Geom_BSplineSurface::Resolution(const double Tolerance3D,
                          myUPeriodic,
                          myVPeriodic,
                          1.,
-                         myUMaxDerivInv,
-                         myVMaxDerivInv);
-    myMaxDerivInvOk = true;
+                         aUMaxDerivInv,
+                         aVMaxDerivInv);
+    myUMaxDerivInv.store(aUMaxDerivInv, std::memory_order_relaxed);
+    myVMaxDerivInv.store(aVMaxDerivInv, std::memory_order_relaxed);
+    myMaxDerivInvOk.store(true, std::memory_order_release);
   }
-  UTolerance = Tolerance3D * myUMaxDerivInv;
-  VTolerance = Tolerance3D * myVMaxDerivInv;
+  UTolerance = Tolerance3D * myUMaxDerivInv.load(std::memory_order_relaxed);
+  VTolerance = Tolerance3D * myVMaxDerivInv.load(std::memory_order_relaxed);
 }
