@@ -1536,17 +1536,23 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
       {
         aStyle.SetColorCurv(aColor.GetRGB());
       }
-      if (!aStyle.IsSetColorSurf())
       {
         occ::handle<XCAFDoc_VisMaterial> aVisMat =
           XCAFDoc_VisMaterialTool::GetShapeMaterial(aSeqValue);
         if (!aVisMat.IsNull() && !aVisMat->IsEmpty())
         {
-          // only color can be stored in STEP
-          aStyle.SetColorSurf(aVisMat->BaseColor());
+          // the material rides the style: written out as rendering
+          // properties when the visual material mode asks for it, and
+          // its base colour keeps serving readers that only take colours
+          aStyle.SetMaterial(aVisMat);
+          if (!aStyle.IsSetColorSurf())
+          {
+            aStyle.SetColorSurf(aVisMat->BaseColor());
+          }
         }
       }
-      if (!aStyle.IsSetColorCurv() && !aStyle.IsSetColorSurf() && anIsVisible)
+      if (!aStyle.IsSetColorCurv() && !aStyle.IsSetColorSurf() && aStyle.Material().IsNull()
+          && anIsVisible)
       {
         continue;
       }

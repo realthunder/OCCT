@@ -519,98 +519,66 @@ void STEPConstruct_RenderingProperties::Init(const XCAFDoc_VisMaterialCommon& th
   // Find maximum diffuse component to avoid division by zero for dark colors
   const double aDiffMax = std::max(aDiffRed, std::max(aDiffGreen, aDiffBlue));
 
-  // Check if ambient color is non-default and diffuse color has non-zero components
+  // The full reflectance model is always defined: the writer can only emit
+  // the specular properties through surface_style_reflectance_ambient_
+  // diffuse_specular, whose fields are all mandatory, so a partially
+  // defined model was silently dropped on write (specular and shininess
+  // lost). Each factor is a best-effort projection; the specular colour is
+  // kept explicitly, which the reader prefers, so specular round-trips
+  // exactly.
+
+  // Ambient reflectance: average of the per-channel ambient/diffuse ratios
   if (aDiffMax > Precision::Confusion())
   {
-    // Extract RGB components from ambient color
-    double aAmbRed   = theMaterial.AmbientColor.Red();
-    double aAmbGreen = theMaterial.AmbientColor.Green();
-    double aAmbBlue  = theMaterial.AmbientColor.Blue();
+    const double aAmbRed   = theMaterial.AmbientColor.Red();
+    const double aAmbGreen = theMaterial.AmbientColor.Green();
+    const double aAmbBlue  = theMaterial.AmbientColor.Blue();
 
-    // Calculate per-channel ratios
     const double aRed   = (aDiffRed > Precision::Confusion()) ? aAmbRed / aDiffRed : 0.0;
     const double aGreen = (aDiffGreen > Precision::Confusion()) ? aAmbGreen / aDiffGreen : 0.0;
     const double aBlue  = (aDiffBlue > Precision::Confusion()) ? aAmbBlue / aDiffBlue : 0.0;
 
-    // Calculate min and max of RGB ratios
-    const double aMin = std::min(aRed, std::min(aGreen, aBlue));
-    const double aMax = std::max(aRed, std::max(aGreen, aBlue));
-
-    // If ratios are reasonably close, use average as ambient reflectance factor
-    // otherwise the ambient color isn't a simple multiplier of diffuse
-    const double kMaxRatioDeviation = 0.2; // Max allowed deviation between RGB ratios
-    if ((aMax - aMin) < kMaxRatioDeviation)
-    {
-      // Use average of RGB ratios as the reflectance factor
-      double aAmbientFactor = (aRed + aGreen + aBlue) / 3.0;
-
-      // Check if factor is significantly different from default (0.1)
-      if (std::abs(aAmbientFactor - 0.1) > 0.01)
-      {
-        // Clamp to valid range
-        aAmbientFactor = std::max(0.0, std::min(1.0, aAmbientFactor));
-
-        myAmbientReflectance.first  = aAmbientFactor;
-        myAmbientReflectance.second = true;
-      }
-    }
+    const double aAmbientFactor = std::max(0.0, std::min(1.0, (aRed + aGreen + aBlue) / 3.0));
+    myAmbientReflectance.first  = aAmbientFactor;
+    myAmbientReflectance.second = true;
+  }
+  else
+  {
+    myAmbientReflectance.first =
+      (theMaterial.AmbientColor.Red() + theMaterial.AmbientColor.Green()
+       + theMaterial.AmbientColor.Blue())
+      / 3.0;
+    myAmbientReflectance.second = true;
   }
 
   // Diffuse reflectance is always 1.0 for the main color
   myDiffuseReflectance.first  = 1.0;
   myDiffuseReflectance.second = true;
 
-  // Calculate specular reflectance factor relative to diffuse color
-  // Compare specular color to diffuse color directly to get reflectance factor
-  if (aDiffMax > Precision::Confusion())
+  // Specular: the explicit colour, plus an average factor relative to the
+  // diffuse color for formats that only take the factor
   {
-    // Extract RGB components from specular color
     const double aSpecRed   = theMaterial.SpecularColor.Red();
     const double aSpecGreen = theMaterial.SpecularColor.Green();
     const double aSpecBlue  = theMaterial.SpecularColor.Blue();
 
-    // Calculate per-channel ratios
-    const double aRed   = (aDiffRed > Precision::Confusion()) ? aSpecRed / aDiffRed : 0.0;
-    const double aGreen = (aDiffGreen > Precision::Confusion()) ? aSpecGreen / aDiffGreen : 0.0;
-    const double aBlue  = (aDiffBlue > Precision::Confusion()) ? aSpecBlue / aDiffBlue : 0.0;
+    mySpecularColour.first  = theMaterial.SpecularColor;
+    mySpecularColour.second = true;
 
-    // Calculate min and max of RGB ratios
-    const double aMin = std::min(aRed, std::min(aGreen, aBlue));
-    const double aMax = std::max(aRed, std::max(aGreen, aBlue));
-
-    // If ratios are reasonably close, use average as specular reflectance factor
-    const double kMaxRatioDeviation = 0.2; // Max allowed deviation between RGB ratios
-    if ((aMax - aMin) < kMaxRatioDeviation)
+    double aSpecularFactor = (aSpecRed + aSpecGreen + aSpecBlue) / 3.0;
+    if (aDiffMax > Precision::Confusion())
     {
-      // Use average of RGB ratios as the reflectance factor
-      double aSpecularFactor = (aRed + aGreen + aBlue) / 3.0;
-
-      // Check if factor is significantly different from default (0.2)
-      if (std::abs(aSpecularFactor - 0.2) > 0.01)
-      {
-        // Clamp to valid range
-        aSpecularFactor = std::max(0.0, std::min(1.0, aSpecularFactor));
-
-        mySpecularReflectance.first  = aSpecularFactor;
-        mySpecularReflectance.second = true;
-      }
+      const double aRed   = (aDiffRed > Precision::Confusion()) ? aSpecRed / aDiffRed : 0.0;
+      const double aGreen = (aDiffGreen > Precision::Confusion()) ? aSpecGreen / aDiffGreen : 0.0;
+      const double aBlue  = (aDiffBlue > Precision::Confusion()) ? aSpecBlue / aDiffBlue : 0.0;
+      aSpecularFactor     = (aRed + aGreen + aBlue) / 3.0;
     }
-    else
-    {
-      // Ratios differ significantly, specular color isn't a simple multiplier of diffuse
-      // Store actual specular color
-      mySpecularColour.first  = theMaterial.SpecularColor;
-      mySpecularColour.second = true;
-
-      // Still compute an average reflectance factor for formats that don't support color
-      double aSpecularFactor       = (aSpecRed + aSpecGreen + aSpecBlue) / 3.0;
-      mySpecularReflectance.first  = aSpecularFactor;
-      mySpecularReflectance.second = true;
-    }
+    mySpecularReflectance.first  = std::max(0.0, std::min(1.0, aSpecularFactor));
+    mySpecularReflectance.second = true;
   }
 
   // Convert shininess to specular exponent using fixed scale factor
-  if (theMaterial.Shininess >= 0.0f && std::abs(theMaterial.Shininess - 1.0f) > 0.01f)
+  if (theMaterial.Shininess >= 0.0f)
   {
     const double kScaleFactor = 128.0;
     mySpecularExponent.first  = theMaterial.Shininess * kScaleFactor;
