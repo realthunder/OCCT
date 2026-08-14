@@ -209,6 +209,8 @@
 #include <XCAFDoc_MaterialTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
 #include <XCAFDoc_View.hxx>
+#include <XCAFDoc_VisMaterial.hxx>
+#include <XCAFDoc_VisMaterialTool.hxx>
 #include <XCAFDoc_ViewTool.hxx>
 #include <XCAFDoc_Volume.hxx>
 #include <XCAFDimTolObjects_DimensionObject.hxx>
@@ -1786,6 +1788,64 @@ static void SetAssemblyComponentStyle(
 }
 
 //=======================================================================
+// function : setRenderingMaterial
+// purpose  : auxiliary: a style whose rendering properties carry the full
+//            reflectance model is kept as a visualization material on the
+//            same label its colour goes to, instead of being collapsed to
+//            that colour only
+//=======================================================================
+
+static void setRenderingMaterial(const occ::handle<XCAFDoc_ColorTool>&    theCTool,
+                                 const STEPConstruct_RenderingProperties& theRenderProps,
+                                 const TDF_Label&                         theLabel)
+{
+  // Not IsMaterialConvertible(): that requires every reflectance property
+  // at once, which writers emit only when each survives their heuristics.
+  // Any reflectance-model property beyond colour+transparency is worth a
+  // material; CreateXCAFMaterial() fills the rest with defaults. A style
+  // with none stays a colour, as before.
+  if (!theRenderProps.IsDefined()
+      || !(theRenderProps.IsAmbientReflectanceDefined()
+           || theRenderProps.IsDiffuseReflectanceDefined()
+           || theRenderProps.IsSpecularReflectanceDefined()
+           || theRenderProps.IsSpecularExponentDefined()
+           || theRenderProps.IsSpecularColourDefined()))
+  {
+    return;
+  }
+  occ::handle<XCAFDoc_VisMaterialTool> aMatTool =
+    XCAFDoc_DocumentTool::VisMaterialTool(theCTool->Label());
+  if (aMatTool.IsNull())
+  {
+    return;
+  }
+  const XCAFDoc_VisMaterialCommon aCommon = theRenderProps.CreateXCAFMaterial();
+  // one material label per distinct material: styles share rendering
+  // properties freely, and a label per styled face would bloat the document
+  TDF_Label                       aMatLabel;
+  NCollection_Sequence<TDF_Label> aMaterials;
+  aMatTool->GetMaterials(aMaterials);
+  for (NCollection_Sequence<TDF_Label>::Iterator aMatIter(aMaterials); aMatIter.More();
+       aMatIter.Next())
+  {
+    occ::handle<XCAFDoc_VisMaterial> aMat = XCAFDoc_VisMaterialTool::GetMaterial(aMatIter.Value());
+    if (!aMat.IsNull() && aMat->HasCommonMaterial() && !aMat->HasPbrMaterial()
+        && aMat->CommonMaterial().IsEqual(aCommon))
+    {
+      aMatLabel = aMatIter.Value();
+      break;
+    }
+  }
+  if (aMatLabel.IsNull())
+  {
+    occ::handle<XCAFDoc_VisMaterial> aMat = new XCAFDoc_VisMaterial();
+    aMat->SetCommonMaterial(aCommon);
+    aMatLabel = aMatTool->AddMaterial(aMat, TCollection_AsciiString());
+  }
+  aMatTool->SetShapeMaterial(theLabel, aMatLabel);
+}
+
+//=======================================================================
 // function : SetStyle
 // purpose  : auxiliary: set style for parts and instances
 //=======================================================================
@@ -1982,6 +2042,7 @@ static void SetStyle(
           if (!aSurfCol.IsNull() || aRenderProps.IsDefined())
           {
             theCTool->SetColor(aL, aFullSCol, XCAFDoc_ColorSurf);
+            setRenderingMaterial(theCTool, aRenderProps, aL);
           }
           if (!aBoundCol.IsNull())
           {
@@ -2002,6 +2063,7 @@ static void SetStyle(
               if (!aSurfCol.IsNull() || aRenderProps.IsDefined())
               {
                 theCTool->SetColor(aL1, aFullSCol, XCAFDoc_ColorSurf);
+                setRenderingMaterial(theCTool, aRenderProps, aL1);
               }
               if (!aBoundCol.IsNull())
               {

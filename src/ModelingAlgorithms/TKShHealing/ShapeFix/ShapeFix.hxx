@@ -72,11 +72,13 @@ public:
   //! share components - the parts of an assembly and then the assembly - so
   //! that a component shared between them is processed only once. The map
   //! carries what has been processed from one call to the next and is the
-  //! caller's to keep for as long as the shapes live.
+  //! caller's to keep for as long as the shapes live. With <theIsParallel>,
+  //! the edges are encoded on several threads; see BRepLib::EncodeRegularity.
   Standard_EXPORT static void EncodeRegularity(
     const TopoDS_Shape&                                     shape,
     const double                                            tolang,
-    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed);
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed,
+    const bool                                              theIsParallel = false);
 
   //! Removes edges which are less than given tolerance from shape
   //! with help of ShapeFix_Wire::FixSmall()

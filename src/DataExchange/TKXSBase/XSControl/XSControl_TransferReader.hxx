@@ -24,7 +24,9 @@
 #include <Standard_Integer.hxx>
 #include <Standard_Transient.hxx>
 #include <NCollection_DataMap.hxx>
+#include <NCollection_Map.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_Sequence.hxx>
 #include <NCollection_HSequence.hxx>
 #include <Interface_CheckStatus.hxx>
@@ -190,6 +192,18 @@ public:
   //! Returns the resulting object as a Shape
   //! Null Shape if no result or result not a shape
   Standard_EXPORT TopoDS_Shape ShapeResult(const occ::handle<Standard_Transient>& theEnt) const;
+
+  //! Declares that the regularity of the given shapes, read from the given
+  //! model, has already been encoded, so that ShapeResult() hands back a
+  //! result containing them without walking them again. Meant for a reader
+  //! that encodes a shape where it produces it - on a worker thread of its
+  //! own, say - rather than leaving it to the caller asking for the result.
+  //!
+  //! To be called from the thread that goes on to read the results, once the
+  //! shapes are final and nothing else is encoding them any more.
+  Standard_EXPORT static void NoteEncodedRegularity(
+    const occ::handle<Interface_InterfaceModel>&                  theModel,
+    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theShapes);
 
   //! Clears recorded result for an entity, according mode
   //! <mode> = -1 : true, complete, clearing (erasing result)

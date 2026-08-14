@@ -350,7 +350,10 @@ protected:
 
   //! If parameters haven't yet been provided, initializes them with default values
   //! provided by GetDefaultShapeFixParameters() method.
-  void InitializeMissingParameters();
+  //! Exported because STEPControl_Reader (TKDESTEP) calls it across the toolkit
+  //! boundary; without the macro it is absent from TKXSBase's export table and
+  //! only Windows notices, ELF default visibility hiding the omission.
+  Standard_EXPORT void InitializeMissingParameters();
 
 protected:
   bool                                                  therootsta;

@@ -488,12 +488,42 @@ TopoDS_Shape XSControl_TransferReader::ShapeResult(const occ::handle<Standard_Tr
     THE_ENCODED_MODEL = myModel;
     THE_ENCODED_SHAPES.Clear();
   }
-  ShapeFix::EncodeRegularity(sh, tolang, THE_ENCODED_SHAPES);
+  // On several threads where the caller asks for it: this runs on the thread
+  // reading the results, which has nothing else in flight - a reader that
+  // encodes on workers of its own has already done the work by now, and what
+  // reaches here is what it left, or a whole read that was never deferred.
+  ShapeFix::EncodeRegularity(sh,
+                             tolang,
+                             THE_ENCODED_SHAPES,
+                             Interface_Static::IVal("read.encoderegularity.parallel") != 0);
   if (aIsTimed)
   {
     Message::SendTrace() << "      ...    Encode regularity : " << aTimer.ElapsedTime() << " s";
   }
   return sh;
+}
+
+//=================================================================================================
+
+void XSControl_TransferReader::NoteEncodedRegularity(
+  const occ::handle<Interface_InterfaceModel>&                  theModel,
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theShapes)
+{
+  if (theShapes.IsEmpty())
+  {
+    return;
+  }
+  if (THE_ENCODED_MODEL != theModel)
+  {
+    THE_ENCODED_MODEL = theModel;
+    THE_ENCODED_SHAPES.Clear();
+  }
+  for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIter(theShapes);
+       anIter.More();
+       anIter.Next())
+  {
+    THE_ENCODED_SHAPES.Add(anIter.Value());
+  }
 }
 
 //=================================================================================================

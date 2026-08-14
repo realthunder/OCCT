@@ -2526,6 +2526,10 @@ static constexpr std::string_view Reco_BooleanRepresentationItem("BOOLEAN_REPRES
 static constexpr std::string_view Reco_RealRepresentationItem("REAL_REPRESENTATION_ITEM");
 static constexpr std::string_view Reco_MechanicalDesignAndDraughtingRelationship(
   "MECHANICAL_DESIGN_AND_DRAUGHTING_RELATIONSHIP");
+static constexpr std::string_view Reco_SurfaceStyleReflectanceAmbientDiffuse(
+  "SURFACE_STYLE_REFLECTANCE_AMBIENT_DIFFUSE");
+static constexpr std::string_view Reco_SurfaceStyleReflectanceAmbientDiffuseSpecular(
+  "SURFACE_STYLE_REFLECTANCE_AMBIENT_DIFFUSE_SPECULAR");
 
 static constexpr std::string_view s_ADDRSS("ADDRSS");
 static constexpr std::string_view s_ABSR("ABSR");
@@ -3757,6 +3761,8 @@ static void initializeTypenums(StringViewDataMap& theTypenums)
   theTypenums.Bind(Reco_BooleanRepresentationItem, 822);
   theTypenums.Bind(Reco_RealRepresentationItem, 823);
   theTypenums.Bind(Reco_MechanicalDesignAndDraughtingRelationship, 824);
+  theTypenums.Bind(Reco_SurfaceStyleReflectanceAmbientDiffuse, 825);
+  theTypenums.Bind(Reco_SurfaceStyleReflectanceAmbientDiffuseSpecular, 826);
 }
 
 // Initialize theTypeshor map
@@ -6395,6 +6401,10 @@ const std::string_view& RWStepAP214_ReadWriteModule::StepType(const int CN) cons
       return Reco_RealRepresentationItem;
     case 824:
       return Reco_MechanicalDesignAndDraughtingRelationship;
+    case 825:
+      return Reco_SurfaceStyleReflectanceAmbientDiffuse;
+    case 826:
+      return Reco_SurfaceStyleReflectanceAmbientDiffuseSpecular;
     default:
       return PasReco;
   }
@@ -16245,6 +16255,18 @@ void RWStepAP214_ReadWriteModule::WriteStep(const int                           
     case 824: {
       DeclareAndCast(StepRepr_MechanicalDesignAndDraughtingRelationship, anent, ent);
       RWStepRepr_RWMechanicalDesignAndDraughtingRelationship aTool;
+      aTool.WriteStep(SW, anent);
+    }
+    break;
+    case 825: {
+      DeclareAndCast(StepVisual_SurfaceStyleReflectanceAmbientDiffuse, anent, ent);
+      RWStepVisual_RWSurfaceStyleReflectanceAmbientDiffuse aTool;
+      aTool.WriteStep(SW, anent);
+    }
+    break;
+    case 826: {
+      DeclareAndCast(StepVisual_SurfaceStyleReflectanceAmbientDiffuseSpecular, anent, ent);
+      RWStepVisual_RWSurfaceStyleReflectanceAmbientDiffuseSpecular aTool;
       aTool.WriteStep(SW, anent);
     }
     break;

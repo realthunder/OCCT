@@ -286,9 +286,10 @@ void ShapeFix::EncodeRegularity(const TopoDS_Shape& shape, const double tolang)
 
 void ShapeFix::EncodeRegularity(const TopoDS_Shape&                                     shape,
                                 const double                                            tolang,
-                                NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed)
+                                NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed,
+                                const bool                                              theIsParallel)
 {
-  BRepLib::EncodeRegularity(shape, tolang, theProcessed);
+  BRepLib::EncodeRegularity(shape, tolang, theProcessed, theIsParallel);
 }
 
 //=================================================================================================

@@ -58,6 +58,7 @@
 #include <Poly_Triangulation.hxx>
 #include <Precision.hxx>
 #include <ProjLib_ProjectedCurve.hxx>
+#include <OSD_Parallel.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_Real.hxx>
 #include <gp_Pnt2d.hxx>
@@ -79,6 +80,8 @@
 #include <Standard_HashUtils.hxx>
 
 #include <algorithm>
+#include <unordered_map>
+#include <vector>
 
 // TODO - not thread-safe static variables
 static double                  thePrecision = Precision::Confusion();
@@ -2418,6 +2421,77 @@ GeomAbs_Shape BRepLib::ContinuityOfFaces(const TopoDS_Edge& theEdge,
   return aCont;
 }
 
+//! One edge whose regularity is to be encoded, with the two faces it bounds.
+//! Deciding which edges those are is a walk over the shape; encoding one is a
+//! computation over its two surfaces, far the more expensive of the two and
+//! independent between edges. They are therefore collected first and run
+//! afterwards, so that the running can be spread over several threads.
+struct BRepLib_RegularityTask
+{
+  TopoDS_Edge Edge;
+  TopoDS_Face Face1;
+  TopoDS_Face Face2;
+};
+
+//! Encodes what was collected. Every task writes the continuity onto its own
+//! edge and reads nothing that another one writes, so they may run at once -
+//! but one edge can be reached through two faces of the same shape, and those
+//! two tasks write the same list, so tasks are grouped by edge and a group is
+//! one thread's to do. A group keeps the order the tasks were collected in,
+//! which is what makes the outcome the same as running them all serially.
+static void RunRegularity(std::vector<BRepLib_RegularityTask>& theTasks,
+                          const double                         theTolAng,
+                          const bool                           theIsParallel)
+{
+  if (theTasks.empty())
+  {
+    return;
+  }
+  if (!theIsParallel || theTasks.size() < 2)
+  {
+    for (BRepLib_RegularityTask& aTask : theTasks)
+    {
+      BRepLib::EncodeRegularity(aTask.Edge, aTask.Face1, aTask.Face2, theTolAng);
+    }
+    return;
+  }
+
+  std::unordered_map<const TopoDS_TShape*, size_t> aGroupOfEdge;
+  std::vector<std::vector<size_t>>                 aGroups;
+  aGroups.reserve(theTasks.size());
+  for (size_t i = 0; i < theTasks.size(); ++i)
+  {
+    const TopoDS_TShape* anEdge = theTasks[i].Edge.TShape().get();
+    auto                 aFound = aGroupOfEdge.find(anEdge);
+    if (aFound == aGroupOfEdge.end())
+    {
+      aGroupOfEdge.emplace(anEdge, aGroups.size());
+      aGroups.emplace_back(1, i);
+    }
+    else
+    {
+      aGroups[aFound->second].push_back(i);
+    }
+  }
+
+  OSD_Parallel::For(0, (int)aGroups.size(), [&](const int theIndex) {
+    try
+    {
+      OCC_CATCH_SIGNALS
+      for (const size_t aTaskIndex : aGroups[theIndex])
+      {
+        BRepLib_RegularityTask& aTask = theTasks[aTaskIndex];
+        BRepLib::EncodeRegularity(aTask.Edge, aTask.Face1, aTask.Face2, theTolAng);
+      }
+    }
+    catch (Standard_Failure const&)
+    {
+      // As the serial path does: an edge that cannot be encoded is left as it
+      // is, and the rest of the shape is still encoded.
+    }
+  });
+}
+
 //=======================================================================
 // function : EncodeRegularity
 // purpose  : Code the regularities on all edges of the shape, boundary of
@@ -2426,9 +2500,10 @@ GeomAbs_Shape BRepLib::ContinuityOfFaces(const TopoDS_Edge& theEdge,
 //            placed with different transformations
 //=======================================================================
 static void EncodeRegularity(
-  const TopoDS_Shape&                                           theShape,
-  const double                                                  theTolAng,
-  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>&       theMap,
+  const TopoDS_Shape&                                     theShape,
+  const double                                            theTolAng,
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theMap,
+  std::vector<BRepLib_RegularityTask>&                    theTasks,
   const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theEdgesToEncode =
     NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>())
 {
@@ -2444,7 +2519,7 @@ static void EncodeRegularity(
   {
     for (TopoDS_Iterator it(aShape); it.More(); it.Next())
     {
-      EncodeRegularity(it.Value(), theTolAng, theMap, theEdgesToEncode);
+      EncodeRegularity(it.Value(), theTolAng, theMap, theTasks, theEdgesToEncode);
     }
     return;
   }
@@ -2509,7 +2584,7 @@ static void EncodeRegularity(
       }
       if (found)
       {
-        BRepLib::EncodeRegularity(E, F1, F2, theTolAng);
+        theTasks.push_back(BRepLib_RegularityTask{E, F1, F2});
       }
     }
   }
@@ -2533,7 +2608,11 @@ static void EncodeRegularity(
 void BRepLib::EncodeRegularity(const TopoDS_Shape& S, const double TolAng)
 {
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMap;
-  ::EncodeRegularity(S, TolAng, aMap);
+  std::vector<BRepLib_RegularityTask>                    aTasks;
+  ::EncodeRegularity(S, TolAng, aMap, aTasks);
+  // Serially: this is called from algorithms that may themselves be running on
+  // several threads, where spreading it again costs more than it saves.
+  ::RunRegularity(aTasks, TolAng, false);
 }
 
 //=======================================================================
@@ -2545,9 +2624,12 @@ void BRepLib::EncodeRegularity(const TopoDS_Shape& S, const double TolAng)
 
 void BRepLib::EncodeRegularity(const TopoDS_Shape&                                     S,
                                const double                                            TolAng,
-                               NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed)
+                               NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theProcessed,
+                               const bool                                              theIsParallel)
 {
-  ::EncodeRegularity(S, TolAng, theProcessed);
+  std::vector<BRepLib_RegularityTask> aTasks;
+  ::EncodeRegularity(S, TolAng, theProcessed, aTasks);
+  ::RunRegularity(aTasks, TolAng, theIsParallel);
 }
 
 //=======================================================================
@@ -2573,7 +2655,9 @@ void BRepLib::EncodeRegularity(const TopoDS_Shape&                   S,
   }
 
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMap;
-  ::EncodeRegularity(S, TolAng, aMap, aPureEdges);
+  std::vector<BRepLib_RegularityTask>                    aTasks;
+  ::EncodeRegularity(S, TolAng, aMap, aTasks, aPureEdges);
+  ::RunRegularity(aTasks, TolAng, false);
 }
 
 //=======================================================================

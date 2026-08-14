@@ -340,6 +340,17 @@ STEPControl_Controller::STEPControl_Controller()
     Interface_Static::Init("step", "read.step.parallel.healing", '&', "eval Pipeline"); // 3
     Interface_Static::SetCVal("read.step.parallel.healing", "Pipeline");
 
+    // Regularity encoding of translated shapes: On lets the worker that healed
+    // a shape encode it as well, so the walk over its faces and edges is off
+    // the thread reading results; Off leaves it to whoever asks for the result
+    // (see XSControl_TransferReader::ShapeResult). Only applies where healing
+    // pipelines - there is no worker to do it on otherwise.
+    Interface_Static::Init("step", "read.step.parallel.encoding", 'e', "");
+    Interface_Static::Init("step", "read.step.parallel.encoding", '&', "enum 0");
+    Interface_Static::Init("step", "read.step.parallel.encoding", '&', "eval Off"); // 0
+    Interface_Static::Init("step", "read.step.parallel.encoding", '&', "eval On");  // 1
+    Interface_Static::SetCVal("read.step.parallel.encoding", "On");
+
     // Parsing of the file itself: On cuts the DATA section into record-aligned
     // chunks scanned in parallel (see StepFile_Read), Off keeps one pass over
     // the whole file. A file that cannot be cut safely falls back on its own.

@@ -2,6 +2,8 @@
 
 Open CASCADE Technology (OCCT) is a software development platform providing services for 3D surface and solid modeling, CAD data exchange, and visualization. Most of OCCT functionality is available in the form of C++ libraries. OCCT is ideal for developing software dealing with 3D modeling (CAD), manufacturing/measuring (CAM), or numerical simulation (CAE).
 
+**This is the realthunder fork**, maintained as the geometry kernel of the [realthunder fork of FreeCAD](https://github.com/realthunder/FreeCAD). See [dox/fork_changes.md](dox/fork_changes.md) for everything it changes over upstream.
+
 ## License
 
 Open CASCADE Technology is free software; you can redistribute it and/or modify it under the terms of the GNU Lesser General Public License version 2.1 as published by the Free Software Foundation, with a special exception defined in the file `OCCT_LGPL_EXCEPTION.txt`. Consult the file `LICENSE_LGPL_21.txt` included in the OCCT distribution for the complete text of the license.

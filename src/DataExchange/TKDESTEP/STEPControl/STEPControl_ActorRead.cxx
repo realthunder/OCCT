@@ -122,6 +122,8 @@
 #include <UnitsMethods.hxx>
 #include <XSAlgo.hxx>
 #include <XSAlgo_ShapeProcessor.hxx>
+#include <XSControl_TransferReader.hxx>
+#include <BRepLib.hxx>
 #include <BRepTools_ReShape.hxx>
 #include <Interface_Static.hxx>
 #include <Message.hxx>
@@ -238,6 +240,48 @@ struct DeferredHealing
   //! What healing this one shape took. One shape can dominate a whole batch,
   //! which only the individual times show; reported on the trace stream.
   double                                 Seconds  = 0.0;
+  //! What encoding its regularity took, when that was done here rather than
+  //! left to whoever asks for the result.
+  double                                 EncodeSeconds = 0.0;
+};
+
+//! Which shapes have had their regularity encoded by a healing worker, and
+//! therefore need not be encoded again when the result containing them is
+//! asked for. Shared by every worker of one transfer, so claiming is what
+//! keeps two of them off the same shape: encoding writes the continuity onto
+//! the edges, which two shapes may well have between them - the parts of an
+//! assembly and the assembly, or one component used twice.
+class STEPControl_EncodedShapes : public Standard_Transient
+{
+public:
+  //! The angle regularity is to be encoded at, read on the transferring
+  //! thread: a worker must not go into Interface_Static behind its back.
+  explicit STEPControl_EncodedShapes(const double theTolAng)
+      : myTolAng(theTolAng)
+  {
+  }
+
+  double TolAng() const { return myTolAng; }
+
+  //! Takes the shape on, unless another worker got to it first. The location
+  //! is dropped, as EncodeRegularity itself does: the same shape placed twice
+  //! carries the same edges and is encoded once.
+  bool Claim(const TopoDS_Shape& theShape)
+  {
+    TopoDS_Shape    aShape = theShape;
+    TopLoc_Location aNullLoc;
+    aShape.Location(aNullLoc);
+    std::unique_lock<std::mutex> aLock(myMutex);
+    return myShapes.Add(aShape);
+  }
+
+  //! Everything claimed so far. To be read once the workers have stopped.
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& Shapes() const { return myShapes; }
+
+private:
+  double                                                 myTolAng;
+  std::mutex                                             myMutex;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myShapes;
 };
 
 //! Heals one deferred shape in place. Touches nothing but its own entry, so it
@@ -352,6 +396,15 @@ thread_local std::vector<std::unique_ptr<DeferredHealing>> THE_DEFERRED_HEALINGS
 
 //! Whether this thread is accumulating healings instead of running them inline.
 thread_local bool THE_DEFER_PROCESSING = false;
+
+//! What the heal-ahead workers of this transfer have encoded the regularity
+//! of. Kept for the whole transfer, not just one batch, so that the closing
+//! root - which is assembled from everything the batches produced - finds it
+//! all done. Handed to the transfer reader by each flush.
+thread_local occ::handle<STEPControl_EncodedShapes> THE_ENCODED_AHEAD;
+
+//! The process the shapes above were transferred by.
+thread_local occ::handle<Transfer_TransientProcess> THE_ENCODED_PROCESS;
 
 //! How many binders the previous flush of this process already rewrote. A
 //! streamed transfer flushes once per batch, and every binder from an earlier
@@ -2958,6 +3011,34 @@ void healOne(DeferredHealing& theHealing, const Message_ProgressRange& theProgre
 
 //=================================================================================================
 
+//! Encodes the regularity of one healed shape, claiming each part of it so
+//! that no two workers encode the same one. Only the parts are claimed: a
+//! compound is nothing but the sum of them, and whoever asks for a result
+//! containing it walks it in no time once they are all done.
+void encodeOne(const TopoDS_Shape& theShape, STEPControl_EncodedShapes& theEncoded)
+{
+  if (theShape.IsNull())
+  {
+    return;
+  }
+  if (theShape.ShapeType() == TopAbs_COMPOUND || theShape.ShapeType() == TopAbs_COMPSOLID)
+  {
+    for (TopoDS_Iterator anIter(theShape); anIter.More(); anIter.Next())
+    {
+      encodeOne(anIter.Value(), theEncoded);
+    }
+    return;
+  }
+  if (!theEncoded.Claim(theShape))
+  {
+    return; // another worker has it
+  }
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aProcessed;
+  BRepLib::EncodeRegularity(theShape, theEncoded.TolAng(), aProcessed);
+}
+
+//=================================================================================================
+
 void startHealPool()
 {
   if (!THE_HEAL_PIPELINE.IsNull() || Interface_Static::IVal("read.step.parallel.healing") != 3)
@@ -2971,12 +3052,35 @@ void startHealPool()
   XSAlgo::Init();
   ShapeExtend::Init();
 
-  THE_HEAL_PIPELINE = new STEPControl_HealPipeline([](void* theItem) {
+  // Encoding the regularity of a result is the caller's to pay for when it
+  // asks for it, on the one thread it reads results with. A shape healed here
+  // is final, so the worker that healed it may as well encode it too, which
+  // takes that walk over every face and edge off the transferring thread.
+  // Kept for the whole transfer: the closing root is assembled from what the
+  // batches produced, and finds all of it encoded already.
+  if (THE_ENCODED_AHEAD.IsNull() && Interface_Static::IVal("read.step.parallel.encoding") == 1)
+  {
+    const double aTolAng = Interface_Static::RVal("read.encoderegularity.angle");
+    if (aTolAng > 0)
+    {
+      THE_ENCODED_AHEAD = new STEPControl_EncodedShapes(aTolAng);
+    }
+  }
+
+  occ::handle<STEPControl_EncodedShapes> anEncoded = THE_ENCODED_AHEAD;
+  THE_HEAL_PIPELINE = new STEPControl_HealPipeline([anEncoded](void* theItem) {
     DeferredHealing* aHealing = static_cast<DeferredHealing*>(theItem);
     try
     {
       OCC_CATCH_SIGNALS
       healOne(*aHealing, Message_ProgressRange());
+      if (!anEncoded.IsNull())
+      {
+        OSD_Timer aTimer;
+        aTimer.Start();
+        encodeOne(aHealing->Result, *anEncoded);
+        aHealing->EncodeSeconds = aTimer.ElapsedTime();
+      }
     }
     catch (Standard_Failure const&)
     {
@@ -3012,6 +3116,27 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
   aFlushTimer.Start();
   stopHealPool();
   const double aWaited = aFlushTimer.ElapsedTime();
+
+  // The workers have stopped and their shapes are final, so whatever they
+  // encoded on the way can now be told to the reader that is about to hand
+  // the results out - it then gives back a result without walking the parts
+  // of it again. Nothing else is encoding meanwhile: results are read on this
+  // thread, between one deferred transfer and the next.
+  if (!THE_ENCODED_AHEAD.IsNull())
+  {
+    if (!THE_ENCODED_PROCESS.IsNull() && THE_ENCODED_PROCESS != theTP)
+    {
+      // Another transfer: its shapes are not these, and holding them here
+      // would only keep them alive. The batch that has just been encoded
+      // pays for it again on the reading thread, once.
+      THE_ENCODED_AHEAD = new STEPControl_EncodedShapes(THE_ENCODED_AHEAD->TolAng());
+    }
+    else
+    {
+      XSControl_TransferReader::NoteEncodedRegularity(theTP->Model(), THE_ENCODED_AHEAD->Shapes());
+    }
+    THE_ENCODED_PROCESS = theTP;
+  }
 
   if (THE_DEFERRED_HEALINGS.empty())
   {
@@ -3064,11 +3189,12 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
   // done unless it is going to be printed.
   if (Message::IsAccepted(Message_Trace))
   {
-    double                 aSum = 0.0, aMax = 0.0;
+    double                 aSum = 0.0, aMax = 0.0, aEncoded = 0.0;
     const DeferredHealing* aWorst = nullptr;
     for (const std::unique_ptr<DeferredHealing>& aHealing : aHealings)
     {
       aSum += aHealing->Seconds;
+      aEncoded += aHealing->EncodeSeconds;
       if (aHealing->Seconds > aMax)
       {
         aMax   = aHealing->Seconds;
@@ -3100,7 +3226,8 @@ void STEPControl_ActorRead::FlushDeferredProcessing(
                          << aPending.size() << " left to this flush, "
                          << (aIsParallel ? "parallel" : "serial") << "), waited " << aWaited
                          << " s, healing " << aSum << " s summed, " << aMax
-                         << " s the longest, " << aFlushTimer.ElapsedTime() << " s so far";
+                         << " s the longest, encoding " << aEncoded << " s summed, "
+                         << aFlushTimer.ElapsedTime() << " s so far";
   }
 
   for (const std::unique_ptr<DeferredHealing>& aHealing : aHealings)
