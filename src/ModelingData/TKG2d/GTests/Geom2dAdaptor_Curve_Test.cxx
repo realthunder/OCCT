@@ -22,6 +22,7 @@
 #include <gp_Pnt2d.hxx>
 #include <Precision.hxx>
 #include <Standard_ConstructionError.hxx>
+#include <Standard_NullObject.hxx>
 
 //=================================================================================================
 // Test fixture for Geom2dAdaptor_Curve degenerated curve handling
@@ -236,4 +237,58 @@ TEST_F(Geom2dAdaptor_Curve_Test, LoadWithoutParameters_Success)
   EXPECT_NEAR(anAdaptor.FirstParameter(), myCircle->FirstParameter(), Precision::Confusion());
   EXPECT_NEAR(anAdaptor.LastParameter(), myCircle->LastParameter(), Precision::Confusion());
   EXPECT_TRUE(anAdaptor.IsPeriodic());
+}
+
+//=================================================================================================
+// An adaptor that was never loaded. Load() rejects a null curve, but the empty state
+// is still reachable: BRepAdaptor_Curve2d skips the Load() when the edge carries no
+// pcurve on its face. Asking such an adaptor for a value must raise, not dereference
+// the null curve behind it.
+//=================================================================================================
+
+TEST_F(Geom2dAdaptor_Curve_Test, NotLoaded_IsInitialized_False)
+{
+  Geom2dAdaptor_Curve anAdaptor;
+
+  EXPECT_FALSE(anAdaptor.IsInitialized());
+  EXPECT_EQ(anAdaptor.GetType(), GeomAbs_OtherCurve);
+  EXPECT_TRUE(anAdaptor.Curve().IsNull());
+}
+
+//=================================================================================================
+
+TEST_F(Geom2dAdaptor_Curve_Test, NotLoaded_Value_ThrowsException)
+{
+  Geom2dAdaptor_Curve anAdaptor;
+
+  EXPECT_THROW(anAdaptor.Value(0.0), Standard_NullObject);
+
+  gp_Pnt2d aPoint;
+  EXPECT_THROW(anAdaptor.D0(0.0, aPoint), Standard_NullObject);
+}
+
+//=================================================================================================
+
+TEST_F(Geom2dAdaptor_Curve_Test, NotLoaded_Derivatives_ThrowException)
+{
+  Geom2dAdaptor_Curve anAdaptor;
+
+  gp_Pnt2d aPoint;
+  gp_Vec2d aV1, aV2, aV3;
+
+  EXPECT_THROW(anAdaptor.D1(0.0, aPoint, aV1), Standard_NullObject);
+  EXPECT_THROW(anAdaptor.D2(0.0, aPoint, aV1, aV2), Standard_NullObject);
+  EXPECT_THROW(anAdaptor.D3(0.0, aPoint, aV1, aV2, aV3), Standard_NullObject);
+  EXPECT_THROW(anAdaptor.DN(0.0, 1), Standard_NullObject);
+}
+
+//=================================================================================================
+
+TEST_F(Geom2dAdaptor_Curve_Test, NotLoaded_CurveQueries_ThrowException)
+{
+  Geom2dAdaptor_Curve anAdaptor;
+
+  EXPECT_THROW(anAdaptor.IsPeriodic(), Standard_NullObject);
+  EXPECT_THROW(anAdaptor.Period(), Standard_NullObject);
+  EXPECT_THROW(anAdaptor.NbSamples(), Standard_NullObject);
 }

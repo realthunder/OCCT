@@ -53,6 +53,7 @@
 #include <Standard_DomainError.hxx>
 #include <Standard_NoSuchObject.hxx>
 #include <Standard_NotImplemented.hxx>
+#include <Standard_NullObject.hxx>
 #include <Standard_Integer.hxx>
 #include <NCollection_Array1.hxx>
 
@@ -81,6 +82,20 @@ bool hasEvalRep(const Geom2dAdaptor_Curve::CurveDataVariant& theData)
     return !anOffsetData->EvalRep.IsNull();
   }
   return false;
+}
+
+// Raises instead of dereferencing a curve that was never loaded. Load() rejects a
+// null curve, but an adaptor can still be left empty: BRepAdaptor_Curve2d skips the
+// Load() when the edge carries no pcurve on its face, and a defective shape then
+// reaches evaluation with myTypeCurve == GeomAbs_OtherCurve and a null myCurve.
+// Only the paths that fall through to the curve itself need the check; every other
+// branch has a matching myCurveData alternative, which cannot exist without a curve.
+void raiseIfNotLoaded(const occ::handle<Geom2d_Curve>& theCurve, const char* theMessage)
+{
+  if (theCurve.IsNull())
+  {
+    throw Standard_NullObject(theMessage);
+  }
 }
 } // namespace
 
@@ -603,6 +618,7 @@ bool Geom2dAdaptor_Curve::IsClosed() const
 
 bool Geom2dAdaptor_Curve::IsPeriodic() const
 {
+  raiseIfNotLoaded(myCurve, "Geom2dAdaptor_Curve::IsPeriodic() - no curve is loaded");
   return myCurve->IsPeriodic();
 }
 
@@ -610,6 +626,7 @@ bool Geom2dAdaptor_Curve::IsPeriodic() const
 
 double Geom2dAdaptor_Curve::Period() const
 {
+  raiseIfNotLoaded(myCurve, "Geom2dAdaptor_Curve::Period() - no curve is loaded");
   return myCurve->LastParameter() - myCurve->FirstParameter();
 }
 
@@ -789,6 +806,7 @@ gp_Pnt2d Geom2dAdaptor_Curve::EvalD0(const double theU) const
     }
 
     default:
+      raiseIfNotLoaded(myCurve, "Geom2dAdaptor_Curve::EvalD0() - no curve is loaded");
       return myCurve->EvalD0(U);
   }
 }
@@ -884,6 +902,7 @@ Geom2d_Curve::ResD1 Geom2dAdaptor_Curve::EvalD1(const double theU) const
     }
 
     default:
+      raiseIfNotLoaded(myCurve, "Geom2dAdaptor_Curve::EvalD1() - no curve is loaded");
       return myCurve->EvalD1(U);
   }
 }
@@ -982,6 +1001,7 @@ Geom2d_Curve::ResD2 Geom2dAdaptor_Curve::EvalD2(const double theU) const
     }
 
     default:
+      raiseIfNotLoaded(myCurve, "Geom2dAdaptor_Curve::EvalD2() - no curve is loaded");
       return myCurve->EvalD2(U);
   }
 }
@@ -1104,6 +1124,7 @@ Geom2d_Curve::ResD3 Geom2dAdaptor_Curve::EvalD3(const double theU) const
     }
 
     default:
+      raiseIfNotLoaded(myCurve, "Geom2dAdaptor_Curve::EvalD3() - no curve is loaded");
       return myCurve->EvalD3(U);
   }
 }
@@ -1178,6 +1199,7 @@ gp_Vec2d Geom2dAdaptor_Curve::EvalDN(const double theU, const int theN) const
     default:
       break;
   }
+  raiseIfNotLoaded(myCurve, "Geom2dAdaptor_Curve::EvalDN() - no curve is loaded");
   return myCurve->EvalDN(U, N);
 }
 
@@ -1390,5 +1412,6 @@ static int nbPoints(const occ::handle<Geom2d_Curve>& theCurve)
 
 int Geom2dAdaptor_Curve::NbSamples() const
 {
+  raiseIfNotLoaded(myCurve, "Geom2dAdaptor_Curve::NbSamples() - no curve is loaded");
   return nbPoints(myCurve);
 }
