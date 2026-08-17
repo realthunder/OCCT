@@ -164,6 +164,28 @@ public:
   //! on the stream <OS>.
   Standard_EXPORT void DumpPolygonOnTriangulation(Standard_OStream& OS) const;
 
+  //! The geometry tables the shape records index into.
+  //!
+  //! A subclass that writes or reads the tables itself needs them: the indices
+  //! WriteGeometry() emits per shape are positions in these sets, so a format
+  //! that stores a table entry differently -- naming geometry held elsewhere
+  //! rather than writing it out -- has to see and seed them. Reading them is
+  //! also the only way to ask which curve or surface an index stands for.
+  //! @{
+  const GeomTools_SurfaceSet& Surfaces() const { return mySurfaces; }
+
+  GeomTools_SurfaceSet& ChangeSurfaces() { return mySurfaces; }
+
+  const GeomTools_CurveSet& Curves() const { return myCurves; }
+
+  GeomTools_CurveSet& ChangeCurves() { return myCurves; }
+
+  const GeomTools_Curve2dSet& Curves2d() const { return myCurves2d; }
+
+  GeomTools_Curve2dSet& ChangeCurves2d() { return myCurves2d; }
+
+  //! @}
+
 private:
   BRep_Builder                                            myBuilder;
   GeomTools_SurfaceSet                                    mySurfaces;

@@ -52,6 +52,11 @@ public:
   //! Returns the index of <L>.
   Standard_EXPORT int Index(const occ::handle<Geom_Curve>& C) const;
 
+  //! The number of entries. A subclass of BRepTools_ShapeSet that writes the
+  //! tables itself needs it: the shape records index into this set, so the
+  //! count is part of what has to be emitted and read back.
+  int Extent() const { return myMap.Extent(); }
+
   //! Dumps the content of me on the stream <OS>.
   Standard_EXPORT void Dump(Standard_OStream& OS) const;
 
