@@ -28,6 +28,11 @@
 #include <Standard_IStream.hxx>
 #include <Message_ProgressRange.hxx>
 
+#include <cstddef>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 class Geom2d_Curve;
 
 //! Stores a set of Curves from Geom2d.
@@ -42,8 +47,22 @@ public:
   //! Clears the content of the set.
   Standard_EXPORT void Clear();
 
-  //! Incorporate a new Curve in the set and returns
-  //! its index.
+  //! Incorporate a new Curve in the set and returns its index.
+  //!
+  //! A curve that would be written exactly as one already in the set is not
+  //! added again: the index of that one is returned instead. The set is keyed
+  //! by handle otherwise, so a file used to carry the same pcurve as often as
+  //! independent computation happened to produce it -- on a real model the
+  //! largest single duplication in a shape file.
+  //!
+  //! This is sound for 2D curves specifically. A pcurve is reached through the
+  //! surface an edge's representation names, never by the identity of the curve
+  //! object itself, so two representations sharing one Geom2d_Curve are
+  //! indistinguishable from two holding equal copies. The 3D curve and surface
+  //! sets are deliberately NOT deduplicated this way: a vertex's parameter is
+  //! keyed on its edge's curve, and an edge's pcurve on its face's surface, so
+  //! merging equal-but-distinct objects there would make those lookups
+  //! ambiguous.
   Standard_EXPORT int Add(const occ::handle<Geom2d_Curve>& C);
 
   //! Returns the Curve of index <I>.
@@ -84,6 +103,16 @@ public:
 
 private:
   NCollection_IndexedMap<occ::handle<Standard_Transient>> myMap;
+  //! Hash of a curve's written form -> the indices in myMap that hash to it.
+  //! Only Add() maintains this; Read() fills myMap directly, so a file whose
+  //! table does hold equal entries still reads back with its indices intact.
+  std::unordered_map<std::size_t, std::vector<int>> myByValue;
+  //! A curve Add() merged into an equal entry -> that entry's index. Index() is
+  //! how the shape records are written, and it looks up by handle, so a merged
+  //! curve has to be answerable even though the map holds its twin instead. The
+  //! handle is kept so the address remains this curve's for the set's lifetime.
+  std::unordered_map<const Standard_Transient*, std::pair<occ::handle<Standard_Transient>, int>>
+    myAlias;
 };
 
 #endif // _GeomTools_Curve2dSet_HeaderFile

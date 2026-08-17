@@ -41,7 +41,13 @@
 #include <fstream>
 #include <gp_Pnt2d.hxx>
 #include <NCollection_Array1.hxx>
+
 #include <Standard_Integer.hxx>
+
+#include <functional>
+#include <locale>
+#include <sstream>
+#include <string>
 
 #define LINE 1
 #define CIRCLE 2
@@ -62,13 +68,56 @@ GeomTools_Curve2dSet::GeomTools_Curve2dSet() = default;
 void GeomTools_Curve2dSet::Clear()
 {
   myMap.Clear();
+  myByValue.clear();
+  myAlias.clear();
 }
 
 //=================================================================================================
 
+namespace
+{
+//! A curve exactly as Write() would put it in the table.
+std::string writtenForm(const occ::handle<Geom2d_Curve>& theCurve)
+{
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out.precision(17);
+  GeomTools_Curve2dSet::PrintCurve2d(theCurve, out, true);
+  return out.str();
+}
+} // namespace
+
 int GeomTools_Curve2dSet::Add(const occ::handle<Geom2d_Curve>& S)
 {
-  return myMap.Add(S);
+  if (S.IsNull())
+  {
+    return myMap.Add(S);
+  }
+  // The same object is still answered without writing anything out.
+  if (const int known = myMap.FindIndex(S))
+  {
+    return known;
+  }
+
+  const std::string text = writtenForm(S);
+  std::vector<int>& bucket = myByValue[std::hash<std::string>{}(text)];
+  for (const int candidate : bucket)
+  {
+    // The hash only proposes; equal text is what decides, so a collision costs
+    // one comparison and never merges two curves that would be written apart.
+    if (writtenForm(Curve2d(candidate)) == text)
+    {
+      // Index() is what the shape records are written through, and it looks up
+      // by handle. This curve is not in the map -- its twin is -- so without
+      // this the record would be written with index 0.
+      myAlias.emplace(S.get(), std::make_pair(occ::handle<Standard_Transient>(S), candidate));
+      return candidate;
+    }
+  }
+
+  const int added = myMap.Add(S);
+  bucket.push_back(added);
+  return added;
 }
 
 //=================================================================================================
@@ -87,7 +136,13 @@ occ::handle<Geom2d_Curve> GeomTools_Curve2dSet::Curve2d(const int I) const
 
 int GeomTools_Curve2dSet::Index(const occ::handle<Geom2d_Curve>& S) const
 {
-  return myMap.FindIndex(S);
+  if (const int index = myMap.FindIndex(S))
+  {
+    return index;
+  }
+  // A curve Add() merged into an equal entry answers with that entry's index.
+  const auto found = myAlias.find(S.get());
+  return found == myAlias.end() ? 0 : found->second.second;
 }
 
 //=================================================================================================

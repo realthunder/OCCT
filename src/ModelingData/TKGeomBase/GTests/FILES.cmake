@@ -10,6 +10,7 @@ set(OCCT_TKGeomBase_GTests_FILES
   AppCont_ContMatrices_Test.cxx
   BndLib_Test.cxx
   GeomBndLib_Curve_Test.cxx
+  GeomTools_Curve2dSet_Test.cxx
   GeomBndLib_Curve2d_Test.cxx
   GeomBndLib_OffsetCurve_Test.cxx
   GeomBndLib_OffsetCurve2d_Test.cxx
