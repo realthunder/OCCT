@@ -98,6 +98,10 @@ int GeomTools_Curve2dSet::Add(const occ::handle<Geom2d_Curve>& S)
   {
     return known;
   }
+  if (!myMerging)
+  {
+    return myMap.Add(S);
+  }
 
   const std::string text = writtenForm(S);
   std::vector<int>& bucket = myByValue[std::hash<std::string>{}(text)];

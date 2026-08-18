@@ -181,12 +181,18 @@ void BinTools_ShapeSet::AddShape(const TopoDS_Shape& S)
       }
       else if (CR->IsCurveOnSurface())
       {
-        mySurfaces.Add(CR->Surface());
-        myCurves2d.Add(CR->PCurve());
-        ChangeLocations().Add(CR->Location());
-        if (CR->IsCurveOnClosedSurface())
+        // Left out of the tables under exactly the condition Write leaves the
+        // record out under -- see BRepTools_ShapeSet::AddGeometry for why the
+        // two must agree.
+        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR)))
         {
-          myCurves2d.Add(CR->PCurve2());
+          mySurfaces.Add(CR->Surface());
+          myCurves2d.Add(CR->PCurve());
+          ChangeLocations().Add(CR->Location());
+          if (CR->IsCurveOnClosedSurface())
+          {
+            myCurves2d.Add(CR->PCurve2());
+          }
         }
       }
       else if (CR->IsRegularity())
@@ -682,6 +688,12 @@ void BinTools_ShapeSet::WriteShape(const TopoDS_Shape& S, Standard_OStream& OS) 
         }
         else if (CR->IsCurveOnSurface())
         {
+          // See AddGeometry: the same test decides both.
+          if (myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+          {
+            itrc.Next();
+            continue;
+          }
           occ::handle<BRep_GCurve> GC = occ::down_cast<BRep_GCurve>(itrc.Value());
           GC->Range(first, last);
           if (!CR->IsCurveOnClosedSurface())

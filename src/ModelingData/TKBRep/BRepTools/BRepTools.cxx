@@ -19,10 +19,14 @@
 #include <Adaptor3d_CurveOnSurface.hxx>
 #include <Bnd_Box2d.hxx>
 #include <BndLib_Add2dCurve.hxx>
+#include <BRep_CurveRepresentation.hxx>
 #include <BRep_GCurve.hxx>
 #include <BRep_TEdge.hxx>
+#include <BRep_Tool.hxx>
 #include <BRepTools_ShapeSet.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <Geom2d_BSplineCurve.hxx>
+#include <Geom2d_BezierCurve.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom2dAdaptor_Curve.hxx>
 #include <GeomAdaptor_Curve.hxx>
@@ -35,7 +39,10 @@
 #include <Poly_PolygonOnTriangulation.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Precision.hxx>
+#include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
+#include <algorithm>
+#include <gp_Pnt2d.hxx>
 #include <Standard_Macro.hxx>
 #include <iostream>
 #include <iomanip>
@@ -364,6 +371,114 @@ void BRepTools::AddUVBounds(const TopoDS_Face& aF, const TopoDS_Edge& aE, Bnd_Bo
   aBoxS.Update(aXmin, aYmin, aXmax, aYmax);
 
   aB.Add(aBoxS);
+}
+
+//=================================================================================================
+
+bool BRepTools::IsPCurveOmittable(const TopoDS_Edge&                           theEdge,
+                                  const occ::handle<BRep_CurveRepresentation>& theCR)
+{
+  if (theCR.IsNull() || !theCR->IsCurveOnSurface() || theCR->IsCurveOnClosedSurface())
+  {
+    return false;
+  }
+  const occ::handle<Geom2d_Curve> aStored = theCR->PCurve();
+  const occ::handle<Geom_Surface> aSurface = theCR->Surface();
+  if (aStored.IsNull() || aSurface.IsNull())
+  {
+    return false;
+  }
+
+  // The reader reaches CurveOnPlane with the face's location, and finds this
+  // representation by comparing against L.Predivided(E.Location()), which is
+  // what the representation stores. Predivided(Other) is Other.Inverted() * me,
+  // so stripping the edge's location and passing the representation's own
+  // gives CurveOnPlane the identical relative frame:
+  //   reader: (Le * Lc).Predivided(Lf) = Lf^-1 * Le * Lc
+  //   here:    Lc.Predivided(Lf^-1 * Le) = Lf^-1 * Le * Lc
+  TopoDS_Edge aLocalEdge = theEdge;
+  aLocalEdge.Location(TopLoc_Location());
+  aLocalEdge.Orientation(TopAbs_FORWARD);
+
+  double                    aFirst = 0., aLast = 0.;
+  occ::handle<Geom2d_Curve> aRecovered;
+  try
+  {
+    OCC_CATCH_SIGNALS
+    // Null for anything but a plane, and for an edge whose 3D curve is missing
+    // or does not trim to the edge's range -- a degenerate edge among them,
+    // whose pcurve is the only geometry it has.
+    aRecovered = BRep_Tool::CurveOnPlane(aLocalEdge, aSurface, theCR->Location(), aFirst, aLast);
+  }
+  catch (const Standard_Failure&)
+  {
+    return false;
+  }
+  if (aRecovered.IsNull() || aLast <= aFirst)
+  {
+    return false;
+  }
+
+  // Only an analytic projection is taken. A line, a circle or an ellipse
+  // projects to itself and comes back exact -- 4.8e-13 over a whole model,
+  // against 3.7e-8 when splines are allowed in as well. The 1.5% of extra
+  // shape bytes that would buy is not worth either half of the trade: the
+  // agreement stops being exact, and the reader has to run an approximation
+  // loop to rebuild a spline pcurve, on every call, uncached, where the
+  // analytic case costs about a microsecond. This moves cost off the file and
+  // onto every open, which is the wrong direction.
+  if (aRecovered->IsKind(STANDARD_TYPE(Geom2d_BSplineCurve))
+      || aRecovered->IsKind(STANDARD_TYPE(Geom2d_BezierCurve)))
+  {
+    return false;
+  }
+
+  // Producing *a* pcurve is not enough: it has to be the one being dropped.
+  // Sampled on the surface rather than in its parameter space, so the criterion
+  // is the edge's own tolerance -- the quantity that bounds how far the pcurve
+  // and the 3D curve are allowed to disagree in the first place.
+  const occ::handle<BRep_GCurve> aGC = occ::down_cast<BRep_GCurve>(theCR);
+  double                         aStoredFirst = aFirst, aStoredLast = aLast;
+  if (!aGC.IsNull())
+  {
+    aGC->Range(aStoredFirst, aStoredLast);
+  }
+  const double aBegin = std::max(aFirst, aStoredFirst);
+  const double anEnd  = std::min(aLast, aStoredLast);
+  if (anEnd <= aBegin)
+  {
+    return false;
+  }
+
+  // The tighter of the edge's own tolerance and the kernel's default precision.
+  // An edge is allowed to declare a lot of slop -- 5e-4 is ordinary -- and
+  // accepting that much would let the file come back measurably different from
+  // what was written while still being "within tolerance". What a persistence
+  // format owes is the shape it was given, to the precision the kernel treats
+  // as exact.
+  const double  aTol      = std::min(BRep_Tool::Tolerance(theEdge), Precision::Confusion());
+  constexpr int aNbSample = 8;
+  try
+  {
+    OCC_CATCH_SIGNALS
+    for (int i = 0; i <= aNbSample; ++i)
+    {
+      const double aParam = aBegin + (anEnd - aBegin) * double(i) / double(aNbSample);
+      const gp_Pnt2d aUVStored    = aStored->Value(aParam);
+      const gp_Pnt2d aUVRecovered = aRecovered->Value(aParam);
+      if (aSurface->Value(aUVStored.X(), aUVStored.Y())
+            .Distance(aSurface->Value(aUVRecovered.X(), aUVRecovered.Y()))
+          > aTol)
+      {
+        return false;
+      }
+    }
+  }
+  catch (const Standard_Failure&)
+  {
+    return false;
+  }
+  return true;
 }
 
 //=================================================================================================

@@ -70,6 +70,19 @@ public:
   //! Ignored (always written) if face defines only triangulation (no surface).
   void SetWithNormals(const bool theWithNormals) { myWithNormals = theWithNormals; }
 
+  //! Return true if pcurves a plane can rebuild are left out of the file.
+  bool IsOmitPCurvesOnPlane() const { return myOmitPCurvesOnPlane; }
+
+  //! Define whether to leave out the pcurves that reading the file back
+  //! computes again anyway, which is those on a plane -- see
+  //! BRepTools::IsPCurveOmittable for the exact condition and how it is
+  //! checked. Off by default, so a file written without asking is unchanged.
+  //!
+  //! Nothing is needed on the reading side: a representation that is not in
+  //! the file is one BRep_Tool::CurveOnSurface answers for by projecting the
+  //! edge's 3D curve onto the plane.
+  void SetOmitPCurvesOnPlane(const bool theOmit) { myOmitPCurvesOnPlane = theOmit; }
+
   //! Clears the content of the set.
   Standard_EXPORT void Clear() override;
 
@@ -201,6 +214,7 @@ private:
   NCollection_IndexedMap<occ::handle<Standard_Transient>> myNodes;
   bool                                                    myWithTriangles;
   bool                                                    myWithNormals;
+  bool                                                    myOmitPCurvesOnPlane = false;
 };
 
 #endif // _BRepTools_ShapeSet_HeaderFile

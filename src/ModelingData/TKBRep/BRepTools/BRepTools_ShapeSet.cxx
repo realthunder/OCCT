@@ -157,12 +157,19 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
       }
       else if (CR->IsCurveOnSurface())
       {
-        mySurfaces.Add(CR->Surface());
-        myCurves2d.Add(CR->PCurve());
-        ChangeLocations().Add(CR->Location());
-        if (CR->IsCurveOnClosedSurface())
+        // Left out of the tables under exactly the condition WriteGeometry
+        // leaves the record out under. The two have to agree: an entry no
+        // record names is dead weight, and a record naming an entry that was
+        // never added is written with index 0 and read back empty.
+        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR)))
         {
-          myCurves2d.Add(CR->PCurve2());
+          mySurfaces.Add(CR->Surface());
+          myCurves2d.Add(CR->PCurve());
+          ChangeLocations().Add(CR->Location());
+          if (CR->IsCurveOnClosedSurface())
+          {
+            myCurves2d.Add(CR->PCurve2());
+          }
         }
       }
       else if (CR->IsRegularity())
@@ -656,6 +663,13 @@ void BRepTools_ShapeSet::WriteGeometry(const TopoDS_Shape& S, Standard_OStream& 
       }
       else if (CR->IsCurveOnSurface())
       {
+        // See AddGeometry: the same test decides both, or the tables and the
+        // records stop agreeing.
+        if (myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+        {
+          itrc.Next();
+          continue;
+        }
         occ::handle<BRep_GCurve> GC = occ::down_cast<BRep_GCurve>(itrc.Value());
         GC->Range(first, last);
         if (!CR->IsCurveOnClosedSurface())

@@ -40,6 +40,7 @@ class TopoDS_Shell;
 class TopoDS_Solid;
 class TopoDS_CompSolid;
 class TopoDS_Compound;
+class BRep_CurveRepresentation;
 class TopoDS_Shape;
 class BRep_Builder;
 class Geom_Curve;
@@ -119,6 +120,26 @@ public:
   //! Adds to the box <B> the bounding values of the
   //! edge in the parametric space of F.
   Standard_EXPORT static void AddUVBounds(const TopoDS_Face& F, const TopoDS_Edge& E, Bnd_Box2d& B);
+
+  //! True when the pcurve held by the representation <CR> of the edge <E> does
+  //! not have to be stored, because reading the file back computes an equal one
+  //! on demand.
+  //!
+  //! That is the case, and only the case, for a pcurve on a plane:
+  //! BRep_Tool::CurveOnSurface falls through to CurveOnPlane when it finds no
+  //! representation, and projects the edge's 3D curve onto the plane. The test
+  //! is made by performing that projection and comparing it against the pcurve
+  //! that would be dropped, so a pcurve is only ever called omittable when the
+  //! reader demonstrably produces the same one. It answers false for a
+  //! representation on a closed surface, for an edge with no 3D curve -- a
+  //! degenerate one carries its pcurve as its only geometry -- and whenever the
+  //! projection fails or disagrees.
+  //!
+  //! Used by the shape writers under BRepTools_ShapeSet::SetOmitPCurvesOnPlane
+  //! and BinTools_ShapeSet::SetOmitPCurvesOnPlane. It costs one projection per
+  //! planar pcurve, around a microsecond.
+  Standard_EXPORT static bool IsPCurveOmittable(const TopoDS_Edge&                          E,
+                                                const occ::handle<BRep_CurveRepresentation>& CR);
 
   //! Update a vertex (nothing is done)
   Standard_EXPORT static void Update(const TopoDS_Vertex& V);

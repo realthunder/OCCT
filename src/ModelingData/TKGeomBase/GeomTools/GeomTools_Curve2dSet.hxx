@@ -63,7 +63,18 @@ public:
   //! keyed on its edge's curve, and an edge's pcurve on its face's surface, so
   //! merging equal-but-distinct objects there would make those lookups
   //! ambiguous.
+  //!
+  //! Turned off with SetMerging(false), which restores keying by handle alone.
   Standard_EXPORT int Add(const occ::handle<Geom2d_Curve>& C);
+
+  //! True if Add() merges a curve into an entry that would be written
+  //! identically. On by default.
+  bool IsMerging() const { return myMerging; }
+
+  //! Define whether Add() merges equal curves. Set it before anything is added:
+  //! turning it off part way leaves already merged entries merged, and turning
+  //! it on part way only merges what comes after.
+  void SetMerging(const bool theMerging) { myMerging = theMerging; }
 
   //! Returns the Curve of index <I>.
   Standard_EXPORT occ::handle<Geom2d_Curve> Curve2d(const int I) const;
@@ -113,6 +124,7 @@ private:
   //! handle is kept so the address remains this curve's for the set's lifetime.
   std::unordered_map<const Standard_Transient*, std::pair<occ::handle<Standard_Transient>, int>>
     myAlias;
+  bool myMerging = true;
 };
 
 #endif // _GeomTools_Curve2dSet_HeaderFile

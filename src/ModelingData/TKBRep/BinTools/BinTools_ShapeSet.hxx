@@ -177,7 +177,16 @@ public:
     Standard_OStream&            OS,
     const Message_ProgressRange& theRange = Message_ProgressRange()) const;
 
+  //! Return true if pcurves a plane can rebuild are left out of the file.
+  bool IsOmitPCurvesOnPlane() const { return myOmitPCurvesOnPlane; }
+
+  //! Define whether to leave out the pcurves that reading the file back
+  //! computes again anyway -- see BRepTools_ShapeSet::SetOmitPCurvesOnPlane,
+  //! which this mirrors for the binary format. Off by default.
+  void SetOmitPCurvesOnPlane(const bool theOmit) { myOmitPCurvesOnPlane = theOmit; }
+
 private:
+  bool                 myOmitPCurvesOnPlane = false;
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>
                        myShapes; ///< index and its shape (started from 1)
   BinTools_LocationSet myLocations;
