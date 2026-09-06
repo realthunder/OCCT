@@ -13,6 +13,8 @@
 
 #include "Aspect_VKeySet.hxx"
 
+#include <mutex>
+
 IMPLEMENT_STANDARD_RTTIEXT(Aspect_VKeySet, Standard_Transient)
 
 //=================================================================================================
