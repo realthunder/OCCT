@@ -147,12 +147,23 @@ public:
   //! Dumps the content of me into the stream
   Standard_EXPORT virtual void DumpJson(Standard_OStream& theOStream, int theDepth = -1) const;
 
+  //! True for a representation an Immutable edge (a fork flag) was given
+  //! after it was frozen -- a pcurve for a face built on the edge elsewhere.
+  //! It is derived data like a triangulation, not part of the edge's value, so
+  //! BRep_Builder lets it be replaced, removed or re-ranged where the value's
+  //! own representations may not be.
+  bool IsCache() const { return myIsCache; }
+
+  //! Marks the representation as a cache, see IsCache().
+  void SetCache(const bool theIsCache) { myIsCache = theIsCache; }
+
   DEFINE_STANDARD_RTTIEXT(BRep_CurveRepresentation, Standard_Transient)
 
 protected:
   Standard_EXPORT BRep_CurveRepresentation(const TopLoc_Location& L);
 
   TopLoc_Location myLocation;
+  bool            myIsCache = false;
 };
 
 #include <BRep_CurveRepresentation.lxx>

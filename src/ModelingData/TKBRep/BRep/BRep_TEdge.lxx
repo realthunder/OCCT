@@ -25,6 +25,10 @@ inline double BRep_TEdge::Tolerance() const
 
 inline void BRep_TEdge::Tolerance(const double T)
 {
+  if (T != myTolerance && Immutable())
+  {
+    throw TopoDS_LockedShape("BRep_TEdge::Tolerance");
+  }
   myTolerance = T;
 }
 
@@ -33,7 +37,13 @@ inline void BRep_TEdge::Tolerance(const double T)
 inline void BRep_TEdge::UpdateTolerance(const double T)
 {
   if (T > myTolerance)
+  {
+    if (Immutable())
+    {
+      throw TopoDS_LockedShape("BRep_TEdge::UpdateTolerance");
+    }
     myTolerance = T;
+  }
 }
 
 //=================================================================================================

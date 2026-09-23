@@ -23,6 +23,7 @@
 #include <Standard_Real.hxx>
 #include <BRep_PointRepresentation.hxx>
 #include <NCollection_List.hxx>
+#include <TopoDS_LockedShape.hxx>
 #include <TopoDS_TVertex.hxx>
 class TopoDS_TShape;
 
@@ -38,6 +39,9 @@ public:
 
   double Tolerance() const;
 
+  //! On an Immutable TShape (a fork flag) a change throws TopoDS_LockedShape;
+  //! the same value again is no change. BRep_Builder is not the only writer:
+  //! BRepLib raises a vertex tolerance here directly.
   void Tolerance(const double T);
 
   //! Sets the tolerance to the max of <T> and the

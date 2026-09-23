@@ -23,6 +23,7 @@
 #include <TopLoc_Location.hxx>
 #include <Standard_Real.hxx>
 #include <TopoDS_TFace.hxx>
+#include <TopoDS_LockedShape.hxx>
 class Geom_Surface;
 class TopoDS_TShape;
 
@@ -71,7 +72,17 @@ public:
   double Tolerance() const { return myTolerance; }
 
   //! Sets the tolerance for this face.
-  void Tolerance(const double theTolerance) { myTolerance = theTolerance; }
+  //! On an Immutable TShape (a fork flag) a change throws TopoDS_LockedShape;
+  //! the same value again is no change. BRep_Builder is not the only writer:
+  //! BRepLib raises a vertex tolerance here directly.
+  void Tolerance(const double theTolerance)
+  {
+    if (theTolerance != myTolerance && Immutable())
+    {
+      throw TopoDS_LockedShape("BRep_TFace::Tolerance");
+    }
+    myTolerance = theTolerance;
+  }
 
   //! Returns TRUE if the boundary of this face is known to be the parametric space (Umin, UMax,
   //! VMin, VMax).

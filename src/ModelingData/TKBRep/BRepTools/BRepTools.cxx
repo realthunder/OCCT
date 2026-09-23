@@ -615,7 +615,9 @@ void BRepTools::UpdateFaceUVPoints(const TopoDS_Face& theF)
     const TopoDS_Edge& aE = TopoDS::Edge(anExpE.Current());
 
     const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&aE.TShape());
-    if (TE->Locked() || TE->Immutable())
+    // Not refused for an Immutable edge (a fork flag): the UV points are the
+    // pcurve evaluated at its range, a cache like the triangulation.
+    if (TE->Locked())
     {
       return;
     }
