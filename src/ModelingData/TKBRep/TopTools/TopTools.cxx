@@ -37,7 +37,13 @@ static FuncShowTopoShape* _FuncShowTopoShape;
 
 static thread_local char _ShapeName[256];
 
-#define OCCT_EXT_VERSION 1
+// What this fork offers beyond upstream, as SetFuncShowTopoShape reports it to
+// a client that looks it up at run time:
+//   1  the ShowTopoShape hook itself;
+//   2  TopoDS_TShape::Immutable honoured by BRep_Builder, BRepLib and the
+//      boolean pave filler, pcurves added to an Immutable edge as a cache, and
+//      the shape sets' SetStableBytes.
+#define OCCT_EXT_VERSION 2
 
 int SetFuncShowTopoShape(FuncShowTopoShape* func)
 {

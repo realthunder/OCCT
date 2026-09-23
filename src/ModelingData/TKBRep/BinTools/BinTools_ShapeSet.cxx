@@ -30,6 +30,7 @@
 #include <BRep_PolygonOnTriangulation.hxx>
 #include <BRep_TEdge.hxx>
 #include <BRep_TFace.hxx>
+#include <TopExp_Explorer.hxx>
 #include <BRep_Tool.hxx>
 #include <BRep_TVertex.hxx>
 #include <BRepTools.hxx>
@@ -71,11 +72,30 @@ void BinTools_ShapeSet::Clear()
   myTriangulations.Clear();
   myShapes.Clear();
   myLocations.Clear();
+  myOwnSurfaces.Clear();
 }
 
 //=================================================================================================
 
 int BinTools_ShapeSet::Add(const TopoDS_Shape& theShape)
+{
+  if (myStableBytes && !theShape.IsNull())
+  {
+    for (TopExp_Explorer anExp(theShape, TopAbs_FACE); anExp.More(); anExp.Next())
+    {
+      const occ::handle<BRep_TFace>& aTF = occ::down_cast<BRep_TFace>(anExp.Current().TShape());
+      if (!aTF.IsNull() && !aTF->Surface().IsNull())
+      {
+        myOwnSurfaces.Add(aTF->Surface().get());
+      }
+    }
+  }
+  return addShapes(theShape);
+}
+
+//=================================================================================================
+
+int BinTools_ShapeSet::addShapes(const TopoDS_Shape& theShape)
 {
   if (theShape.IsNull())
   {
@@ -90,7 +110,7 @@ int BinTools_ShapeSet::Add(const TopoDS_Shape& theShape)
     AddShape(aS2);
     for (TopoDS_Iterator its(aS2, false, false); its.More(); its.Next())
     {
-      Add(its.Value());
+      addShapes(its.Value());
     }
     anIndex = myShapes.Add(aS2);
   }
@@ -140,6 +160,11 @@ void BinTools_ShapeSet::AddShape(const TopoDS_Shape& S)
     while (itrp.More())
     {
       const occ::handle<BRep_PointRepresentation>& PR = itrp.Value();
+      if (!PR->IsPointOnCurve() && isForeign(PR->Surface()))
+      {
+        itrp.Next();
+        continue;
+      }
 
       if (PR->IsPointOnCurve())
       {
@@ -184,7 +209,8 @@ void BinTools_ShapeSet::AddShape(const TopoDS_Shape& S)
         // Left out of the tables under exactly the condition Write leaves the
         // record out under -- see BRepTools_ShapeSet::AddGeometry for why the
         // two must agree.
-        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR)))
+        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+            && !isForeign(CR->Surface()))
         {
           mySurfaces.Add(CR->Surface());
           myCurves2d.Add(CR->PCurve());
@@ -197,6 +223,11 @@ void BinTools_ShapeSet::AddShape(const TopoDS_Shape& S)
       }
       else if (CR->IsRegularity())
       {
+        if (isForeign(CR->Surface()) || isForeign(CR->Surface2()))
+        {
+          itrc.Next();
+          continue;
+        }
         mySurfaces.Add(CR->Surface());
         ChangeLocations().Add(CR->Location());
         mySurfaces.Add(CR->Surface2());
@@ -228,7 +259,7 @@ void BinTools_ShapeSet::AddShape(const TopoDS_Shape& S)
             myNodes.Add(CR->PolygonOnTriangulation2());
           }
         }
-        else if (CR->IsPolygonOnSurface())
+        else if (CR->IsPolygonOnSurface() && !isForeign(CR->Surface()))
         {
           mySurfaces.Add(CR->Surface());
           myPolygons2D.Add(CR->Polygon());
@@ -350,9 +381,10 @@ void BinTools_ShapeSet::Write(Standard_OStream& OS, const Message_ProgressRange&
     WriteShape(S, OS);
 
     // Flags
-    BinTools::PutBool(OS, S.Free());
-    BinTools::PutBool(OS, S.Modified());
-    BinTools::PutBool(OS, S.Checked());
+    // Constant under SetStableBytes, see BRepTools_ShapeSet::SetStableBytes.
+    BinTools::PutBool(OS, myStableBytes || S.Free());
+    BinTools::PutBool(OS, myStableBytes || S.Modified());
+    BinTools::PutBool(OS, !myStableBytes && S.Checked());
     BinTools::PutBool(OS, S.Orientable());
     BinTools::PutBool(OS, S.Closed());
     BinTools::PutBool(OS, S.Infinite());
@@ -612,6 +644,12 @@ void BinTools_ShapeSet::WriteShape(const TopoDS_Shape& S, Standard_OStream& OS) 
       while (itrp.More())
       {
         const occ::handle<BRep_PointRepresentation>& PR = itrp.Value();
+        // See AddShape: the same test decides both.
+        if (!PR->IsPointOnCurve() && isForeign(PR->Surface()))
+        {
+          itrp.Next();
+          continue;
+        }
         //	BinTools::PutReal(OS, PR->Parameter());
         if (PR->IsPointOnCurve())
         {
@@ -689,7 +727,8 @@ void BinTools_ShapeSet::WriteShape(const TopoDS_Shape& S, Standard_OStream& OS) 
         else if (CR->IsCurveOnSurface())
         {
           // See AddGeometry: the same test decides both.
-          if (myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+          if ((myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+              || isForeign(CR->Surface()))
           {
             itrc.Next();
             continue;
@@ -741,6 +780,11 @@ void BinTools_ShapeSet::WriteShape(const TopoDS_Shape& S, Standard_OStream& OS) 
         }
         else if (CR->IsRegularity())
         {
+          if (isForeign(CR->Surface()) || isForeign(CR->Surface2()))
+          {
+            itrc.Next();
+            continue;
+          }
           // -4- Regularity
           OS << (uint8_t)4;
           OS << (uint8_t)CR->Continuity();

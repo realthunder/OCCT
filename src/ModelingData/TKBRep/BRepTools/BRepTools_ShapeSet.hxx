@@ -27,6 +27,8 @@
 #include <GeomTools_Curve2dSet.hxx>
 #include <Standard_Transient.hxx>
 #include <NCollection_IndexedMap.hxx>
+#include <NCollection_Map.hxx>
+#include <Geom_Surface.hxx>
 #include <TopTools_ShapeSet.hxx>
 #include <Standard_OStream.hxx>
 #include <Standard_IStream.hxx>
@@ -82,6 +84,35 @@ public:
   //! the file is one BRep_Tool::CurveOnSurface answers for by projecting the
   //! edge's 3D curve onto the plane.
   void SetOmitPCurvesOnPlane(const bool theOmit) { myOmitPCurvesOnPlane = theOmit; }
+
+  //! Return true if the written bytes are to depend on the shape alone.
+  bool IsStableBytes() const { return myStableBytes; }
+
+  //! Define whether the written bytes depend on the shape alone, not on what
+  //! was done with it (a fork option, off by default). With it on, a
+  //! representation on a surface no face of the written shape carries is left
+  //! out -- the pcurve an edge was given by a face built on it elsewhere, a
+  //! vertex parameter on such a pcurve, the regularity between two such faces
+  //! -- and the Free, Modified and Checked flags are written as 1, 1 and 0,
+  //! which is also the conservative reading of each. Neither loses anything
+  //! the shape needs: a left-out pcurve is on a surface nothing in the file
+  //! refers to. The surfaces are collected by Add(), so set this first.
+  void SetStableBytes(const bool theStable)
+  {
+    myStableBytes = theStable;
+    myCanonicalFlags = theStable;
+  }
+
+  //! Stores <S> and its sub-shapes, as TopTools_ShapeSet::Add, after
+  //! AddOwnSurfaces(S).
+  Standard_EXPORT int Add(const TopoDS_Shape& S);
+
+  //! Under SetStableBytes, a representation on a surface is written only if a
+  //! face of a shape named here carries that surface. Add() names its shape; a
+  //! writer that fills the tables another way -- a subclass calling
+  //! AddGeometry itself -- names its roots here, before it does, and again
+  //! after a Clear().
+  Standard_EXPORT void AddOwnSurfaces(const TopoDS_Shape& S);
 
   //! Clears the content of the set.
   Standard_EXPORT void Clear() override;
@@ -215,6 +246,14 @@ private:
   bool                                                    myWithTriangles;
   bool                                                    myWithNormals;
   bool                                                    myOmitPCurvesOnPlane = false;
+  bool                                                    myStableBytes        = false;
+  NCollection_Map<const Geom_Surface*>                    myOwnSurfaces;
+
+  //! Under SetStableBytes, whether <theS> is carried by no face added so far.
+  bool isForeign(const occ::handle<Geom_Surface>& theS) const
+  {
+    return myStableBytes && !myOwnSurfaces.Contains(theS.get());
+  }
 };
 
 #endif // _BRepTools_ShapeSet_HeaderFile

@@ -184,6 +184,11 @@ public:
 public:
   static const char* const THE_ASCII_VERSIONS[TopTools_FormatVersion_VERSION_3 + 1];
 
+protected:
+  //! Write the Free, Modified and Checked flags as 1, 1 and 0 (a fork option,
+  //! see BRepTools_ShapeSet::SetStableBytes).
+  bool myCanonicalFlags = false;
+
 private:
   //! Reads from <IS> a shape and returns it in S.
   //! <NbShapes> is the number of tshapes in the set.

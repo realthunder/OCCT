@@ -20,6 +20,8 @@
 
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_IndexedMap.hxx>
+#include <NCollection_Map.hxx>
+#include <Geom_Surface.hxx>
 #include <BinTools_LocationSet.hxx>
 #include <BRep_Builder.hxx>
 #include <BinTools_SurfaceSet.hxx>
@@ -185,8 +187,27 @@ public:
   //! which this mirrors for the binary format. Off by default.
   void SetOmitPCurvesOnPlane(const bool theOmit) { myOmitPCurvesOnPlane = theOmit; }
 
+  //! Return true if the written bytes are to depend on the shape alone.
+  bool IsStableBytes() const { return myStableBytes; }
+
+  //! Define whether the written bytes depend on the shape alone -- see
+  //! BRepTools_ShapeSet::SetStableBytes, which this mirrors for the binary
+  //! format (a fork option, off by default). Set it before Add().
+  void SetStableBytes(const bool theStable) { myStableBytes = theStable; }
+
 private:
-  bool                 myOmitPCurvesOnPlane = false;
+  //! Add() without the surface collection, recursively.
+  int addShapes(const TopoDS_Shape& theShape);
+
+  //! Under SetStableBytes, whether <theS> is carried by no face of the shapes added.
+  bool isForeign(const occ::handle<Geom_Surface>& theS) const
+  {
+    return myStableBytes && !myOwnSurfaces.Contains(theS.get());
+  }
+
+  bool                                 myOmitPCurvesOnPlane = false;
+  bool                                 myStableBytes        = false;
+  NCollection_Map<const Geom_Surface*> myOwnSurfaces;
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>
                        myShapes; ///< index and its shape (started from 1)
   BinTools_LocationSet myLocations;

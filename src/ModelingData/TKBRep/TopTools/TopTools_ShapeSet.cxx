@@ -566,9 +566,9 @@ void TopTools_ShapeSet::Write(Standard_OStream& OS, const Message_ProgressRange&
 
     // Flags
     OS << "\n";
-    OS << (S.Free() ? 1 : 0);
-    OS << (S.Modified() ? 1 : 0);
-    OS << (S.Checked() ? 1 : 0);
+    OS << (myCanonicalFlags || S.Free() ? 1 : 0);
+    OS << (myCanonicalFlags || S.Modified() ? 1 : 0);
+    OS << (!myCanonicalFlags && S.Checked() ? 1 : 0);
     OS << (S.Orientable() ? 1 : 0);
     OS << (S.Closed() ? 1 : 0);
     OS << (S.Infinite() ? 1 : 0);

@@ -32,6 +32,7 @@
 #include <BRep_TVertex.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_ShapeSet.hxx>
+#include <TopExp_Explorer.hxx>
 #include <GeomTools.hxx>
 #include <Message_ProgressScope.hxx>
 #include <Poly_Polygon3D.hxx>
@@ -98,7 +99,34 @@ void BRepTools_ShapeSet::Clear()
   myPolygons2D.Clear();
   myNodes.Clear();
   myTriangulations.Clear();
+  myOwnSurfaces.Clear();
   TopTools_ShapeSet::Clear();
+}
+
+//=================================================================================================
+
+int BRepTools_ShapeSet::Add(const TopoDS_Shape& S)
+{
+  AddOwnSurfaces(S);
+  return TopTools_ShapeSet::Add(S);
+}
+
+//=================================================================================================
+
+void BRepTools_ShapeSet::AddOwnSurfaces(const TopoDS_Shape& S)
+{
+  if (!myStableBytes || S.IsNull())
+  {
+    return;
+  }
+  for (TopExp_Explorer anExp(S, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    const occ::handle<BRep_TFace>& aTF = occ::down_cast<BRep_TFace>(anExp.Current().TShape());
+    if (!aTF.IsNull() && !aTF->Surface().IsNull())
+    {
+      myOwnSurfaces.Add(aTF->Surface().get());
+    }
+  }
 }
 
 //=================================================================================================
@@ -116,6 +144,11 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
     while (itrp.More())
     {
       const occ::handle<BRep_PointRepresentation>& PR = itrp.Value();
+      if (!PR->IsPointOnCurve() && isForeign(PR->Surface()))
+      {
+        itrp.Next();
+        continue;
+      }
 
       if (PR->IsPointOnCurve())
       {
@@ -161,7 +194,8 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
         // leaves the record out under. The two have to agree: an entry no
         // record names is dead weight, and a record naming an entry that was
         // never added is written with index 0 and read back empty.
-        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR)))
+        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+            && !isForeign(CR->Surface()))
         {
           mySurfaces.Add(CR->Surface());
           myCurves2d.Add(CR->PCurve());
@@ -174,6 +208,11 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
       }
       else if (CR->IsRegularity())
       {
+        if (isForeign(CR->Surface()) || isForeign(CR->Surface2()))
+        {
+          itrc.Next();
+          continue;
+        }
         mySurfaces.Add(CR->Surface());
         ChangeLocations().Add(CR->Location());
         mySurfaces.Add(CR->Surface2());
@@ -205,7 +244,7 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
             myNodes.Add(CR->PolygonOnTriangulation2());
           }
         }
-        else if (CR->IsPolygonOnSurface())
+        else if (CR->IsPolygonOnSurface() && !isForeign(CR->Surface()))
         {
           mySurfaces.Add(CR->Surface());
           myPolygons2D.Add(CR->Polygon());
@@ -603,6 +642,12 @@ void BRepTools_ShapeSet::WriteGeometry(const TopoDS_Shape& S, Standard_OStream& 
     while (itrp.More())
     {
       const occ::handle<BRep_PointRepresentation>& PR = itrp.Value();
+      // See AddGeometry: the same test decides both.
+      if (!PR->IsPointOnCurve() && isForeign(PR->Surface()))
+      {
+        itrp.Next();
+        continue;
+      }
 
       OS << PR->Parameter();
       if (PR->IsPointOnCurve())
@@ -665,7 +710,8 @@ void BRepTools_ShapeSet::WriteGeometry(const TopoDS_Shape& S, Standard_OStream& 
       {
         // See AddGeometry: the same test decides both, or the tables and the
         // records stop agreeing.
-        if (myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+        if ((myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+            || isForeign(CR->Surface()))
         {
           itrc.Next();
           continue;
@@ -711,6 +757,11 @@ void BRepTools_ShapeSet::WriteGeometry(const TopoDS_Shape& S, Standard_OStream& 
       }
       else if (CR->IsRegularity())
       {
+        if (isForeign(CR->Surface()) || isForeign(CR->Surface2()))
+        {
+          itrc.Next();
+          continue;
+        }
         OS << "4 "; // -4- Regularity
         PrintRegularity(CR->Continuity(), OS);
         OS << " " << mySurfaces.Index(CR->Surface());
