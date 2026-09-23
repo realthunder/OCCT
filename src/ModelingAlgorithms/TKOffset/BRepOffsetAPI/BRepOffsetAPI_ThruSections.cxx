@@ -340,6 +340,19 @@ void BRepOffsetAPI_ThruSections::Build(const Message_ProgressRange& /*theRange*/
 {
   myStatus = BRepFill_ThruSectionErrorStatus_Done;
   myBFGenerator.Nullify();
+  // An Immutable section (a fork flag) is input that may not be modified, as
+  // a Locked argument makes a boolean non-destructive.
+  for (int anIdx = 1; myMutableInput && anIdx <= myWires.Length(); ++anIdx)
+  {
+    for (TopExp_Explorer anExp(myWires(anIdx), TopAbs_EDGE); anExp.More(); anExp.Next())
+    {
+      if (anExp.Current().Immutable())
+      {
+        myMutableInput = false;
+        break;
+      }
+    }
+  }
   // Check set of section for right configuration of punctual sections
   int             i;
   TopExp_Explorer explo;

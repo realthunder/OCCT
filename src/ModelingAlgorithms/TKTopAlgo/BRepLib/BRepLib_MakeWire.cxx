@@ -112,6 +112,59 @@ void BRepLib_MakeWire::Add(const TopoDS_Edge& E)
   Add(E, true);
 }
 
+//=================================================================================================
+
+TopoDS_Vertex BRepLib_MakeWire::thawVertex(const int     theIndex,
+                                           const gp_Pnt& thePnt,
+                                           const double  theTol)
+{
+  BRep_Builder        aB;
+  const TopoDS_Vertex anOld = TopoDS::Vertex(myVertices.FindKey(theIndex));
+  TopoDS_Vertex       aNew  = TopoDS::Vertex(anOld.EmptyCopied());
+  aB.UpdateVertex(aNew, thePnt, theTol);
+
+  TopoDS_Wire aWire;
+  aB.MakeWire(aWire);
+  for (TopoDS_Iterator anIt(myShape); anIt.More(); anIt.Next())
+  {
+    const TopoDS_Edge& anEdge = TopoDS::Edge(anIt.Value());
+    const TopoDS_Edge  aFwd   = TopoDS::Edge(anEdge.Oriented(TopAbs_FORWARD));
+    bool               isUser = false;
+    for (TopoDS_Iterator aV(aFwd); aV.More() && !isUser; aV.Next())
+    {
+      isUser = aV.Value().IsSame(anOld);
+    }
+    if (!isUser)
+    {
+      aB.Add(aWire, anEdge);
+      continue;
+    }
+    // As the proximity merge in Add() copies an edge.
+    TopoDS_Edge aCopy = TopoDS::Edge(aFwd.EmptyCopied());
+    for (TopoDS_Iterator aV(aFwd); aV.More(); aV.Next())
+    {
+      const TopoDS_Vertex& aVE = TopoDS::Vertex(aV.Value());
+      const TopoDS_Vertex  aVN =
+        aVE.IsSame(anOld) ? TopoDS::Vertex(aNew.Oriented(aVE.Orientation())) : aVE;
+      aB.Add(aCopy, aVN);
+      aB.Transfert(aFwd, aCopy, aVE, aVN);
+    }
+    aB.Add(aWire, aCopy.Oriented(anEdge.Orientation()));
+  }
+  aWire.Closed(myShape.Closed());
+  myShape = aWire;
+
+  myVertices.Substitute(theIndex, aNew);
+  for (TopoDS_Vertex* aKept : {&VF, &VL, &FirstVertex})
+  {
+    if (aKept->IsSame(anOld))
+    {
+      *aKept = TopoDS::Vertex(aNew.Oriented(aKept->Orientation()));
+    }
+  }
+  return aNew;
+}
+
 //=======================================================================
 // function : Add
 // purpose  :
@@ -348,10 +401,20 @@ void BRepLib_MakeWire::Add(const TopoDS_Edge& E, bool IsCheckGeometryProximity)
                         cW * PW.Y() + cE * PE.Y(),
                         cW * PW.Z() + cE * PE.Z());
 
-              B.UpdateVertex(VW, PC, maxtol);
+              // A frozen vertex is not moved or widened: the wire gets a
+              // copy that is (thawVertex), and the input keeps its own.
+              TopoDS_Vertex aVW = VW;
+              if (VW.Immutable() && (!PC.IsEqual(PW, 0.) || maxtol > tolW))
+              {
+                aVW = thawVertex(i, PC, maxtol);
+              }
+              else
+              {
+                B.UpdateVertex(VW, PC, maxtol);
+              }
 
               newvertex = true;
-              myVertex  = VW;
+              myVertex  = aVW;
               myVertex.Orientation(VE.Orientation());
               B.Add(myEdge, myVertex);
               B.Transfert(EE, myEdge, VE, myVertex);

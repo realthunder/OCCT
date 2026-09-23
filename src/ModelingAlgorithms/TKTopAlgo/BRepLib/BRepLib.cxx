@@ -28,6 +28,8 @@
 #include <BRepCheck.hxx>
 #include <BRep_TEdge.hxx>
 #include <BRep_Tool.hxx>
+#include <BRepLib_ValidateEdge.hxx>
+#include <Adaptor3d_CurveOnSurface.hxx>
 #include <BRep_TVertex.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBndLib.hxx>
@@ -912,6 +914,63 @@ static void UpdShTol(
 }
 
 //=================================================================================================
+// function : pcurvesWithinTolerance
+// purpose  : Whether every pcurve an edge stores lies on its 3d curve within the
+//            edge tolerance -- what the SameParameter flag claims. Asked of an
+//            Immutable edge (a fork flag) in place of a forced reset, which
+//            would be a write: an edge a new face shares has just been given
+//            that face's pcurve, and this is where it is held to the claim.
+//=================================================================================================
+
+static bool pcurvesWithinTolerance(const TopoDS_Edge& theEdge)
+{
+  if (BRep_Tool::Degenerated(theEdge))
+  {
+    return true;
+  }
+  double                  aFirst = 0., aLast = 0.;
+  TopLoc_Location         aCurveLoc;
+  occ::handle<Geom_Curve> aC3D = BRep_Tool::Curve(theEdge, aCurveLoc, aFirst, aLast);
+  if (aC3D.IsNull())
+  {
+    return true;
+  }
+  if (!aCurveLoc.IsIdentity())
+  {
+    const gp_Trsf& aTrsf = aCurveLoc.Transformation();
+    aC3D                 = occ::down_cast<Geom_Curve>(aC3D->Transformed(aTrsf));
+    aFirst               = aC3D->TransformedParameter(aFirst, aTrsf);
+    aLast                = aC3D->TransformedParameter(aLast, aTrsf);
+  }
+  occ::handle<GeomAdaptor_Curve> aGAC = new GeomAdaptor_Curve(aC3D, aFirst, aLast);
+  const double                   aTol = BRep_Tool::Tolerance(theEdge);
+  for (int anIndex = 1;; ++anIndex)
+  {
+    occ::handle<Geom2d_Curve> aPC;
+    occ::handle<Geom_Surface> aS;
+    TopLoc_Location           aLoc;
+    double                    f = 0., l = 0.;
+    BRep_Tool::CurveOnSurface(theEdge, aPC, aS, aLoc, f, l, anIndex);
+    if (aPC.IsNull())
+    {
+      return true;
+    }
+    occ::handle<Geom_Surface> aST =
+      aLoc.IsIdentity() ? aS : occ::down_cast<Geom_Surface>(aS->Transformed(aLoc.Transformation()));
+    occ::handle<Adaptor3d_CurveOnSurface> anACS =
+      new Adaptor3d_CurveOnSurface(new Geom2dAdaptor_Curve(aPC, f, l),
+                                   new GeomAdaptor_Surface(aST));
+    BRepLib_ValidateEdge aCheck(aGAC, anACS, true);
+    aCheck.SetExitIfToleranceExceeded(aTol);
+    aCheck.Process();
+    if (!aCheck.IsDone() || !aCheck.CheckTolerance(aTol))
+    {
+      return false;
+    }
+  }
+}
+
+//=================================================================================================
 
 static void InternalSameParameter(const TopoDS_Shape& theSh,
                                   BRepTools_ReShape&  theReshaper,
@@ -931,7 +990,11 @@ static void InternalSameParameter(const TopoDS_Shape& theSh,
     {
       TopoDS_Edge aNE        = TopoDS::Edge(theReshaper.Value(aCE));
       bool        UseOldEdge = IsMutableInput || theReshaper.IsNewShape(aCE) || !aNE.IsSame(aCE);
-      if (IsForced && (BRep_Tool::SameRange(aCE) || BRep_Tool::SameParameter(aCE)))
+      // An Immutable edge whose flags hold is not reset (see pcurvesWithinTolerance);
+      // one whose flags do not goes on and is refused by the builder.
+      const bool isHeld = IsForced && aCE.Immutable() && BRep_Tool::SameRange(aCE)
+                          && BRep_Tool::SameParameter(aCE) && pcurvesWithinTolerance(aCE);
+      if (IsForced && !isHeld && (BRep_Tool::SameRange(aCE) || BRep_Tool::SameParameter(aCE)))
       {
         if (!UseOldEdge)
         {
@@ -1942,13 +2005,18 @@ static void InternalUpdateTolerances(const TopoDS_Shape& theOldShape,
       }
     }
     tol = std::max(tol, sqrt(aMaxDist));
+    // An Immutable vertex (a fork flag) that already covers what its edges
+    // need is left alone: the padding below guards a tolerance just computed
+    // against rounding, and would grow a frozen vertex by an epsilon on its
+    // first pass; nor is a frozen tolerance lowered to the minimum.
+    const bool isFrozenAndCovered = V.Immutable() && tol <= BRep_Tool::Tolerance(V);
     tol += 2. * Epsilon(tol);
     //
     double                           aVTol    = BRep_Tool::Tolerance(V);
-    bool                             anUpdTol = tol > aVTol;
+    bool                             anUpdTol = !isFrozenAndCovered && tol > aVTol;
     const occ::handle<BRep_TVertex>& aTV      = *((occ::handle<BRep_TVertex>*)&V.TShape());
     bool                             toAdd    = false;
-    if (IsVerifyTolerance)
+    if (IsVerifyTolerance && !V.Immutable())
     {
       // ASet minimum value of the tolerance
       // Attention to sharing of the vertex by other shapes
