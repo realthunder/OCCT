@@ -172,7 +172,8 @@ protected:
     BOPAlgo_DataMapOfIntegerMapOfPaveBlock;
 
   //! Sets non-destructive mode automatically if an argument
-  //! contains a locked sub-shape (see TopoDS_Shape::Locked()).
+  //! contains a locked or immutable sub-shape (see TopoDS_Shape::Locked()
+  //! and TopoDS_Shape::Immutable()).
   Standard_EXPORT void SetNonDestructive();
 
   Standard_EXPORT void SetIsPrimary(const bool theFlag);
