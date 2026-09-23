@@ -36,6 +36,10 @@ void TopoDS_Builder::MakeShape(TopoDS_Shape& S, const occ::handle<TopoDS_TShape>
 
 void TopoDS_Builder::Add(TopoDS_Shape& aShape, const TopoDS_Shape& aComponent) const
 {
+  // An immutable shape (realthunder) takes no component, whatever its
+  // Free flag says; checked before the component is frozen below.
+  TopoDS_FrozenShape_Raise_if(aShape.Immutable(), "TopoDS_Builder::Add");
+
   // From now the Component cannot be edited
   aComponent.TShape()->Free(false);
 
@@ -107,7 +111,7 @@ void TopoDS_Builder::Add(TopoDS_Shape& aShape, const TopoDS_Shape& aComponent) c
 void TopoDS_Builder::Remove(TopoDS_Shape& aShape, const TopoDS_Shape& aComponent) const
 {
   // check if aShape is not Frozen
-  TopoDS_FrozenShape_Raise_if(!aShape.Free(), "TopoDS_Builder::Remove");
+  TopoDS_FrozenShape_Raise_if(!aShape.Free() || aShape.Immutable(), "TopoDS_Builder::Remove");
 
   // compute the relative Orientation and Location of aComponent
   TopoDS_Shape S = aComponent;

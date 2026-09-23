@@ -502,7 +502,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                     F,
                             const double                     Tol) const
 {
   occ::handle<BRep_TFace> TF = new BRep_TFace();
-  if (!F.IsNull() && F.Locked())
+  if (!F.IsNull() && (F.Locked() || F.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -517,7 +517,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                           theFace,
                             const occ::handle<Poly_Triangulation>& theTriangulation) const
 {
   occ::handle<BRep_TFace> aTFace = new BRep_TFace();
-  if (!theFace.IsNull() && theFace.Locked())
+  if (!theFace.IsNull() && (theFace.Locked() || theFace.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -533,7 +533,7 @@ void BRep_Builder::MakeFace(
   const occ::handle<Poly_Triangulation>&                   theActiveTriangulation) const
 {
   occ::handle<BRep_TFace> aTFace = new BRep_TFace();
-  if (!theFace.IsNull() && theFace.Locked())
+  if (!theFace.IsNull() && (theFace.Locked() || theFace.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -549,7 +549,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                     F,
                             const double                     Tol) const
 {
   occ::handle<BRep_TFace> TF = new BRep_TFace();
-  if (!F.IsNull() && F.Locked())
+  if (!F.IsNull() && (F.Locked() || F.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -567,7 +567,7 @@ void BRep_Builder::UpdateFace(const TopoDS_Face&               F,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TFace>& TF = *((occ::handle<BRep_TFace>*)&F.TShape());
-  if (TF->Locked())
+  if (TF->Locked() || TF->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
   }
@@ -597,7 +597,7 @@ void BRep_Builder::UpdateFace(const TopoDS_Face&                     theFace,
 void BRep_Builder::UpdateFace(const TopoDS_Face& F, const double Tol) const
 {
   const occ::handle<BRep_TFace>& TF = *((occ::handle<BRep_TFace>*)&F.TShape());
-  if (TF->Locked())
+  if (TF->Locked() || TF->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
   }
@@ -610,7 +610,7 @@ void BRep_Builder::UpdateFace(const TopoDS_Face& F, const double Tol) const
 void BRep_Builder::NaturalRestriction(const TopoDS_Face& F, const bool N) const
 {
   const occ::handle<BRep_TFace>& TF = (*((occ::handle<BRep_TFace>*)&F.TShape()));
-  if (TF->Locked())
+  if (TF->Locked() || TF->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::NaturalRestriction");
   }
@@ -623,7 +623,7 @@ void BRep_Builder::NaturalRestriction(const TopoDS_Face& F, const bool N) const
 void BRep_Builder::MakeEdge(TopoDS_Edge& E) const
 {
   occ::handle<BRep_TEdge> TE = new BRep_TEdge();
-  if (!E.IsNull() && E.Locked())
+  if (!E.IsNull() && (E.Locked() || E.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeEdge");
   }
@@ -638,7 +638,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&             E,
                               const double                   Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
@@ -659,7 +659,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
@@ -685,7 +685,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const gp_Pnt2d&                  Pl) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
@@ -707,7 +707,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
@@ -734,7 +734,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const gp_Pnt2d&                  Pl) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
@@ -999,7 +999,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
 void BRep_Builder::UpdateEdge(const TopoDS_Edge& E, const double Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
@@ -1030,7 +1030,7 @@ void BRep_Builder::Continuity(const TopoDS_Edge&               E,
                               const GeomAbs_Shape              C) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::Continuity");
   }
@@ -1047,7 +1047,7 @@ void BRep_Builder::Continuity(const TopoDS_Edge&               E,
 void BRep_Builder::SameParameter(const TopoDS_Edge& E, const bool S) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::SameParameter");
   }
@@ -1060,7 +1060,7 @@ void BRep_Builder::SameParameter(const TopoDS_Edge& E, const bool S) const
 void BRep_Builder::SameRange(const TopoDS_Edge& E, const bool S) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::SameRange");
   }
@@ -1073,7 +1073,7 @@ void BRep_Builder::SameRange(const TopoDS_Edge& E, const bool S) const
 void BRep_Builder::Degenerated(const TopoDS_Edge& E, const bool D) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::Degenerated");
   }
@@ -1095,7 +1095,7 @@ void BRep_Builder::Range(const TopoDS_Edge& E,
 {
   //  set the range to all the representations if Only3d=FALSE
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::Range");
   }
@@ -1125,7 +1125,7 @@ void BRep_Builder::Range(const TopoDS_Edge&               E,
                          const double                     Last) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::Range");
   }
@@ -1203,7 +1203,7 @@ void BRep_Builder::Transfert(const TopoDS_Edge& Ein, const TopoDS_Edge& Eout) co
 void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V, const gp_Pnt& P, const double Tol) const
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
-  if (TV->Locked())
+  if (TV->Locked() || TV->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
   }
@@ -1230,7 +1230,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V,
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
   const occ::handle<BRep_TEdge>&   TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
 
-  if (TV->Locked() || TE->Locked())
+  if (TV->Locked() || TE->Locked() || TV->Immutable() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
   }
@@ -1334,7 +1334,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex&             V,
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
   const occ::handle<BRep_TEdge>&   TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
 
-  if (TV->Locked() || TE->Locked())
+  if (TV->Locked() || TE->Locked() || TV->Immutable() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
   }
@@ -1422,7 +1422,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& Ve,
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&Ve.TShape());
 
-  if (TV->Locked())
+  if (TV->Locked() || TV->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
   }
@@ -1443,7 +1443,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V, const double Tol) const
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
 
-  if (TV->Locked())
+  if (TV->Locked() || TV->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
   }

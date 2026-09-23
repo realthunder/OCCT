@@ -151,6 +151,12 @@ public:
   //! Sets the locked flag.
   void Locked(bool theIsLocked) { myTShape->Locked(theIsLocked); }
 
+  //! Returns the immutable flag of the TShape (see TopoDS_TShape::Immutable).
+  bool Immutable() const { return myTShape->Immutable(); }
+
+  //! Sets the immutable flag of the TShape.
+  void Immutable(bool theIsImmutable) { myTShape->Immutable(theIsImmutable); }
+
   //! Returns the modification flag.
   bool Modified() const { return myTShape->Modified(); }
 

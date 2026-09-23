@@ -615,7 +615,7 @@ void BRepTools::UpdateFaceUVPoints(const TopoDS_Face& theF)
     const TopoDS_Edge& aE = TopoDS::Edge(anExpE.Current());
 
     const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&aE.TShape());
-    if (TE->Locked())
+    if (TE->Locked() || TE->Immutable())
     {
       return;
     }

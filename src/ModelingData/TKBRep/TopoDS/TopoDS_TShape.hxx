@@ -78,7 +78,8 @@ public:
     Bit_Infinite         = 0x0200, //!< bit 9: infinite flag
     Bit_Convex           = 0x0400, //!< bit 10: convex flag
     Bit_Locked           = 0x0800, //!< bit 11: locked flag
-    Bits_Reserved        = 0xF000  //!< bits 12-15: reserved
+    Bit_Immutable        = 0x1000, //!< bit 12: immutable flag (realthunder)
+    Bits_Reserved        = 0xE000  //!< bits 13-15: reserved
   };
 
 public:
@@ -93,6 +94,18 @@ public:
 
   //! Sets the locked flag.
   void Locked(bool theIsLocked) { setBit(Bit_Locked, theIsLocked); }
+
+  //! Returns the immutable flag (realthunder). An immutable TShape refuses
+  //! every change to its geometry, tolerances, ranges, flags and topology
+  //! (BRep_Builder throws TopoDS_LockedShape, TopoDS_Builder throws
+  //! TopoDS_FrozenShape) but still accepts the cache data a locked one
+  //! refuses: a face's triangulation and an edge's polygons. Those are
+  //! derived from the geometry the flag freezes, so they cannot go stale,
+  //! and a mesher can run on a shape held as an immutable value.
+  bool Immutable() const { return (myState & Bit_Immutable) != 0; }
+
+  //! Sets the immutable flag.
+  void Immutable(bool theIsImmutable) { setBit(Bit_Immutable, theIsImmutable); }
 
   //! Returns the modification flag.
   bool Modified() const { return (myState & Bit_Modified) != 0; }
