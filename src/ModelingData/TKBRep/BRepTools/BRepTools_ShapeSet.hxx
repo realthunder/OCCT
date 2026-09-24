@@ -28,6 +28,10 @@
 #include <Standard_Transient.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_Map.hxx>
+#include <BRep_PointRepresentation.hxx>
+
+#include <set>
+#include <utility>
 #include <Geom_Surface.hxx>
 #include <TopTools_ShapeSet.hxx>
 #include <Standard_OStream.hxx>
@@ -107,12 +111,48 @@ public:
   //! AddOwnSurfaces(S).
   Standard_EXPORT int Add(const TopoDS_Shape& S);
 
-  //! Under SetStableBytes, a representation on a surface is written only if a
-  //! face of a shape named here carries that surface. Add() names its shape; a
-  //! writer that fills the tables another way -- a subclass calling
-  //! AddGeometry itself -- names its roots here, before it does, and again
-  //! after a Clear().
+  //! Under SetStableBytes, a representation is written only if the shapes
+  //! named here use it (OwnGeometry). Add() names its shape; a writer that
+  //! fills the tables another way -- a subclass calling AddGeometry itself --
+  //! names its roots here, before it does, and again after a Clear().
   Standard_EXPORT void AddOwnSurfaces(const TopoDS_Shape& S);
+
+  //! What the written shapes use, for SetStableBytes (shared with
+  //! BinTools_ShapeSet). A pcurve, a polygon or a regularity is theirs on the
+  //! surface of one of their faces. A vertex parameter on a curve or pcurve is
+  //! theirs only where one of their edges holds the vertex INTERNAL or
+  //! EXTERNAL and carries that curve: BRep_Tool::Parameter reads an end
+  //! vertex's parameter from the edge's range, so no other is ever read -- and
+  //! testing the curve alone will not do, as an edge built on a shared edge
+  //! (an extended one, a split) shares its curves. A vertex parameter on a
+  //! surface is theirs on the surface of one of their faces.
+  class OwnGeometry
+  {
+  public:
+    //! Adds what <theS> uses.
+    Standard_EXPORT void Add(const TopoDS_Shape& theS);
+
+    void Clear()
+    {
+      mySurfaces.Clear();
+      myInnerPoints.clear();
+    }
+
+    bool HasSurface(const occ::handle<Geom_Surface>& theS) const
+    {
+      return mySurfaces.Contains(theS.get());
+    }
+
+    //! Whether the parameter <thePR> of the vertex <theTV> is used.
+    Standard_EXPORT bool HasPoint(const occ::handle<BRep_PointRepresentation>& thePR,
+                                  const Standard_Transient*                    theTV) const;
+
+  private:
+    NCollection_Map<const Standard_Transient*> mySurfaces;
+    //! (vertex, curve or pcurve) for each vertex an edge holds INTERNAL or
+    //! EXTERNAL and each curve that edge carries.
+    std::set<std::pair<const Standard_Transient*, const Standard_Transient*>> myInnerPoints;
+  };
 
   //! Clears the content of the set.
   Standard_EXPORT void Clear() override;
@@ -247,12 +287,19 @@ private:
   bool                                                    myWithNormals;
   bool                                                    myOmitPCurvesOnPlane = false;
   bool                                                    myStableBytes        = false;
-  NCollection_Map<const Geom_Surface*>                    myOwnSurfaces;
+  OwnGeometry                                             myOwnGeometry;
 
   //! Under SetStableBytes, whether <theS> is carried by no face added so far.
   bool isForeign(const occ::handle<Geom_Surface>& theS) const
   {
-    return myStableBytes && !myOwnSurfaces.Contains(theS.get());
+    return myStableBytes && !myOwnGeometry.HasSurface(theS);
+  }
+
+  //! Under SetStableBytes, whether the parameter <thePR> of <theTV> is left out.
+  bool isForeign(const occ::handle<BRep_PointRepresentation>& thePR,
+                 const Standard_Transient*                    theTV) const
+  {
+    return myStableBytes && !myOwnGeometry.HasPoint(thePR, theTV);
   }
 };
 

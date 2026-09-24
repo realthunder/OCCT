@@ -21,6 +21,7 @@
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_Map.hxx>
+#include <BRepTools_ShapeSet.hxx>
 #include <Geom_Surface.hxx>
 #include <BinTools_LocationSet.hxx>
 #include <BRep_Builder.hxx>
@@ -202,12 +203,20 @@ private:
   //! Under SetStableBytes, whether <theS> is carried by no face of the shapes added.
   bool isForeign(const occ::handle<Geom_Surface>& theS) const
   {
-    return myStableBytes && !myOwnSurfaces.Contains(theS.get());
+    return myStableBytes && !myOwnGeometry.HasSurface(theS);
+  }
+
+  //! Under SetStableBytes, whether the parameter <thePR> of <theTV> is left
+  //! out, see BRepTools_ShapeSet::OwnGeometry.
+  bool isForeign(const occ::handle<BRep_PointRepresentation>& thePR,
+                 const Standard_Transient*                    theTV) const
+  {
+    return myStableBytes && !myOwnGeometry.HasPoint(thePR, theTV);
   }
 
   bool                                 myOmitPCurvesOnPlane = false;
   bool                                 myStableBytes        = false;
-  NCollection_Map<const Geom_Surface*> myOwnSurfaces;
+  BRepTools_ShapeSet::OwnGeometry      myOwnGeometry;
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>
                        myShapes; ///< index and its shape (started from 1)
   BinTools_LocationSet myLocations;

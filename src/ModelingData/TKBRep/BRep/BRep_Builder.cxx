@@ -65,8 +65,9 @@
 // BRep_Tool computes the one on a plane on demand, and STEP is routinely
 // written without them -- and an edge shared with a new face gains one for
 // that face; so does the regularity between two faces, and a vertex's
-// parameters on a new face or pcurve. Such a representation is marked
-// BRep_CurveRepresentation::IsCache and may be replaced, removed or re-ranged
+// parameter on a new edge's curve or pcurve or on a new face. Such a
+// representation is marked IsCache (BRep_CurveRepresentation,
+// BRep_PointRepresentation) and may be replaced, removed or re-ranged
 // afterwards. The value's own may not, and nothing may take a tolerance the
 // edge or vertex would have to grow to: those change the value, and throw.
 //=================================================================================================
@@ -161,25 +162,26 @@ static bool rangesAre(const occ::handle<BRep_TEdge>&   theTE,
 }
 
 //! For UpdateVertex on an edge with an Immutable part: throws when the call would
-//! change the frozen vertex or edge. An edge end restated at the parameter it
-//! has, a tolerance at or under the one held, and -- on a surface, see the
-//! note above -- a vertex parameter on a pcurve it has none on yet pass.
-static void checkImmutableVertexOnEdge(const occ::handle<BRep_TVertex>&   theTV,
-                                       const occ::handle<BRep_TEdge>&     theTE,
-                                       const TopAbs_Orientation           theOri,
-                                       const double                       thePar,
-                                       const double                       theTol,
-                                       const occ::handle<Geom_Surface>&   theS,
-                                       const TopLoc_Location&             theEdgeL,
-                                       const TopLoc_Location&             theVertexL)
+//! change the frozen vertex or edge -- a tolerance the vertex would have to grow
+//! to, or an end of a frozen edge moved. An end restated at the parameter it
+//! has passes. The parameter of an internal vertex is a point representation,
+//! which UpdatePoints decides.
+static void checkImmutableVertexOnEdge(const occ::handle<BRep_TVertex>& theTV,
+                                       const occ::handle<BRep_TEdge>&   theTE,
+                                       const TopAbs_Orientation         theOri,
+                                       const double                     thePar,
+                                       const double                     theTol,
+                                       const occ::handle<Geom_Surface>& theS,
+                                       const TopLoc_Location&           theEdgeL)
 {
-  const bool isEnd = theOri == TopAbs_FORWARD || theOri == TopAbs_REVERSED;
   if (theTV->Immutable())
   {
     unchangedOrRefused(theTol <= theTV->Tolerance(), "BRep_Builder::UpdateVertex");
-    // An internal vertex gains a point on each curve; without a surface to
-    // hold such a point against, it is not a cache this rule can name.
-    unchangedOrRefused(isEnd || !theS.IsNull(), "BRep_Builder::UpdateVertex");
+  }
+  const bool isEnd = theOri == TopAbs_FORWARD || theOri == TopAbs_REVERSED;
+  if (!isEnd || !theTE->Immutable())
+  {
+    return;
   }
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(theTE->Curves());
   for (; anIt.More(); anIt.Next())
@@ -190,22 +192,8 @@ static void checkImmutableVertexOnEdge(const occ::handle<BRep_TVertex>&   theTV,
     {
       continue;
     }
-    if (isEnd && theTE->Immutable())
-    {
-      const double aHeld = theOri == TopAbs_FORWARD ? aGC->First() : aGC->Last();
-      unchangedOrRefused(aHeld == thePar, "BRep_Builder::UpdateVertex");
-    }
-    else if (!isEnd && theTV->Immutable())
-    {
-      NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator aPt(theTV->Points());
-      for (; aPt.More(); aPt.Next())
-      {
-        if (aPt.Value()->IsPointOnCurveOnSurface(aGC->PCurve(), theS, theVertexL))
-        {
-          unchangedOrRefused(aPt.Value()->Parameter() == thePar, "BRep_Builder::UpdateVertex");
-        }
-      }
-    }
+    const double aHeld = theOri == TopAbs_FORWARD ? aGC->First() : aGC->Last();
+    unchangedOrRefused(aHeld == thePar, "BRep_Builder::UpdateVertex");
   }
 }
 
@@ -563,10 +551,30 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
   }
 }
 
+//! The UpdatePoints below, for an Immutable vertex (<theFrozen>): a parameter
+//! on a curve or surface the vertex has none on yet is added and marked a cache,
+//! as is a pcurve on a new surface for an edge (see the note at the top); a
+//! cache is rewritten; the value's own may only be restated.
+static bool frozenPointHeld(const bool                                   theFrozen,
+                            const occ::handle<BRep_PointRepresentation>& thePR,
+                            const double                                 theP1,
+                            const double                                 theP2,
+                            const bool                                   theHasP2)
+{
+  if (!theFrozen || thePR->IsCache())
+  {
+    return false;
+  }
+  return unchangedOrRefused(thePR->Parameter() == theP1
+                              && (!theHasP2 || thePR->Parameter2() == theP2),
+                            "BRep_Builder::UpdateVertex");
+}
+
 static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>& lpr,
                          double                                                   p,
                          const occ::handle<Geom_Curve>&                           C,
-                         const TopLoc_Location&                                   L)
+                         const TopLoc_Location&                                   L,
+                         const bool                                               theFrozen)
 {
   NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator itpr(lpr);
   while (itpr.More())
@@ -583,11 +591,15 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   if (itpr.More())
   {
     occ::handle<BRep_PointRepresentation> pr = itpr.Value();
-    pr->Parameter(p);
+    if (!frozenPointHeld(theFrozen, pr, p, 0., false))
+    {
+      pr->Parameter(p);
+    }
   }
   else
   {
     occ::handle<BRep_PointOnCurve> POC = new BRep_PointOnCurve(p, C, L);
+    POC->SetCache(theFrozen);
     lpr.Append(POC);
   }
 }
@@ -596,7 +608,8 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
                          double                                                   p,
                          const occ::handle<Geom2d_Curve>&                         PC,
                          const occ::handle<Geom_Surface>&                         S,
-                         const TopLoc_Location&                                   L)
+                         const TopLoc_Location&                                   L,
+                         const bool                                               theFrozen)
 {
   NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator itpr(lpr);
   while (itpr.More())
@@ -613,11 +626,15 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   if (itpr.More())
   {
     occ::handle<BRep_PointRepresentation> pr = itpr.Value();
-    pr->Parameter(p);
+    if (!frozenPointHeld(theFrozen, pr, p, 0., false))
+    {
+      pr->Parameter(p);
+    }
   }
   else
   {
     occ::handle<BRep_PointOnCurveOnSurface> POCS = new BRep_PointOnCurveOnSurface(p, PC, S, L);
+    POCS->SetCache(theFrozen);
     lpr.Append(POCS);
   }
 }
@@ -626,7 +643,8 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
                          double                                                   p1,
                          double                                                   p2,
                          const occ::handle<Geom_Surface>&                         S,
-                         const TopLoc_Location&                                   L)
+                         const TopLoc_Location&                                   L,
+                         const bool                                               theFrozen)
 {
   NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator itpr(lpr);
   while (itpr.More())
@@ -643,13 +661,17 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   if (itpr.More())
   {
     occ::handle<BRep_PointRepresentation> pr = itpr.Value();
-    pr->Parameter(p1);
-    //    pr->Parameter(p2); // skv
-    pr->Parameter2(p2); // skv
+    if (!frozenPointHeld(theFrozen, pr, p1, p2, true))
+    {
+      pr->Parameter(p1);
+      //    pr->Parameter(p2); // skv
+      pr->Parameter2(p2); // skv
+    }
   }
   else
   {
     occ::handle<BRep_PointOnSurface> POS = new BRep_PointOnSurface(p1, p2, S, L);
+    POS->SetCache(theFrozen);
     lpr.Append(POS);
   }
 }
@@ -1541,14 +1563,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V,
   }
   if (TV->Immutable() || TE->Immutable())
   {
-    checkImmutableVertexOnEdge(TV,
-                               TE,
-                               ori,
-                               Par,
-                               Tol,
-                               occ::handle<Geom_Surface>(),
-                               TopLoc_Location(),
-                               TopLoc_Location());
+    checkImmutableVertexOnEdge(TV, TE, ori, Par, Tol, occ::handle<Geom_Surface>(), TopLoc_Location());
   }
 
   NCollection_List<occ::handle<BRep_CurveRepresentation>>&          lcr = TE->ChangeCurves();
@@ -1576,13 +1591,13 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V,
         if (GC->IsCurve3D())
         {
           const occ::handle<Geom_Curve>& GC3d = GC->Curve3D();
-          UpdatePoints(lpr, Par, GC3d, LGCloc);
+          UpdatePoints(lpr, Par, GC3d, LGCloc, TV->Immutable());
         }
         else if (GC->IsCurveOnSurface())
         {
           const occ::handle<Geom2d_Curve>& GCpc = GC->PCurve();
           const occ::handle<Geom_Surface>& GCsu = GC->Surface();
-          UpdatePoints(lpr, Par, GCpc, GCsu, LGCloc);
+          UpdatePoints(lpr, Par, GCpc, GCsu, LGCloc, TV->Immutable());
         }
       }
     }
@@ -1654,7 +1669,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex&             V,
   }
   if (TV->Immutable() || TE->Immutable())
   {
-    checkImmutableVertexOnEdge(TV, TE, ori, Par, Tol, S, L, l);
+    checkImmutableVertexOnEdge(TV, TE, ori, Par, Tol, S, L);
   }
 
   NCollection_List<occ::handle<BRep_CurveRepresentation>>&          lcr = TE->ChangeCurves();
@@ -1681,7 +1696,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex&             V,
         {
           NCollection_List<occ::handle<BRep_PointRepresentation>>& lpr  = TV->ChangePoints();
           const occ::handle<Geom2d_Curve>&                         GCpc = GC->PCurve();
-          UpdatePoints(lpr, Par, GCpc, S, l);
+          UpdatePoints(lpr, Par, GCpc, S, l, TV->Immutable());
           TV->Modified(true);
         }
         break;
@@ -1723,21 +1738,9 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& Ve,
   NCollection_List<occ::handle<BRep_PointRepresentation>>& lpr = TV->ChangePoints();
   if (TV->Immutable())
   {
-    // The vertex's parameters on a face's surface: a cache (see the note
-    // above) when it has none there yet, the same ones again otherwise.
     unchangedOrRefused(Tol <= TV->Tolerance(), "BRep_Builder::UpdateVertex");
-    NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator aPt(lpr);
-    for (; aPt.More(); aPt.Next())
-    {
-      if (aPt.Value()->IsPointOnSurface(S, L)
-          && unchangedOrRefused(aPt.Value()->Parameter() == U && aPt.Value()->Parameter2() == V,
-                                "BRep_Builder::UpdateVertex"))
-      {
-        return;
-      }
-    }
   }
-  UpdatePoints(lpr, U, V, S, L);
+  UpdatePoints(lpr, U, V, S, L, TV->Immutable());
 
   TV->UpdateTolerance(Tol);
   TV->Modified(true);

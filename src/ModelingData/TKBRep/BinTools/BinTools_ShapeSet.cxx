@@ -72,23 +72,16 @@ void BinTools_ShapeSet::Clear()
   myTriangulations.Clear();
   myShapes.Clear();
   myLocations.Clear();
-  myOwnSurfaces.Clear();
+  myOwnGeometry.Clear();
 }
 
 //=================================================================================================
 
 int BinTools_ShapeSet::Add(const TopoDS_Shape& theShape)
 {
-  if (myStableBytes && !theShape.IsNull())
+  if (myStableBytes)
   {
-    for (TopExp_Explorer anExp(theShape, TopAbs_FACE); anExp.More(); anExp.Next())
-    {
-      const occ::handle<BRep_TFace>& aTF = occ::down_cast<BRep_TFace>(anExp.Current().TShape());
-      if (!aTF.IsNull() && !aTF->Surface().IsNull())
-      {
-        myOwnSurfaces.Add(aTF->Surface().get());
-      }
-    }
+    myOwnGeometry.Add(theShape);
   }
   return addShapes(theShape);
 }
@@ -160,7 +153,7 @@ void BinTools_ShapeSet::AddShape(const TopoDS_Shape& S)
     while (itrp.More())
     {
       const occ::handle<BRep_PointRepresentation>& PR = itrp.Value();
-      if (!PR->IsPointOnCurve() && isForeign(PR->Surface()))
+      if (isForeign(PR, S.TShape().get()))
       {
         itrp.Next();
         continue;
@@ -645,7 +638,7 @@ void BinTools_ShapeSet::WriteShape(const TopoDS_Shape& S, Standard_OStream& OS) 
       {
         const occ::handle<BRep_PointRepresentation>& PR = itrp.Value();
         // See AddShape: the same test decides both.
-        if (!PR->IsPointOnCurve() && isForeign(PR->Surface()))
+        if (isForeign(PR, S.TShape().get()))
         {
           itrp.Next();
           continue;
