@@ -14,10 +14,7 @@
 // Alternatively, this file may be used under the terms of Open CASCADE
 // commercial license or contractual agreement.
 
-#include <algorithm>
-
 #include <BRep_Builder.hxx>
-#include <BRep_Tool.hxx>
 #include <BRepLib.hxx>
 #include <BRepLib_FindSurface.hxx>
 #include <BRepLib_MakeFace.hxx>
@@ -189,30 +186,6 @@ BRepLib_MakeFace::BRepLib_MakeFace(const occ::handle<Geom_Surface>& S,
 
 //=================================================================================================
 
-//! The tolerance of a face built on <theW>, which FindSurface gives as the
-//! largest of its edges' (<theTol>). UpdateTolerances then raises every edge
-//! under it to it, which an Immutable edge (a fork flag) refuses; a face
-//! needs only to cover how far the wire is from its surface (<theNeeded>), so
-//! it takes the smallest frozen edge tolerance when that is enough, and
-//! nothing frozen has to grow. When it is not, the face keeps <theTol>, and
-//! the frozen edge refuses the change it would take.
-static double frozenFaceTolerance(const TopoDS_Wire& theW,
-                                  const double       theTol,
-                                  const double       theNeeded)
-{
-  double aMin = theTol;
-  for (TopoDS_Iterator anIt(theW); anIt.More(); anIt.Next())
-  {
-    if (anIt.Value().Immutable())
-    {
-      aMin = std::min(aMin, BRep_Tool::Tolerance(TopoDS::Edge(anIt.Value())));
-    }
-  }
-  return aMin >= theNeeded ? aMin : theTol;
-}
-
-//=================================================================================================
-
 BRepLib_MakeFace::BRepLib_MakeFace(const TopoDS_Wire& W, const bool OnlyPlane)
 
 {
@@ -229,7 +202,6 @@ BRepLib_MakeFace::BRepLib_MakeFace(const TopoDS_Wire& W, const bool OnlyPlane)
   myError = BRepLib_FaceDone;
 
   double tol = std::max(1.2 * FS.ToleranceReached(), FS.Tolerance());
-  tol        = frozenFaceTolerance(W, tol, 1.2 * FS.ToleranceReached());
 
   B.MakeFace(TopoDS::Face(myShape), FS.Surface(), FS.Location(), tol);
 
