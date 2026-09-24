@@ -122,6 +122,9 @@ TopoDS_Vertex BRepLib_MakeWire::thawVertex(const int     theIndex,
   const TopoDS_Vertex anOld = TopoDS::Vertex(myVertices.FindKey(theIndex));
   TopoDS_Vertex       aNew  = TopoDS::Vertex(anOld.EmptyCopied());
   aB.UpdateVertex(aNew, thePnt, theTol);
+  // Copies in place of changes, so a client naming the wire's elements gives
+  // them the names of what they replace (TopoDS_TShape::Thawed).
+  TopoDS_TShape::Thaw(aNew.TShape(), anOld.TShape());
 
   TopoDS_Wire aWire;
   aB.MakeWire(aWire);
@@ -149,6 +152,7 @@ TopoDS_Vertex BRepLib_MakeWire::thawVertex(const int     theIndex,
       aB.Add(aCopy, aVN);
       aB.Transfert(aFwd, aCopy, aVE, aVN);
     }
+    TopoDS_TShape::Thaw(aCopy.TShape(), aFwd.TShape());
     aB.Add(aWire, aCopy.Oriented(anEdge.Orientation()));
   }
   aWire.Closed(myShape.Closed());
