@@ -51,10 +51,19 @@ primitives in-code (no model files) and hollow them removing **one face at a
 time**, both outward (`+1`) and inward (`-1`), with mode=Skin, join=Arc:
 
 - `cyl_*` — `Part.makeCylinder(4, 20)`: Face1 = lateral (has a seam edge),
-  Face2 = bottom, Face3 = top.
+  Face2 = top (z = height, FORWARD), Face3 = bottom (z = 0, REVERSED).
 - `hole_*` — `makeCylinder(5, 10).cut(makeCylinder(2, 10))`: Face1 = outer
-  lateral, Face2 = bottom, Face3 = top, Face4 = hole lateral (reversed
-  orientation, seam edge).
+  lateral, Face2 = top (FORWARD), Face3 = bottom (REVERSED), Face4 = hole
+  lateral (reversed orientation, seam edge).
+
+Until 2026-09-28 the top and bottom were swapped in these notes and in the
+case names (Face2 was called the bottom), and the failing-inward diagnosis
+below blamed the REVERSED bottom plane. Checked by each face's centre of
+mass and orientation: it is the FORWARD top plane that fails, the REVERSED
+bottom one that works. The cases were renamed to match; face indices,
+expectations and volumes are unchanged. Met again from PartDesign as
+`../occ-issues/` `local01` (a 20 x 10 cup; every size tried fails the same
+way with the top opened).
 
 Status on `LinkVibe-801` (2026-08-01). The same pattern reproduces on the
 7.7.2 branch, i.e. these are long-standing fix-chain casualties, not 8.0
@@ -63,11 +72,11 @@ regressions:
 | Case | Status | Symptom |
 |------|--------|---------|
 | `cyl_bottom_out`, `cyl_top_out` | PASS | |
-| `cyl_top_in` | PASS | |
+| `cyl_bottom_in` | PASS | |
 | `cyl_side_out/in` (remove lateral face) | **XFAIL** | `StdFail_NotDone` — offsetting when the only removed face is the seam-carrying lateral face fails outright |
-| `cyl_bottom_in` | **XFAIL** | invalid + open shell — asymmetric with `cyl_top_in` (PASS): the REVERSED bottom plane trips an orientation-dependent path |
-| `hole_bottom_out`, `hole_top_out`, `hole_top_in` | PASS | |
-| `hole_bottom_in` | **XFAIL** | invalid + open shell (same asymmetry as `cyl_bottom_in`) |
+| `cyl_top_in` | **XFAIL** | invalid + open shell -- asymmetric with `cyl_bottom_in` (PASS): the FORWARD top plane trips an orientation-dependent path |
+| `hole_bottom_out`, `hole_top_out`, `hole_bottom_in` | PASS | |
+| `hole_top_in` | **XFAIL** | invalid + open shell (same asymmetry as `cyl_top_in`) |
 | `hole_outer_out/in` | **XFAIL** | invalid result — outer lateral + hole lateral interaction |
 | `hole_inner_out/in` | **XFAIL** | invalid result (7.7.2 additionally threw on `hole_inner_out`) |
 

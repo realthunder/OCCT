@@ -47,6 +47,15 @@ those need a scripted repro before they can join the suite.
 | 672 | `issue672_recompute_ghost.FCStd` | "Ghost" state: adding a circle to Sketch007 corrupts geometry unless `Support Ring` is recomputed first — recompute-order dependence, possibly not OCC |
 | 985 | `issue985_uptoface.FCStd` | Extruding circles "up to face" fails (`Bnd_Box is void`); needs the up-to-face pad edit scripted |
 
+## Found in FreeCAD work (no tracker issue)
+
+Problems met while working on FreeCAD itself, recorded here before any fix.
+Named `localNN_*`.
+
+| # | Model | Problem | Reproduces |
+|---|-------|---------|-----------|
+| local01 | `local01_thickness_open_top_cup.FCStd` | PartDesign Thickness with its defaults (Skin, **Arc** join, Reversed = inward) on a plain `Part.makeCylinder(20, 10)` opened at the **top** (Face2): invalid solid, volume 16585.68 where the wall is 4423.36. The `ThicknessIntersection` twin in the same file (Intersection join) is right. Found 2026-09-27 porting upstream's recto-verso thickness (fcad `b498307318`, whose Arc test is an expected failure because of it). The same defect as `../thickness/` case `cyl_top_in` (named `cyl_bottom_in` before 2026-09-28, see that README): every radius and height tried (r 4-40, h 5-20, offset -1 and -2) fails with the top opened and passes with the bottom opened. | on recompute: Thickness invalid |
+
 ## No usable repro
 
 | # | Problem |

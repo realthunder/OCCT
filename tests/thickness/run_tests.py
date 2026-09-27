@@ -125,24 +125,25 @@ document_case("issue3_pad_thickness", "issue3_pad_thickness.FCStd",
 document_case("issue4_revolution_thickness", "issue4_revolution_thickness.FCStd",
               volumes={"Thickness": 431.4454})
 
-# Plain cylinder: Face1 = lateral (seam), Face2 = bottom, Face3 = top.
+# Plain cylinder: Face1 = lateral (seam), Face2 = top (FORWARD), Face3 =
+# bottom (REVERSED). The names had top and bottom swapped before 2026-09-28.
 cyl = Part.makeCylinder(4, 20)
 thickness_case("cyl_side_out",    cyl, 1, +1.0, "xfail")
 thickness_case("cyl_side_in",     cyl, 1, -1.0, "xfail")
-thickness_case("cyl_bottom_out",  cyl, 2, +1.0, "pass", 637.5858)
-thickness_case("cyl_bottom_in",   cyl, 2, -1.0, "xfail")
-thickness_case("cyl_top_out",     cyl, 3, +1.0, "pass", 637.5858)
-thickness_case("cyl_top_in",      cyl, 3, -1.0, "pass", 468.0973)
+thickness_case("cyl_top_out",     cyl, 2, +1.0, "pass", 637.5858)
+thickness_case("cyl_top_in",      cyl, 2, -1.0, "xfail")
+thickness_case("cyl_bottom_out",  cyl, 3, +1.0, "pass", 637.5858)
+thickness_case("cyl_bottom_in",   cyl, 3, -1.0, "pass", 468.0973)
 
-# Cylinder with a centered hole: Face1 = outer lateral, Face2 = bottom,
-# Face3 = top, Face4 = hole lateral.
+# Cylinder with a centered hole: Face1 = outer lateral, Face2 = top,
+# Face3 = bottom, Face4 = hole lateral.
 ann = Part.makeCylinder(5, 10).cut(Part.makeCylinder(2, 10))
 thickness_case("hole_outer_out",  ann, 1, +1.0, "xfail")
 thickness_case("hole_outer_in",   ann, 1, -1.0, "xfail")
-thickness_case("hole_bottom_out", ann, 2, +1.0, "pass", 540.3400)
-thickness_case("hole_bottom_in",  ann, 2, -1.0, "xfail")
-thickness_case("hole_top_out",    ann, 3, +1.0, "pass", 540.3400)
-thickness_case("hole_top_in",     ann, 3, -1.0, "pass", 461.8141)
+thickness_case("hole_top_out",    ann, 2, +1.0, "pass", 540.3400)
+thickness_case("hole_top_in",     ann, 2, -1.0, "xfail")
+thickness_case("hole_bottom_out", ann, 3, +1.0, "pass", 540.3400)
+thickness_case("hole_bottom_in",  ann, 3, -1.0, "pass", 461.8141)
 thickness_case("hole_inner_out",  ann, 4, +1.0, "xfail")
 thickness_case("hole_inner_in",   ann, 4, -1.0, "xfail")
 
