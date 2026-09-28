@@ -54,7 +54,7 @@ Named `localNN_*`.
 
 | # | Model | Problem | Reproduces |
 |---|-------|---------|-----------|
-| local01 | `local01_thickness_open_top_cup.FCStd` | PartDesign Thickness with its defaults (Skin, **Arc** join, Reversed = inward) on a plain `Part.makeCylinder(20, 10)` opened at the **top** (Face2): invalid solid, volume 16585.68 where the wall is 4423.36. The `ThicknessIntersection` twin in the same file (Intersection join) is right. Found 2026-09-27 porting upstream's recto-verso thickness (fcad `b498307318`, whose Arc test is an expected failure because of it). The same defect as `../thickness/` case `cyl_top_in` (named `cyl_bottom_in` before 2026-09-28, see that README): every radius and height tried (r 4-40, h 5-20, offset -1 and -2) fails with the top opened and passes with the bottom opened. | on recompute: Thickness invalid |
+| local01 | `local01_thickness_open_top_cup.FCStd` | PartDesign Thickness with its defaults (Skin, **Arc** join, Reversed = inward) on a plain `Part.makeCylinder(20, 10)` opened at the **top** (Face2): invalid solid, volume 16585.68 where the wall is 4423.36. The `ThicknessIntersection` twin in the same file (Intersection join) is right. Found 2026-09-27 porting upstream's recto-verso thickness (fcad `b498307318`, whose Arc test is an expected failure because of it). The same defect as `../thickness/` case `cyl_top_in` (named `cyl_bottom_in` before 2026-09-28, see that README): every radius and height tried (r 4-40, h 5-20, offset -1 and -2) fails with the top opened and passes with the bottom opened. **Fixed 2026-09-28** in `BRepAlgo_Loop` (a closed edge reached after its seam wire was built kept a wire of its own); now 4423.36, valid. | fixed |
 
 ## No usable repro
 

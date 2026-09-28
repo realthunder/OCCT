@@ -1405,6 +1405,53 @@ void BRepAlgo_Loop::FindLoop()
     }
   }
 
+  // The seam wire replaces the wires of the closed edges it takes, but only
+  // those found before it: the search follows MVE's discovery order, and a
+  // closed edge reached later still makes a wire of its own. A face then got
+  // the seam wire and that edge's wire too - an inward thick solid of a
+  // cylinder opened at its FORWARD top came out with a three-wire inner wall
+  // and no floor, where the same opened at its bottom was right. Drop every
+  // plain wire that takes a closed edge a seam wire has.
+  if (IsPeriodic)
+  {
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeamClosed;
+    for (itW = MapIteratorOfMapOfWire(NewWires); itW.More(); itW.Next())
+    {
+      if (!itW.Value().HasSeam)
+      {
+        continue;
+      }
+      for (const auto& anEdge : itW.Value().Edges)
+      {
+        TopExp::Vertices(TopoDS::Edge(anEdge.first), V1, V2);
+        if (V1.IsSame(V2))
+        {
+          aSeamClosed.Add(anEdge.first);
+        }
+      }
+    }
+    if (!aSeamClosed.IsEmpty())
+    {
+      for (int iw = NewWires.Extent(); iw >= 1; --iw)
+      {
+        const WireInfo& info = NewWires(iw);
+        if (info.HasSeam)
+        {
+          continue;
+        }
+        for (const auto& anEdge : info.Edges)
+        {
+          if (aSeamClosed.Contains(anEdge.first))
+          {
+            SHOW_TOPO_SHAPE(info.aWire, "SeamRemoveLate");
+            NewWires.RemoveFromIndex(iw);
+            break;
+          }
+        }
+      }
+    }
+  }
+
   if (!IsPeriodic)
   {
     //-----------------------------------------------

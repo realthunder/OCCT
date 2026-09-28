@@ -74,11 +74,25 @@ regressions:
 | `cyl_bottom_out`, `cyl_top_out` | PASS | |
 | `cyl_bottom_in` | PASS | |
 | `cyl_side_out/in` (remove lateral face) | **XFAIL** | `StdFail_NotDone` — offsetting when the only removed face is the seam-carrying lateral face fails outright |
-| `cyl_top_in` | **XFAIL** | invalid + open shell -- asymmetric with `cyl_bottom_in` (PASS): the FORWARD top plane trips an orientation-dependent path |
+| `cyl_top_in` | PASS (2026-09-28) | was XFAIL: invalid + open shell, see below |
 | `hole_bottom_out`, `hole_top_out`, `hole_bottom_in` | PASS | |
-| `hole_top_in` | **XFAIL** | invalid + open shell (same asymmetry as `cyl_top_in`) |
+| `hole_top_in` | PASS (2026-09-28) | was XFAIL, the same defect as `cyl_top_in` |
 | `hole_outer_out/in` | **XFAIL** | invalid result — outer lateral + hole lateral interaction |
 | `hole_inner_out/in` | **XFAIL** | invalid result (7.7.2 additionally threw on `hole_inner_out`) |
+
+**`cyl_top_in` / `hole_top_in`, fixed 2026-09-28 (`BRepAlgo_Loop`).** Not
+orientation as such: the order the loop search met the inner wall's edges.
+On a periodic face `BRepAlgo_Loop::Perform` makes the wire of each closed
+edge, then a seam wire of two closed edges and the seam, removing the wires
+of the closed edges it takes -- the ones found so far. The search follows
+`MVE`, in discovery order; with the top opened it reached the floor circle
+only after the seam wire was built, so that circle kept a wire of its own:
+the inner wall came out with three wires and the floor was lost (4 faces,
+invalid). The fix drops, after the search, every plain wire that takes a
+closed edge of a seam wire. Found by dumping both cases with
+`Part.showShapeOCCT()` and diffing the bottom case, mirrored, against the
+top one. Both now match their `_bottom_in` twins to 4 decimals; the
+occ-issues model `local01` recomputes to 4423.36, as its Intersection twin.
 
 Leads for the XFAIL group, from the 2026-08-01 code audit (see the ranked
 SUSPECT findings recorded with the fix commits): `TrimEdge`'s end-vertex skip
