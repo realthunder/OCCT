@@ -32,6 +32,8 @@
 #include <BRep_TVertex.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_ShapeSet.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <GeomTools.hxx>
 #include <Message_ProgressScope.hxx>
 #include <Poly_Polygon3D.hxx>
@@ -98,7 +100,97 @@ void BRepTools_ShapeSet::Clear()
   myPolygons2D.Clear();
   myNodes.Clear();
   myTriangulations.Clear();
+  myOwnGeometry.Clear();
   TopTools_ShapeSet::Clear();
+}
+
+//=================================================================================================
+
+int BRepTools_ShapeSet::Add(const TopoDS_Shape& S)
+{
+  AddOwnSurfaces(S);
+  return TopTools_ShapeSet::Add(S);
+}
+
+//=================================================================================================
+
+void BRepTools_ShapeSet::AddOwnSurfaces(const TopoDS_Shape& S)
+{
+  if (myStableBytes)
+  {
+    myOwnGeometry.Add(S);
+  }
+}
+
+//=================================================================================================
+
+void BRepTools_ShapeSet::OwnGeometry::Add(const TopoDS_Shape& theS)
+{
+  if (theS.IsNull())
+  {
+    return;
+  }
+  for (TopExp_Explorer anExp(theS, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    const occ::handle<BRep_TFace>& aTF = occ::down_cast<BRep_TFace>(anExp.Current().TShape());
+    if (!aTF.IsNull() && !aTF->Surface().IsNull())
+    {
+      mySurfaces.Add(aTF->Surface().get());
+    }
+  }
+  // After every surface is known: a pcurve counts only on one of them.
+  for (TopExp_Explorer anExp(theS, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    const occ::handle<BRep_TEdge>& aTE = occ::down_cast<BRep_TEdge>(anExp.Current().TShape());
+    if (aTE.IsNull())
+    {
+      continue;
+    }
+    // The orientation the edge itself gives the vertex, as BRep_Tool::Parameter reads it.
+    for (TopoDS_Iterator aVIt(anExp.Current(), false, false); aVIt.More(); aVIt.Next())
+    {
+      const TopAbs_Orientation anOri = aVIt.Value().Orientation();
+      if (anOri != TopAbs_INTERNAL && anOri != TopAbs_EXTERNAL)
+      {
+        continue;
+      }
+      const Standard_Transient* aTV = aVIt.Value().TShape().get();
+      for (NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(aTE->Curves());
+           anIt.More();
+           anIt.Next())
+      {
+        const occ::handle<BRep_CurveRepresentation>& aCR = anIt.Value();
+        if (aCR->IsCurve3D())
+        {
+          myInnerPoints.emplace(aTV, aCR->Curve3D().get());
+        }
+        else if (aCR->IsCurveOnSurface() && mySurfaces.Contains(aCR->Surface().get()))
+        {
+          myInnerPoints.emplace(aTV, aCR->PCurve().get());
+          if (aCR->IsCurveOnClosedSurface())
+          {
+            myInnerPoints.emplace(aTV, aCR->PCurve2().get());
+          }
+        }
+      }
+    }
+  }
+}
+
+//=================================================================================================
+
+bool BRepTools_ShapeSet::OwnGeometry::HasPoint(const occ::handle<BRep_PointRepresentation>& thePR,
+                                               const Standard_Transient* theTV) const
+{
+  if (thePR->IsPointOnCurve())
+  {
+    return myInnerPoints.count({theTV, thePR->Curve().get()}) > 0;
+  }
+  if (thePR->IsPointOnCurveOnSurface())
+  {
+    return HasSurface(thePR->Surface()) && myInnerPoints.count({theTV, thePR->PCurve().get()}) > 0;
+  }
+  return HasSurface(thePR->Surface());
 }
 
 //=================================================================================================
@@ -116,6 +208,11 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
     while (itrp.More())
     {
       const occ::handle<BRep_PointRepresentation>& PR = itrp.Value();
+      if (isForeign(PR, S.TShape().get()))
+      {
+        itrp.Next();
+        continue;
+      }
 
       if (PR->IsPointOnCurve())
       {
@@ -161,7 +258,8 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
         // leaves the record out under. The two have to agree: an entry no
         // record names is dead weight, and a record naming an entry that was
         // never added is written with index 0 and read back empty.
-        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR)))
+        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+            && !isForeign(CR->Surface()))
         {
           mySurfaces.Add(CR->Surface());
           myCurves2d.Add(CR->PCurve());
@@ -174,6 +272,11 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
       }
       else if (CR->IsRegularity())
       {
+        if (isForeign(CR->Surface()) || isForeign(CR->Surface2()))
+        {
+          itrc.Next();
+          continue;
+        }
         mySurfaces.Add(CR->Surface());
         ChangeLocations().Add(CR->Location());
         mySurfaces.Add(CR->Surface2());
@@ -205,7 +308,7 @@ void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
             myNodes.Add(CR->PolygonOnTriangulation2());
           }
         }
-        else if (CR->IsPolygonOnSurface())
+        else if (CR->IsPolygonOnSurface() && !isForeign(CR->Surface()))
         {
           mySurfaces.Add(CR->Surface());
           myPolygons2D.Add(CR->Polygon());
@@ -603,6 +706,12 @@ void BRepTools_ShapeSet::WriteGeometry(const TopoDS_Shape& S, Standard_OStream& 
     while (itrp.More())
     {
       const occ::handle<BRep_PointRepresentation>& PR = itrp.Value();
+      // See AddGeometry: the same test decides both.
+      if (isForeign(PR, S.TShape().get()))
+      {
+        itrp.Next();
+        continue;
+      }
 
       OS << PR->Parameter();
       if (PR->IsPointOnCurve())
@@ -665,7 +774,8 @@ void BRepTools_ShapeSet::WriteGeometry(const TopoDS_Shape& S, Standard_OStream& 
       {
         // See AddGeometry: the same test decides both, or the tables and the
         // records stop agreeing.
-        if (myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+        if ((myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+            || isForeign(CR->Surface()))
         {
           itrc.Next();
           continue;
@@ -711,6 +821,11 @@ void BRepTools_ShapeSet::WriteGeometry(const TopoDS_Shape& S, Standard_OStream& 
       }
       else if (CR->IsRegularity())
       {
+        if (isForeign(CR->Surface()) || isForeign(CR->Surface2()))
+        {
+          itrc.Next();
+          continue;
+        }
         OS << "4 "; // -4- Regularity
         PrintRegularity(CR->Continuity(), OS);
         OS << " " << mySurfaces.Index(CR->Surface());

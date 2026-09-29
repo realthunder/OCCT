@@ -179,6 +179,12 @@ private:
 
   void Add(const TopoDS_Edge& E, bool IsCheckGeometryProximity);
 
+  //! Copy-on-write for an Immutable vertex (a fork flag) a merge has to move or
+  //! widen: replaces the vertex at <theIndex> of the vertex map by a copy at
+  //! <thePnt> with <theTol>, in the map and in the edges of the wire so far --
+  //! copied too, those being the input's -- and returns the copy.
+  TopoDS_Vertex thawVertex(const int theIndex, const gp_Pnt& thePnt, const double theTol);
+
 private:
   BRepLib_WireError                                             myError;
   TopoDS_Edge                                                   myEdge;

@@ -53,7 +53,8 @@ void BOPAlgo_PaveFiller::SetNonDestructive()
   for (; aItLS.More() && (!bFlag); aItLS.Next())
   {
     const TopoDS_Shape& aS = aItLS.Value();
-    bFlag                  = aS.Locked();
+    // an Immutable shape (a value its owner shares) is as off-limits as a Locked one
+    bFlag                  = aS.Locked() || aS.Immutable();
   }
   myNonDestructive = bFlag;
 }

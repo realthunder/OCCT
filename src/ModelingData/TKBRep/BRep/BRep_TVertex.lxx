@@ -25,6 +25,10 @@ inline double BRep_TVertex::Tolerance() const
 
 inline void BRep_TVertex::Tolerance(const double T)
 {
+  if (T != myTolerance && Immutable())
+  {
+    throw TopoDS_LockedShape("BRep_TVertex::Tolerance");
+  }
   myTolerance = T;
 }
 
@@ -33,7 +37,13 @@ inline void BRep_TVertex::Tolerance(const double T)
 inline void BRep_TVertex::UpdateTolerance(const double T)
 {
   if (T > myTolerance)
+  {
+    if (Immutable())
+    {
+      throw TopoDS_LockedShape("BRep_TVertex::UpdateTolerance");
+    }
     myTolerance = T;
+  }
 }
 
 //=================================================================================================
