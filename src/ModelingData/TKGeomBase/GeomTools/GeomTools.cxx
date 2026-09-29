@@ -16,6 +16,10 @@
 
 #include <GeomTools.hxx>
 
+#include <cctype>
+#include <cstring>
+#include <string>
+
 #include <Geom2d_Curve.hxx>
 #include <Geom_Surface.hxx>
 #include <GeomTools_Curve2dSet.hxx>
@@ -106,5 +110,26 @@ void GeomTools::GetReal(Standard_IStream& IS, double& theValue)
   std::streamsize anOldWide = IS.width(THE_BUFFER_SIZE - 1);
   IS >> aBuffer;
   IS.width(anOldWide);
+  // A real longer than the buffer is the rest of the same token, not the
+  // next field. Writers with fixed notation produce such tokens -- an
+  // unbounded edge's +-2e100 range as a 101-digit integer part -- and the
+  // 256-byte buffer this one replaced read them whole; split, every field
+  // after it came from the wrong token and the reader spun on a failed
+  // stream. The common short token pays one strlen.
+  // (width(N) extracts at most N - 1 characters: a full buffer holds
+  // THE_BUFFER_SIZE - 2 of them.)
+  if (std::strlen(aBuffer) >= THE_BUFFER_SIZE - 2 && IS.good())
+  {
+    const int aNext = IS.peek();
+    if (aNext != std::char_traits<char>::eof() && !std::isspace(aNext))
+    {
+      std::string aToken(aBuffer);
+      std::string aRest;
+      IS >> aRest;
+      aToken += aRest;
+      theValue = Strtod(aToken.c_str(), nullptr);
+      return;
+    }
+  }
   theValue = Strtod(aBuffer, nullptr);
 }
