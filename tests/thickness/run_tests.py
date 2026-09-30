@@ -130,21 +130,64 @@ cyl = Part.makeCylinder(4, 20)
 thickness_case("cyl_side_out",    cyl, 1, +1.0, "xfail")
 thickness_case("cyl_side_in",     cyl, 1, -1.0, "xfail")
 thickness_case("cyl_bottom_out",  cyl, 2, +1.0, "pass", 637.5858)
-thickness_case("cyl_bottom_in",   cyl, 2, -1.0, "xfail")
+thickness_case("cyl_bottom_in",   cyl, 2, -1.0, "pass", 468.0973)
 thickness_case("cyl_top_out",     cyl, 3, +1.0, "pass", 637.5858)
 thickness_case("cyl_top_in",      cyl, 3, -1.0, "pass", 468.0973)
 
 # Cylinder with a centered hole: Face1 = outer lateral, Face2 = bottom,
 # Face3 = top, Face4 = hole lateral.
 ann = Part.makeCylinder(5, 10).cut(Part.makeCylinder(2, 10))
-thickness_case("hole_outer_out",  ann, 1, +1.0, "xfail")
-thickness_case("hole_outer_in",   ann, 1, -1.0, "xfail")
+thickness_case("hole_outer_out",  ann, 1, +1.0, "pass", 241.7451)
+thickness_case("hole_outer_in",   ann, 1, -1.0, "pass", 257.6106)
 thickness_case("hole_bottom_out", ann, 2, +1.0, "pass", 540.3400)
-thickness_case("hole_bottom_in",  ann, 2, -1.0, "xfail")
+thickness_case("hole_bottom_in",  ann, 2, -1.0, "pass", 461.8141)
 thickness_case("hole_top_out",    ann, 3, +1.0, "pass", 540.3400)
 thickness_case("hole_top_in",     ann, 3, -1.0, "pass", 461.8141)
-thickness_case("hole_inner_out",  ann, 4, +1.0, "xfail")
-thickness_case("hole_inner_in",   ann, 4, -1.0, "xfail")
+thickness_case("hole_inner_out",  ann, 4, +1.0, "pass", 531.0589)
+thickness_case("hole_inner_in",   ann, 4, -1.0, "pass", 358.1416)
+
+# Elliptic pad (a single closed ellipse edge, extruded): Face2 = bottom,
+# Face3 = top. The offset of the ellipse is a closed B-spline that is not
+# periodic, which the context extension used to stretch 100 lengths past its
+# ends: the top came back unhollowed, the bottom as two shells.
+ell = Part.Face(Part.Wire(Part.Ellipse(App.Vector(0, 0, 0), 10, 5).toShape())).extrude(
+    App.Vector(0, 0, 8))
+thickness_case("ellipse_bottom_out", ell, 2, +1.0, "pass", 608.6622)
+thickness_case("ellipse_bottom_in",  ell, 2, -1.0, "pass", 473.2070)
+thickness_case("ellipse_top_out",    ell, 3, +1.0, "pass", 608.6631)
+thickness_case("ellipse_top_in",     ell, 3, -1.0, "pass", 473.2073)
+
+# Cylinder with a blind pocket in its top: Face3 = bottom. The loop on the
+# offset pocket wall lost the orientation of a circle and closed its seam
+# wire with two circles running the same way.
+cylpocket = Part.makeCylinder(6, 6).cut(Part.makeCylinder(3, 3, App.Vector(0, 0, 3)))
+thickness_case("pocket_bottom_out", cylpocket, 3, +1.0, "pass", 433.9707)
+thickness_case("pocket_bottom_in",  cylpocket, 3, -1.0, "pass", 346.7660)
+
+# Box with a through hole: Face7 = the hole. The removed cylinder leaves a
+# wall at each end, two seam wires on one face, where only one was allowed.
+boxhole = Part.makeBox(10, 10, 5).cut(Part.makeCylinder(2, 5, App.Vector(5, 5, 0)))
+thickness_case("boxhole_hole_out", boxhole, 7, +1.0, "pass", 457.5959)
+thickness_case("boxhole_hole_in",  boxhole, 7, -1.0, "pass", 282.8673)
+
+
+# A box with a pocket, thickened inward with intersection on and the
+# Intersection join, crashed: splitting the trimmed faces had no map from
+# trimmed to infinite edges and dereferenced it. The result is still invalid
+# (as upstream's is); the case is here to run to the end.
+def nocrash_case(name, shape, face_index, value, inter, join):
+    try:
+        r = shape.makeThickness([shape.Faces[face_index - 1]], value, 1e-7, inter, False, 0,
+                                join)
+        detail = "valid=%s vol=%.4f" % (r.isValid(), r.Volume)
+    except Exception as e:
+        detail = "EXCEPTION " + type(e).__name__
+    report(name, True, False, "no crash; " + detail)
+
+
+nocrash_case("pocket_inter_join_no_crash",
+             Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
+             7, -1.0, True, 2)
 
 # Determinism: thickness with intersection and the Arc join iterated its
 # offsets in hash order (a shape's hash is its TShape's address), and the
