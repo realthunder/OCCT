@@ -122,14 +122,23 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 | `pocketbox_wall_out` | box with a pocket, a pocket wall, outward | the same; no reference volume (upstream's result is invalid) |
 | `tshape_bar_top_out` | T: the bar top beside the post (a concave removed face), outward | the removed face's stretched edge ran on along the back of the T and a piece of it lay on an arc face's tangent line (dropped now), and a corner sphere met before the face that renewed its edge kept the old one (faces are gone over again). Upstream fails it; the reference is the fork's own |
 
-Still failing in FreeCAD's default mode (Arc join, intersection off), from
-the 712-run sweep: the T's concave bar top thickened inward (the stretched
-edge of the removed face cuts the inner back face in its interior); the
-filleted box with an end face or a fillet face removed (upstream fails every
-one of these the same way, several with exceptions in upstream code); and a
-box whose pocket walls are exactly twice the thickness (coincident offsets,
-not counted). Everything else the fork gets wrong there, upstream gets wrong
-too.
+## Inward, intersection mode, the Intersection join (2026-09-30, sec 27.91-27.92)
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `tshape_bar_top_in` | T: the concave bar top, inward | the stretched removed face crossed the far end wall's inner edge above the bar's inner top, and the crossing counted as that edge's own end; the corner above the bar's inner arc came out as a face of its own. Worked out by hand (upstream fails it) |
+| `lbox_top_inter_join_*`, `tshape_back_inter_join_*` | L-box top, T back; intersection on, Intersection join | an edge two faces share was trimmed twice (an indexed map's `Add()` is never 0) and the second pass cut the section short. Upstream's volumes |
+| `conehole_bottom_inter_in` | cone with a through hole, bottom removed, inward, intersection on | a circle running round the hole's offset beyond the seam's span came out as a face of no area. Worked out by hand, = upstream |
+| `tshape_bar_top_right_join_in`, `pocket_floor_join_*` | Intersection join, intersection off | the thick solid came back inside out (the quilt's shells met in an order that turned them); now oriented by classification |
+| `blindhole_floor_join_*` | box with a blind hole, the floor removed, Intersection join | the floor meets the wall at a concave edge; the section on the wall's offset was the wrong way round. Worked out by hand |
+| `lbox_notch_wall_inter_join_out`, `tshape_post_wall_inter_join_in`, `pocket_wall_inter_join_in` | concave removed faces, intersection on, Intersection join | the splits of the offset faces left the rim uncut; such shapes are built as with intersection off |
+
+The 712-run sweep against upstream after these: the fork right in 135-137
+of 150 in each mode (upstream 106-111), worse than upstream in no run.
+Still failing in every mode, upstream too: the filleted box with an end face
+or a fillet face removed (the removed face is tangent to its neighbours,
+whose offsets never reach its plane), and the holed cone's top inward (the
+wall is thinner than twice the thickness; no hollow result exists).
 
 ## Determinism cases (intersection mode, Arc join)
 
