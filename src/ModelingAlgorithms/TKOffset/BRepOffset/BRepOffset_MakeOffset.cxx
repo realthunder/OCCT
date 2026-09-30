@@ -80,6 +80,7 @@
 #include <Standard_ConstructionError.hxx>
 #include <Standard_NotImplemented.hxx>
 #include <ShapeFix_Shape.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
@@ -100,7 +101,10 @@
 #include <BOPAlgo_MakerVolume.hxx>
 #include <BOPTools_AlgoTools.hxx>
 
+#include <algorithm>
+#include <climits>
 #include <cstdio>
+#include <vector>
 // POP for NT
 #ifdef OCCT_DEBUG
   #include <OSD_Chronometer.hxx>
@@ -1995,6 +1999,37 @@ void BRepOffset_MakeOffset::BuildFaceComp()
   }
 }
 
+//! The keys of <theMap> in the order of <theOrder> (the sub-shapes of the
+//! shape being offset, from TopExp::MapShapes), keys it does not hold last.
+//! A DataMap iterates in hash order, and a shape's hash is its TShape's
+//! address: the offsets would be put in another order on every run, and the
+//! result depends on that order (FreeCAD docs/TransactionLog.md sec 27.88).
+static std::vector<TopoDS_Shape> orderedKeys(
+  const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& theMap,
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>&                theOrder)
+{
+  std::vector<std::pair<int, TopoDS_Shape>> aKeys;
+  aKeys.reserve(theMap.Extent());
+  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>::Iterator anIt(
+    theMap);
+  for (; anIt.More(); anIt.Next())
+  {
+    const int anIndex = theOrder.FindIndex(anIt.Key());
+    aKeys.emplace_back(anIndex == 0 ? INT_MAX : anIndex, anIt.Key());
+  }
+  std::stable_sort(aKeys.begin(),
+                   aKeys.end(),
+                   [](const std::pair<int, TopoDS_Shape>& theA,
+                      const std::pair<int, TopoDS_Shape>& theB) { return theA.first < theB.first; });
+  std::vector<TopoDS_Shape> aResult;
+  aResult.reserve(aKeys.size());
+  for (const std::pair<int, TopoDS_Shape>& aKey : aKeys)
+  {
+    aResult.push_back(aKey.second);
+  }
+  return aResult;
+}
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRange)
@@ -2196,17 +2231,25 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
   {
     RT = ChFiDS_Convex;
   }
-  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>::Iterator It(MapSF);
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anOrder;
+  TopExp::MapShapes(myFaceComp, anOrder);
+  for (NCollection_List<TopoDS_Shape>::Iterator aNewIt(myAnalyse.NewFaces()); aNewIt.More();
+       aNewIt.Next())
+  {
+    TopExp::MapShapes(aNewIt.Value(), anOrder);
+  }
+  const std::vector<TopoDS_Shape> aKeys = orderedKeys(MapSF, anOrder);
   Message_ProgressScope aPS3(aPSOuter.Next(), nullptr, MapSF.Length());
-  for (; It.More(); It.Next(), aPS3.Next())
+  for (std::vector<TopoDS_Shape>::const_iterator aKeyIt = aKeys.begin(); aKeyIt != aKeys.end();
+       ++aKeyIt, aPS3.Next())
   {
     if (!aPS3.More())
     {
       myError = BRepOffset_UserBreak;
       return;
     }
-    const TopoDS_Shape&      SI = It.Key();
-    const BRepOffset_Offset& SF = It.Value();
+    const TopoDS_Shape&      SI = *aKeyIt;
+    const BRepOffset_Offset& SF = MapSF.Find(SI);
     if (SF.Status() == BRepOffset_Reversed || SF.Status() == BRepOffset_Degenerated)
     {
       //------------------------------------------------
@@ -2215,7 +2258,7 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
       continue;
     }
 
-    const TopoDS_Face& OF = It.Value().Face();
+    const TopoDS_Face& OF = SF.Face();
     myInitOffsetFace.Bind(SI, OF);
     SHOW_TOPO_SHAPE(SI, "SI");
     SHOW_TOPO_SHAPE(OF, "OF");
@@ -2236,7 +2279,7 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
         if (!L.IsEmpty() && L.First().Type() != RT)
         {
           TopAbs_Orientation OO          = E.Orientation();
-          TopoDS_Shape       aLocalShape = It.Value().Generated(E);
+          TopoDS_Shape       aLocalShape = SF.Generated(E);
           TopoDS_Edge        OE          = TopoDS::Edge(aLocalShape);
           //          TopoDS_Edge        OE  = TopoDS::Edge(It.Value().Generated(E));
           myAsDes->Add(OF, OE.Oriented(OO));
