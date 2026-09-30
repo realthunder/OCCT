@@ -1176,6 +1176,13 @@ void BRepOffset_BuildOffsetFaces::UpdateIntersectedEdges(
   const NCollection_List<TopoDS_Shape>& theLA,
   BOPAlgo_Builder&                      theGF)
 {
+  // Splitting already trimmed faces binds no trimmed edge to an infinite
+  // one: the map is not set at all there, and its edges can still cut one
+  // another (a thickness with its intersection on).
+  if (!myETrimEInf)
+  {
+    return;
+  }
   for (NCollection_List<TopoDS_Shape>::Iterator aItA(theLA); aItA.More(); aItA.Next())
   {
     const TopoDS_Shape& aS    = aItA.Value();
