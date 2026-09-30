@@ -39,6 +39,8 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopTools.hxx>
+#include <Extrema_ExtPC.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_Map.hxx>
@@ -1117,6 +1119,47 @@ void BRepOffset_Inter3d::ConnexIntByInt(
 
 //=================================================================================================
 
+// Whether two edges run the same way, each as its orientation has it: the
+// tangent of <theE> at its middle against the tangent of <theRef> at the
+// point nearest to it.
+static bool RunTheSameWay(const TopoDS_Edge& theE, const TopoDS_Edge& theRef)
+{
+  BRepAdaptor_Curve aC(theE), aRef(theRef);
+  const double      aT = (aC.FirstParameter() + aC.LastParameter()) / 2.;
+  gp_Pnt            aP;
+  gp_Vec            aD;
+  aC.D1(aT, aP, aD);
+  Extrema_ExtPC anExt(aP, aRef);
+  if (!anExt.IsDone() || anExt.NbExt() == 0)
+  {
+    return true;
+  }
+  int    iMin   = 1;
+  double aDMin = anExt.SquareDistance(1);
+  for (int i = 2; i <= anExt.NbExt(); ++i)
+  {
+    if (anExt.SquareDistance(i) < aDMin)
+    {
+      aDMin = anExt.SquareDistance(i);
+      iMin  = i;
+    }
+  }
+  gp_Pnt aPR;
+  gp_Vec aDR;
+  aRef.D1(anExt.Point(iMin).Parameter(), aPR, aDR);
+  if (theE.Orientation() == TopAbs_REVERSED)
+  {
+    aD.Reverse();
+  }
+  if (theRef.Orientation() == TopAbs_REVERSED)
+  {
+    aDR.Reverse();
+  }
+  return aD.Dot(aDR) >= 0.;
+}
+
+//=================================================================================================
+
 void BRepOffset_Inter3d::ContextIntByInt(
   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& ContextFaces,
   const bool                                                           _ExtentContext,
@@ -1335,6 +1378,38 @@ void BRepOffset_Inter3d::ContextIntByInt(
           LOE.Append(OE);
           BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, E, CF, F);
           SetDone(NF, CF);
+          // The section is oriented as if the removed face met the offset
+          // one at a convex edge. At a concave one -- the floor of a blind
+          // hole -- it comes out the wrong way round, and a band on the hole's
+          // offset closed on two circles running the same way. The offset of
+          // the removed face's edge, as its face holds it, runs the way the
+          // section must: where they disagree, the section is turned.
+          if (bEdge && !OE.IsNull())
+          {
+            TopoDS_Edge anOE;
+            for (TopExp_Explorer anExpE(OF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+            {
+              if (anExpE.Current().IsSame(OE))
+              {
+                anOE = TopoDS::Edge(anExpE.Current());
+                break;
+              }
+            }
+            if (!anOE.IsNull())
+            {
+              const bool isRevFace = OF.Orientation() == TopAbs_REVERSED;
+              NCollection_List<TopoDS_Shape>::Iterator anIt1(LInt1), anIt2(LInt2);
+              for (; anIt1.More() && anIt2.More(); anIt1.Next(), anIt2.Next())
+              {
+                if (RunTheSameWay(TopoDS::Edge(anIt2.Value()), anOE) == isRevFace)
+                {
+                  anIt1.ChangeValue().Reverse();
+                  anIt2.ChangeValue().Reverse();
+                  SHOW_TOPO_SHAPE(anIt2.Value(), "ContextSectionTurned", anOE);
+                }
+              }
+            }
+          }
           if (!LInt1.IsEmpty())
           {
             SHOW_TOPO_SHAPE(CF, "ExtentIntCF");
