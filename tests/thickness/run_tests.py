@@ -146,6 +146,34 @@ thickness_case("hole_top_in",     ann, 3, -1.0, "pass", 461.8141)
 thickness_case("hole_inner_out",  ann, 4, +1.0, "xfail")
 thickness_case("hole_inner_in",   ann, 4, -1.0, "xfail")
 
+# Determinism: thickness with intersection and the Arc join iterated its
+# offsets in hash order (a shape's hash is its TShape's address), and the
+# result depended on that order -- up to four different results in eight runs
+# of one input. Each case must give one result over repeated runs on fresh
+# shapes (FreeCAD docs/TransactionLog.md sec 27.88).
+def determinism_case(name, make, face_index, value, runs=8):
+    outcomes = set()
+    for _ in range(runs):
+        shape = make()
+        try:
+            r = shape.makeThickness([shape.Faces[face_index - 1]], value, 1e-3,
+                                    True, False, 0, 0)
+            outcomes.add("valid=%s vol=%.4f" % (r.isValid(), r.Volume))
+        except Exception as e:
+            outcomes.add("EXCEPTION " + type(e).__name__)
+    report(name, len(outcomes) == 1, False, "; ".join(sorted(outcomes)))
+
+
+determinism_case("arc_inter_boss_same_every_run",
+                 lambda: Part.makeCylinder(6, 4).fuse(
+                     Part.makeCylinder(3, 4, App.Vector(0, 0, 4))), 3, +1.0)
+determinism_case("arc_inter_lbox_same_every_run",
+                 lambda: Part.makeBox(10, 10, 5).cut(
+                     Part.makeBox(5, 5, 5, App.Vector(5, 5, 0))), 7, +1.0)
+determinism_case("arc_inter_boxhole_same_every_run",
+                 lambda: Part.makeBox(10, 10, 5).cut(
+                     Part.makeCylinder(2, 3, App.Vector(5, 5, 2))), 2, +1.0)
+
 counts = {}
 for _, verdict, _ in results:
     counts[verdict] = counts.get(verdict, 0) + 1

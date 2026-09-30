@@ -38,6 +38,11 @@ reference volume.
 | `issue3_pad_thickness` | PartDesign Pad + Thickness | realthunder/OCCT#3 | MakeThickSolid producing hollow walls from a padded profile (volume reference detects silently-wrong results, e.g. non-hollowed solid) |
 | `issue4_revolution_thickness` | Part Revolution (quarter revolve, two sphere caps) + Thickness, planar faces removed | realthunder/OCCT#4 | Offset of periodic faces: sphere caps with **degenerated pole edges** + seam handling. Historically: 7.7.2 produced an invalid solid; the 8.0.1 port initially threw `StdFail_NotDone` (hash-order nondeterminism); both fixed on `LinkVibe-801` — result must now be a fully valid single-shell solid |
 
+`issue2_broken_loft` also broke -- volume 2055.8 -- while FreeCAD built
+sketch edges on reversed curves (2026-08-23 to 2026-09-30, fixed there,
+FreeCAD docs/TransactionLog.md sec 27.87): the ring's radii come from the
+ends of an external edge, which came in reversed.
+
 Fix history for these (branch `LinkVibe-801`):
 - `1789444318` — port of the 7.7.2 MakeThickSolid fix chain to 8.0.1
 - `756262b692` — deterministic wire nesting in `BRepAlgo_FaceRestrictor`
@@ -78,6 +83,19 @@ extension block mishandles **closed offset edges** (second `UpdateVertex`
 clobbers the first trim parameter — the cylinder lateral faces are exactly
 this case); the `ContextFaces` pair-skip in `Inter2d::Compute` lacks a
 same-face check; `WireInfo` equality is orientation-blind.
+
+## Determinism cases (intersection mode, Arc join)
+
+`arc_inter_boss_same_every_run`, `arc_inter_lbox_same_every_run`,
+`arc_inter_boxhole_same_every_run` run one thickness (intersection on,
+join=Arc, +1) eight times on freshly built shapes and require one result.
+`BuildOffsetByArc` iterated its offsets (`MapSF`, a DataMap) in hash order,
+and a shape's hash is its TShape's address, so the order -- and with it the
+result -- changed from run to run: up to four results in eight runs of the
+same input. The offsets are now taken in the shape's topological order
+(FreeCAD docs/TransactionLog.md sec 27.88). The cases check that the result is
+the same every run, not that it is right: the boss and the box with a blind
+hole settle on an invalid solid, as some of their runs were before.
 
 ## Layout
 
