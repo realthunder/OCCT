@@ -61,6 +61,8 @@
 #include <NCollection_Sequence.hxx>
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 // #define OCCT_DEBUG_ALGO
 #ifdef OCCT_DEBUG_ALGO
 bool         AffichLoop = true;
@@ -1301,6 +1303,375 @@ void SplitWires(NCollection_List<TopoDS_Shape>& OutputWires,
 
 } // Anonymous namespace
 
+
+//=================================================================================================
+// The minimal wires by angle, not by search (after FreeCAD's WireJoiner).
+//
+// The faces of a planar edge network are the orbits of a permutation on its
+// darts, a dart being one end of an edge taken as that edge travelled away
+// from that end:
+//
+//     rev(d)   the same edge travelled the other way
+//     next(d)  the first dart clockwise from rev(d) in the angular order of
+//              the darts leaving the vertex d arrives at
+//
+// Walking next() from any dart returns to it, every dart lies in one orbit,
+// and each orbit is a face boundary: the bounded faces come out with a
+// positive signed area, the unbounded face of each connected component with
+// a negative one. One pass, an angular sort per vertex, nothing searched and
+// nothing undone. It is OCCT's own rule at a branching vertex
+// (BOPAlgo_WireSplitter::ClockWiseAngle), measured here in the face's
+// parametric space, which keeps the cyclic order of the directions leaving a
+// vertex on a surface that is not periodic -- periodic faces keep the search
+// and its seam wires.
+//=================================================================================================
+
+namespace
+{
+// Angles at or below this are the same direction.
+constexpr double THE_ANGLE_TIE = 1.e-8;
+// Where the second order tie break samples: two edges leaving a vertex the
+// same way are told apart by the chord to a point this far along each.
+constexpr double THE_ANGLE_REFINE = 0.1;
+
+struct LoopDart
+{
+  int  Edge;    // index in the edge map
+  bool AtStart; // leaves the edge's first vertex, runs along it
+};
+
+// The turn from the back of the edge we came in on to a way out, measured one
+// way round; going straight back is a full turn, the last resort.
+double ClockWiseAngle(const double theIn, const double theOut)
+{
+  double a = theIn - theOut;
+  while (a < 0.)
+  {
+    a += 2. * M_PI;
+  }
+  while (a >= 2. * M_PI)
+  {
+    a -= 2. * M_PI;
+  }
+  return a <= THE_ANGLE_TIE ? 2. * M_PI : a;
+}
+} // namespace
+
+// Direction a dart leaves its vertex in, as an angle in the face's (u, v); a
+// fraction above zero takes the chord to a point that far along instead.
+static bool DartAngle(const occ::handle<Geom2d_Curve>& theC2d,
+                      const double                     theF,
+                      const double                     theL,
+                      const bool                       theAtStart,
+                      double                           theFraction,
+                      double&                          theAngle)
+{
+  gp_Vec2d aDir;
+  if (theFraction <= 0.)
+  {
+    gp_Pnt2d aP;
+    gp_Vec2d aD1;
+    theC2d->D1(theAtStart ? theF : theL, aP, aD1);
+    if (aD1.SquareMagnitude() > Precision::SquarePConfusion())
+    {
+      aDir = theAtStart ? aD1 : aD1.Reversed();
+    }
+    else
+    {
+      theFraction = THE_ANGLE_REFINE;
+    }
+  }
+  if (theFraction > 0.)
+  {
+    const double p0 = theAtStart ? theF : theL;
+    const double p1 = theAtStart ? theF + (theL - theF) * theFraction
+                                 : theL - (theL - theF) * theFraction;
+    aDir            = gp_Vec2d(theC2d->Value(p0), theC2d->Value(p1));
+  }
+  if (aDir.SquareMagnitude() <= Precision::SquarePConfusion())
+  {
+    return false;
+  }
+  theAngle = std::atan2(aDir.Y(), aDir.X());
+  return true;
+}
+
+static bool FindLoopsByAngle(
+  const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+                                                                MVE,
+  const TopoDS_Face&                                            theFace,
+  MapOfWire&                                                    theWires,
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theOutside)
+{
+  // The edges, and for each its pcurve and its two ends among the vertices.
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEdges;
+  for (int i = 1; i <= MVE.Extent(); ++i)
+  {
+    for (NCollection_List<TopoDS_Shape>::Iterator it(MVE(i)); it.More(); it.Next())
+    {
+      anEdges.Add(it.Value().Oriented(TopAbs_FORWARD));
+    }
+  }
+  const int                              aNbE = anEdges.Extent();
+  std::vector<occ::handle<Geom2d_Curve>> aC2d(aNbE + 1);
+  std::vector<double>                    aF(aNbE + 1), aL(aNbE + 1);
+  std::vector<int>                       aV1(aNbE + 1), aV2(aNbE + 1);
+  for (int e = 1; e <= aNbE; ++e)
+  {
+    const TopoDS_Edge& E = TopoDS::Edge(anEdges(e));
+    aC2d[e]              = BRep_Tool::CurveOnSurface(E, theFace, aF[e], aL[e]);
+    TopoDS_Vertex V1, V2;
+    TopExp::Vertices(E, V1, V2);
+    aV1[e] = V1.IsNull() ? 0 : MVE.FindIndex(V1);
+    aV2[e] = V2.IsNull() ? 0 : MVE.FindIndex(V2);
+    if (aC2d[e].IsNull() || aV1[e] == 0 || aV2[e] == 0)
+    {
+      return false;
+    }
+  }
+  // Darts: 2e leaves the first vertex, 2e+1 the last; rev(d) = d ^ 1.
+  const int           aNbD = 2 * (aNbE + 1);
+  std::vector<double> anAngle(aNbD, 0.);
+  std::vector<std::vector<int>> aOut(MVE.Extent() + 1);
+  for (int e = 1; e <= aNbE; ++e)
+  {
+    for (int k = 0; k < 2; ++k)
+    {
+      const int d = 2 * e + k;
+      if (!DartAngle(aC2d[e], aF[e], aL[e], k == 0, 0., anAngle[d]))
+      {
+        return false;
+      }
+      aOut[k == 0 ? aV1[e] : aV2[e]].push_back(d);
+    }
+  }
+  auto aDartVertex  = [&](int d) { return (d & 1) ? aV2[d / 2] : aV1[d / 2]; };
+  auto aArrivalVert = [&](int d) { return (d & 1) ? aV1[d / 2] : aV2[d / 2]; };
+  auto aRefined     = [&](int d, double& theA) {
+    return DartAngle(aC2d[d / 2], aF[d / 2], aL[d / 2], (d & 1) == 0, THE_ANGLE_REFINE, theA);
+  };
+  auto aNext = [&](int d) {
+    const int         aBack = d ^ 1;
+    const auto&       aCand = aOut[aArrivalVert(d)];
+    int               aBest = -1;
+    double            aBestA = 0.;
+    for (int c : aCand)
+    {
+      const double a = ClockWiseAngle(anAngle[aBack], anAngle[c]);
+      if (aBest < 0 || a < aBestA)
+      {
+        aBest  = c;
+        aBestA = a;
+      }
+    }
+    // Ties merge two faces into one: a second look, along the edges.
+    std::vector<int> aTies;
+    for (int c : aCand)
+    {
+      if (c != aBest && ClockWiseAngle(anAngle[aBack], anAngle[c]) <= aBestA + THE_ANGLE_TIE)
+      {
+        aTies.push_back(c);
+      }
+    }
+    double anIn = 0.;
+    if (!aTies.empty() && aRefined(aBack, anIn))
+    {
+      aTies.push_back(aBest);
+      int    aRef  = -1;
+      double aRefA = 0.;
+      for (int c : aTies)
+      {
+        double a = 0.;
+        if (!aRefined(c, a))
+        {
+          continue;
+        }
+        const double aTurn = ClockWiseAngle(anIn, a);
+        if (aRef < 0 || aTurn < aRefA)
+        {
+          aRef  = c;
+          aRefA = aTurn;
+        }
+      }
+      if (aRef >= 0)
+      {
+        aBest = aRef;
+      }
+    }
+    return aBest;
+  };
+  (void)aDartVertex;
+
+  std::vector<int> anOrbit(aNbD, 0);
+  int              aNbOrbits = 0;
+  std::vector<int> aLoop;
+  for (int d0 = 2; d0 < aNbD; ++d0)
+  {
+    if (anOrbit[d0])
+    {
+      continue;
+    }
+    ++aNbOrbits;
+    aLoop.clear();
+    int d = d0;
+    for (;;)
+    {
+      anOrbit[d] = aNbOrbits;
+      aLoop.push_back(d);
+      const int n = aNext(d);
+      if (n < 0)
+      {
+        return false;
+      }
+      if (n == d0)
+      {
+        break;
+      }
+      if (anOrbit[n])
+      {
+        // next() is a permutation: coming back anywhere but to the start
+        // means the angles do not describe this network.
+        return false;
+      }
+      d = n;
+    }
+    // Drop the out-and-back excursions: a bridge or a tail bounds nothing.
+    std::vector<int> aPruned;
+    for (int x : aLoop)
+    {
+      if (!aPruned.empty() && aPruned.back() == (x ^ 1))
+      {
+        aPruned.pop_back();
+      }
+      else
+      {
+        aPruned.push_back(x);
+      }
+    }
+    while (aPruned.size() >= 2 && aPruned.front() == (aPruned.back() ^ 1))
+    {
+      aPruned.pop_back();
+      aPruned.erase(aPruned.begin());
+    }
+    if (aPruned.empty() || (aPruned.size() == 1 && aV1[aPruned[0] / 2] != aV2[aPruned[0] / 2]))
+    {
+      continue;
+    }
+    // Twice the signed area in (u, v), sampled along each dart the way it
+    // runs -- four points an edge, so a lone circle is not read as empty:
+    // bounded faces positive.
+    double   anArea = 0.;
+    gp_Pnt2d aPrev;
+    bool     isFirst = true;
+    gp_Pnt2d aFirst;
+    for (int x : aPruned)
+    {
+      const int e = x / 2;
+      gp_Pnt2d  aPs[4];
+      for (int k = 0; k < 4; ++k)
+      {
+        const double t = (x & 1) ? 1. - k / 4. : k / 4.;
+        aPs[k]         = aC2d[e]->Value(aF[e] + (aL[e] - aF[e]) * t);
+      }
+      for (const gp_Pnt2d& aP : aPs)
+      {
+        if (isFirst)
+        {
+          aFirst  = aP;
+          isFirst = false;
+        }
+        else
+        {
+          anArea += aPrev.X() * aP.Y() - aP.X() * aPrev.Y();
+        }
+        aPrev = aP;
+      }
+    }
+    anArea += aPrev.X() * aFirst.Y() - aFirst.X() * aPrev.Y();
+    if (anArea <= 0.)
+    {
+      continue;
+    }
+    BRepLib_MakeWire aMW;
+    for (int x : aPruned)
+    {
+      aMW.Add(TopoDS::Edge(anEdges(x / 2).Oriented((x & 1) ? TopAbs_REVERSED : TopAbs_FORWARD)));
+    }
+    if (!aMW.IsDone() || !aMW.Wire().Closed())
+    {
+      return false;
+    }
+    WireInfo anInfo(aMW.Wire());
+    for (const auto& v : anInfo.Edges)
+    {
+      anInfo.Outside = anInfo.Outside || theOutside.Contains(v.first);
+    }
+    if (!theWires.Contains(anInfo))
+    {
+      theWires.Add(anInfo);
+      SHOW_TOPO_SHAPE(anInfo.aWire, "AngleWire");
+    }
+  }
+  return true;
+}
+
+// Whether FindLoop walks the angles (1, the default), searches (0), or does
+// both and reports where the minimal wires differ (2):
+// BREPALGO_LOOP_WALK=0/1/check.
+static int LoopWalkMode()
+{
+  const char* aVal = std::getenv("BREPALGO_LOOP_WALK");
+  if (aVal == nullptr)
+  {
+    return 1;
+  }
+  if (std::strcmp(aVal, "check") == 0)
+  {
+    return 2;
+  }
+  return std::atoi(aVal) != 0 ? 1 : 0;
+}
+
+// A wire through a piece of an edge beyond the span its intersections gave it
+// (the loop keeps every piece, to find the edges of a concave removed face)
+// loses to a wire sharing an edge with it that stays inside: the corner of an
+// arc face cut off by the arc of the next face, closed by the arc's own end.
+// Alone, it is kept.
+static void DropOutsideWires(MapOfWire& theWires, const TopoDS_Face& theFace)
+{
+  for (int iw = theWires.Extent(); iw >= 1; --iw)
+  {
+    const WireInfo& anInfo = theWires(iw);
+    if (!anInfo.Outside || anInfo.HasSeam)
+    {
+      continue;
+    }
+    bool isRivalled = false;
+    for (MapIteratorOfMapOfWire itW(theWires); itW.More() && !isRivalled; itW.Next())
+    {
+      const WireInfo& anOther = itW.Value();
+      if (anOther.Outside)
+      {
+        continue;
+      }
+      for (const auto& v : anInfo.Edges)
+      {
+        if (!BRep_Tool::IsClosed(TopoDS::Edge(v.first), theFace)
+            && anOther.Contains(TopoDS::Edge(v.first)))
+        {
+          isRivalled = true;
+          break;
+        }
+      }
+    }
+    if (isRivalled)
+    {
+      SHOW_TOPO_SHAPE(anInfo.aWire, "OutsideWire");
+      theWires.RemoveFromIndex(iw);
+    }
+  }
+}
+
 //=================================================================================================
 
 void BRepAlgo_Loop::FindLoop()
@@ -1460,7 +1831,18 @@ void BRepAlgo_Loop::FindLoop()
   bool                      IsPeriodic = S->IsUPeriodic() || S->IsVPeriodic();
   DejaVu.Clear();
 
-  for (int ii = 1; ii <= MVE.Extent(); ++ii)
+  // By angle where the face is not periodic; the search otherwise, or when
+  // the walk cannot describe the network.
+  const int aWalkMode = IsPeriodic ? 0 : LoopWalkMode();
+  MapOfWire aWalked;
+  const bool isWalked =
+    aWalkMode != 0 && FindLoopsByAngle(MVE, myFace, aWalked, myOutsideEdges);
+  if (isWalked && aWalkMode == 1)
+  {
+    NewWires = aWalked;
+  }
+
+  for (int ii = 1; ii <= MVE.Extent() && !(isWalked && aWalkMode == 1); ++ii)
   {
     const TopoDS_Vertex& VF = TopoDS::Vertex(MVE.FindKey(ii));
 
@@ -1606,42 +1988,7 @@ void BRepAlgo_Loop::FindLoop()
     }
   }
 
-  // A wire through a piece of an edge beyond the span its intersections gave
-  // it (the loop keeps every piece, to find the edges of a concave removed
-  // face) loses to a wire sharing an edge with it that stays inside: the
-  // corner of an arc face cut off by the arc of the next face, closed by the
-  // arc's own end. Alone, it is kept.
-  for (int iw = NewWires.Extent(); iw >= 1; --iw)
-  {
-    const WireInfo& anInfo = NewWires(iw);
-    if (!anInfo.Outside || anInfo.HasSeam)
-    {
-      continue;
-    }
-    bool isRivalled = false;
-    for (itW = MapIteratorOfMapOfWire(NewWires); itW.More() && !isRivalled; itW.Next())
-    {
-      const WireInfo& anOther = itW.Value();
-      if (anOther.Outside)
-      {
-        continue;
-      }
-      for (const auto& v : anInfo.Edges)
-      {
-        if (!BRep_Tool::IsClosed(TopoDS::Edge(v.first), myFace)
-            && anOther.Contains(TopoDS::Edge(v.first)))
-        {
-          isRivalled = true;
-          break;
-        }
-      }
-    }
-    if (isRivalled)
-    {
-      SHOW_TOPO_SHAPE(anInfo.aWire, "OutsideWire");
-      NewWires.RemoveFromIndex(iw);
-    }
-  }
+  DropOutsideWires(NewWires, myFace);
 
   if (!IsPeriodic)
   {
@@ -1649,6 +1996,37 @@ void BRepAlgo_Loop::FindLoop()
     // Split wires
     //----------------------------------------------
     SplitWires(myNewWires, NewWires, MVE, myFace);
+    if (isWalked && aWalkMode == 2)
+    {
+      // Both ways, and the minimal wires compared.
+      DropOutsideWires(aWalked, myFace);
+      NCollection_List<TopoDS_Shape> aWalkedOut;
+      SplitWires(aWalkedOut, aWalked, MVE, myFace);
+      MapOfWire aA, aB;
+      for (itl.Initialize(myNewWires); itl.More(); itl.Next())
+      {
+        aA.Add(WireInfo(TopoDS::Wire(itl.Value())));
+      }
+      for (itl.Initialize(aWalkedOut); itl.More(); itl.Next())
+      {
+        aB.Add(WireInfo(TopoDS::Wire(itl.Value())));
+      }
+      bool isSame = aA.Extent() == aB.Extent();
+      for (MapIteratorOfMapOfWire itA(aA); itA.More() && isSame; itA.Next())
+      {
+        isSame = aB.Contains(itA.Value());
+      }
+      if (!isSame)
+      {
+        std::fprintf(stderr, "LOOPWALK MISMATCH search %d walk %d\n", aA.Extent(), aB.Extent());
+        SHOW_TOPO_SHAPE(myFace, "LoopWalkMismatchSearch", myNewWires);
+        SHOW_TOPO_SHAPE(myFace, "LoopWalkMismatchWalk", aWalkedOut);
+      }
+      else
+      {
+        std::fprintf(stderr, "LOOPWALK SAME %d\n", aA.Extent());
+      }
+    }
   }
   else
   {
