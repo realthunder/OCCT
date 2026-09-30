@@ -192,6 +192,14 @@ thickness_case("pocketbox_wall_out", pocketbox, 7, +1.0, "pass", None)
 # the reference is the fork's own.
 thickness_case("tshape_bar_top_out", tshape, 2, +1.0, "pass", 382.4425)
 
+# The same face inward. The stretched edge of the removed face crossed the
+# far end wall's inner edge above the bar's inner top, and that crossing
+# counted as the end wall edge's own end: the corner above the bar's inner
+# arc came out as a face of its own. The reference is worked out by hand:
+# 288 less the cavity -- bar 40, post 24, under the removed top 8, and the
+# corner outside the concave arc, 2 * (1 - pi/4).
+thickness_case("tshape_bar_top_in", tshape, 2, -1.0, "pass", 215.5708)
+
 # A box with a pocket, thickened inward with intersection on and the
 # Intersection join, crashed: splitting the trimmed faces had no map from
 # trimmed to infinite edges and dereferenced it. The result is still invalid
