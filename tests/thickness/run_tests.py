@@ -273,6 +273,19 @@ thickness_case("lbox_notch_wall_inter_join_out", lbox, 7, +1.0, "pass", 423.0, T
 thickness_case("tshape_post_wall_inter_join_in", tshape, 3, -1.0, "pass", 212.0, True, 2)
 thickness_case("pocket_wall_inter_join_in", pocket5, 7, -1.0, "pass", 395.0, True, 2)
 
+# A box with its vertical edges filleted, an end or a side face removed,
+# inward: the removed face is tangent to the fillets, whose offsets run
+# parallel to it and never meet it; the rim had no edge but the removed
+# face's own and the result came back unhollowed. A tube round the tangent
+# edge closes the gap, as the Arc join closes a convex edge (FreeCAD
+# docs/TransactionLog.md sec 27.93). Worked out by hand: the input less the
+# shrunk rounded box, less the channel to the opening minus two quarter
+# discs of the thickness's radius.
+filletbox = Part.makeBox(10, 8, 6)
+filletbox = filletbox.makeFillet(2, [filletbox.Edges[i] for i in (0, 2, 4, 6)])
+thickness_case("filletbox_end_in",  filletbox, 1, -1.0, "pass", 261.1150)
+thickness_case("filletbox_side_in", filletbox, 6, -1.0, "pass", 253.1150)
+
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
              7, -1.0, True, 2)
