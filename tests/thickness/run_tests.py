@@ -227,6 +227,16 @@ thickness_case("lbox_top_inter_join_in",  lbox, 3, -1.0, "pass", 219.0, True, 2)
 thickness_case("tshape_back_inter_join_out", tshape, 8, +1.0, "pass", 312.0, True, 2)
 thickness_case("tshape_back_inter_join_in",  tshape, 8, -1.0, "pass", 192.0, True, 2)
 
+# A cone with a through hole, its bottom removed, inward with intersection
+# on. The cone's and the hole's offsets meet at z=6.485, below the top face's
+# offset at z=7, which vanishes; each cut the other at z=7 too, and that
+# circle, beyond the seam's span, came out as a face of its own with no area
+# (FreeCAD docs/TransactionLog.md sec 27.91). The reference is worked out by
+# hand -- the cavity is the band between r=2.5 and the cone's offset up to
+# where they meet -- and is upstream's.
+conehole = Part.makeCone(6, 3, 8).cut(Part.makeCylinder(1.5, 8))
+thickness_case("conehole_bottom_inter_in", conehole, 3, -1.0, "pass", 307.1946, True, 0)
+
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
              7, -1.0, True, 2)
