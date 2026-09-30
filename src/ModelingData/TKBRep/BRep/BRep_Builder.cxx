@@ -15,6 +15,10 @@
 // commercial license or contractual agreement.
 
 #include <BRep_Builder.hxx>
+#include <vector>
+#include <NCollection_DataMap.hxx>
+#include <cstdlib>
+#include <cstring>
 
 #include <algorithm>
 #include <cmath>
@@ -83,6 +87,145 @@ static bool unchangedOrRefused(const bool theUnchanged, const char* theWhere)
   return true;
 }
 
+//! What an Immutable edge does with a pcurve for a surface it has none on yet
+//! (docs/TransactionLog.md sec 27.82 in FreeCAD, a benchmark switch for now,
+//! CSF_FrozenPCurve): Cache takes it as a cache (sec 23.12); Sweep does, and
+//! first drops the edge's caches whose surface nothing else holds -- the face
+//! they were made for is gone; Refuse throws, so the caller copies.
+enum class FrozenPCurve
+{
+  Cache,
+  Sweep,
+  Refuse
+};
+
+static FrozenPCurve frozenPCurveMode()
+{
+  static const FrozenPCurve aMode = [] {
+    const char* aValue = std::getenv("CSF_FrozenPCurve");
+    if (aValue != nullptr && std::strcmp(aValue, "sweep") == 0)
+    {
+      return FrozenPCurve::Sweep;
+    }
+    if (aValue != nullptr && std::strcmp(aValue, "refuse") == 0)
+    {
+      return FrozenPCurve::Refuse;
+    }
+    return FrozenPCurve::Cache;
+  }();
+  return aMode;
+}
+
+//! Drops the caches of <theTE> on a surface nothing holds but caches of this
+//! edge and of its vertices: the face they were made for is gone. A vertex
+//! keeps a parameter on each new face too, so the edge's own count alone
+//! never reaches the surface's; a surface also held by another frozen edge
+//! (a dead face on a closed frozen wire) is not seen from here and stays.
+static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
+{
+  // Surface -> references to it from caches of the edge and its vertices.
+  NCollection_DataMap<const Geom_Surface*, int> aHeld;
+  auto hold = [&aHeld](const occ::handle<Geom_Surface>& theS) {
+    if (theS.IsNull())
+    {
+      return;
+    }
+    if (int* aCount = aHeld.ChangeSeek(theS.get()))
+    {
+      ++*aCount;
+    }
+    else
+    {
+      aHeld.Bind(theS.get(), 1);
+    }
+  };
+  for (const occ::handle<BRep_CurveRepresentation>& aCR : theTE->Curves())
+  {
+    if (aCR->IsCache() && aCR->IsCurveOnSurface())
+    {
+      hold(aCR->Surface());
+    }
+    else if (aCR->IsCache() && aCR->IsRegularity())
+    {
+      hold(aCR->Surface());
+      hold(aCR->Surface2());
+    }
+  }
+  if (aHeld.IsEmpty())
+  {
+    return;
+  }
+  TopoDS_Shape anEdge;
+  anEdge.TShape(theTE);
+  std::vector<occ::handle<BRep_TVertex>> aVertices;
+  for (TopoDS_Iterator anIt(anEdge, false, false); anIt.More(); anIt.Next())
+  {
+    occ::handle<BRep_TVertex> aTV = occ::down_cast<BRep_TVertex>(anIt.Value().TShape());
+    if (aTV.IsNull())
+    {
+      continue;
+    }
+    aVertices.push_back(aTV);
+    for (const occ::handle<BRep_PointRepresentation>& aPR : aTV->Points())
+    {
+      if (aPR->IsCache() && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface()))
+      {
+        if (aHeld.IsBound(aPR->Surface().get()))
+        {
+          hold(aPR->Surface());
+        }
+      }
+    }
+  }
+  auto isDead = [&aHeld](const occ::handle<Geom_Surface>& theS) {
+    const int* aCount = theS.IsNull() ? nullptr : aHeld.Seek(theS.get());
+    return aCount != nullptr && theS->GetRefCount() == *aCount;
+  };
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>& aList = theTE->ChangeCurves();
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(aList);
+  std::vector<occ::handle<Geom_Surface>> aDead; // alive until the vertices are swept
+  while (anIt.More())
+  {
+    const occ::handle<BRep_CurveRepresentation>& aCR = anIt.Value();
+    bool aDrop = false;
+    if (aCR->IsCache() && aCR->IsCurveOnSurface())
+    {
+      aDrop = isDead(aCR->Surface());
+    }
+    else if (aCR->IsCache() && aCR->IsRegularity())
+    {
+      aDrop = isDead(aCR->Surface()) || isDead(aCR->Surface2());
+    }
+    if (aDrop)
+    {
+      aDead.push_back(aCR->Surface());
+      aList.Remove(anIt);
+      continue;
+    }
+    anIt.Next();
+  }
+  if (aDead.empty())
+  {
+    return;
+  }
+  for (const occ::handle<BRep_TVertex>& aTV : aVertices)
+  {
+    NCollection_List<occ::handle<BRep_PointRepresentation>>& aPoints = aTV->ChangePoints();
+    NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator aPIt(aPoints);
+    while (aPIt.More())
+    {
+      const occ::handle<BRep_PointRepresentation>& aPR = aPIt.Value();
+      if (aPR->IsCache() && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface())
+          && std::find(aDead.begin(), aDead.end(), aPR->Surface()) != aDead.end())
+      {
+        aPoints.Remove(aPIt);
+        continue;
+      }
+      aPIt.Next();
+    }
+  }
+}
+
 //! For an Immutable edge: true when the pcurve(s) on <theS> are to be written
 //! -- added, or replacing or removing a cache (BRep_CurveRepresentation::
 //! IsCache) -- false when there is nothing to do; a throw for a change to one
@@ -116,7 +259,21 @@ static bool immutableTakesPCurve(const occ::handle<BRep_TEdge>&   theTE,
     return unchangedOrRefused(aCR->IsCache(), "BRep_Builder::UpdateEdge");
   }
   // Removing what is not there changes nothing.
-  return !theC1.IsNull();
+  if (theC1.IsNull())
+  {
+    return false;
+  }
+  switch (frozenPCurveMode())
+  {
+    case FrozenPCurve::Refuse:
+      throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
+    case FrozenPCurve::Sweep:
+      sweepDeadPCurveCaches(theTE);
+      break;
+    case FrozenPCurve::Cache:
+      break;
+  }
+  return true;
 }
 
 //! Marks what an Immutable edge now holds on <theS> as a cache.
