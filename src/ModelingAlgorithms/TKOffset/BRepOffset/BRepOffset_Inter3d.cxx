@@ -80,7 +80,20 @@ static void ExtentEdge(const TopoDS_Face& /*F*/, const TopoDS_Edge& E, TopoDS_Ed
   BRep_Builder B;
   B.Range(NE, f, l);
   BRepAdaptor_Curve CE(E);
-  if (CE.IsPeriodic() && l - f >= CE.Period())
+  TopoDS_Vertex     aV1, aV2;
+  TopExp::Vertices(E, aV1, aV2);
+  if (!CE.IsPeriodic() && !aV1.IsNull() && aV1.IsSame(aV2))
+  {
+    // Closed on a curve that is not periodic -- the offset of an ellipse is
+    // a closed B-spline: there is nothing beyond its ends, and the curve
+    // evaluated 100 lengths out is at 1e34. It stays as it is.
+    B.Range(NE, f0, l0);
+    TopoDS_Vertex V = BRepLib_MakeVertex(CE.Value(f0));
+    B.Add(NE, V.Oriented(TopAbs_FORWARD));
+    B.Add(NE, V.Oriented(TopAbs_REVERSED));
+    NE.Closed(true);
+  }
+  else if (CE.IsPeriodic() && l - f >= CE.Period())
   {
     length = CE.Period() - (l0 - f0);
     f      = f0 - length / 2;
