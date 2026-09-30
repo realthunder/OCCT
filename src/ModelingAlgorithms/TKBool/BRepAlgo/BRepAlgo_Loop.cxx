@@ -1414,10 +1414,44 @@ void BRepAlgo_Loop::FindLoop()
   }
   else
   {
+    // The seam wire replaces the closed-edge wires found before it, but the
+    // search goes on from the other vertices and can find one of its closed
+    // edges again on its own afterwards -- the floor circle of a cylinder
+    // whose seam wire was built from the top circle. An edge is in one wire
+    // of a face (a seam twice, in one wire), so a wire made only of the seam
+    // wire's edges is that edge found again, and the face must not get it.
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeamWireEdges;
     for (itW = MapIteratorOfMapOfWire(NewWires); itW.More(); itW.Next())
     {
-      const TopoDS_Wire& aWire = itW.Value().aWire;
-      myNewWires.Append(aWire);
+      if (itW.Value().HasSeam)
+      {
+        for (const auto& v : itW.Value().Edges)
+        {
+          aSeamWireEdges.Add(v.first);
+        }
+      }
+    }
+    for (itW = MapIteratorOfMapOfWire(NewWires); itW.More(); itW.Next())
+    {
+      const WireInfo& anInfo = itW.Value();
+      if (!anInfo.HasSeam && !aSeamWireEdges.IsEmpty())
+      {
+        bool isInSeamWire = true;
+        for (const auto& v : anInfo.Edges)
+        {
+          if (!aSeamWireEdges.Contains(v.first))
+          {
+            isInSeamWire = false;
+            break;
+          }
+        }
+        if (isInSeamWire)
+        {
+          SHOW_TOPO_SHAPE(anInfo.aWire, "SeamWireAgain");
+          continue;
+        }
+      }
+      myNewWires.Append(anInfo.aWire);
     }
   }
 
