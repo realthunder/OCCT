@@ -249,6 +249,17 @@ thickness_case("tshape_bar_top_right_join_in", tshape, 7, -1.0, "pass", 216.0, F
 thickness_case("pocket_floor_join_out", pocket5, 11, +1.0, "pass", 591.0, False, 2)
 thickness_case("pocket_floor_join_in",  pocket5, 11, -1.0, "pass", 367.0, False, 2)
 
+# The Intersection join, a blind hole's floor removed. The floor meets the
+# hole's wall at a concave edge, and the section of the floor with the wall's
+# offset was oriented as for a convex one: the band on the offset cylinder
+# closed on two circles running the same way -- a face of negative area
+# (FreeCAD docs/TransactionLog.md sec 27.92). Worked out by hand: inward, 462.3
+# less the box shrunk by 1 around the hole's offset; outward, the box grown by
+# 1 less the hole's offset below its top, less the input.
+blindhole = Part.makeBox(10, 10, 5).cut(Part.makeCylinder(2, 3, App.Vector(5, 5, 2)))
+thickness_case("blindhole_floor_join_out", blindhole, 8, +1.0, "pass", 533.1327, False, 2)
+thickness_case("blindhole_floor_join_in",  blindhole, 8, -1.0, "pass", 326.8496, False, 2)
+
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
              7, -1.0, True, 2)
