@@ -81,6 +81,7 @@
 #include <Standard_NotImplemented.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <TopExp.hxx>
+#include <ChFi3d.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
@@ -851,6 +852,43 @@ void BRepOffset_MakeOffset::SetFacesWithOffset()
 
 //=================================================================================================
 
+// Whether a removed face meets a neighbour that stays at a concave edge.
+static bool HasConcaveRemovedFace(
+  const TopoDS_Shape&                                                  theShape,
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theRemoved)
+{
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    anEF;
+  TopExp::MapShapesAndAncestors(theShape, TopAbs_EDGE, TopAbs_FACE, anEF);
+  const double aSinTol = std::abs(std::sin(Precision::Angular()));
+  for (int i = 1; i <= anEF.Extent(); ++i)
+  {
+    const NCollection_List<TopoDS_Shape>& aLF = anEF(i);
+    if (aLF.Extent() != 2)
+    {
+      continue;
+    }
+    const TopoDS_Face& aF1 = TopoDS::Face(aLF.First());
+    const TopoDS_Face& aF2 = TopoDS::Face(aLF.Last());
+    if (theRemoved.Contains(aF1) == theRemoved.Contains(aF2))
+    {
+      continue;
+    }
+    const TopoDS_Edge& anE = TopoDS::Edge(anEF.FindKey(i));
+    if (BRep_Tool::Degenerated(anE))
+    {
+      continue;
+    }
+    if (ChFi3d::DefineConnectType(anE, aF1, aF2, aSinTol, false) == ChFiDS_Concave)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+//=================================================================================================
+
 void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRange)
 {
   BRepAlgo_LoopIntersectingEdgeMap IntersectingEdgeMap;
@@ -861,6 +899,27 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   myIsPlanar = IsPlanar();
 
   SetFaces();
+
+  // With intersection on and the Intersection join, a planar shape's offset
+  // faces are split by BuildSplitsOfExtendedFaces. Where a removed face meets
+  // a neighbour at a concave edge, the rim needs the neighbour's section cut
+  // where it crosses the removed face's own edges, and the splits do not
+  // cut it there: the rim came out invalid (the L-box's notch walls, the T's
+  // bar tops and post walls, a pocket's walls -- upstream fails them too).
+  // The loops cut it: such a shape is built as with intersection off, and
+  // myInter is given back on the way out.
+  struct InterRestore
+  {
+    bool& myRef;
+    bool  myValue;
+
+    ~InterRestore() { myRef = myValue; }
+  } anInterRestore{myInter, myInter};
+  if (myInter && myJoin == GeomAbs_Intersection && myIsPlanar && !myFaces.IsEmpty()
+      && HasConcaveRemovedFace(myShape, myFaces))
+  {
+    myInter = false;
+  }
   SetFacesWithOffset();
 
   BuildFaceComp();
