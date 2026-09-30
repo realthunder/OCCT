@@ -232,6 +232,7 @@ radius-one circle).
 | `e8e2758d6f` | `BRepFeat_MakePrism` empty result on `JustFeat` (FreeCAD #985). |
 | `f6e6ff7879` | Thrusection, by reverting upstream `4607bd0747f`. |
 | `b096b91e74` | Accumulated fixes by blobfish across `BRepFill`, `ChFi3d`, `ChFiDS`, `MAT`, `Extrema`. |
+| `310bfaf34f` | `GeomTools::GetReal` reads a real longer than its 32-byte buffer whole (8.0 regression: a fixed-notation +-2e100 in a user BRep hung the reader). |
 
 ## 4. glTF export
 
