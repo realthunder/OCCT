@@ -459,6 +459,30 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
       theEdges.Append(itl.Value());
     }
 
+    // Where an extended edge -- the removed face's section, stretched far past
+    // the face -- crosses another edge, the crossing does not bound that
+    // edge's own span: the stretched line runs on through the neighbours.
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aStretchVertices;
+    for (itl.Initialize(theEdges); itl.More(); itl.Next())
+    {
+      const NCollection_List<TopoDS_Shape>* pLV = myVerOnEdges.Seek(itl.Value());
+      if (!pLV)
+      {
+        continue;
+      }
+      for (TopoDS_Iterator It(itl.Value()); It.More(); It.Next())
+      {
+        if (It.Value().Orientation() == TopAbs_INTERNAL)
+        {
+          for (itl1.Initialize(*pLV); itl1.More(); itl1.Next())
+          {
+            aStretchVertices.Add(itl1.Value());
+          }
+          break;
+        }
+      }
+    }
+
     for (itl.Initialize(theEdges); itl.More(); itl.Next())
     {
       TopoDS_Edge anEdge = TopoDS::Edge(itl.Value().Oriented(TopAbs_FORWARD));
@@ -494,7 +518,11 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
           {
             const TopoDS_Vertex& aVertex = TopoDS::Vertex(itl1.Value());
             double               P       = BRep_Tool::Parameter(aVertex, anEdge);
-            if (aVertex.Orientation() == TopAbs_FORWARD)
+            if (aStretchVertices.Contains(aVertex))
+            {
+              // not the edge's own
+            }
+            else if (aVertex.Orientation() == TopAbs_FORWARD)
             {
               aSpanF = Precision::IsInfinite(aSpanF) ? P : std::min(aSpanF, P);
             }
