@@ -24,6 +24,7 @@
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_FaceRestrictor.hxx>
 #include <BRepAlgo_Loop.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepLib_MakeWire.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
@@ -440,6 +441,11 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
   NCollection_List<TopoDS_Shape> theEdges = myEdges;
   NCollection_List<TopoDS_Shape> ConstEdges;
   NCollection_List<TopoDS_Shape> IntersectingEdges;
+  // The span each bounded edge's own vertices give it, before the vertices of
+  // the other edges are added (see myOutsideEdges).
+  NCollection_DataMap<TopoDS_Shape, std::pair<double, double>, TopTools_ShapeMapHasher> aSpans;
+  myOutsideEdges.Clear();
+  const bool isPlanarFace = BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Plane;
   if (_CollectingEdges)
   {
     NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> EMap;
@@ -468,6 +474,9 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
 
       bool         Bounded = false;
       double       FP = 0.0, LP = 0.0;
+      // The span the edge's own vertices keep: from its first FORWARD vertex
+      // to its last REVERSED one, open where there is none.
+      double aSpanF = -Precision::Infinite(), aSpanL = Precision::Infinite();
       TopoDS_Shape VF, VL;
       if (myVerOnEdges.IsBound(anEdge))
       {
@@ -484,6 +493,14 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
           {
             const TopoDS_Vertex& aVertex = TopoDS::Vertex(itl1.Value());
             double               P       = BRep_Tool::Parameter(aVertex, anEdge);
+            if (aVertex.Orientation() == TopAbs_FORWARD)
+            {
+              aSpanF = Precision::IsInfinite(aSpanF) ? P : std::min(aSpanF, P);
+            }
+            else
+            {
+              aSpanL = Precision::IsInfinite(aSpanL) ? P : std::max(aSpanL, P);
+            }
             if (VF.IsNull())
             {
               FP = LP = P;
@@ -538,6 +555,17 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
       for (itl1.Initialize(LV); itl1.More(); itl1.Next())
       {
         SHOW_TOPO_SHAPE(itl1.Value(), "InterV1", 1);
+      }
+      // Open on one side, the span is trusted on arc faces only: the corner
+      // piece it is for is closed by an arc face's own end, while on a plane
+      // a lone vertex can be where the extended removed face crosses the
+      // edge, far from the face itself, and its orientation says nothing.
+      const bool isOpenSpan = Precision::IsInfinite(aSpanF) || Precision::IsInfinite(aSpanL);
+      if (Bounded && !Extended
+          && (!Precision::IsInfinite(aSpanF) || !Precision::IsInfinite(aSpanL))
+          && aSpanL > aSpanF && (!isOpenSpan || !isPlanarFace))
+      {
+        aSpans.Bind(anEdge, std::make_pair(aSpanF, aSpanL));
       }
 
       for (itl1.Initialize(theEdges); itl1.More(); itl1.Next())
@@ -733,6 +761,20 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
         }
       }
       CutEdge(anEdge, *pVertices, LCE, KeepAll);
+      if (const std::pair<double, double>* pSpan = aSpans.Seek(anEdge))
+      {
+        for (itl1.Initialize(LCE); itl1.More(); itl1.Next())
+        {
+          double aF, aL;
+          BRep_Tool::Range(TopoDS::Edge(itl1.Value()), aF, aL);
+          if (aL <= pSpan->first + Precision::PConfusion()
+              || aF >= pSpan->second - Precision::PConfusion())
+          {
+            myOutsideEdges.Add(itl1.Value());
+            SHOW_TOPO_SHAPE(itl1.Value(), "OutsidePiece");
+          }
+        }
+      }
       myCutEdges.Add(anEdge, LCE);
     }
   }
@@ -785,6 +827,7 @@ struct WireInfo
   std::vector<std::pair<TopoDS_Shape, size_t>> Edges;
   size_t                                       aHashCode;
   bool                                         HasSeam;
+  bool                                         Outside = false;
   mutable TopoDS_Face                          aFace;
 
   WireInfo(const TopoDS_Wire& W, bool theHasSeam = false)
@@ -821,7 +864,8 @@ struct WireInfo
       : aWire(other.aWire),
         Edges(other.Edges),
         aHashCode(other.aHashCode),
-        HasSeam(other.HasSeam)
+        HasSeam(other.HasSeam),
+        Outside(other.Outside)
   {
   }
 
@@ -873,7 +917,8 @@ void FindAllLoops(const TopoDS_Vertex&                                          
                                                    TopTools_ShapeMapHasher>&            MVE,
                   MapOfWire&                                                            NewWires,
                   const TopoDS_Face&                                                    aFace,
-                  const double&                                                         Tol)
+                  const double&                                                         Tol,
+                  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>&         theOutside)
 {
   NCollection_List<TopoDS_Shape>::Iterator itl;
   TopoDS_Vertex                            V1, V2, NV;
@@ -940,7 +985,12 @@ void FindAllLoops(const TopoDS_Vertex&                                          
     if (aMakeWire.IsDone())
     {
       TopoDS_Wire NW = aMakeWire.Wire();
-      if (NW.Closed() && !NewWires.Contains(NW) && NewWires.Add(NW) > 0)
+      WireInfo    anInfo(NW);
+      for (const auto& v : anInfo.Edges)
+      {
+        anInfo.Outside = anInfo.Outside || theOutside.Contains(v.first);
+      }
+      if (NW.Closed() && !NewWires.Contains(anInfo) && NewWires.Add(anInfo) > 0)
       {
         SHOW_TOPO_SHAPE(NW, "NewWire");
       }
@@ -961,7 +1011,7 @@ void FindAllLoops(const TopoDS_Vertex&                                          
       const TopoDS_Edge& NE = TopoDS::Edge(itl.Value());
       if (!NE.IsSame(CE) && !EF.IsSame(NE))
       {
-        FindAllLoops(NV, NE, CurrentVEMap, CurrentEdgeList, MVE, NewWires, aFace, Tol);
+        FindAllLoops(NV, NE, CurrentVEMap, CurrentEdgeList, MVE, NewWires, aFace, Tol, theOutside);
       }
     }
   }
@@ -1284,7 +1334,15 @@ void BRepAlgo_Loop::FindLoop()
         continue;
       }
 
-      FindAllLoops(VF, CE, CurrentVEMap, CurrentEdgeList, MVE, NewWires, myFace, myTolConf);
+      FindAllLoops(VF,
+                   CE,
+                   CurrentVEMap,
+                   CurrentEdgeList,
+                   MVE,
+                   NewWires,
+                   myFace,
+                   myTolConf,
+                   myOutsideEdges);
 
       // Perioidc surface needs a wire with seam edge. Look for wires consists
       // of a wire with two closed edge joined by a seam edge.
@@ -1405,6 +1463,43 @@ void BRepAlgo_Loop::FindLoop()
           }
         }
       }
+    }
+  }
+
+  // A wire through a piece of an edge beyond the span its intersections gave
+  // it (the loop keeps every piece, to find the edges of a concave removed
+  // face) loses to a wire sharing an edge with it that stays inside: the
+  // corner of an arc face cut off by the arc of the next face, closed by the
+  // arc's own end. Alone, it is kept.
+  for (int iw = NewWires.Extent(); iw >= 1; --iw)
+  {
+    const WireInfo& anInfo = NewWires(iw);
+    if (!anInfo.Outside || anInfo.HasSeam)
+    {
+      continue;
+    }
+    bool isRivalled = false;
+    for (itW = MapIteratorOfMapOfWire(NewWires); itW.More() && !isRivalled; itW.Next())
+    {
+      const WireInfo& anOther = itW.Value();
+      if (anOther.Outside)
+      {
+        continue;
+      }
+      for (const auto& v : anInfo.Edges)
+      {
+        if (!BRep_Tool::IsClosed(TopoDS::Edge(v.first), myFace)
+            && anOther.Contains(TopoDS::Edge(v.first)))
+        {
+          isRivalled = true;
+          break;
+        }
+      }
+    }
+    if (isRivalled)
+    {
+      SHOW_TOPO_SHAPE(anInfo.aWire, "OutsideWire");
+      NewWires.RemoveFromIndex(iw);
     }
   }
 
