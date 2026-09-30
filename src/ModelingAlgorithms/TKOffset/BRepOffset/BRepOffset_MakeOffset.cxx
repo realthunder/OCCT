@@ -69,6 +69,7 @@
 #include <Geom_SphericalSurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Geom_OffsetCurve.hxx>
+#include <gp_Circ.hxx>
 #include <GeomConvert.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
@@ -2435,6 +2436,47 @@ void BRepOffset_MakeOffset::ToContext(
   // intersection.
   //---------------------------------------------------------
   int j;
+  // A removed face tangent to a neighbour along an edge: the neighbour's
+  // offset runs parallel to the removed face, and stretched it meets it far
+  // round the neighbour or not at all (a plane beside a fillet). Its edges
+  // are closed by a tube round the edge instead (below), so neither the
+  // neighbour nor the tubes at the edge's ends are stretched to the cap.
+  NCollection_IndexedDataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aTangentE;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>                           aTangentV;
+  if (myJoin == GeomAbs_Arc)
+  {
+    const double aSinTol = std::abs(std::sin(Precision::Angular()));
+    for (j = 1; j <= myFaces.Extent(); j++)
+    {
+      const TopoDS_Face& CF = TopoDS::Face(myFaces(j));
+      if (BRepAdaptor_Surface(CF, false).GetType() != GeomAbs_Plane)
+      {
+        continue;
+      }
+      for (exp.Init(CF, TopAbs_EDGE); exp.More(); exp.Next())
+      {
+        const TopoDS_Edge& E = TopoDS::Edge(exp.Current());
+        if (!myAnalyse.HasAncestor(E) || myAnalyse.Ancestors(E).Extent() != 1
+            || !MapSF.IsBound(myAnalyse.Ancestors(E).First()))
+        {
+          continue;
+        }
+        if (ChFi3d::DefineConnectType(E,
+                                      CF,
+                                      TopoDS::Face(myAnalyse.Ancestors(E).First()),
+                                      aSinTol,
+                                      false)
+            == ChFiDS_Tangential)
+        {
+          aTangentE.Add(E, CF);
+          for (TopoDS_Iterator anItV(E); anItV.More(); anItV.Next())
+          {
+            aTangentV.Add(anItV.Value());
+          }
+        }
+      }
+    }
+  }
   for (j = 1; j <= myFaces.Extent(); j++)
   {
     const TopoDS_Face& CF = TopoDS::Face(myFaces(j));
@@ -2444,7 +2486,7 @@ void BRepOffset_MakeOffset::ToContext(
       if (myAnalyse.HasAncestor(E))
       {
         const NCollection_List<TopoDS_Shape>& LEA = myAnalyse.Ancestors(E);
-        for (itl.Initialize(LEA); itl.More(); itl.Next())
+        for (itl.Initialize(LEA); itl.More() && !aTangentE.Contains(E); itl.Next())
         {
           const BRepOffset_Offset& OF = MapSF(itl.Value());
           FacesToBuild.Add(itl.Value());
@@ -2454,6 +2496,10 @@ void BRepOffset_MakeOffset::ToContext(
         TopExp::Vertices(E, V[0], V[1]);
         for (int i = 0; i < 2; i++)
         {
+          if (aTangentV.Contains(V[i]))
+          {
+            continue;
+          }
           const NCollection_List<TopoDS_Shape>& LVA = myAnalyse.Ancestors(V[i]);
           for (itl.Initialize(LVA); itl.More(); itl.Next())
           {
@@ -2578,119 +2624,180 @@ void BRepOffset_MakeOffset::ToContext(
   }
 
   //------------------------------------------------------------------
-  // A removed face tangent to its neighbour along an edge: the
-  // neighbour's offset runs parallel to the removed face and never
-  // meets it (a plane beside a fillet), so it cannot be extended to it
-  // and the rim had no edge but the removed face's own. The gap is
-  // closed by a tube round that edge, from the neighbour's offset edge to
-  // an edge on the removed face at the offset's distance -- the rounded
-  // end the Arc join gives a convex edge. The rim is cut along it.
+  // A removed face tangent to its neighbour along an edge: the gap between
+  // the neighbour's offset edge and the removed face is closed by a tube
+  // round the edge -- the rounded end the Arc join gives a convex edge --
+  // turning into the removed face, the side the neighbour's own offset does
+  // not cover; its edge on the removed face at the offset's distance is where
+  // the rim is cut. Outward, where a tube round a convex edge ends at the
+  // same vertex, the corner between the two tubes and the removed face is a
+  // piece of sphere.
   //------------------------------------------------------------------
-  if (myJoin == GeomAbs_Arc)
+  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher> aTubes;
+  for (int iT = 1; iT <= aTangentE.Extent(); ++iT)
   {
-    const double aSinTol = std::abs(std::sin(Precision::Angular()));
-    for (j = 1; j <= myFaces.Extent(); j++)
+    const TopoDS_Edge& E  = TopoDS::Edge(aTangentE.FindKey(iT));
+    const TopoDS_Face& CF = TopoDS::Face(aTangentE(iT));
+    if (!myInitOffsetEdge.HasImage(E))
     {
-      const TopoDS_Face&  CF = TopoDS::Face(myFaces(j));
-      BRepAdaptor_Surface aCFS(CF, false);
-      if (aCFS.GetType() != GeomAbs_Plane)
+      continue;
+    }
+    const gp_Pln      aPln = BRepAdaptor_Surface(CF, false).Plane();
+    const double      sF   = CF.Orientation() == TopAbs_REVERSED ? -1. : 1.;
+    const TopoDS_Edge OE0  = TopoDS::Edge(myInitOffsetEdge.Image(E).First());
+    BRepAdaptor_Curve anOEC(OE0);
+    if (aPln.Distance(anOEC.Value((anOEC.FirstParameter() + anOEC.LastParameter()) / 2.))
+        < std::abs(myOffset) / 2.)
+    {
+      continue;
+    }
+    // Into the removed face: its interior is on the left of the edge as the
+    // face holds it, seen along its normal.
+    double                  f, l;
+    TopLoc_Location         aLoc;
+    occ::handle<Geom_Curve> aC = BRep_Tool::Curve(E, aLoc, f, l);
+    if (aC.IsNull())
+    {
+      continue;
+    }
+    aC            = occ::down_cast<Geom_Curve>(aC->Transformed(aLoc.Transformation()));
+    const double sE = E.Orientation() == TopAbs_REVERSED ? -1. : 1.;
+    TopoDS_Edge  EOn2;
+    try
+    {
+      // Kept to the kind of curve the edge has where that is exact (a line
+      // is translated), for the pcurve on the cap is a projection.
+      occ::handle<Geom_OffsetCurve> anOC =
+        new Geom_OffsetCurve(new Geom_TrimmedCurve(aC, f, l),
+                             -sF * sE * std::abs(myOffset),
+                             aPln.Axis().Direction());
+      occ::handle<Geom_Curve> anEOn2C;
+      if (aC->IsKind(STANDARD_TYPE(Geom_Line)))
+      {
+        anEOn2C = occ::down_cast<Geom_Curve>(aC->Translated(gp_Vec(aC->Value(f), anOC->Value(f))));
+      }
+      else
+      {
+        anEOn2C = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(anOC, f, l));
+      }
+      BRepLib_MakeEdge aME(anEOn2C, f, l);
+      if (!aME.IsDone())
       {
         continue;
       }
-      const gp_Pln aPln = aCFS.Plane();
-      const double sF   = CF.Orientation() == TopAbs_REVERSED ? -1. : 1.;
-      for (exp.Init(CF, TopAbs_EDGE); exp.More(); exp.Next())
+      EOn2 = aME.Edge();
+      BRepOffset_Offset aTube;
+      aTube.Init(E, OE0, EOn2, myOffset);
+      const TopoDS_Face& aTF = aTube.Face();
+      myInitOffsetFace.Bind(E, aTF);
+      myInitOffsetFace.SetRoot(E);
+      myImageOffset.SetRoot(aTF);
+      for (TopExp_Explorer anExpT(aTF.Oriented(TopAbs_FORWARD), TopAbs_EDGE); anExpT.More();
+           anExpT.Next())
       {
-        const TopoDS_Edge& E = TopoDS::Edge(exp.Current());
-        if (!myAnalyse.HasAncestor(E) || myInitOffsetFace.HasImage(E)
-            || !myInitOffsetEdge.HasImage(E))
+        myAsDes->Add(aTF, anExpT.Current());
+      }
+      aTubes.Bind(E, aTube);
+      SHOW_TOPO_SHAPE(aTF, "TangentTube", EOn2);
+    }
+    catch (Standard_Failure const&)
+    {
+      SHOW_TOPO_SHAPE(E, "TangentTubeFailed");
+      continue;
+    }
+    EOn2.Orientation(OE0.Orientation());
+    myInitOffsetEdge.Remove(OE0);
+    myInitOffsetEdge.Bind(E, EOn2);
+
+    // The corners, outward.
+    if (myOffset <= 0.)
+    {
+      continue;
+    }
+    const BRepOffset_Offset& aTube = aTubes(E);
+    for (TopoDS_Iterator anItV(E); anItV.More(); anItV.Next())
+    {
+      const TopoDS_Vertex& V = TopoDS::Vertex(anItV.Value());
+      if (myInitOffsetFace.HasImage(V) || !myAnalyse.HasAncestor(V))
+      {
+        continue;
+      }
+      // The tube round a convex edge ending here.
+      TopoDS_Edge aConvexArc;
+      for (itl.Initialize(myAnalyse.Ancestors(V)); itl.More(); itl.Next())
+      {
+        if (!itl.Value().IsSame(E) && MapSF.IsBound(itl.Value())
+            && MapSF(itl.Value()).InitialShape().ShapeType() == TopAbs_EDGE)
         {
-          continue;
+          aConvexArc = TopoDS::Edge(MapSF(itl.Value()).Generated(V));
+          break;
         }
-        const NCollection_List<TopoDS_Shape>& LEA = myAnalyse.Ancestors(E);
-        if (LEA.Extent() != 1)
+      }
+      const TopoDS_Edge aTubeArc = TopoDS::Edge(aTube.Generated(V));
+      if (aConvexArc.IsNull() || aTubeArc.IsNull())
+      {
+        continue;
+      }
+      // The two arcs share their end on the neighbour's offset; the arc on
+      // the cap joins their other ends round V.
+      TopoDS_Vertex aA1, aA2, aB1, aB2, aA, aB;
+      TopExp::Vertices(aTubeArc, aA1, aA2);
+      TopExp::Vertices(aConvexArc, aB1, aB2);
+      if (aA1.IsSame(aB1) || aA1.IsSame(aB2))
+      {
+        aA = aA2;
+        aB = aA1.IsSame(aB1) ? aB2 : aB1;
+      }
+      else if (aA2.IsSame(aB1) || aA2.IsSame(aB2))
+      {
+        aA = aA1;
+        aB = aA2.IsSame(aB1) ? aB2 : aB1;
+      }
+      else
+      {
+        SHOW_TOPO_SHAPE(V, "TangentCornerNoCommonVertex");
+        continue;
+      }
+      try
+      {
+        const gp_Pnt aPV = BRep_Tool::Pnt(V);
+        gp_Circ      aCirc(gp_Ax2(aPV, aPln.Axis().Direction(), gp_Vec(aPV, BRep_Tool::Pnt(aA))),
+                      std::abs(myOffset));
+        occ::handle<Geom_Circle> aGC = new Geom_Circle(aCirc);
+        double aUB = ElCLib::Parameter(aCirc, BRep_Tool::Pnt(aB));
+        TopoDS_Edge aCapArc;
+        if (aUB <= M_PI)
         {
-          continue;
+          aCapArc = BRepLib_MakeEdge(aGC, aA, aB, 0., aUB).Edge();
         }
-        const TopoDS_Edge OE0 = TopoDS::Edge(myInitOffsetEdge.Image(E).First());
-        // ExtentFace binds an edge it could not stretch to itself.
-        const TopoDS_Shape* pExtended = Created.Seek(OE0);
-        if (pExtended && !pExtended->IsSame(OE0))
+        else
         {
-          continue;
+          aCapArc = BRepLib_MakeEdge(aGC, aB, aA, aUB, 2. * M_PI).Edge();
         }
-        BRepAdaptor_Curve anOEC(OE0);
-        const gp_Pnt      aMid =
-          anOEC.Value((anOEC.FirstParameter() + anOEC.LastParameter()) / 2.);
-        if (aPln.Distance(aMid) < std::abs(myOffset) / 2.)
+        NCollection_List<TopoDS_Shape> aLOE;
+        aLOE.Append(aTubeArc);
+        aLOE.Append(aConvexArc);
+        aLOE.Append(aCapArc);
+        BRepOffset_Offset aSphere(V, aLOE, myOffset);
+        const TopoDS_Face& aSF = aSphere.Face();
+        myInitOffsetFace.Bind(V, aSF);
+        myInitOffsetFace.SetRoot(V);
+        myImageOffset.SetRoot(aSF);
+        for (TopExp_Explorer anExpS(aSF.Oriented(TopAbs_FORWARD), TopAbs_EDGE); anExpS.More();
+             anExpS.Next())
         {
-          continue;
+          myAsDes->Add(aSF, anExpS.Current());
         }
-        if (ChFi3d::DefineConnectType(E, CF, TopoDS::Face(LEA.First()), aSinTol, false)
-            != ChFiDS_Tangential)
+        if (myInitOffsetEdge.HasImage(V))
         {
-          continue;
+          myInitOffsetEdge.Remove(myInitOffsetEdge.Image(V).First());
         }
-        // The edge on the removed face: into the face for an inward
-        // offset, out of it for an outward one. Its interior is on the
-        // left of the edge as the face holds it, seen along its normal.
-        double                  f, l;
-        TopLoc_Location         aLoc;
-        occ::handle<Geom_Curve> aC = BRep_Tool::Curve(E, aLoc, f, l);
-        if (aC.IsNull())
-        {
-          continue;
-        }
-        aC = occ::down_cast<Geom_Curve>(aC->Transformed(aLoc.Transformation()));
-        const double sE   = E.Orientation() == TopAbs_REVERSED ? -1. : 1.;
-        const double aIn  = myOffset < 0. ? std::abs(myOffset) : -std::abs(myOffset);
-        TopoDS_Edge  EOn2;
-        try
-        {
-          // Kept to the kind of curve the edge has where that is exact (a
-          // line is translated), for the pcurve on the cap is a projection.
-          occ::handle<Geom_Curve>       anEOn2C;
-          occ::handle<Geom_OffsetCurve> anOC =
-            new Geom_OffsetCurve(new Geom_TrimmedCurve(aC, f, l),
-                                 -sF * sE * aIn,
-                                 aPln.Axis().Direction());
-          if (aC->IsKind(STANDARD_TYPE(Geom_Line)))
-          {
-            const gp_Pnt aP0 = aC->Value(f);
-            anEOn2C =
-              occ::down_cast<Geom_Curve>(aC->Translated(gp_Vec(aP0, anOC->Value(f))));
-          }
-          else
-          {
-            anEOn2C = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(anOC, f, l));
-          }
-          BRepLib_MakeEdge aME(anEOn2C, f, l);
-          if (!aME.IsDone())
-          {
-            continue;
-          }
-          EOn2 = aME.Edge();
-          BRepOffset_Offset aTube;
-          aTube.Init(E, OE0, EOn2, myOffset);
-          const TopoDS_Face& aTF = aTube.Face();
-          myInitOffsetFace.Bind(E, aTF);
-          myInitOffsetFace.SetRoot(E);
-          myImageOffset.SetRoot(aTF);
-          for (TopExp_Explorer anExpT(aTF.Oriented(TopAbs_FORWARD), TopAbs_EDGE); anExpT.More();
-               anExpT.Next())
-          {
-            myAsDes->Add(aTF, anExpT.Current());
-          }
-          SHOW_TOPO_SHAPE(aTF, "TangentTube", EOn2);
-        }
-        catch (Standard_Failure const&)
-        {
-          SHOW_TOPO_SHAPE(E, "TangentTubeFailed");
-          continue;
-        }
-        EOn2.Orientation(OE0.Orientation());
-        myInitOffsetEdge.Remove(OE0);
-        myInitOffsetEdge.Bind(E, EOn2);
+        myInitOffsetEdge.Bind(V, aCapArc);
+        SHOW_TOPO_SHAPE(aSF, "TangentCorner", aCapArc);
+      }
+      catch (Standard_Failure const&)
+      {
+        SHOW_TOPO_SHAPE(V, "TangentCornerFailed");
       }
     }
   }

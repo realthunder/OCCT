@@ -1641,6 +1641,23 @@ void BRepOffset_Inter3d::ContextIntByArc(
           continue;
         }
         OF1.Nullify();
+        if (InitOffsetFace.HasImage(V[i]) && InitOffsetEdge.HasImage(V[i]))
+        {
+          // The piece of sphere at a corner of a tangent edge's tube
+          // (BRepOffset_MakeOffset::ToContext): its arc on the cap.
+          OF1 = TopoDS::Face(InitOffsetFace.Image(V[i]).First());
+          OE  = TopoDS::Edge(InitOffsetEdge.Image(V[i]).First());
+          LInt1.Clear();
+          LInt1.Append(OE);
+          LInt2.Clear();
+          TopAbs_Orientation O1, O2;
+          BRepOffset_Tool::OrientSection(OE, CF, OF1, O1, O2);
+          O1 = TopAbs::Reverse(O1);
+          LInt1.First().Orientation(O1);
+          Store(CF, OF1, LInt1, LInt2);
+          SHOW_TOPO_SHAPE(OE, "CornerArcOnCap");
+          continue;
+        }
         const NCollection_List<TopoDS_Shape>& LE = Analyse.Ancestors(V[i]);
         SHOW_TOPO_SHAPE(V[i], "AnceV", LE);
         NCollection_List<TopoDS_Shape>::Iterator itLE(LE);
