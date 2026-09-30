@@ -1185,6 +1185,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   // Construction of a solid with the initial shell, parallel shell
   // limited by caps.
   //--------------------------------------------------------------------
+  bool isOriented = false;
   if (!myFaces.IsEmpty())
   {
     TopoDS_Solid    Res;
@@ -1240,6 +1241,12 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       B.Add(Res, exp.Current());
     }
     Res.Closed(true);
+    // The quilt orients each shell by the faces it met first and reverses a
+    // shell it joins to it when they disagree, so which way the result faces
+    // depends on the order the shells meet, not on the sign of the offset:
+    // the T's right bar top removed, inward with the Intersection join, came
+    // out inside out where its mirror image did not. Set the material inside.
+    isOriented = BRepLib::OrientClosedSolid(Res);
     myOffsetShape = Res;
 
     // Test of Validity of the result of thick Solid
@@ -1261,7 +1268,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     }
   }
 
-  if (myOffset > 0)
+  if (myOffset > 0 && !isOriented)
   {
     myOffsetShape.Reverse();
   }
