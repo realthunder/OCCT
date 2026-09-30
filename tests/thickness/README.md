@@ -133,12 +133,16 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 | `blindhole_floor_join_*` | box with a blind hole, the floor removed, Intersection join | the floor meets the wall at a concave edge; the section on the wall's offset was the wrong way round. Worked out by hand |
 | `lbox_notch_wall_inter_join_out`, `tshape_post_wall_inter_join_in`, `pocket_wall_inter_join_in` | concave removed faces, intersection on, Intersection join | the splits of the offset faces left the rim uncut; such shapes are built as with intersection off |
 
-The 712-run sweep against upstream after these: the fork right in 135-137
-of 150 in each mode (upstream 106-111), worse than upstream in no run.
-Still failing in every mode, upstream too: the filleted box with an end face
-or a fillet face removed (the removed face is tangent to its neighbours,
-whose offsets never reach its plane), and the holed cone's top inward (the
-wall is thinner than twice the thickness; no hollow result exists).
+| `filletbox_end_*`, `filletbox_side_*` | box with its vertical edges filleted, an end or side face removed (Arc join) | the removed face is tangent to the fillets, whose offsets never meet it (inward) or meet it far round the cylinder (outward, a lip). A tube round the tangent edge closes the gap, turning into the removed face, and outward an eighth of a sphere closes each corner with the top and bottom edges' tubes (sec 27.93). Worked out by hand (Steiner for outward) |
+
+The 712-run sweep against upstream after these: the fork right in 141 of
+150 with the Arc join and 137 with the Intersection join (upstream 106-111),
+worse than upstream in no run. Still failing, upstream too: a fillet face
+removed (inward ill-posed at these sizes; outward the removed face is curved
+and the loop on it does not sort the pieces), the filleted box's end and
+side faces inward with the Intersection join (no tubes there), and the holed
+cone's top inward (the wall is thinner than twice the thickness; no hollow
+result exists).
 
 ## Determinism cases (intersection mode, Arc join)
 
