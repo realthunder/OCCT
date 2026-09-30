@@ -203,7 +203,10 @@ thickness_case("tshape_bar_top_in", tshape, 2, -1.0, "pass", 215.5708)
 # A box with a pocket, thickened inward with intersection on and the
 # Intersection join, crashed: splitting the trimmed faces had no map from
 # trimmed to infinite edges and dereferenced it. The result is still invalid
-# (as upstream's is); the case is here to run to the end.
+# (as upstream's is); the case is here to run to the end. Since sec 27.92
+# a removed face at a concave edge is built as with intersection off, so
+# this input no longer reaches the guarded code; it throws (its walls are
+# twice the thickness, the offsets coincide).
 def nocrash_case(name, shape, face_index, value, inter, join):
     try:
         r = shape.makeThickness([shape.Faces[face_index - 1]], value, 1e-7, inter, False, 0,
@@ -259,6 +262,16 @@ thickness_case("pocket_floor_join_in",  pocket5, 11, -1.0, "pass", 367.0, False,
 blindhole = Part.makeBox(10, 10, 5).cut(Part.makeCylinder(2, 3, App.Vector(5, 5, 2)))
 thickness_case("blindhole_floor_join_out", blindhole, 8, +1.0, "pass", 533.1327, False, 2)
 thickness_case("blindhole_floor_join_in",  blindhole, 8, -1.0, "pass", 326.8496, False, 2)
+
+# Intersection on and the Intersection join, a removed face meeting a
+# neighbour at a concave edge -- the L-box's notch wall, the T's post wall, a
+# pocket's wall. The splits of the offset faces did not cut the neighbour's
+# section where the rim needs it; such a shape is now built as with
+# intersection off (FreeCAD docs/TransactionLog.md sec 27.92). The volumes are
+# intersection-off's, which the sweep checked.
+thickness_case("lbox_notch_wall_inter_join_out", lbox, 7, +1.0, "pass", 423.0, True, 2)
+thickness_case("tshape_post_wall_inter_join_in", tshape, 3, -1.0, "pass", 212.0, True, 2)
+thickness_case("pocket_wall_inter_join_in", pocket5, 7, -1.0, "pass", 395.0, True, 2)
 
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
