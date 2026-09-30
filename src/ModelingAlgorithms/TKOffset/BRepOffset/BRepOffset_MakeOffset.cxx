@@ -5178,8 +5178,12 @@ bool TrimEdges(
         else
         {
           NE = aS.EmptyCopied();
+          // The vertices as <aS> holds them, orientation included: NE keeps
+          // aS's orientation, and Add() reverses a vertex under a reversed
+          // edge, so taken as the TShape holds them a reversed aS gave NE its
+          // ends swapped (FreeCAD docs/TransactionLog.md sec 27.86).
           TopoDS_Vertex V1, V2;
-          TopExp::Vertices(TopoDS::Edge(aS), V1, V2);
+          TopExp::Vertices(TopoDS::Edge(aS), V1, V2, true);
           B.Add(NE, V1);
           B.Add(NE, V2);
         }
