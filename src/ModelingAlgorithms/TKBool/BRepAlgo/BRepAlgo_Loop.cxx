@@ -675,8 +675,11 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
       }
       else
       {
-        ConstEdges.Append(anEdge);
-        SHOW_TOPO_SHAPE(anEdge, "ConstEdge");
+        // As it came, not anEdge: the loop takes a const edge's orientation
+        // as the one it has in the face, and a seam wire made of two closed
+        // edges running the same way does not close in UV.
+        ConstEdges.Append(itl.Value());
+        SHOW_TOPO_SHAPE(itl.Value(), "ConstEdge");
       }
     }
     if (ConstEdges.Extent() != myConstEdges.Extent())
