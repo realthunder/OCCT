@@ -69,6 +69,12 @@
 #include <Geom_SphericalSurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Geom_OffsetCurve.hxx>
+#include <NCollection_Array1.hxx>
+#include <GeomProjLib.hxx>
+#include <GeomAPI_PointsToBSpline.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <GeomAPI_IntSS.hxx>
+#include <GeomAPI_IntCS.hxx>
 #include <gp_Circ.hxx>
 #include <GeomConvert.hxx>
 #include <GeomAdaptor_Surface.hxx>
@@ -2399,6 +2405,188 @@ void BRepOffset_MakeOffset::SelfInter(
 
 //=================================================================================================
 
+// The edge on a removed face (the cap) where a tube of radius theR round the
+// tangent edge theE meets it: at each point of theE, the circle round it in
+// its normal plane meets the cap's surface on the side into the face (the
+// face's interior is on the left of its edge, seen along its normal). A
+// translated line when the edge is straight and every step is the same; a
+// B-spline through the points otherwise. It carries its pcurve on the cap.
+static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
+                                        const TopoDS_Face&               theCap,
+                                        const occ::handle<Geom_Surface>& theSurf,
+                                        const double                     theR)
+{
+  TopoDS_Edge             aResult;
+  double                  f, l, f2, l2;
+  TopLoc_Location         aLoc;
+  occ::handle<Geom_Curve> aC = BRep_Tool::Curve(theE, aLoc, f, l);
+  occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, theCap, f2, l2);
+  if (aC.IsNull() || aC2d.IsNull())
+  {
+    return aResult;
+  }
+  aC = occ::down_cast<Geom_Curve>(aC->Transformed(aLoc.Transformation()));
+  const double sF = theCap.Orientation() == TopAbs_REVERSED ? -1. : 1.;
+  const double sE = theE.Orientation() == TopAbs_REVERSED ? -1. : 1.;
+  const bool   isLine = aC->IsKind(STANDARD_TYPE(Geom_Line));
+  const int    aNb    = isLine ? 3 : 21;
+  NCollection_Array1<gp_Pnt> aPnts(1, aNb);
+  NCollection_Array1<double> aPars(1, aNb);
+  NCollection_Array1<gp_Vec> aSteps(1, aNb);
+  for (int i = 1; i <= aNb; ++i)
+  {
+    const double u = f + (l - f) * (i - 1) / (aNb - 1);
+    gp_Pnt       aP;
+    gp_Vec       aT;
+    aC->D1(u, aP, aT);
+    const gp_Pnt2d aUV = aC2d->Value(u);
+    gp_Pnt         aPS;
+    gp_Vec         aDU, aDV;
+    theSurf->D1(aUV.X(), aUV.Y(), aPS, aDU, aDV);
+    gp_Vec aN = aDU ^ aDV;
+    if (aN.Magnitude() < gp::Resolution() || aT.Magnitude() < gp::Resolution())
+    {
+      return aResult;
+    }
+    const gp_Vec aIn = (aN.Normalized() * sF) ^ (aT.Normalized() * sE);
+    if (aIn.Magnitude() < gp::Resolution())
+    {
+      return aResult;
+    }
+    occ::handle<Geom_Circle> aCirc =
+      new Geom_Circle(gp_Ax2(aP, gp_Dir(aT), gp_Dir(aIn)), theR);
+    GeomAPI_IntCS anInt(aCirc, theSurf);
+    if (!anInt.IsDone())
+    {
+      return aResult;
+    }
+    int    iBest = 0;
+    double aBest = 0.;
+    for (int k = 1; k <= anInt.NbPoints(); ++k)
+    {
+      const double aDot = gp_Vec(aP, anInt.Point(k)).Dot(aIn);
+      if (aDot > aBest)
+      {
+        aBest = aDot;
+        iBest = k;
+      }
+    }
+    if (iBest == 0)
+    {
+      return aResult;
+    }
+    aPnts(i)  = anInt.Point(iBest);
+    aPars(i)  = u;
+    aSteps(i) = gp_Vec(aP, aPnts(i));
+  }
+  occ::handle<Geom_Curve> aNC;
+  bool isTranslation = isLine;
+  for (int i = 2; i <= aNb && isTranslation; ++i)
+  {
+    isTranslation = aSteps(i).IsEqual(aSteps(1), Precision::Confusion(), Precision::Angular());
+  }
+  if (isTranslation)
+  {
+    aNC = occ::down_cast<Geom_Curve>(aC->Translated(aSteps(1)));
+  }
+  else
+  {
+    GeomAPI_PointsToBSpline anApprox(aPnts, aPars, 3, 8, GeomAbs_C2, Precision::Confusion());
+    if (!anApprox.IsDone())
+    {
+      return aResult;
+    }
+    aNC = anApprox.Curve();
+  }
+  BRepLib_MakeEdge aME(aNC, f, l);
+  if (!aME.IsDone())
+  {
+    return aResult;
+  }
+  aResult = aME.Edge();
+  occ::handle<Geom2d_Curve> aPC = GeomProjLib::Curve2d(aNC, f, l, theSurf);
+  if (!aPC.IsNull())
+  {
+    BRep_Builder().UpdateEdge(aResult, aPC, theCap, Precision::Confusion());
+  }
+  return aResult;
+}
+
+// The arc on a removed face (the cap) of the sphere of radius theR round the
+// vertex theV, from theA to theB: where the sphere meets the cap's surface.
+// It carries its pcurve on the cap.
+static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
+                                         const TopoDS_Vertex&             theA,
+                                         const TopoDS_Vertex&             theB,
+                                         const TopoDS_Face&               theCap,
+                                         const occ::handle<Geom_Surface>& theSurf,
+                                         const double                     theR)
+{
+  TopoDS_Edge  aResult;
+  const gp_Pnt aPV = BRep_Tool::Pnt(theV);
+  const gp_Pnt aPA = BRep_Tool::Pnt(theA);
+  const gp_Pnt aPB = BRep_Tool::Pnt(theB);
+  occ::handle<Geom_SphericalSurface> aSph =
+    new Geom_SphericalSurface(gp_Ax3(aPV, gp::DZ()), theR);
+  GeomAPI_IntSS anInt(aSph, theSurf, Precision::Confusion());
+  if (!anInt.IsDone())
+  {
+    return aResult;
+  }
+  const double aTol = 1.e-4 * std::max(1., theR);
+  for (int i = 1; i <= anInt.NbLines(); ++i)
+  {
+    const occ::handle<Geom_Curve>& aL = anInt.Line(i);
+    GeomAPI_ProjectPointOnCurve    aPrA(aPA, aL), aPrB(aPB, aL);
+    if (aPrA.NbPoints() == 0 || aPrB.NbPoints() == 0 || aPrA.LowerDistance() > aTol
+        || aPrB.LowerDistance() > aTol)
+    {
+      continue;
+    }
+    double uA = aPrA.LowerDistanceParameter();
+    double uB = aPrB.LowerDistanceParameter();
+    // The shorter way round from A to B on a closed line.
+    TopoDS_Vertex aVF = theA, aVL = theB;
+    if (aL->IsPeriodic())
+    {
+      const double aT = aL->Period();
+      while (uB < uA)
+      {
+        uB += aT;
+      }
+      if (uB - uA > aT / 2.)
+      {
+        std::swap(uA, uB);
+        while (uB < uA)
+        {
+          uB += aT;
+        }
+        std::swap(aVF, aVL);
+      }
+    }
+    else if (uB < uA)
+    {
+      std::swap(uA, uB);
+      std::swap(aVF, aVL);
+    }
+    BRepLib_MakeEdge aME(aL, aVF, aVL, uA, uB);
+    if (!aME.IsDone())
+    {
+      continue;
+    }
+    aResult = aME.Edge();
+    occ::handle<Geom2d_Curve> aPC = GeomProjLib::Curve2d(aL, uA, uB, theSurf);
+    if (!aPC.IsNull())
+    {
+      BRep_Builder().UpdateEdge(aResult, aPC, theCap, Precision::Confusion());
+    }
+    return aResult;
+  }
+  return aResult;
+}
+
+//=================================================================================================
+
 void BRepOffset_MakeOffset::ToContext(
   NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF)
 {
@@ -2449,6 +2637,9 @@ void BRepOffset_MakeOffset::ToContext(
     for (j = 1; j <= myFaces.Extent(); j++)
     {
       const TopoDS_Face& CF = TopoDS::Face(myFaces(j));
+      // A curved removed face -- a fillet removed -- is left as it was: the
+      // offsets beside it cut its surface in whole circles and the loop on
+      // the periodic face does not sort the pieces (not done).
       if (BRepAdaptor_Surface(CF, false).GetType() != GeomAbs_Plane)
       {
         continue;
@@ -2642,50 +2833,34 @@ void BRepOffset_MakeOffset::ToContext(
     {
       continue;
     }
-    const gp_Pln      aPln = BRepAdaptor_Surface(CF, false).Plane();
-    const double      sF   = CF.Orientation() == TopAbs_REVERSED ? -1. : 1.;
-    const TopoDS_Edge OE0  = TopoDS::Edge(myInitOffsetEdge.Image(E).First());
-    BRepAdaptor_Curve anOEC(OE0);
-    if (aPln.Distance(anOEC.Value((anOEC.FirstParameter() + anOEC.LastParameter()) / 2.))
-        < std::abs(myOffset) / 2.)
+    const TopoDS_Edge OE0 = TopoDS::Edge(myInitOffsetEdge.Image(E).First());
+    TopLoc_Location   aSLoc;
+    occ::handle<Geom_Surface> aCS = BRep_Tool::Surface(CF, aSLoc);
+    aCS = occ::down_cast<Geom_Surface>(aCS->Transformed(aSLoc.Transformation()));
     {
-      continue;
-    }
-    // Into the removed face: its interior is on the left of the edge as the
-    // face holds it, seen along its normal.
-    double                  f, l;
-    TopLoc_Location         aLoc;
-    occ::handle<Geom_Curve> aC = BRep_Tool::Curve(E, aLoc, f, l);
-    if (aC.IsNull())
-    {
-      continue;
-    }
-    aC            = occ::down_cast<Geom_Curve>(aC->Transformed(aLoc.Transformation()));
-    const double sE = E.Orientation() == TopAbs_REVERSED ? -1. : 1.;
-    TopoDS_Edge  EOn2;
-    try
-    {
-      // Kept to the kind of curve the edge has where that is exact (a line
-      // is translated), for the pcurve on the cap is a projection.
-      occ::handle<Geom_OffsetCurve> anOC =
-        new Geom_OffsetCurve(new Geom_TrimmedCurve(aC, f, l),
-                             -sF * sE * std::abs(myOffset),
-                             aPln.Axis().Direction());
-      occ::handle<Geom_Curve> anEOn2C;
-      if (aC->IsKind(STANDARD_TYPE(Geom_Line)))
-      {
-        anEOn2C = occ::down_cast<Geom_Curve>(aC->Translated(gp_Vec(aC->Value(f), anOC->Value(f))));
-      }
-      else
-      {
-        anEOn2C = GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(anOC, f, l));
-      }
-      BRepLib_MakeEdge aME(anEOn2C, f, l);
-      if (!aME.IsDone())
+      BRepAdaptor_Curve anOEC(OE0);
+      GeomAPI_ProjectPointOnSurf aProj(
+        anOEC.Value((anOEC.FirstParameter() + anOEC.LastParameter()) / 2.), aCS);
+      if (aProj.NbPoints() > 0 && aProj.LowerDistance() < std::abs(myOffset) / 2.)
       {
         continue;
       }
-      EOn2 = aME.Edge();
+    }
+    TopoDS_Edge EOn2;
+    try
+    {
+      EOn2 = TangentTubeEdgeOnCap(E, CF, aCS, std::abs(myOffset));
+    }
+    catch (Standard_Failure const&)
+    {
+    }
+    if (EOn2.IsNull())
+    {
+      SHOW_TOPO_SHAPE(E, "TangentTubeNoEdge");
+      continue;
+    }
+    try
+    {
       BRepOffset_Offset aTube;
       aTube.Init(E, OE0, EOn2, myOffset);
       const TopoDS_Face& aTF = aTube.Face();
@@ -2760,19 +2935,12 @@ void BRepOffset_MakeOffset::ToContext(
       }
       try
       {
-        const gp_Pnt aPV = BRep_Tool::Pnt(V);
-        gp_Circ      aCirc(gp_Ax2(aPV, aPln.Axis().Direction(), gp_Vec(aPV, BRep_Tool::Pnt(aA))),
-                      std::abs(myOffset));
-        occ::handle<Geom_Circle> aGC = new Geom_Circle(aCirc);
-        double aUB = ElCLib::Parameter(aCirc, BRep_Tool::Pnt(aB));
-        TopoDS_Edge aCapArc;
-        if (aUB <= M_PI)
+        const TopoDS_Edge aCapArc =
+          TangentCornerArcOnCap(V, aA, aB, CF, aCS, std::abs(myOffset));
+        if (aCapArc.IsNull())
         {
-          aCapArc = BRepLib_MakeEdge(aGC, aA, aB, 0., aUB).Edge();
-        }
-        else
-        {
-          aCapArc = BRepLib_MakeEdge(aGC, aB, aA, aUB, 2. * M_PI).Edge();
+          SHOW_TOPO_SHAPE(V, "TangentCornerNoArc");
+          continue;
         }
         NCollection_List<TopoDS_Shape> aLOE;
         aLOE.Append(aTubeArc);
