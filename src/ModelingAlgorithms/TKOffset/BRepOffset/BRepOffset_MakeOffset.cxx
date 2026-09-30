@@ -310,6 +310,15 @@ static bool TrimEdges(
 
 static void AppendToList(NCollection_List<TopoDS_Shape>& theL, const TopoDS_Shape& theS);
 
+//! Adds theS to theMap; true only when it was not there. An indexed map's
+//! Add() returns the key's index, found or new, and is never 0.
+static bool AddNew(NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theMap,
+                   const TopoDS_Shape&                                            theS)
+{
+  const int aNb = theMap.Extent();
+  return theMap.Add(theS) > aNb;
+}
+
 static BRepOffset_Error checkSinglePoint(const double                            theUParam,
                                          const double                            theVParam,
                                          const occ::handle<Geom_Surface>&        theSurf,
@@ -5158,7 +5167,7 @@ bool TrimEdges(
         // trim edges
         if (NE.ShapeType() == TopAbs_EDGE)
         {
-          if (theNewEdges.Add(NE))
+          if (AddNew(theNewEdges, NE))
           {
             if (!TrimEdge(TopoDS::Edge(NE), theAsDes2d, theAsDes, theETrimEInf))
             {
@@ -5177,7 +5186,7 @@ bool TrimEdges(
           for (ExpC.Init(NE, TopAbs_EDGE); ExpC.More(); ExpC.Next())
           {
             TopoDS_Edge NEC = TopoDS::Edge(ExpC.Current());
-            if (theNewEdges.Add(NEC))
+            if (AddNew(theNewEdges, NEC))
             {
               if (!theAsDes2d->Descendant(NEC).IsEmpty())
               {
@@ -5244,7 +5253,7 @@ bool TrimEdges(
           NE = theMES(NE);
           SHOW_TOPO_SHAPE(NE, "TrimingMES");
           NE.Orientation(aS.Orientation());
-          if (theNewEdges.Add(NE))
+          if (AddNew(theNewEdges, NE))
           {
             if (!TrimEdge(TopoDS::Edge(NE), theAsDes2d, theAsDes, theETrimEInf))
             {
