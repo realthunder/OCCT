@@ -237,6 +237,18 @@ thickness_case("tshape_back_inter_join_in",  tshape, 8, -1.0, "pass", 192.0, Tru
 conehole = Part.makeCone(6, 3, 8).cut(Part.makeCylinder(1.5, 8))
 thickness_case("conehole_bottom_inter_in", conehole, 3, -1.0, "pass", 307.1946, True, 0)
 
+# The Intersection join, intersection off: the T's right bar top inward, and
+# a box pocketed 5 x 5 with its pocket floor removed, came back as valid
+# solids of negative volume -- inside out, the quilt's shells met in an order
+# that flipped them (the T's left bar top, its mirror image, was right). The
+# thick solid is now oriented by classification (FreeCAD
+# docs/TransactionLog.md sec 27.92). Worked out by hand: 288 - 72, and the
+# box less its pocket grown by the floor's removal.
+pocket5 = Part.makeBox(10, 10, 6).cut(Part.makeBox(5, 5, 3, App.Vector(2.5, 2.5, 3)))
+thickness_case("tshape_bar_top_right_join_in", tshape, 7, -1.0, "pass", 216.0, False, 2)
+thickness_case("pocket_floor_join_out", pocket5, 11, +1.0, "pass", 591.0, False, 2)
+thickness_case("pocket_floor_join_in",  pocket5, 11, -1.0, "pass", 367.0, False, 2)
+
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
              7, -1.0, True, 2)
