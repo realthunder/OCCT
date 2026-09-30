@@ -285,6 +285,16 @@ filletbox = Part.makeBox(10, 8, 6)
 filletbox = filletbox.makeFillet(2, [filletbox.Edges[i] for i in (0, 2, 4, 6)])
 thickness_case("filletbox_end_in",  filletbox, 1, -1.0, "pass", 261.1150)
 thickness_case("filletbox_side_in", filletbox, 6, -1.0, "pass", 253.1150)
+# Outward: the tube turns into the removed face too (the fillet's own offset
+# covers the other side), and where it meets the tube round the convex top
+# or bottom edge, the corner is an eighth of a sphere. The side face used to
+# come back valid at 354.3386: the fillet's offset stretched round the
+# cylinder until it crossed the removed plane, a lip in the opening further
+# than the thickness from every face kept. Worked out by hand (Steiner): the
+# whole skin 422.72, less what lies in front of the removed face, plus the
+# two tubes and four eighths of a sphere.
+thickness_case("filletbox_end_out",  filletbox, 1, +1.0, "pass", 403.9604)
+thickness_case("filletbox_side_out", filletbox, 6, +1.0, "pass", 388.8188)
 
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
