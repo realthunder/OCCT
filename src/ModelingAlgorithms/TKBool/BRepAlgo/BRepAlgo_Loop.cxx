@@ -24,6 +24,7 @@
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_FaceRestrictor.hxx>
 #include <BRepAlgo_Loop.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepLib_MakeWire.hxx>
@@ -1258,6 +1259,80 @@ void BRepAlgo_Loop::FindLoop()
   // into the wire passing through its vertex once the wires are built.
   NCollection_List<TopoDS_Shape> DegenEdges;
 
+  // A piece of an extended edge (one carrying INTERNAL vertices: the context
+  // extension stretches the edges of a removed face far past their ends) can
+  // lie exactly on an edge the face has from elsewhere -- the tangent line of
+  // an arc face, where the stretched edge of the removed face runs on through
+  // the rest of the face. Both in the loop, the face gets the line twice and
+  // the shell a free edge. Such a piece is left out; the other edge stays.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDuplicates;
+  {
+    auto isExtended = [](const TopoDS_Shape& theE) {
+      for (TopoDS_Iterator aIt(theE); aIt.More(); aIt.Next())
+      {
+        if (aIt.Value().Orientation() == TopAbs_INTERNAL)
+        {
+          return true;
+        }
+      }
+      return false;
+    };
+    NCollection_List<TopoDS_Shape> aFromExtended, aOthers;
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>::Iterator itC(myCutEdges);
+    for (; itC.More(); itC.Next())
+    {
+      NCollection_List<TopoDS_Shape>& aTarget = isExtended(itC.Key()) ? aFromExtended : aOthers;
+      for (itl1.Initialize(itC.Value()); itl1.More(); itl1.Next())
+      {
+        aTarget.Append(itl1.Value());
+      }
+    }
+    for (itl1.Initialize(myConstEdges); itl1.More(); itl1.Next())
+    {
+      (isExtended(itl1.Value()) ? aFromExtended : aOthers).Append(itl1.Value());
+    }
+    const double aTol = std::max(myTolConf, Precision::Confusion());
+    auto         aKey = [](const TopoDS_Edge& theE, gp_Pnt& theP1, gp_Pnt& theP2, gp_Pnt& theM) {
+      TopoDS_Vertex aV1, aV2;
+      TopExp::Vertices(theE, aV1, aV2);
+      if (aV1.IsNull() || aV2.IsNull() || aV1.IsSame(aV2) || BRep_Tool::Degenerated(theE))
+      {
+        return false;
+      }
+      theP1 = BRep_Tool::Pnt(aV1);
+      theP2 = BRep_Tool::Pnt(aV2);
+      BRepAdaptor_Curve aC(theE);
+      theM = aC.Value((aC.FirstParameter() + aC.LastParameter()) / 2.);
+      return true;
+    };
+    for (itl1.Initialize(aFromExtended); itl1.More(); itl1.Next())
+    {
+      gp_Pnt aP1, aP2, aM;
+      if (!aKey(TopoDS::Edge(itl1.Value()), aP1, aP2, aM))
+      {
+        continue;
+      }
+      for (itl2.Initialize(aOthers); itl2.More(); itl2.Next())
+      {
+        gp_Pnt aQ1, aQ2, aN;
+        if (itl2.Value().IsSame(itl1.Value())
+            || !aKey(TopoDS::Edge(itl2.Value()), aQ1, aQ2, aN) || aM.Distance(aN) > aTol)
+        {
+          continue;
+        }
+        if ((aP1.Distance(aQ1) <= aTol && aP2.Distance(aQ2) <= aTol)
+            || (aP1.Distance(aQ2) <= aTol && aP2.Distance(aQ1) <= aTol))
+        {
+          aDuplicates.Add(itl1.Value());
+          SHOW_TOPO_SHAPE(itl1.Value(), "DuplicateOfExtended");
+          break;
+        }
+      }
+    }
+  }
+
   // add cut edges (in the order the edges were cut - hash order here would
   // make vertex canonicalization and loop discovery nondeterministic).
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> Emap;
@@ -1269,7 +1344,7 @@ void BRepAlgo_Loop::FindLoop()
     for (itl1.Initialize(itM.Value()); itl1.More(); itl1.Next())
     {
       TopoDS_Edge& E = TopoDS::Edge(itl1.ChangeValue());
-      if (Emap.Add(E))
+      if (!aDuplicates.Contains(E) && Emap.Add(E))
       {
         if (BRep_Tool::Degenerated(E))
         {
@@ -1288,7 +1363,7 @@ void BRepAlgo_Loop::FindLoop()
   for (itl.Initialize(myConstEdges); itl.More(); itl.Next())
   {
     TopoDS_Edge& E = TopoDS::Edge(itl.ChangeValue());
-    if (DejaVu.Add(E))
+    if (!aDuplicates.Contains(E) && DejaVu.Add(E))
     {
       if (BRep_Tool::Degenerated(E))
       {
