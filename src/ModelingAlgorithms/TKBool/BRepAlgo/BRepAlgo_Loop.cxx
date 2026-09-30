@@ -1334,35 +1334,21 @@ void BRepAlgo_Loop::FindLoop()
           TopExp::Vertices(NNE, V1, V2, true);
           if (V1.IsSame(V2))
           {
-            // Look for an already-built seam wire first: only when none exists
-            // may the plain wires be removed and replaced. Removing before the
-            // scan completes would destroy wires without a replacement whenever
-            // a seam wire happens to come later in map-iteration order.
-            bool hasSeamWire = false;
-            for (itW = MapIteratorOfMapOfWire(NewWires); itW.More(); itW.Next())
+            // A face can have more than one seam wire -- a removed cylinder
+            // leaves a wall at each end, each closed by its own piece of the
+            // seam -- but not two sharing an edge: a seam wire already built
+            // on one of these edges is this one, or one it cannot sit beside.
+            bool isTaken = false;
+            for (itW = MapIteratorOfMapOfWire(NewWires); itW.More() && !isTaken; itW.Next())
             {
-              if (itW.Value().HasSeam)
-              {
-                hasSeamWire = true;
-                break;
-              }
+              const WireInfo& info = itW.Value();
+              isTaken = info.HasSeam
+                        && (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE));
             }
-            if (hasSeamWire)
+            if (isTaken)
             {
               break;
             }
-            for (int iw = NewWires.Extent(); iw >= 1; --iw)
-            {
-              const WireInfo& info = NewWires(iw);
-              if (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE))
-              {
-                SHOW_TOPO_SHAPE(info.aWire, "SeamRemove");
-                NewWires.RemoveFromIndex(iw);
-              }
-            }
-
-            DejaVu.Add(NE);
-            DejaVu.Add(NNE);
 
             SHOW_TOPO_SHAPE(NE, "SeamEdge2", true);
             SHOW_TOPO_SHAPE(NNV, "SeamEdgeV2", true);
@@ -1391,14 +1377,28 @@ void BRepAlgo_Loop::FindLoop()
             NW = aFixer.Wire();
 
             WireInfo aSeamInfo(NW, true);
-            if (NW.Closed() && !NewWires.Contains(aSeamInfo) && NewWires.Add(aSeamInfo) > 0)
-            {
-              SHOW_TOPO_SHAPE(NW, "NewWire2");
-            }
-            else
+            if (!NW.Closed() || NewWires.Contains(aSeamInfo))
             {
               SHOW_TOPO_SHAPE(NW, "DiscardWire2");
+              continue;
             }
+
+            // The seam wire replaces the plain wires made of its edges -- only
+            // now that it exists, or a failed build would lose them for nothing.
+            for (int iw = NewWires.Extent(); iw >= 1; --iw)
+            {
+              const WireInfo& info = NewWires(iw);
+              if (!info.HasSeam
+                  && (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE)))
+              {
+                SHOW_TOPO_SHAPE(info.aWire, "SeamRemove");
+                NewWires.RemoveFromIndex(iw);
+              }
+            }
+            DejaVu.Add(NE);
+            DejaVu.Add(NNE);
+            NewWires.Add(aSeamInfo);
+            SHOW_TOPO_SHAPE(NW, "NewWire2");
           }
         }
       }
