@@ -547,223 +547,243 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
   // Loop on all faces //.
   //----------------------------------
   Message_ProgressScope aPS(theRange, "Building faces", LF.Extent());
-  for (itr.Initialize(LF); itr.More(); itr.Next(), aPS.Next())
+  // A face is rebuilt when one of its edges has an image. The image can come
+  // from a face met later -- one renewing the edge because its vertices were
+  // renewed -- so the faces are gone over again until none is rebuilt: a
+  // face skipped as unchanged kept the edge its rebuilt neighbour replaced,
+  // and the shell had a free edge there. A face rebuilt into nothing leaves no
+  // image to tell it was done, so the rebuilt faces are kept apart.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aRebuiltFaces;
+  bool                                                   isFirstPass = true;
+  for (bool isRebuilt = true; isRebuilt; isFirstPass = false)
   {
-    if (!aPS.More())
+    isRebuilt = false;
+    for (itr.Initialize(LF); itr.More(); itr.Next())
     {
-      return;
-    }
-    TopoDS_Face F = TopoDS::Face(itr.Value());
-    Loops.Init(F);
-    ToRebuild = false;
-    NCollection_List<TopoDS_Shape> AddedEdges;
-
-    if (!Image.HasImage(F))
-    {
-      //----------------------------------
-      // Face F not yet reconstructed.
-      //----------------------------------
-      const NCollection_List<TopoDS_Shape>& LE = AsDes->Descendant(F);
-      SHOW_TOPO_SHAPE(F, "BuildFace", LE);
-      //----------------------------------------------------------------
-      // first loop to find if the edges of the face were reconstructed.
-      // - maj on map MONV. Some vertices on reconstructed edges
-      // coincide geometrically with old but are not IsSame.
-      //----------------------------------------------------------------
-      NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> MONV;
-      TopoDS_Vertex                                                            OV1, OV2, NV1, NV2;
-
-      for (itl.Initialize(LE); itl.More(); itl.Next())
+      if (isFirstPass && !aPS.More())
       {
-        TopoDS_Edge E = TopoDS::Edge(itl.Value());
-        if (Image.HasImage(E))
-        {
-          const NCollection_List<TopoDS_Shape>& LCE = Image.Image(E);
-          if (LCE.Extent() == 1 && LCE.First().IsSame(E))
-          {
-            TopoDS_Shape aLocalShape = LCE.First().Oriented(E.Orientation());
-            TopoDS_Edge  CE          = TopoDS::Edge(aLocalShape);
-            //	    TopoDS_Edge CE = TopoDS::Edge(LCE.First().Oriented(E.Orientation()));
-            Loops.AddConstEdge(CE);
-            continue;
-          }
-          //----------------------------------
-          // F should be reconstructed.
-          //----------------------------------
-          ToRebuild = true;
-          for (itLCE.Initialize(LCE); itLCE.More(); itLCE.Next())
-          {
-            TopoDS_Shape aLocalShape = itLCE.Value().Oriented(E.Orientation());
-            TopoDS_Edge  CE          = TopoDS::Edge(aLocalShape);
-            //	    TopoDS_Edge CE = TopoDS::Edge(itLCE.Value().Oriented(E.Orientation()));
-            TopExp::Vertices(E, OV1, OV2);
-            TopExp::Vertices(CE, NV1, NV2);
-            SHOW_TOPO_SHAPE(CE, "CE");
-
-            // The image of E may contain a list of cut edges, so their
-            // vertices may not be 1-1 corresponding.
-            if (!OV1.IsSame(NV1)
-                && BRep_Tool::Pnt(OV1).Distance(BRep_Tool::Pnt(NV1)) < Precision::Confusion())
-            {
-              MONV.Bind(OV1, NV1);
-              char name[256];
-              snprintf(name,
-                       sizeof(name),
-                       "OV1_%zx_%p",
-                       std::hash<TopoDS_Shape>{}(OV1),
-                       (void*)&MONV(OV1));
-              SHOW_TOPO_SHAPE(OV1, name);
-              SHOW_TOPO_SHAPE(NV1, "NV1_");
-            }
-            else if (!OV1.IsSame(NV2)
-                     && BRep_Tool::Pnt(OV1).Distance(BRep_Tool::Pnt(NV2)) < Precision::Confusion())
-            {
-              MONV.Bind(OV1, NV2);
-              char name[256];
-              snprintf(name,
-                       sizeof(name),
-                       "OV1_%zx_%p",
-                       std::hash<TopoDS_Shape>{}(OV1),
-                       (void*)&MONV(OV1));
-              SHOW_TOPO_SHAPE(OV1, name);
-              SHOW_TOPO_SHAPE(NV2, "NV2_");
-            }
-
-            if (!OV2.IsSame(NV2)
-                && BRep_Tool::Pnt(OV2).Distance(BRep_Tool::Pnt(NV2)) < Precision::Confusion())
-            {
-              MONV.Bind(OV2, NV2);
-              char name[256];
-              snprintf(name,
-                       sizeof(name),
-                       "OV2_%zx_%p",
-                       std::hash<TopoDS_Shape>{}(OV2),
-                       (void*)&MONV(OV2));
-              SHOW_TOPO_SHAPE(OV2, name);
-              SHOW_TOPO_SHAPE(NV2, "NV2_");
-            }
-            else if (!OV2.IsSame(NV1)
-                     && BRep_Tool::Pnt(OV2).Distance(BRep_Tool::Pnt(NV1)) < Precision::Confusion())
-            {
-              MONV.Bind(OV2, NV1);
-              char name[256];
-              snprintf(name,
-                       sizeof(name),
-                       "OV2_%zx_%p",
-                       std::hash<TopoDS_Shape>{}(OV2),
-                       (void*)&MONV(OV2));
-              SHOW_TOPO_SHAPE(OV2, name);
-              SHOW_TOPO_SHAPE(NV1, "NV1_");
-            }
-            Loops.AddConstEdge(CE);
-          }
-        }
+        return;
       }
-      if (ToRebuild)
-      {
+      TopoDS_Face F = TopoDS::Face(itr.Value());
+      Loops.Init(F);
+      ToRebuild = false;
+      NCollection_List<TopoDS_Shape> AddedEdges;
 
-        //-----------------------------------------------------------
-        // Non-reconstructed edges on other faces are added.
-        // If their vertices were reconstructed they are reconstructed.
-        //-----------------------------------------------------------
+      if (!Image.HasImage(F) && !aRebuiltFaces.Contains(F))
+      {
+        //----------------------------------
+        // Face F not yet reconstructed.
+        //----------------------------------
+        const NCollection_List<TopoDS_Shape>& LE = AsDes->Descendant(F);
+        SHOW_TOPO_SHAPE(F, "BuildFace", LE);
+        //----------------------------------------------------------------
+        // first loop to find if the edges of the face were reconstructed.
+        // - maj on map MONV. Some vertices on reconstructed edges
+        // coincide geometrically with old but are not IsSame.
+        //----------------------------------------------------------------
+        NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> MONV;
+        TopoDS_Vertex                                                            OV1, OV2, NV1, NV2;
+
         for (itl.Initialize(LE); itl.More(); itl.Next())
         {
-          double      f, l;
           TopoDS_Edge E = TopoDS::Edge(itl.Value());
-          BRep_Tool::Range(E, f, l);
-          if (!Image.HasImage(E))
+          if (Image.HasImage(E))
           {
-            TopExp::Vertices(E, OV1, OV2);
-            NCollection_List<TopoDS_Shape> LV;
-            SHOW_TOPO_SHAPE(E, "E1_");
-            if (MONV.IsBound(OV1))
+            const NCollection_List<TopoDS_Shape>& LCE = Image.Image(E);
+            if (LCE.Extent() == 1 && LCE.First().IsSame(E))
             {
-              TopoDS_Vertex VV = TopoDS::Vertex(MONV(OV1));
-              char          name[256];
-              snprintf(name,
-                       sizeof(name),
-                       "OV11_%zx_%p",
-                       std::hash<TopoDS_Shape>{}(OV1),
-                       (void*)&MONV(OV1));
-              SHOW_TOPO_SHAPE(OV1, name);
-              SHOW_TOPO_SHAPE(VV, "VV");
-              VV.Orientation(TopAbs_FORWARD);
-              LV.Append(VV);
-              TopoDS_Shape aLocalShape = VV.Oriented(TopAbs_INTERNAL);
-              B.UpdateVertex(TopoDS::Vertex(aLocalShape), f, E, BRep_Tool::Tolerance(VV));
+              TopoDS_Shape aLocalShape = LCE.First().Oriented(E.Orientation());
+              TopoDS_Edge  CE          = TopoDS::Edge(aLocalShape);
+              //	    TopoDS_Edge CE = TopoDS::Edge(LCE.First().Oriented(E.Orientation()));
+              Loops.AddConstEdge(CE);
+              continue;
             }
-            if (MONV.IsBound(OV2))
+            //----------------------------------
+            // F should be reconstructed.
+            //----------------------------------
+            ToRebuild = true;
+            for (itLCE.Initialize(LCE); itLCE.More(); itLCE.Next())
             {
-              TopoDS_Vertex VV = TopoDS::Vertex(MONV(OV2));
-              char          name[256];
-              snprintf(name,
-                       sizeof(name),
-                       "OV21_%zx_%p",
-                       std::hash<TopoDS_Shape>{}(OV2),
-                       (void*)&MONV(OV2));
-              SHOW_TOPO_SHAPE(OV2, name);
-              SHOW_TOPO_SHAPE(VV, "VV1_");
-              VV.Orientation(TopAbs_REVERSED);
-              LV.Append(VV);
-              TopoDS_Shape aLocalShape = VV.Oriented(TopAbs_INTERNAL);
-              B.UpdateVertex(TopoDS::Vertex(aLocalShape), l, E, BRep_Tool::Tolerance(VV));
-              //	      B.UpdateVertex(TopoDS::Vertex(VV.Oriented(TopAbs_INTERNAL)),
-              //			     l,E,BRep_Tool::Tolerance(VV));
+              TopoDS_Shape aLocalShape = itLCE.Value().Oriented(E.Orientation());
+              TopoDS_Edge  CE          = TopoDS::Edge(aLocalShape);
+              //	    TopoDS_Edge CE = TopoDS::Edge(itLCE.Value().Oriented(E.Orientation()));
+              TopExp::Vertices(E, OV1, OV2);
+              TopExp::Vertices(CE, NV1, NV2);
+              SHOW_TOPO_SHAPE(CE, "CE");
+
+              // The image of E may contain a list of cut edges, so their
+              // vertices may not be 1-1 corresponding.
+              if (!OV1.IsSame(NV1)
+                  && BRep_Tool::Pnt(OV1).Distance(BRep_Tool::Pnt(NV1)) < Precision::Confusion())
+              {
+                MONV.Bind(OV1, NV1);
+                char name[256];
+                snprintf(name,
+                         sizeof(name),
+                         "OV1_%zx_%p",
+                         std::hash<TopoDS_Shape>{}(OV1),
+                         (void*)&MONV(OV1));
+                SHOW_TOPO_SHAPE(OV1, name);
+                SHOW_TOPO_SHAPE(NV1, "NV1_");
+              }
+              else if (!OV1.IsSame(NV2)
+                       && BRep_Tool::Pnt(OV1).Distance(BRep_Tool::Pnt(NV2))
+                            < Precision::Confusion())
+              {
+                MONV.Bind(OV1, NV2);
+                char name[256];
+                snprintf(name,
+                         sizeof(name),
+                         "OV1_%zx_%p",
+                         std::hash<TopoDS_Shape>{}(OV1),
+                         (void*)&MONV(OV1));
+                SHOW_TOPO_SHAPE(OV1, name);
+                SHOW_TOPO_SHAPE(NV2, "NV2_");
+              }
+
+              if (!OV2.IsSame(NV2)
+                  && BRep_Tool::Pnt(OV2).Distance(BRep_Tool::Pnt(NV2)) < Precision::Confusion())
+              {
+                MONV.Bind(OV2, NV2);
+                char name[256];
+                snprintf(name,
+                         sizeof(name),
+                         "OV2_%zx_%p",
+                         std::hash<TopoDS_Shape>{}(OV2),
+                         (void*)&MONV(OV2));
+                SHOW_TOPO_SHAPE(OV2, name);
+                SHOW_TOPO_SHAPE(NV2, "NV2_");
+              }
+              else if (!OV2.IsSame(NV1)
+                       && BRep_Tool::Pnt(OV2).Distance(BRep_Tool::Pnt(NV1))
+                            < Precision::Confusion())
+              {
+                MONV.Bind(OV2, NV1);
+                char name[256];
+                snprintf(name,
+                         sizeof(name),
+                         "OV2_%zx_%p",
+                         std::hash<TopoDS_Shape>{}(OV2),
+                         (void*)&MONV(OV2));
+                SHOW_TOPO_SHAPE(OV2, name);
+                SHOW_TOPO_SHAPE(NV1, "NV1_");
+              }
+              Loops.AddConstEdge(CE);
             }
-            if (LV.IsEmpty())
+          }
+        }
+        if (ToRebuild)
+        {
+
+          //-----------------------------------------------------------
+          // Non-reconstructed edges on other faces are added.
+          // If their vertices were reconstructed they are reconstructed.
+          //-----------------------------------------------------------
+          for (itl.Initialize(LE); itl.More(); itl.Next())
+          {
+            double      f, l;
+            TopoDS_Edge E = TopoDS::Edge(itl.Value());
+            BRep_Tool::Range(E, f, l);
+            if (!Image.HasImage(E))
             {
-              Loops.AddConstEdge(E);
-            }
-            else
-            {
-              Loops.AddEdge(E, LV);
-              AddedEdges.Append(E);
+              TopExp::Vertices(E, OV1, OV2);
+              NCollection_List<TopoDS_Shape> LV;
+              SHOW_TOPO_SHAPE(E, "E1_");
+              if (MONV.IsBound(OV1))
+              {
+                TopoDS_Vertex VV = TopoDS::Vertex(MONV(OV1));
+                char          name[256];
+                snprintf(name,
+                         sizeof(name),
+                         "OV11_%zx_%p",
+                         std::hash<TopoDS_Shape>{}(OV1),
+                         (void*)&MONV(OV1));
+                SHOW_TOPO_SHAPE(OV1, name);
+                SHOW_TOPO_SHAPE(VV, "VV");
+                VV.Orientation(TopAbs_FORWARD);
+                LV.Append(VV);
+                TopoDS_Shape aLocalShape = VV.Oriented(TopAbs_INTERNAL);
+                B.UpdateVertex(TopoDS::Vertex(aLocalShape), f, E, BRep_Tool::Tolerance(VV));
+              }
+              if (MONV.IsBound(OV2))
+              {
+                TopoDS_Vertex VV = TopoDS::Vertex(MONV(OV2));
+                char          name[256];
+                snprintf(name,
+                         sizeof(name),
+                         "OV21_%zx_%p",
+                         std::hash<TopoDS_Shape>{}(OV2),
+                         (void*)&MONV(OV2));
+                SHOW_TOPO_SHAPE(OV2, name);
+                SHOW_TOPO_SHAPE(VV, "VV1_");
+                VV.Orientation(TopAbs_REVERSED);
+                LV.Append(VV);
+                TopoDS_Shape aLocalShape = VV.Oriented(TopAbs_INTERNAL);
+                B.UpdateVertex(TopoDS::Vertex(aLocalShape), l, E, BRep_Tool::Tolerance(VV));
+                //	      B.UpdateVertex(TopoDS::Vertex(VV.Oriented(TopAbs_INTERNAL)),
+                //			     l,E,BRep_Tool::Tolerance(VV));
+              }
+              if (LV.IsEmpty())
+              {
+                Loops.AddConstEdge(E);
+              }
+              else
+              {
+                Loops.AddEdge(E, LV);
+                AddedEdges.Append(E);
+              }
             }
           }
         }
       }
-    }
-    if (!ToRebuild)
-    {
-      SHOW_TOPO_SHAPE(F, "BuildFaceSkip");
-    }
-    else
-    {
-      //------------------------
-      // Reconstruction.
-      //------------------------
-      Loops.Perform();
-      Loops.WiresToFaces();
-      //------------------------
-      // MAJ SD.
-      //------------------------
-      const NCollection_List<TopoDS_Shape>& NF = Loops.NewFaces();
-      //-----------------------
-      // F => New faces;
-      //-----------------------
-      Image.Bind(F, NF);
-      SHOW_TOPO_SHAPE(F, "BuildFaceBind", NF);
-
-      // Iterate on all cut edges (instead of only AddedEdges), because the
-      // image of an edge cut in another face may have been refined here.
-      NCollection_IndexedDataMap<TopoDS_Shape,
-                                 NCollection_List<TopoDS_Shape>,
-                                 TopTools_ShapeMapHasher>::Iterator itAdded(Loops.CutEdges());
-      for (; itAdded.More(); itAdded.Next())
+      if (!ToRebuild)
       {
-        const TopoDS_Edge&                    E      = TopoDS::Edge(itAdded.Key());
-        const NCollection_List<TopoDS_Shape>& LoopNE = itAdded.Value();
+        SHOW_TOPO_SHAPE(F, "BuildFaceSkip");
+      }
+      else
+      {
+        //------------------------
+        // Reconstruction.
+        //------------------------
+        isRebuilt = true;
+        aRebuiltFaces.Add(F);
+        Loops.Perform();
+        Loops.WiresToFaces();
+        //------------------------
+        // MAJ SD.
+        //------------------------
+        const NCollection_List<TopoDS_Shape>& NF = Loops.NewFaces();
         //-----------------------
-        //  E => New edges;
+        // F => New faces;
         //-----------------------
-        if (Image.HasImage(E))
+        Image.Bind(F, NF);
+        SHOW_TOPO_SHAPE(F, "BuildFaceBind", NF);
+
+        // Iterate on all cut edges (instead of only AddedEdges), because the
+        // image of an edge cut in another face may have been refined here.
+        NCollection_IndexedDataMap<TopoDS_Shape,
+                                   NCollection_List<TopoDS_Shape>,
+                                   TopTools_ShapeMapHasher>::Iterator itAdded(Loops.CutEdges());
+        for (; itAdded.More(); itAdded.Next())
         {
-          Image.Add(E, LoopNE);
+          const TopoDS_Edge&                    E      = TopoDS::Edge(itAdded.Key());
+          const NCollection_List<TopoDS_Shape>& LoopNE = itAdded.Value();
+          //-----------------------
+          //  E => New edges;
+          //-----------------------
+          if (Image.HasImage(E))
+          {
+            Image.Add(E, LoopNE);
+          }
+          else
+          {
+            Image.Bind(E, LoopNE);
+          }
         }
-        else
-        {
-          Image.Bind(E, LoopNE);
-        }
+      }
+      if (isFirstPass)
+      {
+        aPS.Next();
       }
     }
   }
