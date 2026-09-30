@@ -28,16 +28,19 @@ namespace
 {
 // Thawed copy -> its original (TopoDS_TShape::Thaw). A side table, so the flag
 // is all a TShape carries: copies are rare, and the layout stays as it is.
+// Both are never destroyed: a TShape can die during static destruction, held
+// by a static made before the table (FreeCAD's congruence index), and its
+// destructor still has to find the table at exit.
 std::mutex& thawedMutex()
 {
-  static std::mutex aMutex;
-  return aMutex;
+  static std::mutex* aMutex = new std::mutex;
+  return *aMutex;
 }
 
 std::unordered_map<const TopoDS_TShape*, occ::handle<TopoDS_TShape>>& thawedOriginals()
 {
-  static std::unordered_map<const TopoDS_TShape*, occ::handle<TopoDS_TShape>> aMap;
-  return aMap;
+  static auto* aMap = new std::unordered_map<const TopoDS_TShape*, occ::handle<TopoDS_TShape>>;
+  return *aMap;
 }
 } // namespace
 
