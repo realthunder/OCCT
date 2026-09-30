@@ -310,6 +310,43 @@ static void PurgeNewEdges(
 
 //=================================================================================================
 
+// Whether the wire closes in the face's UV space: its edges' pcurves, each
+// taken the way the wire runs it, add up to no displacement. A wire running
+// once round a periodic surface adds up to a period.
+static bool IsClosedInUV(const TopoDS_Wire& theWire, const TopoDS_Face& theFace)
+{
+  TopLoc_Location                  aLoc;
+  const occ::handle<Geom_Surface>& aSurf = BRep_Tool::Surface(theFace, aLoc);
+  gp_XY                            aSum(0., 0.);
+  for (TopExp_Explorer anExp(theWire, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Edge&        anEdge = TopoDS::Edge(anExp.Current());
+    double                    aF, aL;
+    occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(anEdge, theFace, aF, aL);
+    if (aC2d.IsNull())
+    {
+      return true;
+    }
+    gp_XY aD = aC2d->Value(aL).XY() - aC2d->Value(aF).XY();
+    if (anEdge.Orientation() == TopAbs_REVERSED)
+    {
+      aD.Reverse();
+    }
+    aSum += aD;
+  }
+  if (aSurf->IsUPeriodic() && std::abs(aSum.X()) > aSurf->UPeriod() / 2.)
+  {
+    return false;
+  }
+  if (aSurf->IsVPeriodic() && std::abs(aSum.Y()) > aSurf->VPeriod() / 2.)
+  {
+    return false;
+  }
+  return true;
+}
+
+//=================================================================================================
+
 static void StoreInMVE(
   const TopoDS_Face& F,
   TopoDS_Edge&       E,
@@ -1649,6 +1686,15 @@ void BRepAlgo_Loop::FindLoop()
         if (isInSeamWire)
         {
           SHOW_TOPO_SHAPE(anInfo.aWire, "SeamWireAgain");
+          continue;
+        }
+        // A wire running once round the period does not close in UV: on its
+        // own it bounds nothing. It closes a face only with the seam, and the
+        // seam wires are all built -- the circle where a vanishing face's
+        // offset cut this one, beyond the seam's span.
+        if (!IsClosedInUV(anInfo.aWire, myFace))
+        {
+          SHOW_TOPO_SHAPE(anInfo.aWire, "WrapWireAlone");
           continue;
         }
       }
