@@ -17,8 +17,6 @@
 #include <BRep_Builder.hxx>
 #include <vector>
 #include <NCollection_DataMap.hxx>
-#include <cstdlib>
-#include <cstring>
 
 #include <algorithm>
 #include <cmath>
@@ -72,7 +70,8 @@
 // parameter on a new edge's curve or pcurve or on a new face. Such a
 // representation is marked IsCache (BRep_CurveRepresentation,
 // BRep_PointRepresentation) and may be replaced, removed or re-ranged
-// afterwards. The value's own may not, and nothing may take a tolerance the
+// afterwards. A pcurve's cache for a face that is gone is removed when the
+// next one is added: its surface is then held by caches alone. The value's own may not, and nothing may take a tolerance the
 // edge or vertex would have to grow to: those change the value, and throw.
 //=================================================================================================
 
@@ -85,35 +84,6 @@ static bool unchangedOrRefused(const bool theUnchanged, const char* theWhere)
     throw TopoDS_LockedShape(theWhere);
   }
   return true;
-}
-
-//! What an Immutable edge does with a pcurve for a surface it has none on yet
-//! (docs/TransactionLog.md sec 27.82 in FreeCAD, a benchmark switch for now,
-//! CSF_FrozenPCurve): Cache takes it as a cache (sec 23.12); Sweep does, and
-//! first drops the edge's caches whose surface nothing else holds -- the face
-//! they were made for is gone; Refuse throws, so the caller copies.
-enum class FrozenPCurve
-{
-  Cache,
-  Sweep,
-  Refuse
-};
-
-static FrozenPCurve frozenPCurveMode()
-{
-  static const FrozenPCurve aMode = [] {
-    const char* aValue = std::getenv("CSF_FrozenPCurve");
-    if (aValue != nullptr && std::strcmp(aValue, "sweep") == 0)
-    {
-      return FrozenPCurve::Sweep;
-    }
-    if (aValue != nullptr && std::strcmp(aValue, "refuse") == 0)
-    {
-      return FrozenPCurve::Refuse;
-    }
-    return FrozenPCurve::Cache;
-  }();
-  return aMode;
 }
 
 //! Drops the caches of <theTE> on a surface nothing holds but caches of this
@@ -263,16 +233,9 @@ static bool immutableTakesPCurve(const occ::handle<BRep_TEdge>&   theTE,
   {
     return false;
   }
-  switch (frozenPCurveMode())
-  {
-    case FrozenPCurve::Refuse:
-      throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
-    case FrozenPCurve::Sweep:
-      sweepDeadPCurveCaches(theTE);
-      break;
-    case FrozenPCurve::Cache:
-      break;
-  }
+  // The caches of faces that are gone go first, or every new face on the
+  // edge adds one for good (FreeCAD docs/TransactionLog.md sec 27.81-27.82).
+  sweepDeadPCurveCaches(theTE);
   return true;
 }
 
