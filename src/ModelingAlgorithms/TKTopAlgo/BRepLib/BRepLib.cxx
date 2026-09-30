@@ -860,10 +860,15 @@ static TopoDS_Shape shapeOf(const occ::handle<TopoDS_TShape>& theTS)
 
 //! A copy of <theS> to change in place of it, children and flags as they are,
 //! and for a vertex its parameters: EmptyCopied() keeps only its point.
+//! Built on the TShape alone, <theS>'s location and orientation put back
+//! after: the children come as the TShape holds them, and Add() moves each
+//! by the inverse of a located parent and reverses it under a reversed one.
+//! Built on <theS>, a frozen edge of a pattern instance got its vertices at
+//! another instance's place (FreeCAD docs/TransactionLog.md sec 27.84).
 static TopoDS_Shape copyForThaw(const TopoDS_Shape& theS)
 {
   BRep_Builder aB;
-  TopoDS_Shape aCopy = theS.EmptyCopied();
+  TopoDS_Shape aCopy = shapeOf(theS.TShape()).EmptyCopied();
   for (TopoDS_Iterator anIt(theS, false, false); anIt.More(); anIt.Next())
   {
     aB.Add(aCopy, anIt.Value());
@@ -905,6 +910,8 @@ static TopoDS_Shape copyForThaw(const TopoDS_Shape& theS)
   aCopy.Closed(theS.Closed());
   aCopy.Infinite(theS.Infinite());
   aCopy.Convex(theS.Convex());
+  aCopy.Location(theS.Location(), false);
+  aCopy.Orientation(theS.Orientation());
   return aCopy;
 }
 
