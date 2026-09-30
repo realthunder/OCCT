@@ -15,6 +15,7 @@
 // commercial license or contractual agreement.
 
 #include <TopoDS_TShape.hxx>
+#include <TopoDS_LockedShape.hxx>
 #include <TopoDS_Shape.hxx>
 
 #include <Standard_Dump.hxx>
@@ -23,6 +24,12 @@
 #include <unordered_map>
 
 IMPLEMENT_STANDARD_RTTIEXT(TopoDS_TShape, Standard_Transient)
+
+unsigned int& TopoDS_LockedShape::raisedCounter()
+{
+  thread_local unsigned int aCount = 0;
+  return aCount;
+}
 
 namespace
 {

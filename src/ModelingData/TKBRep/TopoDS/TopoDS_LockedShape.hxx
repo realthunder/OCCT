@@ -32,6 +32,32 @@
   #define TopoDS_LockedShape_Raise_if(CONDITION, MESSAGE)
 #endif
 
-DEFINE_STANDARD_EXCEPTION(TopoDS_LockedShape, Standard_DomainError)
+//! Each one raised on this thread is counted (Raised()): a caller that has
+//! the refusal turned into an error message by the algorithm it called -- as
+//! FreeCAD's features do -- can still tell a frozen input was refused, and
+//! run again on a copy.
+class TopoDS_LockedShape : public Standard_DomainError
+{
+public:
+  TopoDS_LockedShape(const char* theMessage = "")
+      : Standard_DomainError(theMessage)
+  {
+    ++raisedCounter();
+  }
+
+  TopoDS_LockedShape(const char* theMessage, const char* theStackTrace)
+      : Standard_DomainError(theMessage, theStackTrace)
+  {
+    ++raisedCounter();
+  }
+
+  const char* ExceptionType() const noexcept override { return "TopoDS_LockedShape"; }
+
+  //! How many have been raised on this thread.
+  static unsigned int Raised() { return raisedCounter(); }
+
+private:
+  Standard_EXPORT static unsigned int& raisedCounter();
+};
 
 #endif // _TopoDS_LockedShape_HeaderFile
