@@ -171,6 +171,27 @@ thickness_case("boxhole_hole_out", boxhole, 7, +1.0, "pass", 457.5959)
 thickness_case("boxhole_hole_in",  boxhole, 7, -1.0, "pass", 282.8673)
 
 
+# Outward with the Arc join past a concave corner: the arc face along one
+# edge is cut by the arc of the next, and the loop kept the corner piece
+# beyond the cut as a face of its own -- the loop keeps every piece of an
+# edge, and the arc's own end closed the corner. L-box Face4 and T Face1 are
+# end faces of an arm; the pocketed box's Face7 is a wall of the pocket
+# (no reference volume: upstream's result is invalid).
+lbox = Part.makeBox(10, 10, 5).cut(Part.makeBox(5, 5, 5, App.Vector(5, 5, 0)))
+thickness_case("lbox_arm_end_out", lbox, 4, +1.0, "pass", 388.5671)
+tshape = Part.makeBox(12, 4, 4).fuse(Part.makeBox(4, 4, 10, App.Vector(4, 0, 0))).removeSplitter()
+thickness_case("tshape_arm_end_out", tshape, 1, +1.0, "pass", 372.9204)
+pocketbox = Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3)))
+thickness_case("pocketbox_wall_out", pocketbox, 7, +1.0, "pass", None)
+
+# A concave removed face -- the T's bar top beside the post (Face2) --
+# outward with the Arc join. The removed face's stretched edge ran on along
+# the back of the T and one of its pieces lay on the tangent line of an arc
+# face: the plane got the line twice. And a corner sphere, met before the arc
+# face that renewed its edge, kept the old edge. Upstream fails this one too;
+# the reference is the fork's own.
+thickness_case("tshape_bar_top_out", tshape, 2, +1.0, "pass", 382.4425)
+
 # A box with a pocket, thickened inward with intersection on and the
 # Intersection join, crashed: splitting the trimmed faces had no map from
 # trimmed to infinite edges and dereferenced it. The result is still invalid

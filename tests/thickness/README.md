@@ -114,6 +114,23 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 | `boxhole_hole_*` | box with a through hole, the hole removed | two seam wires on one face |
 | `pocket_inter_join_no_crash` | box with a pocket, inward, intersection on, Intersection join | `BuildSplitsOfTrimmedFaces` never sets the trimmed-to-infinite edge map and `UpdateIntersectedEdges` dereferenced it (upstream code, reached only with the fork's edges); still invalid, as upstream's result is |
 
+## Concave corners and removed faces, Arc join (2026-09-30, sec 27.90)
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `lbox_arm_end_out`, `tshape_arm_end_out` | L-box, T: the end face of an arm, outward | past a concave corner the arc face along one edge is cut by the arc of the next; the corner piece beyond the cut, closed by the arc's own end, came out as a face of its own (the loop keeps every piece of an edge). A wire through a piece beyond the edge's own span now loses to a rival that stays inside |
+| `pocketbox_wall_out` | box with a pocket, a pocket wall, outward | the same; no reference volume (upstream's result is invalid) |
+| `tshape_bar_top_out` | T: the bar top beside the post (a concave removed face), outward | the removed face's stretched edge ran on along the back of the T and a piece of it lay on an arc face's tangent line (dropped now), and a corner sphere met before the face that renewed its edge kept the old one (faces are gone over again). Upstream fails it; the reference is the fork's own |
+
+Still failing in FreeCAD's default mode (Arc join, intersection off), from
+the 712-run sweep: the T's concave bar top thickened inward (the stretched
+edge of the removed face cuts the inner back face in its interior); the
+filleted box with an end face or a fillet face removed (upstream fails every
+one of these the same way, several with exceptions in upstream code); and a
+box whose pocket walls are exactly twice the thickness (coincident offsets,
+not counted). Everything else the fork gets wrong there, upstream gets wrong
+too.
+
 ## Determinism cases (intersection mode, Arc join)
 
 `arc_inter_boss_same_every_run`, `arc_inter_lbox_same_every_run`,
