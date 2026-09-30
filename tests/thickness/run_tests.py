@@ -84,8 +84,8 @@ def document_case(name, filename, volumes=None):
 # Programmatic cases: thickness of simple solids, removing one face at a time.
 # ---------------------------------------------------------------------------
 
-def thickness_case(name, shape, face_index, value, expect, ref_volume=None):
-    """makeThickness(mode=Skin, join=Arc) removing 1-based face `face_index`.
+def thickness_case(name, shape, face_index, value, expect, ref_volume=None, inter=False, join=0):
+    """makeThickness(mode=Skin, join=Arc unless given) removing 1-based face `face_index`.
 
     expect='pass':  result must be a valid solid, one closed shell, and match
                     ref_volume (captured from a verified-good run).
@@ -95,7 +95,7 @@ def thickness_case(name, shape, face_index, value, expect, ref_volume=None):
     detail = ""
     try:
         faces = [shape.Faces[face_index - 1]]
-        r = shape.makeThickness(faces, value, 1e-7, False, False, 0, 0)
+        r = shape.makeThickness(faces, value, 1e-7, inter, False, 0, join)
         problems = []
         if r.ShapeType != "Solid":
             problems.append("type=%s" % r.ShapeType)
@@ -213,6 +213,19 @@ def nocrash_case(name, shape, face_index, value, inter, join):
         detail = "EXCEPTION " + type(e).__name__
     report(name, True, False, "no crash; " + detail)
 
+
+# Intersection on, the Intersection join, a face of the L-box's top or the T's
+# back removed. The section of the removed face with an offset face is
+# trimmed to its outermost crossings, then trimmed again from the other face
+# that shares it: the guard meant to trim it once, an indexed map's Add(),
+# returns the key's index and is never 0. The second pass took the edge's
+# own end for a crossing and cut the section short -- the rim face had an
+# edge its wall did not (FreeCAD docs/TransactionLog.md sec 27.91).
+# Upstream's volumes.
+thickness_case("lbox_top_inter_join_out", lbox, 3, +1.0, "pass", 339.0, True, 2)
+thickness_case("lbox_top_inter_join_in",  lbox, 3, -1.0, "pass", 219.0, True, 2)
+thickness_case("tshape_back_inter_join_out", tshape, 8, +1.0, "pass", 312.0, True, 2)
+thickness_case("tshape_back_inter_join_in",  tshape, 8, -1.0, "pass", 192.0, True, 2)
 
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
