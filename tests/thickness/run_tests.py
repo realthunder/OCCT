@@ -117,15 +117,15 @@ def thickness_case(name, shape, face_index, value, expect, ref_volume=None, inte
     report(name, ok, expect == "xfail", detail)
 
 
-def pieces_case(name, shape, face_indices, value, solids, inter=False):
-    """makeThickness(mode=Skin, join=Arc) removing the 1-based faces in
+def pieces_case(name, shape, face_indices, value, solids, inter=False, join=0):
+    """makeThickness(mode=Skin, join=Arc unless given) removing the 1-based faces in
     `face_indices`. `solids` lists the volume of each solid expected, in any
     order: one is a Solid, several a Compound of them. Each must be valid
     with one closed shell -- a void is a wrong answer here."""
     detail = ""
     try:
         r = shape.makeThickness([shape.Faces[i - 1] for i in face_indices], value, 1e-7,
-                                inter, False, 0, 0)
+                                inter, False, 0, join)
         problems = []
         want = "Solid" if len(solids) == 1 else "Compound"
         if r.ShapeType != want:
@@ -197,6 +197,18 @@ pieces_case("short_box_bottom_in", Part.makeBox(10, 10, 1.5), [1, 2, 3, 4, 6], -
 pieces_case("short_box_bottom_in_inter", Part.makeBox(10, 10, 1.5), [1, 2, 3, 4, 6], -1.0,
             [100.0], True)
 pieces_case("short_cyl_bottom_in", Part.makeCylinder(4, 1.5), [1, 2], -1.0, [16 * math.pi])
+
+# The Intersection join with one face left (sec 27.102). The removed faces'
+# enlarged faces were split, and binding the splits as offsets threw
+# (BRepAlgo_Image::Bind); and the removed side's stretched seam was recorded
+# once, so its loop built no band: the cap outward came out as the whole
+# cylinder. Upstream answers these, the cap outward inside out.
+pieces_case("cyl_cap_alone_join_out", cyl, [1, 3], +1.0, [16 * math.pi], False, 2)
+pieces_case("cyl_cap_alone_join_in",  cyl, [1, 3], -1.0, [16 * math.pi], False, 2)
+pieces_case("box_bottom_alone_join_in", Part.makeBox(10, 10, 6), [1, 2, 3, 4, 6], -1.0,
+            [100.0], False, 2)
+pieces_case("cyl_side_join_out",      cyl, [1], +1.0, [16 * math.pi] * 2, False, 2)
+pieces_case("cyl_side_join_in_inter", cyl, [1], -1.0, [16 * math.pi] * 2, True, 2)
 
 # Cylinder with a centered hole: Face1 = outer lateral, Face2 = bottom,
 # Face3 = top, Face4 = hole lateral.

@@ -159,8 +159,7 @@ merged, so `Generated`/`Modified` answer as for one shape (FreeCAD's element
 names carry `THK`). A piece that is not one valid closed shell of positive
 volume refuses the whole, as before: a pocket's walls and floor, with the
 outside of the shape removed around them (a blind hole's top removed), do not
-come out right yet, and their union would pass for an answer. The
-Intersection join throws on a piece of one face (below), so it refuses too.
+come out right yet, and their union would pass for an answer.
 
 Making the short cases right needed a fix of its own, in `BRepAlgo_Loop`:
 keeping only the bottom of a box shorter than twice the thickness, inward,
@@ -186,13 +185,31 @@ frustum slabs 84.58 + 10.36 = 94.94 outward and 72.80 + 15.07 = 87.87 inward;
 2 x 50 pi. The pocket shapes (`boxhole2` Face3 and Face7, `pocket` Face3,
 `cylpocket` Face2, `cylboss` Face2) stay refused.
 
-Found, not fixed: the Intersection join with one face left -- a cylinder with
-its side and a cap removed, a box with five faces removed -- throws
-`BRepAlgo_Image::Bind` in `BuildOffsetByInter`: the fork puts the removed
-faces in its face list, and a removed face already has its own image. The
-other two branches there skip a face that has one; guarding this one too
-gives the box's plate, but the cylinder's cap outward comes out as the whole
-cylinder, so the guard is not in. Upstream answers these.
+## The Intersection join with one face left (2026-10-01, sec 27.102)
+
+Where one face stays beside the removed ones -- a cylinder down to its top, a
+box down to its bottom -- the Intersection join threw `BRepAlgo_Image::Bind`
+in `BuildOffsetByInter`: the fork puts the removed faces in its face list
+for the intersections, a removed face already has its own image, and its
+enlarged face had been split. A removed face now goes the way it goes when
+not split -- its edges recorded, nothing bound. That gave the box's plate,
+and the cylinder's cap outward as the whole cylinder: `ContextIntByInt`
+takes a removed face's edges from a map, which holds a seam once, where
+`ContextIntByArc`'s explorer meets it once each way; given once, the loop on
+the side built no band and kept all of it. The stretched seam is recorded
+both ways now. Upstream answers these (the cap outward inside out).
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `cyl_cap_alone_join_*` | cylinder, side and bottom removed, Intersection join | the throw, and the seam once: a disc of 16 pi |
+| `box_bottom_alone_join_in` | box, all but the bottom removed, Intersection join, inward | the throw: a plate of 100 |
+| `cyl_side_join_*` | cylinder, side removed, Intersection join | the pieces of sec 27.101 with this join, refused until now |
+
+The sweep: in scope unchanged; the cylinder's, cone's and elliptic pad's
+side are answered with the Intersection join too, at the Arc join's volumes
+(one face to a piece, no edge between faces that stay for the joins to
+differ on). The pocket shapes and the torus's face stay refused, NotDone
+now instead of `Bind` or `NoSuchObject` thrown.
 
 ## Determinism cases (intersection mode, Arc join)
 
