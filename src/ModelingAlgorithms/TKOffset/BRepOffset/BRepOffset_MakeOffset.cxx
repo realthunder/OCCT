@@ -29,6 +29,9 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAdaptor_Curve2d.hxx>
 #include <BRepAlgo_AsDes.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 #include <BRepAlgo_Loop.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Edge.hxx>
@@ -44,6 +47,7 @@
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_Map.hxx>
 #include <NCollection_DataMap.hxx>
+#include <NCollection_IndexedDataMap.hxx>
 #include <BRepOffset_Inter2d.hxx>
 #include <BRepOffset_Inter3d.hxx>
 #include <BRepOffset_MakeOffset.hxx>
@@ -1455,10 +1459,369 @@ static bool MakeSealedThickSolid(
   return true;
 }
 
+//=======================================================================
+// function : MakeThickSolidByPieces
+// purpose  : The faces that stay fall apart into pieces sharing no edge
+//            once the removed faces are gone: a cylinder's side removed
+//            leaves its two caps, a box's four sides its top and bottom.
+//            CheckInputData refuses such a shell (NotConnectedShell),
+//            upstream too. Each piece is a thick solid of its own: the
+//            shape with the other pieces removed as well, which share no
+//            edge with it. The result is their union, a compound of solids,
+//            fused where they overlap (inward, past a gap thinner than the
+//            walls); one solid left is the result as it is. The pieces'
+//            history is merged here, so Generated/Modified answer as for one
+//            shape. A piece that is not one valid closed shell refuses the
+//            whole: a pocket's walls and floor, with the outside of the
+//            shape removed around them, do not come out right yet.
+//=======================================================================
+bool BRepOffset_MakeOffset::MakeThickSolidByPieces(const Message_ProgressRange& theRange)
+{
+  if (myOriginalFaces.IsEmpty() || myThickening)
+  {
+    return false;
+  }
+
+  // The pieces: faces that stay, joined by the edges they share.
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aFaces;
+  TopExp::MapShapes(myInitialShape, TopAbs_FACE, aFaces);
+  const int        aNbF = aFaces.Extent();
+  std::vector<int> aParent(aNbF + 1, 0);
+  for (int i = 1; i <= aNbF; ++i)
+  {
+    aParent[i] = myOriginalFaces.Contains(aFaces(i)) ? 0 : i;
+  }
+  auto aFind = [&aParent](int i) {
+    while (aParent[i] != i)
+    {
+      aParent[i] = aParent[aParent[i]];
+      i          = aParent[i];
+    }
+    return i;
+  };
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    anEF;
+  TopExp::MapShapesAndAncestors(myInitialShape, TopAbs_EDGE, TopAbs_FACE, anEF);
+  for (int i = 1; i <= anEF.Extent(); ++i)
+  {
+    int aRoot = 0;
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(anEF(i)); anIt.More(); anIt.Next())
+    {
+      const int k = aFaces.FindIndex(anIt.Value());
+      if (k == 0 || aParent[k] == 0)
+      {
+        continue;
+      }
+      const int r = aFind(k);
+      if (aRoot == 0)
+      {
+        aRoot = r;
+      }
+      else if (r != aRoot)
+      {
+        aParent[r] = aRoot;
+      }
+    }
+  }
+  std::vector<int> aPiece(aNbF + 1, -1);
+  int              aNbPieces = 0;
+  for (int i = 1; i <= aNbF; ++i)
+  {
+    if (aParent[i] == 0)
+    {
+      continue;
+    }
+    const int r = aFind(i);
+    if (aPiece[r] < 0)
+    {
+      aPiece[r] = aNbPieces++;
+    }
+    aPiece[i] = aPiece[r];
+  }
+  if (aNbPieces < 2)
+  {
+    return false;
+  }
+
+  myDone = false;
+  Message_ProgressScope aPS(theRange, "Making thick solid of each piece", aNbPieces + 1);
+
+  // Images by root, in the order the roots came.
+  typedef NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+                                 ImageMap;
+  ImageMap                       aFaceIm, anEdgeIm;
+  NCollection_List<TopoDS_Shape> aFaceRoots, anEdgeRoots;
+  auto                           anAppend = [](ImageMap&                             theMap,
+                                               NCollection_List<TopoDS_Shape>&       theRoots,
+                                               const TopoDS_Shape&                   theRoot,
+                                               const NCollection_List<TopoDS_Shape>& theIm) {
+    NCollection_List<TopoDS_Shape>* aL = theMap.ChangeSeek(theRoot);
+    if (!aL)
+    {
+      theRoots.Append(theRoot);
+      aL = theMap.Bound(theRoot, NCollection_List<TopoDS_Shape>());
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(theIm); anIt.More(); anIt.Next())
+    {
+      aL->Append(anIt.Value());
+    }
+  };
+
+  NCollection_List<TopoDS_Shape> aSolids;
+  for (int p = 0; p < aNbPieces; ++p)
+  {
+    BRepOffset_MakeOffset aMO;
+    aMO.Initialize(myInitialShape,
+                   myOffset,
+                   myTol,
+                   myMode,
+                   myInter,
+                   mySelfInter,
+                   myJoin,
+                   myThickening,
+                   myRemoveIntEdges);
+    aMO.AllowLinearization(myIsLinearizationAllowed);
+    for (int i = 1; i <= aNbF; ++i)
+    {
+      const TopoDS_Face& aF = TopoDS::Face(aFaces(i));
+      if (aPiece[i] != p)
+      {
+        aMO.AddFace(aF);
+      }
+      else if (const double* anOff = myFaceOffset.Seek(aF))
+      {
+        aMO.SetOffsetOnFace(aF, *anOff);
+      }
+    }
+    // A piece that throws is refused like one that is not done: the
+    // Intersection join with one face left throws in the history it fills.
+    try
+    {
+      aMO.MakeThickSolid(aPS.Next());
+    }
+    catch (Standard_Failure const&)
+    {
+      myError = BRepOffset_UnknownError;
+      return true;
+    }
+    if (!aPS.More())
+    {
+      myError = BRepOffset_UserBreak;
+      return true;
+    }
+    if (!aMO.IsDone())
+    {
+      myError = aMO.Error() != BRepOffset_NoError ? aMO.Error() : BRepOffset_UnknownError;
+      return true;
+    }
+    // A piece is one closed shell around material. The pieces of a pocket
+    // -- the walls and floor inside, the outside of the shape -- are not
+    // built right yet (a blind hole's top removed: an invalid piece, one with
+    // a stray shell, one inside out), and a union of them would pass for an
+    // answer where the shape used to be refused.
+    {
+      int aNbShells = 0;
+      for (TopExp_Explorer anExp(aMO.Shape(), TopAbs_SHELL); anExp.More(); anExp.Next())
+      {
+        ++aNbShells;
+      }
+      GProp_GProps aProps;
+      BRepGProp::VolumeProperties(aMO.Shape(), aProps);
+      if (aNbShells != 1 || aProps.Mass() <= 0. || !BRepCheck_Analyzer(aMO.Shape()).IsValid())
+      {
+        myError = BRepOffset_UnknownError;
+        return true;
+      }
+    }
+    aSolids.Append(aMO.Shape());
+
+    // A face's images under the face, or under this object's plane for it:
+    // the piece's own faces and the removed ones, not the other pieces'.
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aPlanOrig;
+    for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIt(
+           aMO.myFacePlanfaceMap);
+         anIt.More();
+         anIt.Next())
+    {
+      aPlanOrig.Bind(anIt.Value(), anIt.Key());
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(aMO.myInitOffsetFace.Roots()); anIt.More();
+         anIt.Next())
+    {
+      const TopoDS_Shape& aRoot  = anIt.Value();
+      const TopoDS_Shape* anOrig = aPlanOrig.Seek(aRoot);
+      const TopoDS_Shape& aF     = anOrig ? *anOrig : aRoot;
+      const int           k      = aFaces.FindIndex(aF);
+      if (k == 0 || (aPiece[k] != p && aPiece[k] >= 0))
+      {
+        continue;
+      }
+      TopoDS_Shape aKey = aF;
+      if (anOrig)
+      {
+        if (const TopoDS_Shape* aPlan = myFacePlanfaceMap.Seek(aF))
+        {
+          aKey = *aPlan;
+        }
+        else
+        {
+          myFacePlanfaceMap.Bind(aF, aRoot);
+          aKey = aRoot;
+        }
+      }
+      NCollection_List<TopoDS_Shape> aLIm;
+      aMO.myInitOffsetFace.LastImage(aRoot, aLIm);
+      anAppend(aFaceIm, aFaceRoots, aKey, aLIm);
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(aMO.myInitOffsetEdge.Roots()); anIt.More();
+         anIt.Next())
+    {
+      NCollection_List<TopoDS_Shape> aLIm;
+      aMO.myInitOffsetEdge.LastImage(anIt.Value(), aLIm);
+      anAppend(anEdgeIm, anEdgeRoots, anIt.Value(), aLIm);
+    }
+  }
+
+  // The union: fused only where the pieces' boxes meet.
+  bool                 isOverlap = false;
+  std::vector<Bnd_Box> aBoxes;
+  for (NCollection_List<TopoDS_Shape>::Iterator anIt(aSolids); anIt.More(); anIt.Next())
+  {
+    Bnd_Box aBox;
+    BRepBndLib::Add(anIt.Value(), aBox);
+    aBox.Enlarge(myTol);
+    for (const Bnd_Box& anOther : aBoxes)
+    {
+      isOverlap = isOverlap || !aBox.IsOut(anOther);
+    }
+    aBoxes.push_back(aBox);
+  }
+  TopoDS_Shape     aUnion;
+  BRepAlgoAPI_Fuse aFuse;
+  if (isOverlap)
+  {
+    NCollection_List<TopoDS_Shape> anArgs, aTools;
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(aSolids); anIt.More(); anIt.Next())
+    {
+      (anArgs.IsEmpty() ? anArgs : aTools).Append(anIt.Value());
+    }
+    aFuse.SetArguments(anArgs);
+    aFuse.SetTools(aTools);
+    aFuse.Build(aPS.Next());
+    if (!aFuse.IsDone() || aFuse.HasErrors())
+    {
+      myError = BRepOffset_UnknownError;
+      return true;
+    }
+    aUnion = aFuse.Shape();
+  }
+  else
+  {
+    TopoDS_Compound aC;
+    BRep_Builder().MakeCompound(aC);
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(aSolids); anIt.More(); anIt.Next())
+    {
+      BRep_Builder().Add(aC, anIt.Value());
+    }
+    aUnion = aC;
+  }
+  TopoDS_Compound aRes;
+  BRep_Builder().MakeCompound(aRes);
+  TopoDS_Shape aSingle;
+  int          aNbSolids = 0;
+  for (TopExp_Explorer anExp(aUnion, TopAbs_SOLID); anExp.More(); anExp.Next())
+  {
+    BRep_Builder().Add(aRes, anExp.Current());
+    aSingle = anExp.Current();
+    ++aNbSolids;
+  }
+  myOffsetShape = aNbSolids == 1 ? aSingle : TopoDS_Shape(aRes);
+
+  // History: each root's images, through the fuse, once each.
+  auto aBind = [&](BRepAlgo_Image&                       theImage,
+                   const NCollection_List<TopoDS_Shape>& theRoots,
+                   const ImageMap&                       theMap) {
+    theImage.Clear();
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(theRoots); anIt.More(); anIt.Next())
+    {
+      NCollection_List<TopoDS_Shape>                         aLIm;
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFence;
+      for (NCollection_List<TopoDS_Shape>::Iterator anItIm(theMap(anIt.Value())); anItIm.More();
+           anItIm.Next())
+      {
+        const TopoDS_Shape& anIm = anItIm.Value();
+        if (isOverlap && !anIm.IsSame(anIt.Value()))
+        {
+          if (aFuse.IsDeleted(anIm))
+          {
+            continue;
+          }
+          const NCollection_List<TopoDS_Shape>& aLMod = aFuse.Modified(anIm);
+          if (!aLMod.IsEmpty())
+          {
+            for (NCollection_List<TopoDS_Shape>::Iterator anItM(aLMod); anItM.More(); anItM.Next())
+            {
+              if (aFence.Add(anItM.Value()))
+              {
+                aLIm.Append(anItM.Value());
+              }
+            }
+            continue;
+          }
+        }
+        if (aFence.Add(anIm))
+        {
+          aLIm.Append(anIm);
+        }
+      }
+      theImage.SetRoot(anIt.Value());
+      theImage.Bind(anIt.Value(), aLIm);
+    }
+  };
+  aBind(myInitOffsetFace, aFaceRoots, aFaceIm);
+  aBind(myInitOffsetEdge, anEdgeRoots, anEdgeIm);
+
+  myFaces.Clear();
+  for (int i = 1; i <= aNbF; ++i)
+  {
+    if (aPiece[i] < 0)
+    {
+      const TopoDS_Shape* aPlan = myFacePlanfaceMap.Seek(aFaces(i));
+      myFaces.Add(aPlan ? *aPlan : aFaces(i));
+    }
+  }
+
+  // Vertices find their images through the edges they bound (Generated).
+  TopoDS_Compound aStay;
+  BRep_Builder().MakeCompound(aStay);
+  for (int i = 1; i <= aNbF; ++i)
+  {
+    if (aPiece[i] >= 0)
+    {
+      BRep_Builder().Add(aStay, aFaces(i));
+    }
+  }
+  double aTol = myTol;
+  EvalMax(myInitialShape, aTol);
+  const double aTolAngleCoeff =
+    std::min(aTol / (std::abs(myOffset * 0.5) + Precision::Confusion()), 1.0);
+  myAnalyse.Perform(aStay, 4 * std::asin(aTolAngleCoeff));
+
+  myResMap.Clear();
+  myError = BRepOffset_NoError;
+  myDone  = true;
+  return true;
+}
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange)
 {
+  if (MakeThickSolidByPieces(theRange))
+  {
+    return;
+  }
+
   //--------------------------------------------------------------
   // Construction of shell parallel to shell (initial without cap).
   //--------------------------------------------------------------

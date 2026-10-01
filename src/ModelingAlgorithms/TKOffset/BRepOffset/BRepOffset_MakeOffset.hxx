@@ -150,6 +150,11 @@ private:
   //! by planar faces
   Standard_EXPORT bool IsPlanar();
 
+  //! A thick solid whose faces that stay fall apart into pieces once the
+  //! removed faces are gone: one thick solid per piece, then their union.
+  //! Returns false, doing nothing, when the faces that stay are one piece.
+  Standard_EXPORT bool MakeThickSolidByPieces(const Message_ProgressRange& theRange);
+
   //! Set the faces that are to be removed
   Standard_EXPORT void SetFaces();
 
