@@ -1,5 +1,7 @@
 # local02: booleans of two solids that share a face TShape, see ../README.md.
 # Run: FreeCADCmd local02_fuse_shared_face.py   (prints one line per op)
+# FreeCAD's booleans run non-destructive, so each op must leave its inputs
+# as they were; the tolerances of every vertex and edge are compared too.
 import os
 import Part
 
@@ -8,16 +10,30 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TRUTH = {"fuse": 9221.776, "common": 501.754, "base-tool": 8218.270, "tool-base": 501.752}
 
 
+def tolerances(shapes):
+    # each vertex and edge once, though the two shapes share some
+    res = []
+    for shape in shapes:
+        for s in shape.Vertexes + shape.Edges:
+            if not any(s.isSame(x) for x, _ in res):
+                res.append((s, s.Tolerance))
+    return res
+
+
 def run(path):
-    base, tool = Part.read(path).childShapes()
     bad = 0
-    for label, b, t, op in (("fuse", base, tool, "fuse"), ("common", base, tool, "common"),
-                            ("base-tool", base, tool, "cut"), ("tool-base", tool, base, "cut")):
+    for label, op, swap in (("fuse", "fuse", False), ("common", "common", False),
+                            ("base-tool", "cut", False), ("tool-base", "cut", True)):
+        base, tool = Part.read(path).childShapes()
+        b, t = (tool, base) if swap else (base, tool)
+        before = tolerances([b, t])
         r = getattr(b, op)(t)
-        ok = abs(r.Volume - TRUTH[label]) < 1e-2
+        touched = sum(1 for s, tol in before if s.Tolerance != tol)
+        ok = abs(r.Volume - TRUTH[label]) < 1e-2 and not touched
         bad += not ok
-        print("%s %-9s solids=%d vol=%9.3f %s" % (os.path.basename(path), label, len(r.Solids),
-              r.Volume, "ok" if ok else "WRONG (want %.3f)" % TRUTH[label]))
+        print("%s %-9s solids=%d vol=%9.3f inputs touched=%d %s" % (
+            os.path.basename(path), label, len(r.Solids), r.Volume, touched,
+            "ok" if ok else "WRONG (want %.3f, inputs untouched)" % TRUTH[label]))
     return bad
 
 
