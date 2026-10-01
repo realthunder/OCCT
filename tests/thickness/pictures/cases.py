@@ -23,6 +23,7 @@ STAGES = {
     "s100": ("457b652f42", "27.100"),
     "s101": ("b21dabe1c4", "27.101"),
     "s102": ("d4d2fe0719", "27.102"),
+    "s103": ("d8d480ef65", "27.103"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -111,6 +112,10 @@ CASES = {
     "cyl_cap_alone_join_out": ("s102", "cyl", [1, 3], +1, False, 2, 50.2655),
     "box_bottom_alone_join_in": ("s102", "box6", [1, 2, 3, 4, 6], -1, False, 2, 100.0),
     "cyl_side_join_out": ("s102", "cyl", 1, +1, False, 2, 100.5310),
+    "blind_top_out": ("s103", "blindhole", 3, +1, False, 0, 380.6342),
+    "blind_top_in": ("s103", "blindhole", 3, -1, False, 0, 315.6543),
+    "pocket_top_in": ("s103", "pocket5", 3, -1, False, 0, 392.2271),
+    "cylpocket_top_join_out": ("s103", "cylpocket", 2, +1, False, 2, 458.6725),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).
@@ -124,6 +129,9 @@ SOLIDS = {
     "cyl_side_out": 2,
     "cyl_side_in": 2,
     "cyl_side_join_out": 2,
+    "blind_top_out": 2,
+    "pocket_top_in": 2,
+    "cylpocket_top_join_out": 2,
 }
 # The captured user models; upstream 8.0.1 passes them all, so not pictured.
 DOCS = {

@@ -86,6 +86,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.100 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.101 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.102 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.103 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -95,16 +96,17 @@ counts the holed cone's sealed void right (sec 27.100), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
 those two runs before it.
 
-Of the 49 pictured cases, 22 are ones upstream gets right and the fork had
-broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, and the
-holed cone's top with intersection on, sec 27.100). The other 27 fail
-upstream too: the fork now does better than upstream there.
+Of the 60 pictured cases, 24 are ones upstream gets right and the fork had
+broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
+cone's top with intersection on, sec 27.100, and a short box's and a box's
+bottom alone, sec 27.101 and 27.102). The other 36 fail upstream too: the
+fork now does better than upstream there.
 
 Nothing in the suite fails now, and every run of the sweep in scope is
 right. Out of scope, sec 27.101 answers the faces left in pieces where each
-piece is a plain plate or disc, with either join (sec 27.102); a piece that
-is a pocket inside the shape is still refused (README.md, "Faces left in
-pieces").
+piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
+the pieces that are pockets and bosses: every one checks by hand. The one
+refusal left in the sweep is the torus's face.
 
 ## The fixes
 
@@ -378,6 +380,32 @@ answered with this join too.
 ![cyl_cap_alone_join_out](pictures/cyl_cap_alone_join_out.png)
 ![box_bottom_alone_join_in](pictures/box_bottom_alone_join_in.png)
 ![cyl_side_join_out](pictures/cyl_side_join_out.png)
+
+### Sec 27.103: pockets left in pieces
+
+A box with a blind hole, its top removed: the hole's wall and floor are a
+piece of their own beside the outside's (sec 27.101), and the fork built it
+wrong, so the whole was refused. Upstream refuses it as well.
+
+Two causes. A piece was the shape with the other pieces removed as well, and
+the removed faces that do not touch it came back as a shell of their own
+(upstream does the same); a piece is now an open shell, its faces and the
+removed faces beside them. And on that open shell the fork was wrong where
+upstream is right: an edge of a removed face that no other face shares -- the
+top's square rim here -- was stretched and put in the top's loop, the loop
+closed it round the hole's rim and the offset rim, and the wires nested a
+step off, so the ring between the two rims was never built. Free edges stay
+out of the loop now; upstream drops them only because they happen not to
+chain. Every pocket and boss of the sweep is answered, in every mode, and
+each was worked out by hand: here, outward, the outside with arcs (300 +
+15 pi + 2 pi / 3) and the hole's pot (10 pi); inward the pot sits on the
+floor's plate and they fuse. A square pocket's piece inward floats in the
+cavity, apart from the walls.
+
+![blind_top_out](pictures/blind_top_out.png)
+![blind_top_in](pictures/blind_top_in.png)
+![pocket_top_in](pictures/pocket_top_in.png)
+![cylpocket_top_join_out](pictures/cylpocket_top_join_out.png)
 
 ## The captured models
 
