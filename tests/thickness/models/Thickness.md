@@ -10,12 +10,12 @@ measured against upstream for the first time and the thickness failures were
 chased down, one cause at a time. This page shows what each fix did, in
 pictures. The build log -- every cause, what was tried, the hand-worked
 volumes, the gates -- is FreeCAD's docs/TransactionLog.md sec 27.88 to
-27.96 and sec 27.100; "sec" below means a section there.
+27.96, sec 27.100 and sec 27.101; "sec" below means a section there.
 
 Where things are:
 
 - The fork's suite: `tests/thickness/run_tests.py` (`FreeCADCmd
-  tests/thickness/run_tests.py`; PASS 66, XFAIL 2) and its `README.md`, the
+  tests/thickness/run_tests.py`; PASS 77) and its `README.md`, the
   case-by-case reference.
 - The pictures: `pictures/<case>.png` beside this page, one per case of the
   suite that a fix turned from failing to passing.
@@ -84,6 +84,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.95 | 0 | 138 | 149 / 149 | 137 / 137 | 106 / 107 / 110 / 111 |
 | sec 27.96 | 0 | 162 | 149 / 149 | 149 / 149 | 106 / 107 / 110 / 111 |
 | sec 27.100 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.101 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -98,9 +99,11 @@ broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, and the
 holed cone's top with intersection on, sec 27.100). The other 27 fail
 upstream too: the fork now does better than upstream there.
 
-What is still failing (upstream too): in the suite, `cyl_side_out/in`, a
-cylinder with its only seam-carrying lateral face removed
-(`StdFail_NotDone`). Every run of the sweep is right.
+Nothing in the suite fails now, and every run of the sweep in scope is
+right. Out of scope, sec 27.101 answers the faces left in pieces where each
+piece is a plain plate or disc; a piece that is a pocket inside the shape is
+still refused, and so is the Intersection join with one face left, which
+upstream answers (README.md, "Faces left in pieces").
 
 ## The fixes
 
@@ -326,6 +329,35 @@ mode is invalid.
 ![conehole_top_in](pictures/conehole_top_in.png)
 ![conehole_top_inter_in](pictures/conehole_top_inter_in.png)
 ![conehole_bottom_in](pictures/conehole_bottom_in.png)
+
+### Sec 27.101: faces left in pieces, and down to one face of a short shape
+
+A cylinder with its side removed keeps its two caps, and nothing joins them:
+the faces that stay fall apart into pieces sharing no edge. OCCT refuses
+that before it starts (`BRepOffset_NotConnectedShell`), upstream too -- the
+suite had it as `cyl_side_out/in`, XFAIL, put down to the seam, which has
+nothing to do with it. Each piece is now a thick solid of its own, the shape
+with the other pieces removed as well, and the result is their union: a
+compound of solids (the user's choice), fused where they overlap, and one
+solid where one is left. A cylinder 1.5 high, inward by 1, gives two discs
+that overlap, and their union is the whole cylinder. A piece that does not
+come out as one valid closed shell refuses the whole as before: a pocket's
+walls and floor, the outside of the shape removed around them, are built
+wrong still, and their union would pass for an answer.
+
+The short cylinder showed a second fault, in the loop. Keep only the bottom
+of a box 1.5 high, inward by 1: each removed side is split where the
+bottom's offset crosses it, and the loop kept the piece of the side's edge
+nearer one of its ends -- above the offset, since the band below it is the
+longer one. It now keeps the piece that runs from the end on an edge of a
+face that stays. The fork had given the box with the plate's complement as
+a void (sec 27.100's sealed cavity took that shell for one), and before that
+an empty shell; upstream is right.
+
+![cyl_side_out](pictures/cyl_side_out.png)
+![cyl_side_in](pictures/cyl_side_in.png)
+![short_cyl_side_in](pictures/short_cyl_side_in.png)
+![short_box_bottom_in](pictures/short_box_bottom_in.png)
 
 ## The captured models
 

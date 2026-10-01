@@ -6,14 +6,16 @@
 import os, sys, json
 sys.path.insert(0, os.environ["THICK_TOOLS"])
 import FreeCAD as App, Part
-from cases import SHAPES, CASES, DOCS, SHELLS
+from cases import SHAPES, CASES, DOCS, SHELLS, SOLIDS
 OUT = os.environ["OUT"]; os.makedirs(OUT, exist_ok=True)
 stages = os.environ.get("STAGES", "all").split()
 only = os.environ.get("ONLY", "").split()
 def emit(s): os.write(1, (s + "\n").encode())
-def judge(r, ref, shells=1):
+def judge(r, ref, shells=1, solids=1):
     p = []
-    if r.ShapeType != "Solid": p.append("type=%s" % r.ShapeType)
+    if r.ShapeType != ("Solid" if solids == 1 else "Compound"): p.append("type=%s" % r.ShapeType)
+    elif len(r.Solids) != solids: p.append("solids=%d" % len(r.Solids))
+    shells = max(shells, solids)
     try:
         if not r.isValid(): p.append("invalid")
     except Exception: p.append("check threw")
@@ -35,15 +37,15 @@ for name, (st, sk, fi, val, inter, join, ref) in CASES.items():
     if "all" not in stages and st not in stages: continue
     if only and name not in only: continue
     s = SHAPES[sk]()
-    f = s.Faces[fi - 1]
-    c, n = face_info(f)
+    faces = [s.Faces[i - 1] for i in (fi if isinstance(fi, list) else [fi])]
+    c, n = face_info(faces[0])
     s.exportBrep(os.path.join(OUT, name + ".input.brep"))
     d = {"center": c, "normal": n, "value": val, "ref": ref, "input_volume": s.Volume}
     try:
-        r = s.makeThickness([f], val, 1e-7, inter, False, 0, join)
-        p, vol = judge(r, ref, SHELLS.get(name, 1))
+        r = s.makeThickness(faces, val, 1e-7, inter, False, 0, join)
+        p, vol = judge(r, ref, SHELLS.get(name, 1), SOLIDS.get(name, 1))
         r.exportBrep(os.path.join(OUT, name + ".brep"))
-        d.update(ok=not p, problems=p, volume=vol, shells=len(r.Shells))
+        d.update(ok=not p, problems=p, volume=vol, shells=len(r.Shells), solids=len(r.Solids))
     except Exception as e:
         d.update(ok=False, problems=["threw " + (str(e).strip().splitlines() or [type(e).__name__])[-1]], volume=None)
     res[name] = d

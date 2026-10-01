@@ -17,11 +17,15 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "cylpocket": "cylinder with a blind pocket", "boxhole": "box with a through hole", "lbox": "L-box",
          "tshape": "T", "pocketbox": "box with a 6x6 pocket", "conehole": "cone with a through hole",
          "pocket5": "box with a 5x5 pocket", "blindhole": "box with a blind hole",
-         "filletbox": "box with filleted vertical edges, r2", "filletbox25": "box with filleted vertical edges, r2.5"}
+         "filletbox": "box with filleted vertical edges, r2", "filletbox25": "box with filleted vertical edges, r2.5",
+         "shortcyl": "cylinder 1.5 high", "shortbox": "box 10 x 10 x 1.5"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"]:
-        sealed = " (a skin and a void)" if d.get("shells", 1) == 2 else ""
+        if d.get("solids", 1) > 1:
+            sealed = " (%d solids)" % d["solids"]
+        else:
+            sealed = " (a skin and a void)" if d.get("shells", 1) == 2 else ""
         return "valid, volume %.2f%s" % (d["volume"], sealed), (20, 120, 40)
     p = []
     for x in d["problems"]:
@@ -47,8 +51,10 @@ for name in names:
     img = Image.new("RGB", (3 * W, top + lab + 2 * H), "white")
     d = ImageDraw.Draw(img)
     d.text((10, 8), name, font=FT, fill=(0, 0, 0))
-    desc = "%s, Face%d removed, %s, %s%s; expected %s  (fix: sec %s)" % (
-        NAMES[sk], fi, "outward +1" if val > 0 else "inward -1", JOIN[join], ", intersection on" if inter else "",
+    faces = "Face%d" % fi if not isinstance(fi, list) else "all but Face%d" % (
+        [i for i in range(1, 7) if i not in fi][0])
+    desc = "%s, %s removed, %s, %s%s; expected %s  (fix: sec %s)" % (
+        NAMES[sk], faces, "outward +1" if val > 0 else "inward -1", JOIN[join], ", intersection on" if inter else "",
         "%.2f" % ref if ref else "a valid solid", sec)
     d.text((10, 36), desc, font=F, fill=(60, 60, 60))
     cols = [("up", "up", "upstream OCCT 8.0.1"), ("before", st, "fork before (%s)" % commit), ("after", "after", "fork after")]

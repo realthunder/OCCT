@@ -21,6 +21,7 @@ STAGES = {
     "s95": ("9a14fb9db5", "27.95"),
     "s96": ("c4be5548f9", "27.96"),
     "s100": ("457b652f42", "27.100"),
+    "s101": ("b21dabe1c4", "27.101"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -47,8 +48,10 @@ SHAPES = {
     "blindhole": lambda: Part.makeBox(10, 10, 5).cut(Part.makeCylinder(2, 3, V(5, 5, 2))),
     "filletbox": lambda: _fillet(2),
     "filletbox25": lambda: _fillet(2.5),
+    "shortcyl": lambda: Part.makeCylinder(4, 1.5),
+    "shortbox": lambda: Part.makeBox(10, 10, 1.5),
 }
-# name: (stage, shape, face, value, inter, join, reference volume)
+# name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
     "cyl_bottom_in": ("s89", "cyl", 2, -1, False, 0, 468.0973),
     "hole_bottom_in": ("s89", "ann", 2, -1, False, 0, 461.8141),
@@ -99,12 +102,22 @@ CASES = {
     "conehole_top_in": ("s100", "conehole", 2, -1, False, 0, 358.3146),
     "conehole_top_inter_in": ("s100", "conehole", 2, -1, True, 0, 358.3146),
     "conehole_bottom_in": ("s100", "conehole", 3, -1, False, 0, 307.1946),
+    "cyl_side_out": ("s101", "cyl", 1, +1, False, 0, 100.5310),
+    "cyl_side_in": ("s101", "cyl", 1, -1, False, 0, 100.5310),
+    "short_cyl_side_in": ("s101", "shortcyl", 1, -1, False, 0, 75.3982),
+    "short_box_bottom_in": ("s101", "shortbox", [1, 2, 3, 4, 6], -1, False, 0, 100.0),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).
 SHELLS = {
     "conehole_top_in": 2,
     "conehole_top_inter_in": 2,
+}
+# Cases whose right result is several solids, a compound: the faces that
+# stay fall apart into pieces once the removed ones are gone (sec 27.101).
+SOLIDS = {
+    "cyl_side_out": 2,
+    "cyl_side_in": 2,
 }
 # The captured user models; upstream 8.0.1 passes them all, so not pictured.
 DOCS = {
