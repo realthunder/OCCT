@@ -312,6 +312,101 @@ static void PurgeNewEdges(
 
 //=================================================================================================
 
+// A band of a periodic face between two closed edges joined by a piece of
+// the seam (theSeam, oriented from theNear's vertex to theFar's): the piece
+// one way, the far edge, the piece back, the near edge. The seam's two
+// pcurves decide which way round the band runs, so each closed edge is taken
+// the way that runs on from them in (u, v) -- the bands either side of a
+// closed edge take it opposite ways, whatever way it was stored -- and its
+// pcurve is moved a whole period onto the band when it lies one over. Null
+// when either closed edge cannot be fitted; ShapeFix_Wire is the fallback,
+// but it edits the seam's pcurves in place to suit the wire in hand, which
+// leaves the band beside it running the wrong way.
+
+static TopoDS_Wire MakeSeamBand(const TopoDS_Edge& theSeam,
+                                const TopoDS_Edge& theNear,
+                                const TopoDS_Edge& theFar,
+                                const TopoDS_Face& theFace)
+{
+  TopLoc_Location                  aLoc;
+  const occ::handle<Geom_Surface>& aSurf = BRep_Tool::Surface(theFace, aLoc);
+  const double aPU = aSurf->IsUPeriodic() ? aSurf->UPeriod() : 0.;
+  const double aPV = aSurf->IsVPeriodic() ? aSurf->VPeriod() : 0.;
+  const double aTol = 1.e-3 * std::max(1., std::max(aPU, aPV));
+
+  auto ends = [&theFace](const TopoDS_Edge& theE, gp_Pnt2d& theFirst, gp_Pnt2d& theLast) {
+    double                    aF, aL;
+    occ::handle<Geom2d_Curve> aC = BRep_Tool::CurveOnSurface(theE, theFace, aF, aL);
+    if (aC.IsNull())
+    {
+      return false;
+    }
+    theFirst = aC->Value(aF);
+    theLast  = aC->Value(aL);
+    if (theE.Orientation() == TopAbs_REVERSED)
+    {
+      std::swap(theFirst, theLast);
+    }
+    return true;
+  };
+  // The closed edge, one way or the other and moved by whole periods, that
+  // runs from theStart to theEnd.
+  auto fit = [&](const TopoDS_Edge& theE,
+                 const gp_Pnt2d&    theStart,
+                 const gp_Pnt2d&    theEnd,
+                 TopoDS_Edge&       theFitted) {
+    for (int i = 0; i < 2; ++i)
+    {
+      const TopoDS_Edge anE = i == 0 ? theE : TopoDS::Edge(theE.Reversed());
+      gp_Pnt2d          aFirst, aLast;
+      if (!ends(anE, aFirst, aLast))
+      {
+        return false;
+      }
+      const double aKU = aPU > 0. ? std::round((theStart.X() - aFirst.X()) / aPU) : 0.;
+      const double aKV = aPV > 0. ? std::round((theStart.Y() - aFirst.Y()) / aPV) : 0.;
+      const gp_Vec2d aShift(aKU * aPU, aKV * aPV);
+      if (aFirst.Translated(aShift).Distance(theStart) > aTol
+          || aLast.Translated(aShift).Distance(theEnd) > aTol)
+      {
+        continue;
+      }
+      if (aKU != 0. || aKV != 0.)
+      {
+        double                    aF, aL;
+        occ::handle<Geom2d_Curve> aC = BRep_Tool::CurveOnSurface(anE, theFace, aF, aL);
+        occ::handle<Geom2d_Curve> aMoved =
+          occ::down_cast<Geom2d_Curve>(aC->Translated(aShift));
+        BRep_Builder().UpdateEdge(anE, aMoved, theFace, BRep_Tool::Tolerance(anE));
+      }
+      theFitted = anE;
+      return true;
+    }
+    return false;
+  };
+
+  const TopoDS_Edge aBack = TopoDS::Edge(theSeam.Reversed());
+  gp_Pnt2d          aOutFirst, aOutLast, aBackFirst, aBackLast;
+  TopoDS_Edge       aFar, aNear;
+  if (!ends(theSeam, aOutFirst, aOutLast) || !ends(aBack, aBackFirst, aBackLast)
+      || aOutFirst.Distance(aBackLast) <= aTol // not a seam on this face
+      || !fit(theFar, aOutLast, aBackFirst, aFar) || !fit(theNear, aBackLast, aOutFirst, aNear))
+  {
+    return TopoDS_Wire();
+  }
+  TopoDS_Wire  aWire;
+  BRep_Builder aB;
+  aB.MakeWire(aWire);
+  aB.Add(aWire, theSeam);
+  aB.Add(aWire, aFar);
+  aB.Add(aWire, aBack);
+  aB.Add(aWire, aNear);
+  aWire.Closed(true);
+  return aWire;
+}
+
+//=================================================================================================
+
 // Whether the wire closes in the face's UV space: its edges' pcurves, each
 // taken the way the wire runs it, add up to no displacement. A wire running
 // once round a periodic surface adds up to a period.
@@ -1978,12 +2073,20 @@ void BRepAlgo_Loop::FindLoop()
             // leaves a wall at each end, each closed by its own piece of the
             // seam -- but not two sharing an edge: a seam wire already built
             // on one of these edges is this one, or one it cannot sit beside.
-            bool isTaken = false;
+            // Except that a band on the seam's own span beats one on a piece
+            // beyond it (myOutsideEdges): the holed cone's inner offsets cross
+            // below a removed top, and the band from the top circle down to
+            // the crossing, found first, took the crossing circle from the
+            // band below it -- the cavity -- which was never built.
+            const bool isOutside = myOutsideEdges.Contains(NE);
+            bool       isTaken   = false;
             for (itW = MapIteratorOfMapOfWire(NewWires); itW.More() && !isTaken; itW.Next())
             {
               const WireInfo& info = itW.Value();
               isTaken = info.HasSeam
-                        && (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE));
+                        && (info.Contains(NE)
+                            || ((info.Contains(CE) || info.Contains(NNE))
+                                && (isOutside || !info.Outside)));
             }
             if (isTaken)
             {
@@ -1994,44 +2097,53 @@ void BRepAlgo_Loop::FindLoop()
             SHOW_TOPO_SHAPE(NNV, "SeamEdgeV2", true);
             SHOW_TOPO_SHAPE(NNE, "SeamEdge3", true);
 
-            BRepLib_MakeWire aMakeWire;
-            aMakeWire.Add(TopoDS::Edge(NE.Reversed()));
-            aMakeWire.Add(CE);
-            aMakeWire.Add(NE);
-            aMakeWire.Add(NNE);
-            if (!aMakeWire.IsDone())
+            TopoDS_Wire NW = MakeSeamBand(NE, CE, NNE, myFace);
+            if (!NW.IsNull())
             {
-              SHOW_TOPO_SHAPE(CE, "DiscardSeamChain");
-              continue;
+              SHOW_TOPO_SHAPE(NW, "SeamBand");
             }
-            TopoDS_Wire NW = aMakeWire.Wire();
+            else
+            {
+              BRepLib_MakeWire aMakeWire;
+              aMakeWire.Add(TopoDS::Edge(NE.Reversed()));
+              aMakeWire.Add(CE);
+              aMakeWire.Add(NE);
+              aMakeWire.Add(NNE);
+              if (!aMakeWire.IsDone())
+              {
+                SHOW_TOPO_SHAPE(CE, "DiscardSeamChain");
+                continue;
+              }
+              NW = aMakeWire.Wire();
 
-            ShapeFix_Wire aFixer;
-            aFixer.Load(NW);
-            aFixer.SetFace(myFace);
-            aFixer.FixReorder();
-            aFixer.FixConnected();
-            aFixer.FixSeam(0);
-            aFixer.FixEdgeCurves();
-            aFixer.FixDegenerated();
-            NW = aFixer.Wire();
+              ShapeFix_Wire aFixer;
+              aFixer.Load(NW);
+              aFixer.SetFace(myFace);
+              aFixer.FixReorder();
+              aFixer.FixConnected();
+              aFixer.FixSeam(0);
+              aFixer.FixEdgeCurves();
+              aFixer.FixDegenerated();
+              NW = aFixer.Wire();
+            }
 
             WireInfo aSeamInfo(NW, true);
+            aSeamInfo.Outside = isOutside;
             if (!NW.Closed() || NewWires.Contains(aSeamInfo))
             {
               SHOW_TOPO_SHAPE(NW, "DiscardWire2");
               continue;
             }
 
-            // The seam wire replaces the plain wires made of its edges -- only
-            // now that it exists, or a failed build would lose them for nothing.
+            // The seam wire replaces the plain wires made of its edges, and
+            // the band beyond the span it beat -- only now that it exists, or
+            // a failed build would lose them for nothing.
             for (int iw = NewWires.Extent(); iw >= 1; --iw)
             {
               const WireInfo& info = NewWires(iw);
-              if (!info.HasSeam
-                  && (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE)))
+              if (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE))
               {
-                SHOW_TOPO_SHAPE(info.aWire, "SeamRemove");
+                SHOW_TOPO_SHAPE(info.aWire, info.HasSeam ? "SeamOutsideRemove" : "SeamRemove");
                 NewWires.RemoveFromIndex(iw);
               }
             }
