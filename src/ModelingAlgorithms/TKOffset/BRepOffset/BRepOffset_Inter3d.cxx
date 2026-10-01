@@ -39,6 +39,8 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopTools.hxx>
+#include <Extrema_ExtPC.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_Map.hxx>
@@ -80,7 +82,20 @@ static void ExtentEdge(const TopoDS_Face& /*F*/, const TopoDS_Edge& E, TopoDS_Ed
   BRep_Builder B;
   B.Range(NE, f, l);
   BRepAdaptor_Curve CE(E);
-  if (CE.IsPeriodic() && l - f >= CE.Period())
+  TopoDS_Vertex     aV1, aV2;
+  TopExp::Vertices(E, aV1, aV2);
+  if (!CE.IsPeriodic() && !aV1.IsNull() && aV1.IsSame(aV2))
+  {
+    // Closed on a curve that is not periodic -- the offset of an ellipse is
+    // a closed B-spline: there is nothing beyond its ends, and the curve
+    // evaluated 100 lengths out is at 1e34. It stays as it is.
+    B.Range(NE, f0, l0);
+    TopoDS_Vertex V = BRepLib_MakeVertex(CE.Value(f0));
+    B.Add(NE, V.Oriented(TopAbs_FORWARD));
+    B.Add(NE, V.Oriented(TopAbs_REVERSED));
+    NE.Closed(true);
+  }
+  else if (CE.IsPeriodic() && l - f >= CE.Period())
   {
     length = CE.Period() - (l0 - f0);
     f      = f0 - length / 2;
@@ -524,6 +539,12 @@ void BRepOffset_Inter3d::ConnexIntByInt(
   NCollection_List<TopoDS_Shape>::Iterator                      it, it1, itF1, itF2;
   //
   TopExp::MapShapes(SI, TopAbs_EDGE, VEmap);
+  // The edges of the faces closing a removed face's tangent edge
+  // (BRepOffset_Analyse::TreatTangentCaps) join them to their neighbours.
+  for (NCollection_List<TopoDS_Shape>::Iterator itNF(Analyse.NewFaces()); itNF.More(); itNF.Next())
+  {
+    TopExp::MapShapes(itNF.Value(), TopAbs_EDGE, VEmap);
+  }
   // Take the vertices for treatment
   Message_ProgressScope aPSOuter(theRange, nullptr, 10);
   if (bIsPlanar)
@@ -1104,6 +1125,47 @@ void BRepOffset_Inter3d::ConnexIntByInt(
 
 //=================================================================================================
 
+// Whether two edges run the same way, each as its orientation has it: the
+// tangent of <theE> at its middle against the tangent of <theRef> at the
+// point nearest to it.
+static bool RunTheSameWay(const TopoDS_Edge& theE, const TopoDS_Edge& theRef)
+{
+  BRepAdaptor_Curve aC(theE), aRef(theRef);
+  const double      aT = (aC.FirstParameter() + aC.LastParameter()) / 2.;
+  gp_Pnt            aP;
+  gp_Vec            aD;
+  aC.D1(aT, aP, aD);
+  Extrema_ExtPC anExt(aP, aRef);
+  if (!anExt.IsDone() || anExt.NbExt() == 0)
+  {
+    return true;
+  }
+  int    iMin   = 1;
+  double aDMin = anExt.SquareDistance(1);
+  for (int i = 2; i <= anExt.NbExt(); ++i)
+  {
+    if (anExt.SquareDistance(i) < aDMin)
+    {
+      aDMin = anExt.SquareDistance(i);
+      iMin  = i;
+    }
+  }
+  gp_Pnt aPR;
+  gp_Vec aDR;
+  aRef.D1(anExt.Point(iMin).Parameter(), aPR, aDR);
+  if (theE.Orientation() == TopAbs_REVERSED)
+  {
+    aD.Reverse();
+  }
+  if (theRef.Orientation() == TopAbs_REVERSED)
+  {
+    aDR.Reverse();
+  }
+  return aD.Dot(aDR) >= 0.;
+}
+
+//=================================================================================================
+
 void BRepOffset_Inter3d::ContextIntByInt(
   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& ContextFaces,
   const bool                                                           _ExtentContext,
@@ -1187,6 +1249,53 @@ void BRepOffset_Inter3d::ContextIntByInt(
         // faces connected by the edge
         //
         E = *(TopoDS_Edge*)&aS;
+        // A tangent edge closed by a wall (TreatTangentCaps): the cap is cut
+        // by the wall, along the wall's edge on it, not by the kept face's
+        // offset, which runs parallel to it.
+        const TopoDS_Edge& aEW = Analyse.EdgeReplacement(CF, E);
+        if (!aEW.IsSame(E) && Analyse.HasAncestor(aEW))
+        {
+          const TopoDS_Face aWall = TopoDS::Face(Analyse.Ancestors(aEW).First());
+          OF                       = TopoDS::Face(MapSF(aWall).Face());
+          if (!MES.IsBound(OF))
+          {
+            BRepOffset_Tool::EnLargeFace(OF, NF, true, true);
+            MES.Bind(OF, NF);
+          }
+          else
+          {
+            NF = TopoDS::Face(MES(OF));
+          }
+          if (!IsDone(NF, CF))
+          {
+            NCollection_List<TopoDS_Shape> LInt1, LInt2;
+            BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, aEW, CF, aWall);
+            SetDone(NF, CF);
+            SHOW_TOPO_SHAPE(CF, "CapClosureCut", LInt1);
+            if (!LInt1.IsEmpty())
+            {
+              Store(CF, NF, LInt1, LInt2);
+              if (LInt1.Extent() == 1)
+              {
+                Build.Bind(aEW, LInt1.First());
+              }
+              else
+              {
+                B.MakeCompound(C);
+                for (it.Initialize(LInt1); it.More(); it.Next())
+                {
+                  B.Add(C, it.Value());
+                }
+                Build.Bind(aEW, C);
+              }
+            }
+            else
+            {
+              Failed.Append(aEW);
+            }
+          }
+          continue;
+        }
         if (!Analyse.HasAncestor(E))
         {
           //----------------------------------------------------------------
@@ -1322,6 +1431,38 @@ void BRepOffset_Inter3d::ContextIntByInt(
           LOE.Append(OE);
           BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, E, CF, F);
           SetDone(NF, CF);
+          // The section is oriented as if the removed face met the offset
+          // one at a convex edge. At a concave one -- the floor of a blind
+          // hole -- it comes out the wrong way round, and a band on the hole's
+          // offset closed on two circles running the same way. The offset of
+          // the removed face's edge, as its face holds it, runs the way the
+          // section must: where they disagree, the section is turned.
+          if (bEdge && !OE.IsNull())
+          {
+            TopoDS_Edge anOE;
+            for (TopExp_Explorer anExpE(OF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+            {
+              if (anExpE.Current().IsSame(OE))
+              {
+                anOE = TopoDS::Edge(anExpE.Current());
+                break;
+              }
+            }
+            if (!anOE.IsNull())
+            {
+              const bool isRevFace = OF.Orientation() == TopAbs_REVERSED;
+              NCollection_List<TopoDS_Shape>::Iterator anIt1(LInt1), anIt2(LInt2);
+              for (; anIt1.More() && anIt2.More(); anIt1.Next(), anIt2.Next())
+              {
+                if (RunTheSameWay(TopoDS::Edge(anIt2.Value()), anOE) == isRevFace)
+                {
+                  anIt1.ChangeValue().Reverse();
+                  anIt2.ChangeValue().Reverse();
+                  SHOW_TOPO_SHAPE(anIt2.Value(), "ContextSectionTurned", anOE);
+                }
+              }
+            }
+          }
           if (!LInt1.IsEmpty())
           {
             SHOW_TOPO_SHAPE(CF, "ExtentIntCF");
@@ -1403,6 +1544,8 @@ void BRepOffset_Inter3d::ContextIntByArc(
     }
     const TopoDS_Face& CF = TopoDS::Face(ContextFaces(j));
     SHOW_TOPO_SHAPE(CF, "ContextFace");
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aCFEdges;
+    TopExp::MapShapes(CF, TopAbs_EDGE, aCFEdges);
     for (exp.Init(CF.Oriented(TopAbs_FORWARD), TopAbs_EDGE); exp.More(); exp.Next())
     {
       const TopoDS_Edge& E = TopoDS::Edge(exp.Current());
@@ -1466,7 +1609,16 @@ void BRepOffset_Inter3d::ContextIntByArc(
       //---------------------------------------------------
       const TopoDS_Shape SI = Analyse.Ancestors(E).First();
       OF1                   = TopoDS::Face(InitOffsetFace.Image(SI).First());
-      OE                    = TopoDS::Edge(InitOffsetEdge.Image(E).First());
+      if (InitOffsetFace.HasImage(E))
+      {
+        // The tube closing a tangent edge (BRepOffset_MakeOffset::ToContext).
+        OF1 = TopoDS::Face(InitOffsetFace.Image(E).First());
+      }
+      OE = TopoDS::Edge(InitOffsetEdge.Image(E).First());
+      // A tube's edge on the cap, before it is stretched: the stretched copy
+      // has no pcurve on the tube, and the section is oriented with this one.
+      const bool        isTangentTube = InitOffsetFace.HasImage(E);
+      const TopoDS_Edge anOEOnTube    = OE;
       SHOW_TOPO_SHAPE(E, "E");
       SHOW_TOPO_SHAPE(SI, "SI");
       SHOW_TOPO_SHAPE(OE, "OE");
@@ -1505,7 +1657,7 @@ void BRepOffset_Inter3d::ContextIntByArc(
         occ::handle<Geom2d_Curve> C1 = BRep_Tool::CurveOnSurface(OE, CF, f, l);
         occ::handle<Geom2d_Curve> C2 = BRep_Tool::CurveOnSurface(OE, OF1, f, l);
 
-        if (C1.IsNull() || C2.IsNull())
+        if (C1.IsNull() || (C2.IsNull() && !isTangentTube))
         {
           continue;
         }
@@ -1523,7 +1675,7 @@ void BRepOffset_Inter3d::ContextIntByArc(
       LInt1.Append(OE);
       LInt2.Clear();
       TopAbs_Orientation anOri1, anOri2;
-      BRepOffset_Tool::OrientSection(OE, CF, OF1, anOri1, anOri2);
+      BRepOffset_Tool::OrientSection(isTangentTube ? anOEOnTube : OE, CF, OF1, anOri1, anOri2);
       //    if (mySide == TopAbs_OUT);
       anOri1 = TopAbs::Reverse(anOri1);
       LInt1.First().Orientation(anOri1);
@@ -1542,13 +1694,32 @@ void BRepOffset_Inter3d::ContextIntByArc(
           continue;
         }
         OF1.Nullify();
+        if (InitOffsetFace.HasImage(V[i]) && InitOffsetEdge.HasImage(V[i]))
+        {
+          // The piece of sphere at a corner of a tangent edge's tube
+          // (BRepOffset_MakeOffset::ToContext): its arc on the cap.
+          OF1 = TopoDS::Face(InitOffsetFace.Image(V[i]).First());
+          OE  = TopoDS::Edge(InitOffsetEdge.Image(V[i]).First());
+          LInt1.Clear();
+          LInt1.Append(OE);
+          LInt2.Clear();
+          TopAbs_Orientation O1, O2;
+          BRepOffset_Tool::OrientSection(OE, CF, OF1, O1, O2);
+          O1 = TopAbs::Reverse(O1);
+          LInt1.First().Orientation(O1);
+          Store(CF, OF1, LInt1, LInt2);
+          SHOW_TOPO_SHAPE(OE, "CornerArcOnCap");
+          continue;
+        }
         const NCollection_List<TopoDS_Shape>& LE = Analyse.Ancestors(V[i]);
         SHOW_TOPO_SHAPE(V[i], "AnceV", LE);
         NCollection_List<TopoDS_Shape>::Iterator itLE(LE);
         for (; itLE.More(); itLE.Next())
         {
           const TopoDS_Edge& EV = TopoDS::Edge(itLE.Value());
-          if (InitOffsetFace.HasImage(EV))
+          // An edge of the cap with a tube is a tangent edge's
+          // (BRepOffset_MakeOffset::ToContext): its ends are not on the cap.
+          if (InitOffsetFace.HasImage(EV) && !aCFEdges.Contains(EV))
           {
             //-------------------------------------------------
             // OF1 parallel face generated by an ancestor edge of V[i].

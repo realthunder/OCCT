@@ -78,7 +78,9 @@ public:
     Bit_Infinite         = 0x0200, //!< bit 9: infinite flag
     Bit_Convex           = 0x0400, //!< bit 10: convex flag
     Bit_Locked           = 0x0800, //!< bit 11: locked flag
-    Bits_Reserved        = 0xF000  //!< bits 12-15: reserved
+    Bit_Immutable        = 0x1000, //!< bit 12: immutable flag (realthunder)
+    Bit_Thawed           = 0x2000, //!< bit 13: thawed copy flag (realthunder)
+    Bits_Reserved        = 0xC000  //!< bits 14-15: reserved
   };
 
 public:
@@ -93,6 +95,38 @@ public:
 
   //! Sets the locked flag.
   void Locked(bool theIsLocked) { setBit(Bit_Locked, theIsLocked); }
+
+  //! Returns the immutable flag (realthunder). An immutable TShape refuses
+  //! every change to its geometry, tolerances, ranges, flags and topology
+  //! (BRep_Builder throws TopoDS_LockedShape, TopoDS_Builder throws
+  //! TopoDS_FrozenShape) but still accepts the cache data a locked one
+  //! refuses: a face's triangulation and an edge's polygons. Those are
+  //! derived from the geometry the flag freezes, so they cannot go stale,
+  //! and a mesher can run on a shape held as an immutable value.
+  bool Immutable() const { return (myState & Bit_Immutable) != 0; }
+
+  //! Sets the immutable flag.
+  void Immutable(bool theIsImmutable) { setBit(Bit_Immutable, theIsImmutable); }
+
+  //! Returns the thawed flag (realthunder): this TShape is a copy an algorithm
+  //! made of an Immutable one it would otherwise have changed in place -- a
+  //! tolerance grown, a vertex moved -- or of a container of such a copy. It
+  //! stands for that TShape: a client naming the elements of a result gives it
+  //! the name the original would have had had it been changed in place, not
+  //! the name of a modification. ThawedFrom() gives the original.
+  bool Thawed() const { return (myState & Bit_Thawed) != 0; }
+
+  //! Marks <theCopy> a thawed copy of <theOriginal>, see Thawed(). The copy
+  //! holds the original until the copy is destroyed.
+  Standard_EXPORT static void Thaw(const occ::handle<TopoDS_TShape>& theCopy,
+                                   const occ::handle<TopoDS_TShape>& theOriginal);
+
+  //! The TShape <theCopy> is a thawed copy of, or null. The original may be a
+  //! thawed copy itself.
+  Standard_EXPORT static occ::handle<TopoDS_TShape> ThawedFrom(const TopoDS_TShape* theCopy);
+
+  //! Forgets a thawed copy's original.
+  Standard_EXPORT ~TopoDS_TShape() override;
 
   //! Returns the modification flag.
   bool Modified() const { return (myState & Bit_Modified) != 0; }

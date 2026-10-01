@@ -28,7 +28,13 @@
 #include <BRepCheck.hxx>
 #include <BRep_TEdge.hxx>
 #include <BRep_Tool.hxx>
+#include <BRepLib_ValidateEdge.hxx>
+#include <Adaptor3d_CurveOnSurface.hxx>
 #include <BRep_TVertex.hxx>
+#include <TopoDS_Iterator.hxx>
+#include <BRep_PointOnSurface.hxx>
+#include <BRep_PointOnCurveOnSurface.hxx>
+#include <BRep_PointOnCurve.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
@@ -833,6 +839,197 @@ static void UpdTolMap(
   }
 }
 
+//=================================================================================================
+// Copy-on-write for the in-place UpdateTolerances (IsMutableInput). An
+// Immutable sub-shape (a fork flag) whose tolerance has to grow is not changed:
+// UpdShTol gives it a copy that is, marked a thawed copy of it
+// (TopoDS_TShape::Thaw, so a client naming the result can tell the copy from a
+// modification), and putThawed puts the copies into the shape being updated.
+//=================================================================================================
+
+//! Original TShape -> its thawed copy.
+typedef std::unordered_map<const TopoDS_TShape*, occ::handle<TopoDS_TShape>> ThawedMap;
+
+//! A shape of <theTS> as it is, for the Builder and the iterators.
+static TopoDS_Shape shapeOf(const occ::handle<TopoDS_TShape>& theTS)
+{
+  TopoDS_Shape aS;
+  aS.TShape(theTS);
+  return aS;
+}
+
+//! A copy of <theS> to change in place of it, children and flags as they are,
+//! and for a vertex its parameters: EmptyCopied() keeps only its point.
+//! Built on the TShape alone, <theS>'s location and orientation put back
+//! after: the children come as the TShape holds them, and Add() moves each
+//! by the inverse of a located parent and reverses it under a reversed one.
+//! Built on <theS>, a frozen edge of a pattern instance got its vertices at
+//! another instance's place (FreeCAD docs/TransactionLog.md sec 27.84).
+static TopoDS_Shape copyForThaw(const TopoDS_Shape& theS)
+{
+  BRep_Builder aB;
+  TopoDS_Shape aCopy = shapeOf(theS.TShape()).EmptyCopied();
+  for (TopoDS_Iterator anIt(theS, false, false); anIt.More(); anIt.Next())
+  {
+    aB.Add(aCopy, anIt.Value());
+  }
+  if (theS.ShapeType() == TopAbs_VERTEX)
+  {
+    const BRep_TVertex* aFrom = static_cast<const BRep_TVertex*>(theS.TShape().get());
+    BRep_TVertex*       aTo   = static_cast<BRep_TVertex*>(aCopy.TShape().get());
+    for (const occ::handle<BRep_PointRepresentation>& aPR : aFrom->Points())
+    {
+      occ::handle<BRep_PointRepresentation> aNew;
+      if (aPR->IsPointOnCurve())
+      {
+        aNew = new BRep_PointOnCurve(aPR->Parameter(), aPR->Curve(), aPR->Location());
+      }
+      else if (aPR->IsPointOnCurveOnSurface())
+      {
+        aNew = new BRep_PointOnCurveOnSurface(aPR->Parameter(),
+                                              aPR->PCurve(),
+                                              aPR->Surface(),
+                                              aPR->Location());
+      }
+      else if (aPR->IsPointOnSurface())
+      {
+        aNew = new BRep_PointOnSurface(aPR->Parameter(),
+                                       aPR->Parameter2(),
+                                       aPR->Surface(),
+                                       aPR->Location());
+      }
+      if (!aNew.IsNull())
+      {
+        aTo->ChangePoints().Append(aNew);
+      }
+    }
+  }
+  aCopy.Free(theS.Free());
+  aCopy.Checked(theS.Checked());
+  aCopy.Orientable(theS.Orientable());
+  aCopy.Closed(theS.Closed());
+  aCopy.Infinite(theS.Infinite());
+  aCopy.Convex(theS.Convex());
+  aCopy.Location(theS.Location(), false);
+  aCopy.Orientation(theS.Orientation());
+  return aCopy;
+}
+
+static occ::handle<TopoDS_TShape> thawedFor(const occ::handle<TopoDS_TShape>&         theTS,
+                                            ThawedMap&                                theThawed,
+                                            NCollection_Map<const TopoDS_TShape*>&    theDone);
+
+//! The children of <theS>, with each thawed one's copy in its place; empty when
+//! none is.
+static NCollection_List<TopoDS_Shape> thawedChildren(const TopoDS_Shape&                    theS,
+                                                     ThawedMap&                             theThawed,
+                                                     NCollection_Map<const TopoDS_TShape*>& theDone)
+{
+  NCollection_List<TopoDS_Shape> aKids;
+  bool                           isChanged = false;
+  for (TopoDS_Iterator anIt(theS, false, false); anIt.More(); anIt.Next())
+  {
+    TopoDS_Shape                     aKid = anIt.Value();
+    const occ::handle<TopoDS_TShape> aNew = thawedFor(aKid.TShape(), theThawed, theDone);
+    if (!aNew.IsNull())
+    {
+      aKid.TShape(aNew);
+      isChanged = true;
+    }
+    aKids.Append(aKid);
+  }
+  if (!isChanged)
+  {
+    aKids.Clear();
+  }
+  return aKids;
+}
+
+//! Puts <theKids> in place of the children of the mutable <theS>, in their order.
+static void replaceChildren(const TopoDS_Shape& theS, const NCollection_List<TopoDS_Shape>& theKids)
+{
+  BRep_Builder aB;
+  TopoDS_Shape aS      = theS;
+  const bool   isFree  = aS.Free();
+  aS.Free(true);
+  NCollection_List<TopoDS_Shape> anOld;
+  for (TopoDS_Iterator anIt(aS, false, false); anIt.More(); anIt.Next())
+  {
+    anOld.Append(anIt.Value());
+  }
+  for (const TopoDS_Shape& aKid : anOld)
+  {
+    aB.Remove(aS, aKid);
+  }
+  for (const TopoDS_Shape& aKid : theKids)
+  {
+    aB.Add(aS, aKid);
+  }
+  aS.Free(isFree);
+}
+
+//! What stands for <theTS> once the copies in <theThawed> are put in: its
+//! thawed copy, with copies put into it too; for an Immutable container of a
+//! copy, a thawed copy of the container; null when <theTS> stays -- as it is,
+//! or, not being Immutable, with the copies put among its children in place.
+static occ::handle<TopoDS_TShape> thawedFor(const occ::handle<TopoDS_TShape>&      theTS,
+                                            ThawedMap&                             theThawed,
+                                            NCollection_Map<const TopoDS_TShape*>& theDone)
+{
+  const auto aFound = theThawed.find(theTS.get());
+  if (aFound != theThawed.end())
+  {
+    const occ::handle<TopoDS_TShape> aCopy = aFound->second;
+    if (theDone.Add(aCopy.get()))
+    {
+      const TopoDS_Shape                   aCopyS = shapeOf(aCopy);
+      const NCollection_List<TopoDS_Shape> aKids  = thawedChildren(aCopyS, theThawed, theDone);
+      if (!aKids.IsEmpty())
+      {
+        replaceChildren(aCopyS, aKids);
+      }
+    }
+    return aCopy;
+  }
+  if (!theDone.Add(theTS.get()))
+  {
+    return occ::handle<TopoDS_TShape>();
+  }
+  const TopoDS_Shape                   aS    = shapeOf(theTS);
+  const NCollection_List<TopoDS_Shape> aKids = thawedChildren(aS, theThawed, theDone);
+  if (aKids.IsEmpty())
+  {
+    return occ::handle<TopoDS_TShape>();
+  }
+  if (!theTS->Immutable())
+  {
+    replaceChildren(aS, aKids);
+    return occ::handle<TopoDS_TShape>();
+  }
+  TopoDS_Shape aCopy = copyForThaw(aS);
+  replaceChildren(aCopy, aKids);
+  TopoDS_TShape::Thaw(aCopy.TShape(), theTS);
+  theThawed[theTS.get()] = aCopy.TShape();
+  theDone.Add(aCopy.TShape().get());
+  return aCopy.TShape();
+}
+
+//! Puts the thawed copies into <theRoot>, in place. The root itself cannot be
+//! replaced: an Immutable root is a refusal, as it was before copy-on-write.
+static void putThawed(const TopoDS_Shape& theRoot, ThawedMap& theThawed)
+{
+  if (theThawed.empty() || theRoot.IsNull())
+  {
+    return;
+  }
+  if (theRoot.Immutable())
+  {
+    throw TopoDS_LockedShape("BRepLib::UpdateTolerances");
+  }
+  NCollection_Map<const TopoDS_TShape*> aDone;
+  thawedFor(theRoot.TShape(), theThawed, aDone);
+}
+
 //=======================================================================
 // function : UpdShTol
 // purpose  : Update vertices/edges/faces according to ShToTol map (create copies of necessary)
@@ -841,8 +1038,10 @@ static void UpdShTol(
   const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theShToTol,
   const bool                                                                IsMutableInput,
   BRepTools_ReShape&                                                        theReshaper,
-  bool                                                                      theVForceUpdate)
+  bool                                                                      theVForceUpdate,
+  const TopoDS_Shape&                                                       theRoot)
 {
+  ThawedMap aThawed;
   BRep_Builder                                                                 aB;
   NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator SHToTolit(
     theShToTol);
@@ -853,8 +1052,27 @@ static void UpdShTol(
     //
     TopoDS_Shape        aNsh;
     const TopoDS_Shape& aVsh = theReshaper.Value(aSh);
-    bool UseOldSh            = IsMutableInput || theReshaper.IsNewShape(aSh) || !aVsh.IsSame(aSh);
-    if (UseOldSh)
+    // An Immutable shape is copied even where the input is mutable, see putThawed.
+    const bool isThawed = IsMutableInput && aSh.Immutable();
+    bool       UseOldSh = (IsMutableInput && !isThawed) || theReshaper.IsNewShape(aSh)
+                    || !aVsh.IsSame(aSh);
+    if (isThawed)
+    {
+      const auto aDone = aThawed.find(aSh.TShape().get());
+      if (aDone != aThawed.end())
+      {
+        aNsh = aSh;
+        aNsh.TShape(aDone->second);
+      }
+      else
+      {
+        aNsh = copyForThaw(aSh);
+        TopoDS_TShape::Thaw(aNsh.TShape(), aSh.TShape());
+        aThawed[aSh.TShape().get()] = aNsh.TShape();
+      }
+      UseOldSh = true;
+    }
+    else if (UseOldSh)
     {
       aNsh = aVsh;
     }
@@ -909,6 +1127,64 @@ static void UpdShTol(
       theReshaper.Replace(aSh, aNsh);
     }
   }
+  putThawed(theRoot, aThawed);
+}
+
+//=================================================================================================
+// function : pcurvesWithinTolerance
+// purpose  : Whether every pcurve an edge stores lies on its 3d curve within the
+//            edge tolerance -- what the SameParameter flag claims. Asked of an
+//            Immutable edge (a fork flag) in place of a forced reset, which
+//            would be a write: an edge a new face shares has just been given
+//            that face's pcurve, and this is where it is held to the claim.
+//=================================================================================================
+
+static bool pcurvesWithinTolerance(const TopoDS_Edge& theEdge)
+{
+  if (BRep_Tool::Degenerated(theEdge))
+  {
+    return true;
+  }
+  double                  aFirst = 0., aLast = 0.;
+  TopLoc_Location         aCurveLoc;
+  occ::handle<Geom_Curve> aC3D = BRep_Tool::Curve(theEdge, aCurveLoc, aFirst, aLast);
+  if (aC3D.IsNull())
+  {
+    return true;
+  }
+  if (!aCurveLoc.IsIdentity())
+  {
+    const gp_Trsf& aTrsf = aCurveLoc.Transformation();
+    aC3D                 = occ::down_cast<Geom_Curve>(aC3D->Transformed(aTrsf));
+    aFirst               = aC3D->TransformedParameter(aFirst, aTrsf);
+    aLast                = aC3D->TransformedParameter(aLast, aTrsf);
+  }
+  occ::handle<GeomAdaptor_Curve> aGAC = new GeomAdaptor_Curve(aC3D, aFirst, aLast);
+  const double                   aTol = BRep_Tool::Tolerance(theEdge);
+  for (int anIndex = 1;; ++anIndex)
+  {
+    occ::handle<Geom2d_Curve> aPC;
+    occ::handle<Geom_Surface> aS;
+    TopLoc_Location           aLoc;
+    double                    f = 0., l = 0.;
+    BRep_Tool::CurveOnSurface(theEdge, aPC, aS, aLoc, f, l, anIndex);
+    if (aPC.IsNull())
+    {
+      return true;
+    }
+    occ::handle<Geom_Surface> aST =
+      aLoc.IsIdentity() ? aS : occ::down_cast<Geom_Surface>(aS->Transformed(aLoc.Transformation()));
+    occ::handle<Adaptor3d_CurveOnSurface> anACS =
+      new Adaptor3d_CurveOnSurface(new Geom2dAdaptor_Curve(aPC, f, l),
+                                   new GeomAdaptor_Surface(aST));
+    BRepLib_ValidateEdge aCheck(aGAC, anACS, true);
+    aCheck.SetExitIfToleranceExceeded(aTol);
+    aCheck.Process();
+    if (!aCheck.IsDone() || !aCheck.CheckTolerance(aTol))
+    {
+      return false;
+    }
+  }
 }
 
 //=================================================================================================
@@ -931,7 +1207,11 @@ static void InternalSameParameter(const TopoDS_Shape& theSh,
     {
       TopoDS_Edge aNE        = TopoDS::Edge(theReshaper.Value(aCE));
       bool        UseOldEdge = IsMutableInput || theReshaper.IsNewShape(aCE) || !aNE.IsSame(aCE);
-      if (IsForced && (BRep_Tool::SameRange(aCE) || BRep_Tool::SameParameter(aCE)))
+      // An Immutable edge whose flags hold is not reset (see pcurvesWithinTolerance);
+      // one whose flags do not goes on and is refused by the builder.
+      const bool isHeld = IsForced && aCE.Immutable() && BRep_Tool::SameRange(aCE)
+                          && BRep_Tool::SameParameter(aCE) && pcurvesWithinTolerance(aCE);
+      if (IsForced && !isHeld && (BRep_Tool::SameRange(aCE) || BRep_Tool::SameParameter(aCE)))
       {
         if (!UseOldEdge)
         {
@@ -1005,7 +1285,7 @@ static void InternalSameParameter(const TopoDS_Shape& theSh,
   }
 
   //
-  UpdShTol(aShToTol, IsMutableInput, theReshaper, false);
+  UpdShTol(aShToTol, IsMutableInput, theReshaper, false, theSh);
 
   InternalUpdateTolerances(theSh, false, IsMutableInput, theReshaper);
 }
@@ -1942,13 +2222,18 @@ static void InternalUpdateTolerances(const TopoDS_Shape& theOldShape,
       }
     }
     tol = std::max(tol, sqrt(aMaxDist));
+    // An Immutable vertex (a fork flag) that already covers what its edges
+    // need is left alone: the padding below guards a tolerance just computed
+    // against rounding, and would grow a frozen vertex by an epsilon on its
+    // first pass; nor is a frozen tolerance lowered to the minimum.
+    const bool isFrozenAndCovered = V.Immutable() && tol <= BRep_Tool::Tolerance(V);
     tol += 2. * Epsilon(tol);
     //
     double                           aVTol    = BRep_Tool::Tolerance(V);
-    bool                             anUpdTol = tol > aVTol;
+    bool                             anUpdTol = !isFrozenAndCovered && tol > aVTol;
     const occ::handle<BRep_TVertex>& aTV      = *((occ::handle<BRep_TVertex>*)&V.TShape());
     bool                             toAdd    = false;
-    if (IsVerifyTolerance)
+    if (IsVerifyTolerance && !V.Immutable())
     {
       // ASet minimum value of the tolerance
       // Attention to sharing of the vertex by other shapes
@@ -1961,7 +2246,7 @@ static void InternalUpdateTolerances(const TopoDS_Shape& theOldShape,
     }
   }
 
-  UpdShTol(aShToTol, IsMutableInput, theReshaper, true);
+  UpdShTol(aShToTol, IsMutableInput, theReshaper, true, theOldShape);
 }
 
 //=================================================================================================

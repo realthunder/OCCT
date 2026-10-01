@@ -18,6 +18,13 @@
 #include <BOPTools_AlgoTools.hxx>
 #include <BOPTools_AlgoTools3D.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepLib_MakeEdge.hxx>
+#include <BRepLib_MakeFace.hxx>
+#include <BRepLib_MakeWire.hxx>
+#include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
+#include <Precision.hxx>
 #include <BRepOffset_Analyse.hxx>
 #include <BRepOffset_Interval.hxx>
 #include <BRepOffset_Tool.hxx>
@@ -803,6 +810,302 @@ void BRepOffset_Analyse::TreatTangentFaces(const NCollection_List<TopoDS_Shape>&
       }
     }
   }
+}
+
+//=================================================================================================
+
+// The normal of theF at the parameter theT of its edge theE, the way the face
+// faces.
+static gp_Dir FaceNormalOnEdge(const TopoDS_Edge& theE, const TopoDS_Face& theF, const double theT)
+{
+  gp_Dir aN;
+  BOPTools_AlgoTools3D::GetNormalToFaceOnEdge(theE, theF, theT, aN);
+  if (theF.Orientation() == TopAbs_REVERSED)
+  {
+    aN.Reverse();
+  }
+  return aN;
+}
+
+// A planar face on the closed wire through theEdges, its normal along theDir.
+static TopoDS_Face PlanarFaceOn(const NCollection_List<TopoDS_Shape>& theEdges,
+                                const gp_Dir&                         theDir)
+{
+  TopoDS_Face      aF;
+  BRepLib_MakeWire aMW;
+  for (NCollection_List<TopoDS_Shape>::Iterator it(theEdges); it.More(); it.Next())
+  {
+    aMW.Add(TopoDS::Edge(it.Value()));
+  }
+  if (!aMW.IsDone() || !aMW.Wire().Closed())
+  {
+    return aF;
+  }
+  BRepLib_MakeFace aMF(aMW.Wire(), true);
+  if (!aMF.IsDone())
+  {
+    return aF;
+  }
+  aF = aMF.Face();
+  BRepAdaptor_Surface aBAS(aF, false);
+  if (aBAS.GetType() != GeomAbs_Plane)
+  {
+    return TopoDS_Face();
+  }
+  gp_Dir aN = aBAS.Plane().Axis().Direction();
+  if (aF.Orientation() == TopAbs_REVERSED)
+  {
+    aN.Reverse();
+  }
+  if (aN.Dot(theDir) < 0.)
+  {
+    aF.Reverse();
+  }
+  return aF;
+}
+
+void BRepOffset_Analyse::TreatTangentCaps(
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theCaps,
+  const double                                                         theOffset)
+{
+  const double aT = std::abs(theOffset);
+  if (aT < Precision::Confusion())
+  {
+    return;
+  }
+  const double aSign   = theOffset > 0. ? 1. : -1.;
+  const double aSinTol = std::abs(std::sin(myAngle));
+  // Tangency as the Arc join's tube judges it (BRepOffset_MakeOffset::ToContext).
+  const double aSinTang = std::abs(std::sin(Precision::Angular()));
+  BRep_Builder aBB;
+  for (int iC = 1; iC <= theCaps.Extent(); ++iC)
+  {
+    const TopoDS_Face& aCF = TopoDS::Face(theCaps(iC));
+    for (TopExp_Explorer anExp(aCF, TopAbs_EDGE); anExp.More(); anExp.Next())
+    {
+      const TopoDS_Edge& aEC = TopoDS::Edge(anExp.Current());
+      if (!myAncestors.Contains(aEC))
+      {
+        continue;
+      }
+      const NCollection_List<TopoDS_Shape>& aLA = myAncestors.FindFromKey(aEC);
+      if (aLA.Extent() != 1 || theCaps.Contains(aLA.First()))
+      {
+        continue;
+      }
+      const TopoDS_Face aN = TopoDS::Face(aLA.First());
+      if (ChFi3d::DefineConnectType(aEC, aCF, aN, aSinTang, false) != ChFiDS_Tangential)
+      {
+        continue;
+      }
+      BRepAdaptor_Curve aBAC(aEC);
+      if (aBAC.GetType() != GeomAbs_Line)
+      {
+        continue;
+      }
+      TopoDS_Vertex aV[2];
+      TopExp::Vertices(TopoDS::Edge(aEC.Oriented(TopAbs_FORWARD)), aV[0], aV[1]);
+      if (aV[0].IsNull() || aV[1].IsNull() || aV[0].IsSame(aV[1]))
+      {
+        continue;
+      }
+      // The kept face's normal, the same all along the edge: its tangent
+      // plane is the strip's.
+      const double f = aBAC.FirstParameter(), l = aBAC.LastParameter();
+      const gp_Dir aNrm = FaceNormalOnEdge(aEC, aN, (f + l) / 2.);
+      if (!aNrm.IsEqual(FaceNormalOnEdge(aEC, aN, f), 10. * Precision::Angular())
+          || !aNrm.IsEqual(FaceNormalOnEdge(aEC, aN, l), 10. * Precision::Angular()))
+      {
+        continue;
+      }
+      // Into the cap: its interior lies to the left of its edge, seen along
+      // its normal.
+      gp_Vec aTan = aBAC.DN((f + l) / 2., 1);
+      if (aEC.Orientation() == TopAbs_REVERSED)
+      {
+        aTan.Reverse();
+      }
+      gp_Vec anIn = gp_Vec(FaceNormalOnEdge(aEC, aCF, (f + l) / 2.)) ^ aTan;
+      if (anIn.Magnitude() < gp::Resolution())
+      {
+        continue;
+      }
+      const gp_Dir aD(anIn);
+      // The faces at each end of the edge besides the kept one: the strip
+      // and the wall meet the same face there.
+      TopoDS_Face aFV[2];
+      bool        isOk = true;
+      for (int i = 0; i < 2 && isOk; ++i)
+      {
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMF;
+        for (NCollection_List<TopoDS_Shape>::Iterator itE(Ancestors(aV[i])); itE.More(); itE.Next())
+        {
+          if (itE.Value().IsSame(aEC) || !myAncestors.Contains(itE.Value()))
+          {
+            continue;
+          }
+          for (NCollection_List<TopoDS_Shape>::Iterator itF(Ancestors(itE.Value())); itF.More();
+               itF.Next())
+          {
+            if (!itF.Value().IsSame(aN) && !theCaps.Contains(itF.Value()))
+            {
+              aMF.Add(itF.Value());
+            }
+          }
+        }
+        isOk = aMF.Extent() == 1;
+        if (isOk)
+        {
+          aFV[i] = TopoDS::Face(NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator(aMF).Value());
+        }
+      }
+      if (!isOk)
+      {
+        continue;
+      }
+      // V -> V' (a thickness into the cap) -> V'n (across the thickness).
+      TopoDS_Vertex aVp[2], aVpn[2];
+      for (int i = 0; i < 2; ++i)
+      {
+        const gp_Pnt aP  = BRep_Tool::Pnt(aV[i]);
+        const gp_Pnt aPp = aP.Translated(gp_Vec(aD) * aT);
+        aBB.MakeVertex(aVp[i], aPp, Precision::Confusion());
+        aBB.MakeVertex(aVpn[i], aPp.Translated(gp_Vec(aNrm) * (aSign * aT)), Precision::Confusion());
+      }
+      BRepLib_MakeEdge aMS1(aV[0], aVp[0]), aMS2(aV[1], aVp[1]), aMEp(aVp[0], aVp[1]),
+        aMT1(aVp[0], aVpn[0]), aMT2(aVp[1], aVpn[1]), aMEpn(aVpn[0], aVpn[1]);
+      if (!aMS1.IsDone() || !aMS2.IsDone() || !aMEp.IsDone() || !aMT1.IsDone() || !aMT2.IsDone()
+          || !aMEpn.IsDone())
+      {
+        continue;
+      }
+      const TopoDS_Edge aS[2] = {aMS1.Edge(), aMS2.Edge()};
+      const TopoDS_Edge aTe[2] = {aMT1.Edge(), aMT2.Edge()};
+      const TopoDS_Edge aEp = aMEp.Edge(), aEpn = aMEpn.Edge();
+      // A planar kept face is its own tangent plane: its offset runs on to
+      // the wall, and a strip would only lie on it (its sections with the
+      // faces at the ends doubling the kept face's). The wall then meets the
+      // kept face itself.
+      const bool isPlanarN = BRepAdaptor_Surface(aN, false).GetType() == GeomAbs_Plane;
+      NCollection_List<TopoDS_Shape> aLStrip, aLWall;
+      aLStrip.Append(aEC.Oriented(TopAbs_FORWARD));
+      aLStrip.Append(aS[1]);
+      aLStrip.Append(aEp);
+      aLStrip.Append(aS[0]);
+      aLWall.Append(aEp);
+      aLWall.Append(aTe[1]);
+      aLWall.Append(aEpn);
+      aLWall.Append(aTe[0]);
+      const TopoDS_Face aStrip = isPlanarN ? TopoDS_Face() : PlanarFaceOn(aLStrip, aNrm);
+      const TopoDS_Face aWall  = PlanarFaceOn(aLWall, aD);
+      if ((!isPlanarN && aStrip.IsNull()) || aWall.IsNull())
+      {
+        continue;
+      }
+      // The face the wall's far edge meets: the strip, or the kept face.
+      const TopoDS_Face& aNear = isPlanarN ? aN : aStrip;
+      // The edges as the new faces hold them.
+      auto anInFace = [](const TopoDS_Shape& theE, const TopoDS_Face& theF) {
+        for (TopExp_Explorer anExpE(theF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+        {
+          if (anExpE.Current().IsSame(theE))
+          {
+            return anExpE.Current();
+          }
+        }
+        return theE;
+      };
+      auto aReplace = [&](const TopoDS_Shape& theF, const TopoDS_Shape& theE,
+                          const TopoDS_Shape& theBy) {
+        NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* pEEMap =
+          myReplacement.ChangeSeek(theF);
+        if (!pEEMap)
+        {
+          pEEMap = myReplacement.Bound(
+            theF,
+            NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>());
+        }
+        pEEMap->Bind(theE, theBy);
+      };
+
+      if (!isPlanarN)
+      {
+        // The tangent edge: the kept face and the strip.
+        myAncestors.ChangeFromKey(aEC).Append(aStrip);
+        myMapEdgeType(aEC).Clear();
+        EdgeAnalyse(TopoDS::Edge(anInFace(aEC, aStrip)), aN, aStrip, aSinTol, myMapEdgeType(aEC));
+      }
+      // The strip's ends and the wall's: each with the face at its end.
+      for (int i = 0; i < 2; ++i)
+      {
+        NCollection_List<TopoDS_Shape> aLVp, aLVpn;
+        if (!isPlanarN)
+        {
+          const TopoDS_Edge aSi = TopoDS::Edge(anInFace(aS[i], aStrip));
+          NCollection_List<TopoDS_Shape> aLS;
+          aLS.Append(aStrip);
+          aLS.Append(aFV[i]);
+          myAncestors.Add(aSi, aLS);
+          myMapEdgeType.Bind(aSi, NCollection_List<BRepOffset_Interval>());
+          EdgeAnalyse(aSi, aStrip, aFV[i], aSinTol, myMapEdgeType(aSi));
+          myAncestors.ChangeFromKey(aV[i]).Append(aSi);
+          aLVp.Append(aSi);
+        }
+
+        const TopoDS_Edge aTi = TopoDS::Edge(anInFace(aTe[i], aWall));
+        NCollection_List<TopoDS_Shape> aLT;
+        aLT.Append(aWall);
+        aLT.Append(aFV[i]);
+        myAncestors.Add(aTi, aLT);
+        myMapEdgeType.Bind(aTi, NCollection_List<BRepOffset_Interval>());
+        EdgeAnalyse(aTi, aWall, aFV[i], aSinTol, myMapEdgeType(aTi));
+
+        aLVp.Append(anInFace(aEp, aWall));
+        aLVp.Append(aTi);
+        myAncestors.Add(aVp[i], aLVp);
+        // The face at the edge's end meets the closure there: its edges on
+        // that face are the vertex's too (BRepOffset_Inter2d::ConnexIntByInt).
+        myAncestors.ChangeFromKey(aV[i]).Append(aTi);
+        aLVpn.Append(aTi);
+        aLVpn.Append(anInFace(aEpn, aWall));
+        myAncestors.Add(aVpn[i], aLVpn);
+      }
+      // The wall's edge on the cap: a free border, as the cap's own edges.
+      {
+        NCollection_List<TopoDS_Shape> aLE;
+        aLE.Append(aWall);
+        const TopoDS_Edge aEpW = TopoDS::Edge(anInFace(aEp, aWall));
+        myAncestors.Add(aEpW, aLE);
+        double aF1, aL1;
+        BRep_Tool::Range(aEpW, aF1, aL1);
+        NCollection_List<BRepOffset_Interval> aLI;
+        aLI.Append(BRepOffset_Interval(aF1, aL1, ChFiDS_FreeBound));
+        myMapEdgeType.Bind(aEpW, aLI);
+      }
+      // The wall's far edge, where the offset of the strip (or of the kept
+      // face) meets it: it replaces the strip's far edge (the kept face's
+      // tangent edge).
+      {
+        const TopoDS_Edge aEpnW = TopoDS::Edge(anInFace(aEpn, aWall));
+        NCollection_List<TopoDS_Shape> aLE;
+        aLE.Append(aWall);
+        aLE.Append(aNear);
+        myAncestors.Add(aEpnW, aLE);
+        myMapEdgeType.Bind(aEpnW, NCollection_List<BRepOffset_Interval>());
+        EdgeAnalyse(aEpnW, aWall, aNear, aSinTol, myMapEdgeType(aEpnW));
+        aReplace(aNear, isPlanarN ? aEC : aEp, aEpnW);
+      }
+      // In the cap, the tangent edge gives way to the wall's edge.
+      aReplace(aCF, aEC, anInFace(aEp, aWall));
+      if (!isPlanarN)
+      {
+        myNewFaces.Append(aStrip);
+        myFaceOffsetMap.Bind(aStrip, theOffset);
+      }
+      myNewFaces.Append(aWall);
+    }
+  }
+  myDescendants.Clear();
 }
 
 //=================================================================================================

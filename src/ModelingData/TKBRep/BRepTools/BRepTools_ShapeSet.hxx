@@ -27,6 +27,12 @@
 #include <GeomTools_Curve2dSet.hxx>
 #include <Standard_Transient.hxx>
 #include <NCollection_IndexedMap.hxx>
+#include <NCollection_Map.hxx>
+#include <BRep_PointRepresentation.hxx>
+
+#include <set>
+#include <utility>
+#include <Geom_Surface.hxx>
 #include <TopTools_ShapeSet.hxx>
 #include <Standard_OStream.hxx>
 #include <Standard_IStream.hxx>
@@ -82,6 +88,71 @@ public:
   //! the file is one BRep_Tool::CurveOnSurface answers for by projecting the
   //! edge's 3D curve onto the plane.
   void SetOmitPCurvesOnPlane(const bool theOmit) { myOmitPCurvesOnPlane = theOmit; }
+
+  //! Return true if the written bytes are to depend on the shape alone.
+  bool IsStableBytes() const { return myStableBytes; }
+
+  //! Define whether the written bytes depend on the shape alone, not on what
+  //! was done with it (a fork option, off by default). With it on, a
+  //! representation on a surface no face of the written shape carries is left
+  //! out -- the pcurve an edge was given by a face built on it elsewhere, a
+  //! vertex parameter on such a pcurve, the regularity between two such faces
+  //! -- and the Free, Modified and Checked flags are written as 1, 1 and 0,
+  //! which is also the conservative reading of each. Neither loses anything
+  //! the shape needs: a left-out pcurve is on a surface nothing in the file
+  //! refers to. The surfaces are collected by Add(), so set this first.
+  void SetStableBytes(const bool theStable)
+  {
+    myStableBytes = theStable;
+    myCanonicalFlags = theStable;
+  }
+
+  //! Stores <S> and its sub-shapes, as TopTools_ShapeSet::Add, after
+  //! AddOwnSurfaces(S).
+  Standard_EXPORT int Add(const TopoDS_Shape& S);
+
+  //! Under SetStableBytes, a representation is written only if the shapes
+  //! named here use it (OwnGeometry). Add() names its shape; a writer that
+  //! fills the tables another way -- a subclass calling AddGeometry itself --
+  //! names its roots here, before it does, and again after a Clear().
+  Standard_EXPORT void AddOwnSurfaces(const TopoDS_Shape& S);
+
+  //! What the written shapes use, for SetStableBytes (shared with
+  //! BinTools_ShapeSet). A pcurve, a polygon or a regularity is theirs on the
+  //! surface of one of their faces. A vertex parameter on a curve or pcurve is
+  //! theirs only where one of their edges holds the vertex INTERNAL or
+  //! EXTERNAL and carries that curve: BRep_Tool::Parameter reads an end
+  //! vertex's parameter from the edge's range, so no other is ever read -- and
+  //! testing the curve alone will not do, as an edge built on a shared edge
+  //! (an extended one, a split) shares its curves. A vertex parameter on a
+  //! surface is theirs on the surface of one of their faces.
+  class OwnGeometry
+  {
+  public:
+    //! Adds what <theS> uses.
+    Standard_EXPORT void Add(const TopoDS_Shape& theS);
+
+    void Clear()
+    {
+      mySurfaces.Clear();
+      myInnerPoints.clear();
+    }
+
+    bool HasSurface(const occ::handle<Geom_Surface>& theS) const
+    {
+      return mySurfaces.Contains(theS.get());
+    }
+
+    //! Whether the parameter <thePR> of the vertex <theTV> is used.
+    Standard_EXPORT bool HasPoint(const occ::handle<BRep_PointRepresentation>& thePR,
+                                  const Standard_Transient*                    theTV) const;
+
+  private:
+    NCollection_Map<const Standard_Transient*> mySurfaces;
+    //! (vertex, curve or pcurve) for each vertex an edge holds INTERNAL or
+    //! EXTERNAL and each curve that edge carries.
+    std::set<std::pair<const Standard_Transient*, const Standard_Transient*>> myInnerPoints;
+  };
 
   //! Clears the content of the set.
   Standard_EXPORT void Clear() override;
@@ -215,6 +286,21 @@ private:
   bool                                                    myWithTriangles;
   bool                                                    myWithNormals;
   bool                                                    myOmitPCurvesOnPlane = false;
+  bool                                                    myStableBytes        = false;
+  OwnGeometry                                             myOwnGeometry;
+
+  //! Under SetStableBytes, whether <theS> is carried by no face added so far.
+  bool isForeign(const occ::handle<Geom_Surface>& theS) const
+  {
+    return myStableBytes && !myOwnGeometry.HasSurface(theS);
+  }
+
+  //! Under SetStableBytes, whether the parameter <thePR> of <theTV> is left out.
+  bool isForeign(const occ::handle<BRep_PointRepresentation>& thePR,
+                 const Standard_Transient*                    theTV) const
+  {
+    return myStableBytes && !myOwnGeometry.HasPoint(thePR, theTV);
+  }
 };
 
 #endif // _BRepTools_ShapeSet_HeaderFile

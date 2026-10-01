@@ -15,6 +15,13 @@
 // commercial license or contractual agreement.
 
 #include <BRep_Builder.hxx>
+#include <BRep_RepresentationLock.hxx>
+#include <vector>
+#include <NCollection_DataMap.hxx>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <BRep_Curve3D.hxx>
 #include <BRep_CurveOn2Surfaces.hxx>
 #include <BRep_CurveOnClosedSurface.hxx>
@@ -49,6 +56,273 @@
 #include <TopoDS_Vertex.hxx>
 
 //=================================================================================================
+
+//=================================================================================================
+// Immutable (TopoDS_TShape::Immutable, a fork flag). The setters below refuse
+// a change to an Immutable vertex, edge or face and let through what is not
+// one. A call that changes nothing -- a tolerance at or under the one held, a
+// flag or a range already so, a pcurve the edge already has -- returns without
+// a write, so a caller normalising a shape it did not make need not know which
+// of its parts are frozen. And an edge takes a pcurve for a surface it has no
+// representation on yet: a pcurve is derived data, like the triangulation --
+// BRep_Tool computes the one on a plane on demand, and STEP is routinely
+// written without them -- and an edge shared with a new face gains one for
+// that face; so does the regularity between two faces, and a vertex's
+// parameter on a new edge's curve or pcurve or on a new face. Such a
+// representation is marked IsCache (BRep_CurveRepresentation,
+// BRep_PointRepresentation) and may be replaced, removed or re-ranged
+// afterwards. A pcurve's cache for a face that is gone is removed when the
+// next one is added: its surface is then held by caches alone. The value's own may not, and nothing may take a tolerance the
+// edge or vertex would have to grow to: those change the value, and throw.
+//
+// A frozen shape may be read on another thread while it takes caches here, so
+// every method below that edits an Immutable TShape does it under that
+// TShape's BRep_RepresentationLock, as the writers walk it under the same lock.
+//=================================================================================================
+
+//! For an Immutable target: true when the call changes nothing (the caller
+//! returns), a throw when it would change something.
+static bool unchangedOrRefused(const bool theUnchanged, const char* theWhere)
+{
+  if (!theUnchanged)
+  {
+    throw TopoDS_LockedShape(theWhere);
+  }
+  return true;
+}
+
+//! Drops the caches of <theTE> on a surface nothing holds but caches of this
+//! edge and of its vertices: the face they were made for is gone. A vertex
+//! keeps a parameter on each new face too, so the edge's own count alone
+//! never reaches the surface's; a surface also held by another frozen edge
+//! (a dead face on a closed frozen wire) is not seen from here and stays.
+static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
+{
+  // Surface -> references to it from caches of the edge and its vertices.
+  NCollection_DataMap<const Geom_Surface*, int> aHeld;
+  auto hold = [&aHeld](const occ::handle<Geom_Surface>& theS) {
+    if (theS.IsNull())
+    {
+      return;
+    }
+    if (int* aCount = aHeld.ChangeSeek(theS.get()))
+    {
+      ++*aCount;
+    }
+    else
+    {
+      aHeld.Bind(theS.get(), 1);
+    }
+  };
+  for (const occ::handle<BRep_CurveRepresentation>& aCR : theTE->Curves())
+  {
+    if (aCR->IsCache() && aCR->IsCurveOnSurface())
+    {
+      hold(aCR->Surface());
+    }
+    else if (aCR->IsCache() && aCR->IsRegularity())
+    {
+      hold(aCR->Surface());
+      hold(aCR->Surface2());
+    }
+  }
+  if (aHeld.IsEmpty())
+  {
+    return;
+  }
+  TopoDS_Shape anEdge;
+  anEdge.TShape(theTE);
+  std::vector<occ::handle<BRep_TVertex>> aVertices;
+  for (TopoDS_Iterator anIt(anEdge, false, false); anIt.More(); anIt.Next())
+  {
+    occ::handle<BRep_TVertex> aTV = occ::down_cast<BRep_TVertex>(anIt.Value().TShape());
+    if (aTV.IsNull())
+    {
+      continue;
+    }
+    aVertices.push_back(aTV);
+    BRep_RepresentationLock aVLock(aTV.get()); // the edge's, then its vertices'
+    for (const occ::handle<BRep_PointRepresentation>& aPR : aTV->Points())
+    {
+      if (aPR->IsCache() && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface()))
+      {
+        if (aHeld.IsBound(aPR->Surface().get()))
+        {
+          hold(aPR->Surface());
+        }
+      }
+    }
+  }
+  auto isDead = [&aHeld](const occ::handle<Geom_Surface>& theS) {
+    const int* aCount = theS.IsNull() ? nullptr : aHeld.Seek(theS.get());
+    return aCount != nullptr && theS->GetRefCount() == *aCount;
+  };
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>& aList = theTE->ChangeCurves();
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(aList);
+  std::vector<occ::handle<Geom_Surface>> aDead; // alive until the vertices are swept
+  while (anIt.More())
+  {
+    const occ::handle<BRep_CurveRepresentation>& aCR = anIt.Value();
+    bool aDrop = false;
+    if (aCR->IsCache() && aCR->IsCurveOnSurface())
+    {
+      aDrop = isDead(aCR->Surface());
+    }
+    else if (aCR->IsCache() && aCR->IsRegularity())
+    {
+      aDrop = isDead(aCR->Surface()) || isDead(aCR->Surface2());
+    }
+    if (aDrop)
+    {
+      aDead.push_back(aCR->Surface());
+      aList.Remove(anIt);
+      continue;
+    }
+    anIt.Next();
+  }
+  if (aDead.empty())
+  {
+    return;
+  }
+  for (const occ::handle<BRep_TVertex>& aTV : aVertices)
+  {
+    BRep_RepresentationLock aVLock(aTV.get()); // the edge's, then its vertices'
+    NCollection_List<occ::handle<BRep_PointRepresentation>>& aPoints = aTV->ChangePoints();
+    NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator aPIt(aPoints);
+    while (aPIt.More())
+    {
+      const occ::handle<BRep_PointRepresentation>& aPR = aPIt.Value();
+      if (aPR->IsCache() && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface())
+          && std::find(aDead.begin(), aDead.end(), aPR->Surface()) != aDead.end())
+      {
+        aPoints.Remove(aPIt);
+        continue;
+      }
+      aPIt.Next();
+    }
+  }
+}
+
+//! For an Immutable edge: true when the pcurve(s) on <theS> are to be written
+//! -- added, or replacing or removing a cache (BRep_CurveRepresentation::
+//! IsCache) -- false when there is nothing to do; a throw for a change to one
+//! of the value's own pcurves, or a tolerance the edge would have to grow to.
+static bool immutableTakesPCurve(const occ::handle<BRep_TEdge>&   theTE,
+                                 const occ::handle<Geom2d_Curve>& theC1,
+                                 const occ::handle<Geom2d_Curve>& theC2,
+                                 const occ::handle<Geom_Surface>& theS,
+                                 const TopLoc_Location&           theL,
+                                 const double                     theTol)
+{
+  if (theTol > theTE->Tolerance())
+  {
+    throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
+  }
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(theTE->Curves());
+  for (; anIt.More(); anIt.Next())
+  {
+    const occ::handle<BRep_CurveRepresentation>& aCR = anIt.Value();
+    if (!aCR->IsCurveOnSurface(theS, theL))
+    {
+      continue;
+    }
+    const bool isClosed = aCR->IsCurveOnClosedSurface();
+    const bool isSame   = !theC1.IsNull() && aCR->PCurve() == theC1
+                        && (theC2.IsNull() ? !isClosed : isClosed && aCR->PCurve2() == theC2);
+    if (isSame)
+    {
+      return false;
+    }
+    return unchangedOrRefused(aCR->IsCache(), "BRep_Builder::UpdateEdge");
+  }
+  // Removing what is not there changes nothing.
+  if (theC1.IsNull())
+  {
+    return false;
+  }
+  // The caches of faces that are gone go first, or every new face on the
+  // edge adds one for good (FreeCAD docs/TransactionLog.md sec 27.81-27.82).
+  sweepDeadPCurveCaches(theTE);
+  return true;
+}
+
+//! Marks what an Immutable edge now holds on <theS> as a cache.
+static void markPCurveCache(const occ::handle<BRep_TEdge>&   theTE,
+                            const occ::handle<Geom_Surface>& theS,
+                            const TopLoc_Location&           theL)
+{
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(theTE->Curves());
+  for (; anIt.More(); anIt.Next())
+  {
+    if (anIt.Value()->IsCurveOnSurface(theS, theL))
+    {
+      anIt.Value()->SetCache(true);
+    }
+  }
+}
+
+//! Whether every range Range() would set on <theTE> is already [theFirst, theLast],
+//! a cache's aside.
+static bool rangesAre(const occ::handle<BRep_TEdge>&   theTE,
+                      const double                     theFirst,
+                      const double                     theLast,
+                      const bool                       theOnly3d,
+                      const occ::handle<Geom_Surface>& theS,
+                      const TopLoc_Location&           theL)
+{
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(theTE->Curves());
+  for (; anIt.More(); anIt.Next())
+  {
+    occ::handle<BRep_GCurve> aGC = occ::down_cast<BRep_GCurve>(anIt.Value());
+    if (aGC.IsNull() || aGC->IsCache())
+    {
+      continue;
+    }
+    const bool isTarget =
+      theS.IsNull() ? (!theOnly3d || aGC->IsCurve3D()) : aGC->IsCurveOnSurface(theS, theL);
+    if (isTarget && (aGC->First() != theFirst || aGC->Last() != theLast))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//! For UpdateVertex on an edge with an Immutable part: throws when the call would
+//! change the frozen vertex or edge -- a tolerance the vertex would have to grow
+//! to, or an end of a frozen edge moved. An end restated at the parameter it
+//! has passes. The parameter of an internal vertex is a point representation,
+//! which UpdatePoints decides.
+static void checkImmutableVertexOnEdge(const occ::handle<BRep_TVertex>& theTV,
+                                       const occ::handle<BRep_TEdge>&   theTE,
+                                       const TopAbs_Orientation         theOri,
+                                       const double                     thePar,
+                                       const double                     theTol,
+                                       const occ::handle<Geom_Surface>& theS,
+                                       const TopLoc_Location&           theEdgeL)
+{
+  if (theTV->Immutable())
+  {
+    unchangedOrRefused(theTol <= theTV->Tolerance(), "BRep_Builder::UpdateVertex");
+  }
+  const bool isEnd = theOri == TopAbs_FORWARD || theOri == TopAbs_REVERSED;
+  if (!isEnd || !theTE->Immutable())
+  {
+    return;
+  }
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(theTE->Curves());
+  for (; anIt.More(); anIt.Next())
+  {
+    occ::handle<BRep_GCurve> aGC = occ::down_cast<BRep_GCurve>(anIt.Value());
+    if (aGC.IsNull() || aGC->IsCache()
+        || (!theS.IsNull() && !aGC->IsCurveOnSurface(theS, theEdgeL)))
+    {
+      continue;
+    }
+    const double aHeld = theOri == TopAbs_FORWARD ? aGC->First() : aGC->Last();
+    unchangedOrRefused(aHeld == thePar, "BRep_Builder::UpdateVertex");
+  }
+}
 
 //=================================================================================================
 // function : UpdateCurves
@@ -404,10 +678,30 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
   }
 }
 
+//! The UpdatePoints below, for an Immutable vertex (<theFrozen>): a parameter
+//! on a curve or surface the vertex has none on yet is added and marked a cache,
+//! as is a pcurve on a new surface for an edge (see the note at the top); a
+//! cache is rewritten; the value's own may only be restated.
+static bool frozenPointHeld(const bool                                   theFrozen,
+                            const occ::handle<BRep_PointRepresentation>& thePR,
+                            const double                                 theP1,
+                            const double                                 theP2,
+                            const bool                                   theHasP2)
+{
+  if (!theFrozen || thePR->IsCache())
+  {
+    return false;
+  }
+  return unchangedOrRefused(thePR->Parameter() == theP1
+                              && (!theHasP2 || thePR->Parameter2() == theP2),
+                            "BRep_Builder::UpdateVertex");
+}
+
 static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>& lpr,
                          double                                                   p,
                          const occ::handle<Geom_Curve>&                           C,
-                         const TopLoc_Location&                                   L)
+                         const TopLoc_Location&                                   L,
+                         const bool                                               theFrozen)
 {
   NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator itpr(lpr);
   while (itpr.More())
@@ -424,11 +718,15 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   if (itpr.More())
   {
     occ::handle<BRep_PointRepresentation> pr = itpr.Value();
-    pr->Parameter(p);
+    if (!frozenPointHeld(theFrozen, pr, p, 0., false))
+    {
+      pr->Parameter(p);
+    }
   }
   else
   {
     occ::handle<BRep_PointOnCurve> POC = new BRep_PointOnCurve(p, C, L);
+    POC->SetCache(theFrozen);
     lpr.Append(POC);
   }
 }
@@ -437,7 +735,8 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
                          double                                                   p,
                          const occ::handle<Geom2d_Curve>&                         PC,
                          const occ::handle<Geom_Surface>&                         S,
-                         const TopLoc_Location&                                   L)
+                         const TopLoc_Location&                                   L,
+                         const bool                                               theFrozen)
 {
   NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator itpr(lpr);
   while (itpr.More())
@@ -454,11 +753,15 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   if (itpr.More())
   {
     occ::handle<BRep_PointRepresentation> pr = itpr.Value();
-    pr->Parameter(p);
+    if (!frozenPointHeld(theFrozen, pr, p, 0., false))
+    {
+      pr->Parameter(p);
+    }
   }
   else
   {
     occ::handle<BRep_PointOnCurveOnSurface> POCS = new BRep_PointOnCurveOnSurface(p, PC, S, L);
+    POCS->SetCache(theFrozen);
     lpr.Append(POCS);
   }
 }
@@ -467,7 +770,8 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
                          double                                                   p1,
                          double                                                   p2,
                          const occ::handle<Geom_Surface>&                         S,
-                         const TopLoc_Location&                                   L)
+                         const TopLoc_Location&                                   L,
+                         const bool                                               theFrozen)
 {
   NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator itpr(lpr);
   while (itpr.More())
@@ -484,13 +788,17 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   if (itpr.More())
   {
     occ::handle<BRep_PointRepresentation> pr = itpr.Value();
-    pr->Parameter(p1);
-    //    pr->Parameter(p2); // skv
-    pr->Parameter2(p2); // skv
+    if (!frozenPointHeld(theFrozen, pr, p1, p2, true))
+    {
+      pr->Parameter(p1);
+      //    pr->Parameter(p2); // skv
+      pr->Parameter2(p2); // skv
+    }
   }
   else
   {
     occ::handle<BRep_PointOnSurface> POS = new BRep_PointOnSurface(p1, p2, S, L);
+    POS->SetCache(theFrozen);
     lpr.Append(POS);
   }
 }
@@ -502,7 +810,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                     F,
                             const double                     Tol) const
 {
   occ::handle<BRep_TFace> TF = new BRep_TFace();
-  if (!F.IsNull() && F.Locked())
+  if (!F.IsNull() && (F.Locked() || F.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -517,7 +825,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                           theFace,
                             const occ::handle<Poly_Triangulation>& theTriangulation) const
 {
   occ::handle<BRep_TFace> aTFace = new BRep_TFace();
-  if (!theFace.IsNull() && theFace.Locked())
+  if (!theFace.IsNull() && (theFace.Locked() || theFace.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -533,7 +841,7 @@ void BRep_Builder::MakeFace(
   const occ::handle<Poly_Triangulation>&                   theActiveTriangulation) const
 {
   occ::handle<BRep_TFace> aTFace = new BRep_TFace();
-  if (!theFace.IsNull() && theFace.Locked())
+  if (!theFace.IsNull() && (theFace.Locked() || theFace.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -549,7 +857,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                     F,
                             const double                     Tol) const
 {
   occ::handle<BRep_TFace> TF = new BRep_TFace();
-  if (!F.IsNull() && F.Locked())
+  if (!F.IsNull() && (F.Locked() || F.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -567,7 +875,8 @@ void BRep_Builder::UpdateFace(const TopoDS_Face&               F,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TFace>& TF = *((occ::handle<BRep_TFace>*)&F.TShape());
-  if (TF->Locked())
+  BRep_RepresentationLock aLock(TF.get()); // an Immutable one may be read on another thread
+  if (TF->Locked() || TF->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
   }
@@ -584,6 +893,7 @@ void BRep_Builder::UpdateFace(const TopoDS_Face&                     theFace,
                               const bool                             theToReset) const
 {
   const occ::handle<BRep_TFace>& aTFace = *((occ::handle<BRep_TFace>*)&theFace.TShape());
+  BRep_RepresentationLock aLock(aTFace.get()); // an Immutable one may be read on another thread
   if (aTFace->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
@@ -597,9 +907,15 @@ void BRep_Builder::UpdateFace(const TopoDS_Face&                     theFace,
 void BRep_Builder::UpdateFace(const TopoDS_Face& F, const double Tol) const
 {
   const occ::handle<BRep_TFace>& TF = *((occ::handle<BRep_TFace>*)&F.TShape());
+  BRep_RepresentationLock aLock(TF.get()); // an Immutable one may be read on another thread
   if (TF->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
+  }
+  if (TF->Immutable()
+      && unchangedOrRefused(Tol == TF->Tolerance(), "BRep_Builder::UpdateFace"))
+  {
+    return;
   }
   TF->Tolerance(Tol);
   F.TShape()->Modified(true);
@@ -610,9 +926,15 @@ void BRep_Builder::UpdateFace(const TopoDS_Face& F, const double Tol) const
 void BRep_Builder::NaturalRestriction(const TopoDS_Face& F, const bool N) const
 {
   const occ::handle<BRep_TFace>& TF = (*((occ::handle<BRep_TFace>*)&F.TShape()));
+  BRep_RepresentationLock aLock(TF.get()); // an Immutable one may be read on another thread
   if (TF->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::NaturalRestriction");
+  }
+  if (TF->Immutable()
+      && unchangedOrRefused(N == TF->NaturalRestriction(), "BRep_Builder::NaturalRestriction"))
+  {
+    return;
   }
   TF->NaturalRestriction(N);
   F.TShape()->Modified(true);
@@ -623,7 +945,7 @@ void BRep_Builder::NaturalRestriction(const TopoDS_Face& F, const bool N) const
 void BRep_Builder::MakeEdge(TopoDS_Edge& E) const
 {
   occ::handle<BRep_TEdge> TE = new BRep_TEdge();
-  if (!E.IsNull() && E.Locked())
+  if (!E.IsNull() && (E.Locked() || E.Immutable()))
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeEdge");
   }
@@ -638,7 +960,8 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&             E,
                               const double                   Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
-  if (TE->Locked())
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
+  if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
@@ -659,13 +982,22 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
   const TopLoc_Location l = L.Predivided(E.Location());
+  if (TE->Immutable() && !immutableTakesPCurve(TE, C, occ::handle<Geom2d_Curve>(), S, l, Tol))
+  {
+    return;
+  }
 
   UpdateCurves(TE->ChangeCurves(), C, S, l);
+  if (TE->Immutable())
+  {
+    markPCurveCache(TE, S, l);
+  }
 
   TE->UpdateTolerance(Tol);
   TE->Modified(true);
@@ -685,13 +1017,22 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const gp_Pnt2d&                  Pl) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
   const TopLoc_Location l = L.Predivided(E.Location());
+  if (TE->Immutable() && !immutableTakesPCurve(TE, C, occ::handle<Geom2d_Curve>(), S, l, Tol))
+  {
+    return;
+  }
 
   UpdateCurves(TE->ChangeCurves(), C, S, l, Pf, Pl);
+  if (TE->Immutable())
+  {
+    markPCurveCache(TE, S, l);
+  }
 
   TE->UpdateTolerance(Tol);
   TE->Modified(true);
@@ -707,13 +1048,22 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
   const TopLoc_Location l = L.Predivided(E.Location());
+  if (TE->Immutable() && !immutableTakesPCurve(TE, C1, C2, S, l, Tol))
+  {
+    return;
+  }
 
   UpdateCurves(TE->ChangeCurves(), C1, C2, S, l);
+  if (TE->Immutable())
+  {
+    markPCurveCache(TE, S, l);
+  }
 
   TE->UpdateTolerance(Tol);
   TE->Modified(true);
@@ -734,13 +1084,22 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const gp_Pnt2d&                  Pl) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
   const TopLoc_Location l = L.Predivided(E.Location());
+  if (TE->Immutable() && !immutableTakesPCurve(TE, C1, C2, S, l, Tol))
+  {
+    return;
+  }
 
   UpdateCurves(TE->ChangeCurves(), C1, C2, S, l, Pf, Pl);
+  if (TE->Immutable())
+  {
+    markPCurveCache(TE, S, l);
+  }
 
   TE->UpdateTolerance(Tol);
   TE->Modified(true);
@@ -753,6 +1112,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
                               const TopLoc_Location&             L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -793,6 +1153,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                              E,
                               const TopLoc_Location&                          L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -841,6 +1202,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                              E,
                               const TopLoc_Location&                          L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -900,6 +1262,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
                               const TopLoc_Location&             L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -957,6 +1320,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
                               const TopLoc_Location&             L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -999,9 +1363,15 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
 void BRep_Builder::UpdateEdge(const TopoDS_Edge& E, const double Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
+  }
+  if (TE->Immutable()
+      && unchangedOrRefused(Tol <= TE->Tolerance(), "BRep_Builder::UpdateEdge"))
+  {
+    return;
   }
   TE->UpdateTolerance(Tol);
   TE->Modified(true);
@@ -1030,14 +1400,46 @@ void BRep_Builder::Continuity(const TopoDS_Edge&               E,
                               const GeomAbs_Shape              C) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::Continuity");
   }
   const TopLoc_Location l1 = L1.Predivided(E.Location());
   const TopLoc_Location l2 = L2.Predivided(E.Location());
+  if (TE->Immutable())
+  {
+    // The regularity between two faces is derived data like a pcurve: an
+    // edge shared by a new pair takes one for it as a cache, and the value's
+    // own are not changed (see the note at the top of this file).
+    NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(TE->Curves());
+    for (; anIt.More(); anIt.Next())
+    {
+      const occ::handle<BRep_CurveRepresentation>& aCR = anIt.Value();
+      if (aCR->IsRegularity(S1, S2, l1, l2))
+      {
+        if (aCR->Continuity() == C)
+        {
+          return;
+        }
+        unchangedOrRefused(aCR->IsCache(), "BRep_Builder::Continuity");
+        break;
+      }
+    }
+  }
 
   UpdateCurves(TE->ChangeCurves(), S1, S2, l1, l2, C);
+  if (TE->Immutable())
+  {
+    NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(TE->Curves());
+    for (; anIt.More(); anIt.Next())
+    {
+      if (anIt.Value()->IsRegularity(S1, S2, l1, l2))
+      {
+        anIt.Value()->SetCache(true);
+      }
+    }
+  }
 
   TE->Modified(true);
 }
@@ -1047,9 +1449,14 @@ void BRep_Builder::Continuity(const TopoDS_Edge&               E,
 void BRep_Builder::SameParameter(const TopoDS_Edge& E, const bool S) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::SameParameter");
+  }
+  if (TE->Immutable() && unchangedOrRefused(S == TE->SameParameter(), "BRep_Builder::SameParameter"))
+  {
+    return;
   }
   TE->SameParameter(S);
   TE->Modified(true);
@@ -1060,9 +1467,14 @@ void BRep_Builder::SameParameter(const TopoDS_Edge& E, const bool S) const
 void BRep_Builder::SameRange(const TopoDS_Edge& E, const bool S) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::SameRange");
+  }
+  if (TE->Immutable() && unchangedOrRefused(S == TE->SameRange(), "BRep_Builder::SameRange"))
+  {
+    return;
   }
   TE->SameRange(S);
   TE->Modified(true);
@@ -1073,9 +1485,14 @@ void BRep_Builder::SameRange(const TopoDS_Edge& E, const bool S) const
 void BRep_Builder::Degenerated(const TopoDS_Edge& E, const bool D) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::Degenerated");
+  }
+  if (TE->Immutable() && unchangedOrRefused(D == TE->Degenerated(), "BRep_Builder::Degenerated"))
+  {
+    return;
   }
   TE->Degenerated(D);
   if (D)
@@ -1095,9 +1512,16 @@ void BRep_Builder::Range(const TopoDS_Edge& E,
 {
   //  set the range to all the representations if Only3d=FALSE
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::Range");
+  }
+  if (TE->Immutable())
+  {
+    unchangedOrRefused(
+      rangesAre(TE, First, Last, Only3d, occ::handle<Geom_Surface>(), TopLoc_Location()),
+      "BRep_Builder::Range");
   }
   NCollection_List<occ::handle<BRep_CurveRepresentation>>&          lcr = TE->ChangeCurves();
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
@@ -1125,11 +1549,16 @@ void BRep_Builder::Range(const TopoDS_Edge&               E,
                          const double                     Last) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::Range");
   }
   const TopLoc_Location l = L.Predivided(E.Location());
+  if (TE->Immutable())
+  {
+    unchangedOrRefused(rangesAre(TE, First, Last, false, S, l), "BRep_Builder::Range");
+  }
 
   NCollection_List<occ::handle<BRep_CurveRepresentation>>&          lcr = TE->ChangeCurves();
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
@@ -1203,11 +1632,28 @@ void BRep_Builder::Transfert(const TopoDS_Edge& Ein, const TopoDS_Edge& Eout) co
 void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V, const gp_Pnt& P, const double Tol) const
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
   if (TV->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
   }
-  TV->Pnt(P.Transformed(V.Location().Inverted().Transformation()));
+  const gp_Pnt aLocal = P.Transformed(V.Location().Inverted().Transformation());
+  // Restating a frozen vertex -- a merge that keeps it where it is because it
+  // already covers the other end -- is no change. The distance allows for the
+  // round trip through the vertex's location, a few units in the last place
+  // of the coordinates, and nothing more.
+  const gp_Pnt& aHeld  = TV->Pnt();
+  const double  aScale = std::max(
+    1.,
+    std::max(std::abs(aHeld.X()), std::max(std::abs(aHeld.Y()), std::abs(aHeld.Z()))));
+  const double aRoundTrip = 16. * std::numeric_limits<double>::epsilon() * aScale;
+  if (TV->Immutable()
+      && unchangedOrRefused(aLocal.Distance(aHeld) <= aRoundTrip && Tol <= TV->Tolerance(),
+                            "BRep_Builder::UpdateVertex"))
+  {
+    return;
+  }
+  TV->Pnt(aLocal);
   TV->UpdateTolerance(Tol);
   TV->Modified(true);
 }
@@ -1229,6 +1675,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V,
 
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
   const occ::handle<BRep_TEdge>&   TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
 
   if (TV->Locked() || TE->Locked())
   {
@@ -1264,6 +1711,10 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V,
     }
     itv.Next();
   }
+  if (TV->Immutable() || TE->Immutable())
+  {
+    checkImmutableVertexOnEdge(TV, TE, ori, Par, Tol, occ::handle<Geom_Surface>(), TopLoc_Location());
+  }
 
   NCollection_List<occ::handle<BRep_CurveRepresentation>>&          lcr = TE->ChangeCurves();
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
@@ -1290,13 +1741,13 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V,
         if (GC->IsCurve3D())
         {
           const occ::handle<Geom_Curve>& GC3d = GC->Curve3D();
-          UpdatePoints(lpr, Par, GC3d, LGCloc);
+          UpdatePoints(lpr, Par, GC3d, LGCloc, TV->Immutable());
         }
         else if (GC->IsCurveOnSurface())
         {
           const occ::handle<Geom2d_Curve>& GCpc = GC->PCurve();
           const occ::handle<Geom_Surface>& GCsu = GC->Surface();
-          UpdatePoints(lpr, Par, GCpc, GCsu, LGCloc);
+          UpdatePoints(lpr, Par, GCpc, GCsu, LGCloc, TV->Immutable());
         }
       }
     }
@@ -1333,6 +1784,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex&             V,
 
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
   const occ::handle<BRep_TEdge>&   TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
 
   if (TV->Locked() || TE->Locked())
   {
@@ -1366,6 +1818,10 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex&             V,
     }
     itv.Next();
   }
+  if (TV->Immutable() || TE->Immutable())
+  {
+    checkImmutableVertexOnEdge(TV, TE, ori, Par, Tol, S, L);
+  }
 
   NCollection_List<occ::handle<BRep_CurveRepresentation>>&          lcr = TE->ChangeCurves();
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
@@ -1391,7 +1847,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex&             V,
         {
           NCollection_List<occ::handle<BRep_PointRepresentation>>& lpr  = TV->ChangePoints();
           const occ::handle<Geom2d_Curve>&                         GCpc = GC->PCurve();
-          UpdatePoints(lpr, Par, GCpc, S, l);
+          UpdatePoints(lpr, Par, GCpc, S, l, TV->Immutable());
           TV->Modified(true);
         }
         break;
@@ -1421,6 +1877,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& Ve,
                                 const double         Tol) const
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&Ve.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
 
   if (TV->Locked())
   {
@@ -1431,7 +1888,11 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& Ve,
   const occ::handle<Geom_Surface>& S                           = BRep_Tool::Surface(F, L);
   L                                                            = L.Predivided(Ve.Location());
   NCollection_List<occ::handle<BRep_PointRepresentation>>& lpr = TV->ChangePoints();
-  UpdatePoints(lpr, U, V, S, L);
+  if (TV->Immutable())
+  {
+    unchangedOrRefused(Tol <= TV->Tolerance(), "BRep_Builder::UpdateVertex");
+  }
+  UpdatePoints(lpr, U, V, S, L, TV->Immutable());
 
   TV->UpdateTolerance(Tol);
   TV->Modified(true);
@@ -1442,10 +1903,16 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& Ve,
 void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V, const double Tol) const
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
 
   if (TV->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
+  }
+  if (TV->Immutable()
+      && unchangedOrRefused(Tol <= TV->Tolerance(), "BRep_Builder::UpdateVertex"))
+  {
+    return;
   }
 
   TV->UpdateTolerance(Tol);

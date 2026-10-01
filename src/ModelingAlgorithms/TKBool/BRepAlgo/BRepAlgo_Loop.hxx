@@ -26,6 +26,7 @@
 #include <NCollection_List.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_DataMap.hxx>
+#include <NCollection_Map.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <BRepAlgo_Image.hxx>
 class BRepAlgo_AsDes;
@@ -134,6 +135,8 @@ private:
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
                                                                            myCutEdges;
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> myVerticesForSubstitute;
+  //! Pieces of cut edges beyond the span the edge's own vertices gave it.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myOutsideEdges;
   BRepAlgo_Image                                                           myImageVV;
   double                                                                   myTolConf;
 };

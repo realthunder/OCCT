@@ -20,6 +20,7 @@
 #include <Bnd_Box2d.hxx>
 #include <BndLib_Add2dCurve.hxx>
 #include <BRep_CurveRepresentation.hxx>
+#include <BRep_RepresentationLock.hxx>
 #include <BRep_GCurve.hxx>
 #include <BRep_TEdge.hxx>
 #include <BRep_Tool.hxx>
@@ -615,12 +616,15 @@ void BRepTools::UpdateFaceUVPoints(const TopoDS_Face& theF)
     const TopoDS_Edge& aE = TopoDS::Edge(anExpE.Current());
 
     const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&aE.TShape());
+    // Not refused for an Immutable edge (a fork flag): the UV points are the
+    // pcurve evaluated at its range, a cache like the triangulation.
     if (TE->Locked())
     {
       return;
     }
 
     const TopLoc_Location aELoc = aLoc.Predivided(aE.Location());
+    BRep_RepresentationLock aLock(TE.get()); // see BRep_RepresentationLock
     // Edge representations
     NCollection_List<occ::handle<BRep_CurveRepresentation>>&          aLCR = TE->ChangeCurves();
     NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itLCR(aLCR);
@@ -912,6 +916,7 @@ void BRepTools::Clean(const TopoDS_Shape& theShape, const bool theForce)
     {
       occ::handle<BRep_CurveRepresentation> aCR;
       BRep_TEdge*                           aTE = static_cast<BRep_TEdge*>(anEdge.TShape().get());
+      BRep_RepresentationLock               aLock(aTE); // see BRep_RepresentationLock
       NCollection_List<occ::handle<BRep_CurveRepresentation>>&          aLCR = aTE->ChangeCurves();
       NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIterCR(aLCR);
 
@@ -1000,6 +1005,7 @@ void BRepTools::RemoveUnusedPCurves(const TopoDS_Shape& S)
   for (i = 1; i <= Emap.Extent(); i++)
   {
     const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&Emap(i).TShape());
+    BRep_RepresentationLock        aLock(TE.get()); // see BRep_RepresentationLock
     NCollection_List<occ::handle<BRep_CurveRepresentation>>&          lcr = TE->ChangeCurves();
     NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itrep(lcr);
     while (itrep.More())

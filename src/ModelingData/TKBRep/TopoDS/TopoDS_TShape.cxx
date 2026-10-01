@@ -15,11 +15,85 @@
 // commercial license or contractual agreement.
 
 #include <TopoDS_TShape.hxx>
+#include <TopoDS_LockedShape.hxx>
 #include <TopoDS_Shape.hxx>
 
 #include <Standard_Dump.hxx>
 
+#include <mutex>
+#include <unordered_map>
+
 IMPLEMENT_STANDARD_RTTIEXT(TopoDS_TShape, Standard_Transient)
+
+unsigned int& TopoDS_LockedShape::raisedCounter()
+{
+  thread_local unsigned int aCount = 0;
+  return aCount;
+}
+
+namespace
+{
+// Thawed copy -> its original (TopoDS_TShape::Thaw). A side table, so the flag
+// is all a TShape carries: copies are rare, and the layout stays as it is.
+// Both are never destroyed: a TShape can die during static destruction, held
+// by a static made before the table (FreeCAD's congruence index), and its
+// destructor still has to find the table at exit.
+std::mutex& thawedMutex()
+{
+  static std::mutex* aMutex = new std::mutex;
+  return *aMutex;
+}
+
+std::unordered_map<const TopoDS_TShape*, occ::handle<TopoDS_TShape>>& thawedOriginals()
+{
+  static auto* aMap = new std::unordered_map<const TopoDS_TShape*, occ::handle<TopoDS_TShape>>;
+  return *aMap;
+}
+} // namespace
+
+//=================================================================================================
+
+void TopoDS_TShape::Thaw(const occ::handle<TopoDS_TShape>& theCopy,
+                         const occ::handle<TopoDS_TShape>& theOriginal)
+{
+  if (theCopy.IsNull() || theOriginal.IsNull() || theCopy == theOriginal)
+  {
+    return;
+  }
+  std::lock_guard<std::mutex> aLock(thawedMutex());
+  thawedOriginals()[theCopy.get()] = theOriginal;
+  theCopy->setBit(Bit_Thawed, true);
+}
+
+//=================================================================================================
+
+occ::handle<TopoDS_TShape> TopoDS_TShape::ThawedFrom(const TopoDS_TShape* theCopy)
+{
+  if (theCopy == nullptr || !theCopy->Thawed())
+  {
+    return occ::handle<TopoDS_TShape>();
+  }
+  std::lock_guard<std::mutex> aLock(thawedMutex());
+  auto anIt = thawedOriginals().find(theCopy);
+  return anIt == thawedOriginals().end() ? occ::handle<TopoDS_TShape>() : anIt->second;
+}
+
+//=================================================================================================
+
+TopoDS_TShape::~TopoDS_TShape()
+{
+  if (Thawed())
+  {
+    occ::handle<TopoDS_TShape> anOriginal; // released after the lock
+    std::lock_guard<std::mutex> aLock(thawedMutex());
+    auto anIt = thawedOriginals().find(this);
+    if (anIt != thawedOriginals().end())
+    {
+      anOriginal = anIt->second;
+      thawedOriginals().erase(anIt);
+    }
+  }
+}
 
 //=================================================================================================
 

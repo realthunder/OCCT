@@ -2301,19 +2301,78 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
           anOr2 = TopAbs::Reverse(anOr2);
         }
 
-        RefEdgeInter(FIO,
-                     BAsurf,
-                     aE1,
-                     aE2,
-                     anOr1,
-                     anOr2,
-                     AsDes2d,
-                     Tol,
-                     true,
-                     Vref,
-                     theImageVV,
-                     theDMVV,
-                     bCoincide);
+        // A removed face's tangent edge closed by a strip and a wall
+        // (BRepOffset_Analyse::TreatTangentCaps) ends at Vref: this face meets
+        // the closure there, and its two edges do not meet each other but the
+        // closure's -- the removed face's side the wall, the kept face's side
+        // the strip (or the wall, where the kept face is its own strip).
+        TopoDS_Edge aStripE, aWallE;
+        if (!Vref.IsNull() && Analyse.HasAncestor(Vref))
+        {
+          for (NCollection_List<TopoDS_Shape>::Iterator itX(Analyse.Ancestors(Vref)); itX.More();
+               itX.Next())
+          {
+            const TopoDS_Shape& aX = itX.Value();
+            if (aX.IsSame(CurESave) || aX.IsSame(NextESave) || !Build.IsBound(aX)
+                || !Analyse.HasAncestor(aX))
+            {
+              continue;
+            }
+            const NCollection_List<TopoDS_Shape>& aLXF = Analyse.Ancestors(aX);
+            if (aLXF.Extent() != 2 || !(aLXF.First().IsSame(FI) || aLXF.Last().IsSame(FI)))
+            {
+              continue;
+            }
+            const TopoDS_Shape& aNew = aLXF.First().IsSame(FI) ? aLXF.Last() : aLXF.First();
+            bool isNew = false;
+            for (NCollection_List<TopoDS_Shape>::Iterator itN(Analyse.NewFaces());
+                 itN.More() && !isNew;
+                 itN.Next())
+            {
+              isNew = itN.Value().IsSame(aNew);
+            }
+            if (!isNew)
+            {
+              continue;
+            }
+            TopExp_Explorer anExpX(Build(aX), TopAbs_EDGE);
+            if (!anExpX.More())
+            {
+              continue;
+            }
+            (Analyse.NewFaceOffset(aNew) == 0. ? aWallE : aStripE) = TopoDS::Edge(anExpX.Current());
+          }
+        }
+        if (!aWallE.IsNull())
+        {
+          // The removed face's side: the edge with one face in the shape.
+          const bool isCapCur = Analyse.HasAncestor(CurESave)
+                                && Analyse.Ancestors(CurESave).Extent() == 1;
+          const TopoDS_Edge& aCapE   = isCapCur ? aE1 : aE2;
+          const TopoDS_Edge& aKeptE  = isCapCur ? aE2 : aE1;
+          const TopoDS_Edge& aKeptX  = aStripE.IsNull() ? aWallE : aStripE;
+          SHOW_TOPO_SHAPE(aWallE, "ConnexInterClosure", aKeptX);
+          RefEdgeInter(FIO, BAsurf, aCapE, aWallE, isCapCur ? anOr1 : anOr2, TopAbs_EXTERNAL,
+                       AsDes2d, Tol, true, Vref, theImageVV, theDMVV, bCoincide);
+          RefEdgeInter(FIO, BAsurf, aKeptE, aKeptX, isCapCur ? anOr2 : anOr1, TopAbs_EXTERNAL,
+                       AsDes2d, Tol, true, Vref, theImageVV, theDMVV, bCoincide);
+        }
+        else
+        {
+          RefEdgeInter(FIO,
+                       BAsurf,
+                       aE1,
+                       aE2,
+                       anOr1,
+                       anOr2,
+                       AsDes2d,
+                       Tol,
+                       true,
+                       Vref,
+                       theImageVV,
+                       theDMVV,
+                       bCoincide);
+        }
 
         if (theEdgeIntEdges.IsBound(aE1))
         {

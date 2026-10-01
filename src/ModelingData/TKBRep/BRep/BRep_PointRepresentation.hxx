@@ -81,6 +81,16 @@ public:
   //! Dumps the content of me into the stream
   Standard_EXPORT virtual void DumpJson(Standard_OStream& theOStream, int theDepth = -1) const;
 
+  //! True for a parameter an Immutable vertex (a fork flag) was given after
+  //! it was frozen -- on the curve of an edge built on it elsewhere, or on a
+  //! face's surface or pcurve. Derived data, as
+  //! BRep_CurveRepresentation::IsCache: BRep_Builder lets it be rewritten
+  //! where the value's own parameters may only be restated.
+  bool IsCache() const { return myIsCache; }
+
+  //! Marks the representation as a cache, see IsCache().
+  void SetCache(const bool theIsCache) { myIsCache = theIsCache; }
+
   DEFINE_STANDARD_RTTIEXT(BRep_PointRepresentation, Standard_Transient)
 
 protected:
@@ -89,6 +99,7 @@ protected:
 private:
   TopLoc_Location myLocation;
   double          myParameter;
+  bool            myIsCache = false;
 };
 
 #include <BRep_PointRepresentation.lxx>
