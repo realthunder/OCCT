@@ -18,7 +18,7 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "tshape": "T", "pocketbox": "box with a 6x6 pocket", "conehole": "cone with a through hole",
          "pocket5": "box with a 5x5 pocket", "blindhole": "box with a blind hole",
          "filletbox": "box with filleted vertical edges, r2", "filletbox25": "box with filleted vertical edges, r2.5",
-         "shortcyl": "cylinder 1.5 high", "shortbox": "box 10 x 10 x 1.5"}
+         "shortcyl": "cylinder 1.5 high", "shortbox": "box 10 x 10 x 1.5", "box6": "box 10 x 10 x 6"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"]:
@@ -51,8 +51,9 @@ for name in names:
     img = Image.new("RGB", (3 * W, top + lab + 2 * H), "white")
     d = ImageDraw.Draw(img)
     d.text((10, 8), name, font=FT, fill=(0, 0, 0))
+    nf = 6 if sk.startswith(("box", "short")) and "cyl" not in sk else 3
     faces = "Face%d" % fi if not isinstance(fi, list) else "all but Face%d" % (
-        [i for i in range(1, 7) if i not in fi][0])
+        [i for i in range(1, nf + 1) if i not in fi][0])
     desc = "%s, %s removed, %s, %s%s; expected %s  (fix: sec %s)" % (
         NAMES[sk], faces, "outward +1" if val > 0 else "inward -1", JOIN[join], ", intersection on" if inter else "",
         "%.2f" % ref if ref else "a valid solid", sec)

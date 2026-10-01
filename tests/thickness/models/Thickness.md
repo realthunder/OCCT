@@ -10,12 +10,12 @@ measured against upstream for the first time and the thickness failures were
 chased down, one cause at a time. This page shows what each fix did, in
 pictures. The build log -- every cause, what was tried, the hand-worked
 volumes, the gates -- is FreeCAD's docs/TransactionLog.md sec 27.88 to
-27.96, sec 27.100 and sec 27.101; "sec" below means a section there.
+27.96 and sec 27.100 to 27.102; "sec" below means a section there.
 
 Where things are:
 
 - The fork's suite: `tests/thickness/run_tests.py` (`FreeCADCmd
-  tests/thickness/run_tests.py`; PASS 77) and its `README.md`, the
+  tests/thickness/run_tests.py`; PASS 82) and its `README.md`, the
   case-by-case reference.
 - The pictures: `pictures/<case>.png` beside this page, one per case of the
   suite that a fix turned from failing to passing.
@@ -85,6 +85,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.96 | 0 | 162 | 149 / 149 | 149 / 149 | 106 / 107 / 110 / 111 |
 | sec 27.100 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.101 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.102 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -101,9 +102,9 @@ upstream too: the fork now does better than upstream there.
 
 Nothing in the suite fails now, and every run of the sweep in scope is
 right. Out of scope, sec 27.101 answers the faces left in pieces where each
-piece is a plain plate or disc; a piece that is a pocket inside the shape is
-still refused, and so is the Intersection join with one face left, which
-upstream answers (README.md, "Faces left in pieces").
+piece is a plain plate or disc, with either join (sec 27.102); a piece that
+is a pocket inside the shape is still refused (README.md, "Faces left in
+pieces").
 
 ## The fixes
 
@@ -358,6 +359,25 @@ an empty shell; upstream is right.
 ![cyl_side_in](pictures/cyl_side_in.png)
 ![short_cyl_side_in](pictures/short_cyl_side_in.png)
 ![short_box_bottom_in](pictures/short_box_bottom_in.png)
+
+### Sec 27.102: the Intersection join with one face left
+
+A cylinder down to its top, a box down to its bottom, with the Intersection
+join: the fork threw (`BRepAlgo_Image::Bind`) where upstream answers. Its
+face list for the intersections carries the removed faces, and with one face
+left the removed faces' enlarged copies had been split; binding the splits
+as offsets met the image a removed face already has. A removed face now goes
+the way it goes when not split. Underneath was a second fault: the removed
+side's seam reached the side's loop once, not once each way -- the
+intersection took the side's edges from a map, which holds a seam once --
+and the loop, with no band to build, kept the whole side: the cap outward
+came out as the cylinder. The seam is recorded both ways now. Upstream's cap
+outward is inside out. The cylinder's side, in pieces (sec 27.101), is
+answered with this join too.
+
+![cyl_cap_alone_join_out](pictures/cyl_cap_alone_join_out.png)
+![box_bottom_alone_join_in](pictures/box_bottom_alone_join_in.png)
+![cyl_side_join_out](pictures/cyl_side_join_out.png)
 
 ## The captured models
 

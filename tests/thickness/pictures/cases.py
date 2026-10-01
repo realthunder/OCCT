@@ -22,6 +22,7 @@ STAGES = {
     "s96": ("c4be5548f9", "27.96"),
     "s100": ("457b652f42", "27.100"),
     "s101": ("b21dabe1c4", "27.101"),
+    "s102": ("d4d2fe0719", "27.102"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -50,6 +51,7 @@ SHAPES = {
     "filletbox25": lambda: _fillet(2.5),
     "shortcyl": lambda: Part.makeCylinder(4, 1.5),
     "shortbox": lambda: Part.makeBox(10, 10, 1.5),
+    "box6": lambda: Part.makeBox(10, 10, 6),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -106,6 +108,9 @@ CASES = {
     "cyl_side_in": ("s101", "cyl", 1, -1, False, 0, 100.5310),
     "short_cyl_side_in": ("s101", "shortcyl", 1, -1, False, 0, 75.3982),
     "short_box_bottom_in": ("s101", "shortbox", [1, 2, 3, 4, 6], -1, False, 0, 100.0),
+    "cyl_cap_alone_join_out": ("s102", "cyl", [1, 3], +1, False, 2, 50.2655),
+    "box_bottom_alone_join_in": ("s102", "box6", [1, 2, 3, 4, 6], -1, False, 2, 100.0),
+    "cyl_side_join_out": ("s102", "cyl", 1, +1, False, 2, 100.5310),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).
@@ -118,6 +123,7 @@ SHELLS = {
 SOLIDS = {
     "cyl_side_out": 2,
     "cyl_side_in": 2,
+    "cyl_side_join_out": 2,
 }
 # The captured user models; upstream 8.0.1 passes them all, so not pictured.
 DOCS = {
