@@ -295,6 +295,20 @@ thickness_case("filletbox_side_in", filletbox, 6, -1.0, "pass", 253.1150)
 # two tubes and four eighths of a sphere.
 thickness_case("filletbox_end_out",  filletbox, 1, +1.0, "pass", 403.9604)
 thickness_case("filletbox_side_out", filletbox, 6, +1.0, "pass", 388.8188)
+# A fillet removed: the removed face is curved, tangent to the planes beside
+# it, and the tubes and corners above are built on its cylinder. The loop on
+# that periodic surface searched and kept a dozen wires, the fillet's own
+# outline among them; its edges all lie within the fillet's quarter turn, so
+# it now walks the angles as on a plane. Inward, the floor's and the
+# ceiling's offsets cut the cylinder in a circle that crosses the walls'
+# offsets before it reaches the tubes, and the piece of floor cut off there
+# hangs on the shell; it is dropped (FreeCAD docs/TransactionLog.md sec
+# 27.95). Before: outward an exception, inward a valid 647.5624 -- more than
+# the input. Worked out by hand: inward the input less the cavity (its
+# section by Green's theorem), outward (Steiner) the whole skin less the
+# fillet's slab and two quarter tori, plus two tubes and four sphere pieces.
+thickness_case("filletbox_fillet_in",  filletbox, 3, -1.0, "pass", 267.0193)
+thickness_case("filletbox_fillet_out", filletbox, 3, +1.0, "pass", 405.9034)
 
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
