@@ -134,12 +134,11 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 | `lbox_notch_wall_inter_join_out`, `tshape_post_wall_inter_join_in`, `pocket_wall_inter_join_in` | concave removed faces, intersection on, Intersection join | the splits of the offset faces left the rim uncut; such shapes are built as with intersection off |
 | `filletbox_end_*`, `filletbox_side_*` | box with its vertical edges filleted, an end or side face removed (Arc join) | the removed face is tangent to the fillets, whose offsets never meet it (inward) or meet it far round the cylinder (outward, a lip). A tube round the tangent edge closes the gap, turning into the removed face, and outward an eighth of a sphere closes each corner with the top and bottom edges' tubes (sec 27.93). Worked out by hand (Steiner for outward) |
 | `filletbox_fillet_*` | the same box, a fillet removed (Arc join) | the removed face is curved: the tubes and corners are built on its cylinder; the loop on that periodic surface kept a dozen wires and now walks the angles, its edges lying within one period; inward a piece of the floor's offset cut off by the cylinder's circle hung on the shell and is dropped (sec 27.95). Worked out by hand |
+| `filletbox_*_join_*`, `filletbox25_fillet_join_*` | the same box, an end, side or fillet face removed, Intersection join (a fillet of 2.5 too) | that join builds no tubes: the neighbour's offset ran round its cylinder into a lip (outward) or never met the removed face (inward, unhollowed). The gap is closed with the tube's sharp counterpart -- a strip of the neighbour's tangent plane a thickness into the removed face, offset with it, and a wall square to the removed face at its far edge; cubes at the corners (sec 27.96). Worked out by hand |
 
 The 712-run sweep against upstream after these: the fork right in 149 of
-150 with the Arc join and 137 with the Intersection join (upstream 106-111),
-worse than upstream in no run. Still failing, upstream too: the filleted
-box with the Intersection join (no tubes there: the end and side faces
-inward, a fillet either way), and the holed cone's top inward (the wall is
+150 with either join (upstream 106-111), worse than upstream in no run.
+Still failing, upstream too: the holed cone's top inward (the wall is
 thinner than twice the thickness; no hollow result exists).
 
 ## Determinism cases (intersection mode, Arc join)
