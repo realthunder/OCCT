@@ -240,6 +240,58 @@ thickness_case("tshape_back_inter_join_in",  tshape, 8, -1.0, "pass", 192.0, Tru
 conehole = Part.makeCone(6, 3, 8).cut(Part.makeCylinder(1.5, 8))
 thickness_case("conehole_bottom_inter_in", conehole, 3, -1.0, "pass", 307.1946, True, 0)
 
+
+def sealed_case(name, shape, face_index, value, skin_volume, void_volume, inter, join):
+    """A thick solid whose cavity reaches no removed face: a valid solid of two
+    closed shells, the skin the input with the removed face kept, and a void."""
+    try:
+        r = shape.makeThickness([shape.Faces[face_index - 1]], value, 1e-7, inter, False, 0, join)
+        problems = []
+        if r.ShapeType != "Solid":
+            problems.append("type=%s" % r.ShapeType)
+        if not r.isValid():
+            problems.append("invalid")
+        vols = sorted((abs(Part.Solid(sh).Volume) for sh in r.Shells), reverse=True)
+        if len(r.Shells) != 2 or not all(sh.isClosed() for sh in r.Shells):
+            problems.append("shells=%s" % ["%.4f" % v for v in vols])
+        else:
+            for got, want in zip(vols, (skin_volume, void_volume)):
+                if abs(got - want) > RELTOL * want:
+                    problems.append("shell %.4f != %.4f" % (got, want))
+            want = skin_volume - void_volume
+            if abs(r.Volume - want) > RELTOL * want:
+                problems.append("volume %.4f != %.4f" % (r.Volume, want))
+        detail = "; ".join(problems) if problems else "vol=%.4f" % r.Volume
+        report(name, not problems, False, detail)
+    except Exception as e:
+        report(name, False, False, "EXCEPTION " + str(e).strip().splitlines()[-1])
+
+
+# The same cone, its top removed, inward: the wall is 1.4 thick at the top,
+# the cone's and the hole's inner offsets cross at z=6.485, and no cavity
+# reaches the removed face. The material is every point within the thickness
+# of a face that stays, so the cavity -- r > 2.5, inside the cone's offset,
+# z > 1 -- is closed, and the top stays as skin over it (the user's choice,
+# FreeCAD docs/TransactionLog.md sec 27.100). The fork gave a "valid" 577.918
+# with intersection off, a shell crossing itself, and invalid shapes with it
+# on: the loop let the band above the crossing take the crossing circle from
+# the cavity's band, and intersection off never meets the two offsets.
+# Upstream's intersection mode gives this result; its default mode is invalid.
+# Hand values: skin 471.2389, void 112.9243 (the band between r=2.5 and the
+# cone's offset, z from 1 to 6.4853).
+for inter in (False, True):
+    for join in (0, 2):
+        sealed_case("conehole_top_in_sealed_%s_j%d" % ("inter" if inter else "nointer", join),
+                    conehole, 2, -1.0, 471.2389, 112.9243, inter, join)
+
+# Its bottom removed with intersection off: the two offsets were never
+# intersected and the cavity ran on to z=7, a sliver of it inside out --
+# "valid", 0.761 too much (upstream: invalid). The walls beside the removed
+# face are too thin for intersection off, which builds it with intersection
+# on now (sec 27.100).
+thickness_case("conehole_bottom_in", conehole, 3, -1.0, "pass", 307.1946, False, 0)
+thickness_case("conehole_bottom_join_in", conehole, 3, -1.0, "pass", 307.1946, False, 2)
+
 # The Intersection join, intersection off: the T's right bar top inward, and
 # a box pocketed 5 x 5 with its pocket floor removed, came back as valid
 # solids of negative volume -- inside out, the quilt's shells met in an order

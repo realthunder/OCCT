@@ -136,10 +136,16 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 | `filletbox_fillet_*` | the same box, a fillet removed (Arc join) | the removed face is curved: the tubes and corners are built on its cylinder; the loop on that periodic surface kept a dozen wires and now walks the angles, its edges lying within one period; inward a piece of the floor's offset cut off by the cylinder's circle hung on the shell and is dropped (sec 27.95). Worked out by hand |
 | `filletbox_*_join_*`, `filletbox25_fillet_join_*` | the same box, an end, side or fillet face removed, Intersection join (a fillet of 2.5 too) | that join builds no tubes: the neighbour's offset ran round its cylinder into a lip (outward) or never met the removed face (inward, unhollowed). The gap is closed with the tube's sharp counterpart -- a strip of the neighbour's tangent plane a thickness into the removed face, offset with it, and a wall square to the removed face at its far edge; cubes at the corners (sec 27.96). Worked out by hand |
 
-The 712-run sweep against upstream after these: the fork right in 149 of
-150 with either join (upstream 106-111), worse than upstream in no run.
-Still failing, upstream too: the holed cone's top inward (the wall is
-thinner than twice the thickness; no hollow result exists).
+## A cavity sealed below the removed face (2026-10-01, sec 27.100)
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `conehole_top_in_sealed_*` | cone with a through hole, top removed, inward, all four modes | the wall is 1.4 thick at the top and the inner offsets cross at z=6.485: no cavity reaches the removed face. The right result (the user's choice) is two shells: the input's skin, the top kept, and a closed void. The loop let the band above the crossing take the crossing circle from the cavity's band below it; the cavity's band is built now, from the seam's pcurves, and a thick solid whose offset faces all close up is the skin and its voids. With intersection off the two offsets were never intersected; walls beside a removed face too thin for it are built with intersection on. Hand values: skin 471.2389, void 112.9243. Upstream's intersection mode gives this; its default mode is invalid |
+| `conehole_bottom_in`, `conehole_bottom_join_in` | the same cone, bottom removed, inward, intersection off | the same crossing near the top face, never intersected: the cavity ran on to z=7, a sliver inside out, "valid" and 0.761 too much. Built with intersection on now. Worked out by hand |
+
+The 712-run sweep against upstream after these: the fork right in all 150
+runs of every mode (upstream 106-112, counting the sealed void right),
+worse than upstream in no run.
 
 ## Determinism cases (intersection mode, Arc join)
 
