@@ -640,10 +640,36 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
     NCollection_List<TopoDS_Shape>                         LV;
     NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> MV;
 
+    // The const edges' vertices, as they came: where a crossing splits an
+    // extended edge, the piece to keep runs from the end on one of them.
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aConstVertices;
     for (itl.Initialize(myConstEdges); itl.More(); itl.Next())
     {
       theEdges.Append(itl.Value());
+      for (TopoDS_Iterator It(itl.Value()); It.More(); It.Next())
+      {
+        aConstVertices.Add(It.Value());
+      }
     }
+    auto isOnConstEdge = [&aConstVertices](const TopoDS_Shape& theV) {
+      if (aConstVertices.Contains(theV))
+      {
+        return true;
+      }
+      const gp_Pnt aP   = BRep_Tool::Pnt(TopoDS::Vertex(theV));
+      const double aTol = BRep_Tool::Tolerance(TopoDS::Vertex(theV));
+      for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIt(aConstVertices);
+           anIt.More();
+           anIt.Next())
+      {
+        const TopoDS_Vertex& aCV = TopoDS::Vertex(anIt.Key());
+        if (aP.Distance(BRep_Tool::Pnt(aCV)) <= std::max(aTol, BRep_Tool::Tolerance(aCV)))
+        {
+          return true;
+        }
+      }
+      return false;
+    };
 
     // Where an extended edge -- the removed face's section, stretched far past
     // the face -- crosses another edge, the crossing does not bound that
@@ -874,7 +900,14 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
                   SHOW_TOPO_SHAPE(aLocalShape, "VertexOverR");
                   ReorientVertex(VL, TopAbs_FORWARD);
                 }
-                else if (P < (FP + LP) / 2)
+                // A crossing inside the edge keeps the piece from the end on
+                // a const edge -- the face that stays -- when only one end
+                // is: a removed face's band between the face that stays and
+                // its offset, which is the longer piece where the walls are
+                // shorter than twice the thickness (a short box hollowed
+                // down to its bottom). Otherwise the nearer end's piece.
+                else if (isOnConstEdge(VF) != isOnConstEdge(VL) ? isOnConstEdge(VF)
+                                                                : P < (FP + LP) / 2)
                 {
                   aLocalShape = aVertex.Oriented(TopAbs_REVERSED);
                   ReorientVertex(VF, TopAbs_FORWARD);
