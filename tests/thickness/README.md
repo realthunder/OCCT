@@ -16,6 +16,12 @@ Any FreeCAD build linked against this OCCT tree:
 FreeCADCmd tests/thickness/run_tests.py
 ```
 
+The suite runs with FreeCAD's shape values unfrozen (`ImmutableShapeValues`
+off), as any build that does not freeze them runs: a frozen input is
+protected by copy-on-write from an algorithm that edits it, and the suite
+must see such an edit. `THICK_FREEZE=1` runs it frozen. Every case also
+checks that its input comes back as it went in (valid, the same volume).
+
 Exit code 0 = no regression (every expected-pass case passed). Known-broken
 cases are marked `XFAIL` in the script; when one starts passing the suite
 prints `UNEXPECTED-PASS` — promote it to `pass` with its reference volume and
@@ -241,6 +247,30 @@ The sweep: in scope unchanged. Every pocket and boss shape is answered now,
 in every mode -- `boxhole2` Face3 and Face7, `pocket` Face3, `cylpocket`
 Faces 1, 2 and 4, `cylboss` Faces 1, 2 and 4 -- and all 68 runs check by
 hand. The torus's face is the one refusal left.
+
+## The input left as it was (2026-10-01, sec 27.104)
+
+A PartDesign Pad of an arc whose parameters run past 2 pi, under a Thickness
+removing the arc's face and the caps, came back inside out on the Windows
+box (`issue3_pad_thickness`: Pad -189356.2997, occ-issues `local03`): the
+thickness had edited the Pad's shape. The loop's pruning builds a test face
+of each wire on the face's own surface from the loop's own edges, some of
+them the input's, and ran `ShapeFix_Shape` on it when it was invalid;
+ShapeFix shifted the pcurve of a shared edge by a period, on that surface --
+the input face's own pcurve. Reached since a periodic face whose edges lie
+within one period takes the plane path (sec 27.95). ShapeFix now works on a
+copy. It showed only unfrozen: FreeCAD freezes the values it finds this fork
+for, and this suite ran frozen -- it runs unfrozen now, and every case
+checks its input.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `issue3_pad_thickness` | the captured model, unfrozen | the Pad stays valid under the Thickness |
+| `sector_outer_arc_input`, `sector_outer_arc_past_period_input` | a ring sector straddling angle 0 padded 27, its outer arc's face and caps removed | the input as it was (inside out before, frozen or not: shapes made in Python are not frozen) |
+
+The sweep, with an input check added: no run alters its input, before the
+fix or after, and every line is unchanged -- its 16 solids never cut a
+periodic face across its seam.
 
 ## Determinism cases (intersection mode, Arc join)
 

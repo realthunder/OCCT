@@ -28,6 +28,25 @@ def emit(line):
 MODELS = os.path.join(HERE, "models")
 RELTOL = 1e-3
 
+# FreeCAD freezes shape values (Immutable TShapes, copy-on-write) when it finds
+# this fork; a frozen input is protected from an algorithm that edits it. Run
+# unfrozen by default, the way any other build of FreeCAD runs it, so an edit
+# of the input shows (THICK_FREEZE=1 for the frozen path).
+App.ParamGet("User parameter:BaseApp/Preferences/Mod/Part").SetBool(
+    "ImmutableShapeValues", os.environ.get("THICK_FREEZE", "0") != "0")
+
+
+def signature(shape):
+    """What a thickness must leave of its input: the shape valid, the volume."""
+    return (shape.isValid(), round(shape.Volume, 6))
+
+
+def input_problems(shape, before):
+    after = signature(shape)
+    if after == before:
+        return []
+    return ["input changed: valid=%s vol=%.4f" % after]
+
 results = []  # (name, verdict, detail); verdict in PASS/FAIL/XFAIL/UNEXPECTED-PASS
 
 
@@ -96,8 +115,9 @@ def thickness_case(name, shape, face_index, value, expect, ref_volume=None, inte
     detail = ""
     try:
         faces = [shape.Faces[face_index - 1]]
+        before = signature(shape)
         r = shape.makeThickness(faces, value, 1e-7, inter, False, 0, join)
-        problems = []
+        problems = input_problems(shape, before)
         if r.ShapeType != "Solid":
             problems.append("type=%s" % r.ShapeType)
         if not r.isValid():
@@ -124,9 +144,10 @@ def pieces_case(name, shape, face_indices, value, solids, inter=False, join=0):
     with one closed shell -- a void is a wrong answer here."""
     detail = ""
     try:
+        before = signature(shape)
         r = shape.makeThickness([shape.Faces[i - 1] for i in face_indices], value, 1e-7,
                                 inter, False, 0, join)
-        problems = []
+        problems = input_problems(shape, before)
         want = "Solid" if len(solids) == 1 else "Compound"
         if r.ShapeType != want:
             problems.append("type=%s" % r.ShapeType)
@@ -358,8 +379,9 @@ def sealed_case(name, shape, face_index, value, skin_volume, void_volume, inter,
     """A thick solid whose cavity reaches no removed face: a valid solid of two
     closed shells, the skin the input with the removed face kept, and a void."""
     try:
+        before = signature(shape)
         r = shape.makeThickness([shape.Faces[face_index - 1]], value, 1e-7, inter, False, 0, join)
-        problems = []
+        problems = input_problems(shape, before)
         if r.ShapeType != "Solid":
             problems.append("type=%s" % r.ShapeType)
         if not r.isValid():
@@ -501,6 +523,46 @@ thickness_case("filletbox25_fillet_join_out", filletbox25, 3, +1.0, "pass", 407.
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
              7, -1.0, True, 2)
+
+# The input left as it was. A pad of a ring sector straddling angle 0, its
+# outer arc's face and both caps removed: the loop on the removed cylinder
+# found its test face invalid and ran ShapeFix on it, which shifted the pcurve
+# of an edge the test face shares with the input by a period, on the
+# cylinder's own surface -- the input came back inside out (FreeCAD's
+# PartDesign Pad under a Thickness, issue3 above, with shape values not
+# frozen; occ-issues local03, FreeCAD docs/TransactionLog.md sec 27.104).
+# Only the input and the result's validity are checked here.
+def input_case(name, shape, face_indices, value, inter=False, join=0):
+    try:
+        before = signature(shape)
+        r = shape.makeThickness([shape.Faces[i - 1] for i in face_indices], value, 1e-7,
+                                inter, False, 0, join)
+        problems = input_problems(shape, before)
+        if not r.isValid():
+            problems.append("result invalid")
+        detail = "; ".join(problems) if problems else "input intact, result vol=%.4f" % r.Volume
+        report(name, not problems, False, detail)
+    except Exception as e:
+        report(name, False, False, "EXCEPTION " + str(e).strip().splitlines()[-1])
+
+
+def ring_sector(past):
+    """A ring sector of radii 46.85 and 59.3 straddling angle 0, padded 27:
+    its arcs' parameters run from past - a to past + a."""
+    V = App.Vector
+    outer = Part.ArcOfCircle(Part.Circle(V(0, 0, 0), V(0, 0, 1), 59.3), past - 0.29,
+                             past + 0.29).toShape()
+    inner = Part.ArcOfCircle(Part.Circle(V(0, 0, 0), V(0, 0, 1), 46.85), past - 0.23,
+                             past + 0.23).toShape()
+    sides = [Part.makeLine(inner.Vertexes[k].Point, outer.Vertexes[k].Point) for k in (0, 1)]
+    wire = Part.Wire(Part.__sortEdges__([outer, sides[0], inner, sides[1]]))
+    return Part.Face(wire).extrude(V(0, 0, 27))
+
+
+# Face3 the outer arc's, Face5 and Face6 the caps.
+input_case("sector_outer_arc_input", ring_sector(0.0), [3, 5, 6], 1.0)
+input_case("sector_outer_arc_past_period_input", ring_sector(2 * math.pi), [3, 5, 6], 1.0)
+
 
 # Determinism: thickness with intersection and the Arc join iterated its
 # offsets in hash order (a shape's hash is its TShape's address), and the
