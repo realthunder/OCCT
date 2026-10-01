@@ -349,6 +349,58 @@ static bool IsClosedInUV(const TopoDS_Wire& theWire, const TopoDS_Face& theFace)
 
 //=================================================================================================
 
+// Whether the edges of a periodic face all lie within one period, none of
+// them a seam: then its (u, v) is a chart of the whole network, as a plane's
+// is, and the network's minimal wires are found the same way -- a fillet
+// removed from a box, cut by its neighbours' offsets and the tubes beside it
+// within its quarter turn.
+static bool IsInOnePeriod(
+  const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+                                   theMVE,
+  const TopoDS_Face&               theFace,
+  const occ::handle<Geom_Surface>& theSurf)
+{
+  double aUMin = RealLast(), aUMax = RealFirst(), aVMin = RealLast(), aVMax = RealFirst();
+  for (int i = 1; i <= theMVE.Extent(); ++i)
+  {
+    for (NCollection_List<TopoDS_Shape>::Iterator it(theMVE(i)); it.More(); it.Next())
+    {
+      const TopoDS_Edge& anEdge = TopoDS::Edge(it.Value());
+      if (BRep_Tool::IsClosed(anEdge, theFace))
+      {
+        return false;
+      }
+      double                    aF, aL;
+      occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(anEdge, theFace, aF, aL);
+      if (aC2d.IsNull())
+      {
+        return false;
+      }
+      const int aNbS = 16;
+      for (int k = 0; k <= aNbS; ++k)
+      {
+        const gp_Pnt2d aP = aC2d->Value(aF + (aL - aF) * k / aNbS);
+        aUMin             = std::min(aUMin, aP.X());
+        aUMax             = std::max(aUMax, aP.X());
+        aVMin             = std::min(aVMin, aP.Y());
+        aVMax             = std::max(aVMax, aP.Y());
+      }
+    }
+  }
+  // Short of a whole period by more than the sampling can miss.
+  if (theSurf->IsUPeriodic() && aUMax - aUMin > 0.9 * theSurf->UPeriod())
+  {
+    return false;
+  }
+  if (theSurf->IsVPeriodic() && aVMax - aVMin > 0.9 * theSurf->VPeriod())
+  {
+    return false;
+  }
+  return aUMin <= aUMax;
+}
+
+//=================================================================================================
+
 static void StoreInMVE(
   const TopoDS_Face& F,
   TopoDS_Edge&       E,
@@ -1829,10 +1881,15 @@ void BRepAlgo_Loop::FindLoop()
   TopLoc_Location           L;
   occ::handle<Geom_Surface> S          = BRep_Tool::Surface(myFace, L);
   bool                      IsPeriodic = S->IsUPeriodic() || S->IsVPeriodic();
+  if (IsPeriodic && DegenEdges.IsEmpty() && IsInOnePeriod(MVE, myFace, S))
+  {
+    IsPeriodic = false;
+    SHOW_TOPO_SHAPE(myFace, "LoopInOnePeriod");
+  }
   DejaVu.Clear();
 
-  // By angle where the face is not periodic; the search otherwise, or when
-  // the walk cannot describe the network.
+  // By angle where the face is not periodic, or its edges lie within one
+  // period; the search otherwise, or when the walk cannot describe the network.
   const int aWalkMode = IsPeriodic ? 0 : LoopWalkMode();
   MapOfWire aWalked;
   const bool isWalked =
