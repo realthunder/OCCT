@@ -15,6 +15,7 @@
 // commercial license or contractual agreement.
 
 #include <BRep_Builder.hxx>
+#include <BRep_RepresentationLock.hxx>
 #include <vector>
 #include <NCollection_DataMap.hxx>
 
@@ -73,6 +74,10 @@
 // afterwards. A pcurve's cache for a face that is gone is removed when the
 // next one is added: its surface is then held by caches alone. The value's own may not, and nothing may take a tolerance the
 // edge or vertex would have to grow to: those change the value, and throw.
+//
+// A frozen shape may be read on another thread while it takes caches here, so
+// every method below that edits an Immutable TShape does it under that
+// TShape's BRep_RepresentationLock, as the writers walk it under the same lock.
 //=================================================================================================
 
 //! For an Immutable target: true when the call changes nothing (the caller
@@ -136,6 +141,7 @@ static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
       continue;
     }
     aVertices.push_back(aTV);
+    BRep_RepresentationLock aVLock(aTV.get()); // the edge's, then its vertices'
     for (const occ::handle<BRep_PointRepresentation>& aPR : aTV->Points())
     {
       if (aPR->IsCache() && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface()))
@@ -180,6 +186,7 @@ static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
   }
   for (const occ::handle<BRep_TVertex>& aTV : aVertices)
   {
+    BRep_RepresentationLock aVLock(aTV.get()); // the edge's, then its vertices'
     NCollection_List<occ::handle<BRep_PointRepresentation>>& aPoints = aTV->ChangePoints();
     NCollection_List<occ::handle<BRep_PointRepresentation>>::Iterator aPIt(aPoints);
     while (aPIt.More())
@@ -868,6 +875,7 @@ void BRep_Builder::UpdateFace(const TopoDS_Face&               F,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TFace>& TF = *((occ::handle<BRep_TFace>*)&F.TShape());
+  BRep_RepresentationLock aLock(TF.get()); // an Immutable one may be read on another thread
   if (TF->Locked() || TF->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
@@ -885,6 +893,7 @@ void BRep_Builder::UpdateFace(const TopoDS_Face&                     theFace,
                               const bool                             theToReset) const
 {
   const occ::handle<BRep_TFace>& aTFace = *((occ::handle<BRep_TFace>*)&theFace.TShape());
+  BRep_RepresentationLock aLock(aTFace.get()); // an Immutable one may be read on another thread
   if (aTFace->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
@@ -898,6 +907,7 @@ void BRep_Builder::UpdateFace(const TopoDS_Face&                     theFace,
 void BRep_Builder::UpdateFace(const TopoDS_Face& F, const double Tol) const
 {
   const occ::handle<BRep_TFace>& TF = *((occ::handle<BRep_TFace>*)&F.TShape());
+  BRep_RepresentationLock aLock(TF.get()); // an Immutable one may be read on another thread
   if (TF->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
@@ -916,6 +926,7 @@ void BRep_Builder::UpdateFace(const TopoDS_Face& F, const double Tol) const
 void BRep_Builder::NaturalRestriction(const TopoDS_Face& F, const bool N) const
 {
   const occ::handle<BRep_TFace>& TF = (*((occ::handle<BRep_TFace>*)&F.TShape()));
+  BRep_RepresentationLock aLock(TF.get()); // an Immutable one may be read on another thread
   if (TF->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::NaturalRestriction");
@@ -949,6 +960,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&             E,
                               const double                   Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked() || TE->Immutable())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -970,6 +982,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1004,6 +1017,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const gp_Pnt2d&                  Pl) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1034,6 +1048,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const double                     Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1069,6 +1084,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
                               const gp_Pnt2d&                  Pl) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1096,6 +1112,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
                               const TopLoc_Location&             L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1136,6 +1153,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                              E,
                               const TopLoc_Location&                          L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1184,6 +1202,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                              E,
                               const TopLoc_Location&                          L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1243,6 +1262,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
                               const TopLoc_Location&             L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1300,6 +1320,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
                               const TopLoc_Location&             L) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1342,6 +1363,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&                 E,
 void BRep_Builder::UpdateEdge(const TopoDS_Edge& E, const double Tol) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
@@ -1378,6 +1400,7 @@ void BRep_Builder::Continuity(const TopoDS_Edge&               E,
                               const GeomAbs_Shape              C) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::Continuity");
@@ -1426,6 +1449,7 @@ void BRep_Builder::Continuity(const TopoDS_Edge&               E,
 void BRep_Builder::SameParameter(const TopoDS_Edge& E, const bool S) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::SameParameter");
@@ -1443,6 +1467,7 @@ void BRep_Builder::SameParameter(const TopoDS_Edge& E, const bool S) const
 void BRep_Builder::SameRange(const TopoDS_Edge& E, const bool S) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::SameRange");
@@ -1460,6 +1485,7 @@ void BRep_Builder::SameRange(const TopoDS_Edge& E, const bool S) const
 void BRep_Builder::Degenerated(const TopoDS_Edge& E, const bool D) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::Degenerated");
@@ -1486,6 +1512,7 @@ void BRep_Builder::Range(const TopoDS_Edge& E,
 {
   //  set the range to all the representations if Only3d=FALSE
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::Range");
@@ -1522,6 +1549,7 @@ void BRep_Builder::Range(const TopoDS_Edge&               E,
                          const double                     Last) const
 {
   const occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TE.get()); // an Immutable one may be read on another thread
   if (TE->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::Range");
@@ -1604,6 +1632,7 @@ void BRep_Builder::Transfert(const TopoDS_Edge& Ein, const TopoDS_Edge& Eout) co
 void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V, const gp_Pnt& P, const double Tol) const
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
   if (TV->Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
@@ -1646,6 +1675,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V,
 
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
   const occ::handle<BRep_TEdge>&   TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
 
   if (TV->Locked() || TE->Locked())
   {
@@ -1754,6 +1784,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex&             V,
 
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
   const occ::handle<BRep_TEdge>&   TE = *((occ::handle<BRep_TEdge>*)&E.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
 
   if (TV->Locked() || TE->Locked())
   {
@@ -1846,6 +1877,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& Ve,
                                 const double         Tol) const
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&Ve.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
 
   if (TV->Locked())
   {
@@ -1871,6 +1903,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& Ve,
 void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V, const double Tol) const
 {
   const occ::handle<BRep_TVertex>& TV = *((occ::handle<BRep_TVertex>*)&V.TShape());
+  BRep_RepresentationLock aLock(TV.get()); // an Immutable one may be read on another thread
 
   if (TV->Locked())
   {

@@ -15,6 +15,7 @@
 #include <BinTools_LocationSet.hxx>
 
 #include <TopoDS.hxx>
+#include <BRep_RepresentationLock.hxx>
 #include <BRep_TEdge.hxx>
 #include <BRep_GCurve.hxx>
 #include <BRep_Polygon3D.hxx>
@@ -90,6 +91,10 @@ void BinTools_ShapeWriter::WriteShape(BinTools_OStream& theStream, const TopoDS_
   try
   {
     OCC_CATCH_SIGNALS
+    // An Immutable shape's caches may be edited on another thread while it is
+    // written: its representations are walked under its lock, released
+    // before the sub-shapes are.
+    BRep_RepresentationLock aLock(aShape.TShape().get());
     switch (aShape.ShapeType())
     {
       case TopAbs_VERTEX: {

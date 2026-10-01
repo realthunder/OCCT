@@ -17,6 +17,7 @@
 #include <BinTools_Curve2dSet.hxx>
 #include <BinTools_ShapeSet.hxx>
 #include <BinTools_SurfaceSet.hxx>
+#include <BRep_RepresentationLock.hxx>
 #include <BRep_CurveOnClosedSurface.hxx>
 #include <BRep_CurveOnSurface.hxx>
 #include <BRep_CurveRepresentation.hxx>
@@ -142,6 +143,9 @@ BinTools_LocationSet& BinTools_ShapeSet::ChangeLocations()
 
 void BinTools_ShapeSet::AddShape(const TopoDS_Shape& S)
 {
+  // An Immutable shape's caches may be edited on another thread while it is
+  // written: its representations are walked under its lock.
+  BRep_RepresentationLock aLock(S.TShape().get());
   // Add the geometry
 
   if (S.ShapeType() == TopAbs_VERTEX)
@@ -617,6 +621,7 @@ void BinTools_ShapeSet::ReadGeometry(Standard_IStream& IS, const Message_Progres
 
 void BinTools_ShapeSet::WriteShape(const TopoDS_Shape& S, Standard_OStream& OS) const
 {
+  BRep_RepresentationLock aLock(S.TShape().get()); // as in AddShape
   // Write the geometry
   try
   {

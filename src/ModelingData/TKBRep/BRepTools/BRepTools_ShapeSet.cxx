@@ -32,6 +32,7 @@
 #include <BRep_TVertex.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_ShapeSet.hxx>
+#include <BRep_RepresentationLock.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <GeomTools.hxx>
@@ -146,6 +147,7 @@ void BRepTools_ShapeSet::OwnGeometry::Add(const TopoDS_Shape& theS)
     {
       continue;
     }
+    BRep_RepresentationLock aLock(aTE.get()); // as in AddGeometry
     // The orientation the edge itself gives the vertex, as BRep_Tool::Parameter reads it.
     for (TopoDS_Iterator aVIt(anExp.Current(), false, false); aVIt.More(); aVIt.Next())
     {
@@ -197,6 +199,9 @@ bool BRepTools_ShapeSet::OwnGeometry::HasPoint(const occ::handle<BRep_PointRepre
 
 void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
 {
+  // An Immutable shape's caches may be edited on another thread while it is
+  // written: its representations are walked under its lock.
+  BRep_RepresentationLock aLock(S.TShape().get());
   // Add the geometry
 
   if (S.ShapeType() == TopAbs_VERTEX)
@@ -485,6 +490,7 @@ static void PrintRegularity(const GeomAbs_Shape C, Standard_OStream& OS)
 
 void BRepTools_ShapeSet::DumpGeometry(const TopoDS_Shape& S, Standard_OStream& OS) const
 {
+  BRep_RepresentationLock aLock(S.TShape().get()); // as in AddGeometry
   // Dump the geometry
 
   if (S.ShapeType() == TopAbs_VERTEX)
@@ -689,6 +695,7 @@ void BRepTools_ShapeSet::DumpGeometry(const TopoDS_Shape& S, Standard_OStream& O
 
 void BRepTools_ShapeSet::WriteGeometry(const TopoDS_Shape& S, Standard_OStream& OS) const
 {
+  BRep_RepresentationLock aLock(S.TShape().get()); // as in AddGeometry
   // Write the geometry
 
   if (S.ShapeType() == TopAbs_VERTEX)

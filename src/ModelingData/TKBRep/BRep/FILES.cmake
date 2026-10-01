@@ -43,6 +43,8 @@ set(OCCT_BRep_FILES
   BRep_PolygonOnSurface.hxx
   BRep_PolygonOnTriangulation.cxx
   BRep_PolygonOnTriangulation.hxx
+  BRep_RepresentationLock.cxx
+  BRep_RepresentationLock.hxx
   BRep_TEdge.cxx
   BRep_TEdge.hxx
   BRep_TEdge.lxx
