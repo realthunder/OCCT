@@ -316,6 +316,6 @@ ten minutes on the dev box, most of it building libraries:
    env).
 
 A case added to `cases.py` with its stage gets its picture on the next run.
-The renderer turns the transaction log off: while drawing, the log's worker
-crashed once serialising a shape the viewer was meshing (FreeCAD's
-docs/TransactionLog.md sec 27.97).
+The renderer turns the transaction log off; the pictures need no history.
+(While drawing, the log's worker once crashed writing a shape the viewer
+was meshing: FreeCAD's docs/TransactionLog.md sec 27.97, fixed in sec 27.98.)

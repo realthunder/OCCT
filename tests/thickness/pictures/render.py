@@ -13,8 +13,9 @@ import os, json
 import FreeCAD as App, FreeCADGui as Gui, Part
 V = App.Vector
 def emit(s): os.write(1, (s + "\n").encode())
-# The transaction log is off: its worker serialised a shape here while the
-# viewer meshed it and crashed once (FreeCAD docs/TransactionLog.md sec 27.97).
+# The transaction log is off: the pictures need no history. (Its worker once
+# crashed here writing a shape the viewer was meshing -- FreeCAD
+# docs/TransactionLog.md sec 27.97, fixed in sec 27.98.)
 App.ParamGet("User parameter:BaseApp/Preferences/Document").SetInt("TransactionLog", int(os.environ.get("TLOG", "0")))
 jobs = json.load(open(os.environ["JOBS"]))
 W, H = jobs["size"]
