@@ -160,7 +160,7 @@ valid now, the boss and the box with the hole at upstream's volumes.
 `models/pictures/<case>.png` shows, for each case a fix turned from failing
 to passing, three results side by side -- upstream's chain files at
 `91be8c4c71`, the fork just before the fix, the fork now -- each whole and
-cut open. FreeCAD's docs/Thickness.md walks through them fix by fix and says
+cut open. `models/Thickness.md` walks through them fix by fix and says
 how to read them. `pictures/make_pictures.sh` makes them again (scratch
 libraries for upstream and for each stage, the cases run on each, rendered
 under Xvfb); add a case to `pictures/cases.py`, with its stage, to picture it.
@@ -172,6 +172,7 @@ tests/thickness/
   README.md          this file
   run_tests.py       the suite (FreeCADCmd script)
   models/            captured user models, one per reported issue
+    Thickness.md     the fixes, before and after, in pictures
     pictures/        before and after, one PNG per fixed case
   pictures/          the tools that make them (make_pictures.sh)
 ```
