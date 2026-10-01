@@ -1465,15 +1465,13 @@ static bool MakeSealedThickSolid(
 //            once the removed faces are gone: a cylinder's side removed
 //            leaves its two caps, a box's four sides its top and bottom.
 //            CheckInputData refuses such a shell (NotConnectedShell),
-//            upstream too. Each piece is a thick solid of its own: the
-//            shape with the other pieces removed as well, which share no
-//            edge with it. The result is their union, a compound of solids,
-//            fused where they overlap (inward, past a gap thinner than the
-//            walls); one solid left is the result as it is. The pieces'
-//            history is merged here, so Generated/Modified answer as for one
-//            shape. A piece that is not one valid closed shell refuses the
-//            whole: a pocket's walls and floor, with the outside of the
-//            shape removed around them, do not come out right yet.
+//            upstream too. Each piece is a thick solid of its own: an open
+//            shell of its faces and the removed faces beside it. The result
+//            is their union, a compound of solids, fused where they overlap
+//            (inward, past a gap thinner than the walls); one solid left is
+//            the result as it is. The pieces' history is merged here, so
+//            Generated/Modified answer as for one shape. A piece that is not
+//            one valid closed shell refuses the whole.
 //=======================================================================
 bool BRepOffset_MakeOffset::MakeThickSolidByPieces(const Message_ProgressRange& theRange)
 {
@@ -1567,11 +1565,46 @@ bool BRepOffset_MakeOffset::MakeThickSolidByPieces(const Message_ProgressRange& 
     }
   };
 
+  // The removed faces beside each piece: those sharing an edge with it.
+  std::vector<std::vector<bool>> aBeside(aNbPieces, std::vector<bool>(aNbF + 1, false));
+  for (int i = 1; i <= anEF.Extent(); ++i)
+  {
+    std::vector<int> aRemoved, aStaying;
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(anEF(i)); anIt.More(); anIt.Next())
+    {
+      const int k = aFaces.FindIndex(anIt.Value());
+      if (k != 0)
+      {
+        (aPiece[k] < 0 ? aRemoved : aStaying).push_back(k);
+      }
+    }
+    for (int k : aStaying)
+    {
+      for (int r : aRemoved)
+      {
+        aBeside[aPiece[k]][r] = true;
+      }
+    }
+  }
+
   NCollection_List<TopoDS_Shape> aSolids;
   for (int p = 0; p < aNbPieces; ++p)
   {
+    // The piece is an open shell: its faces and the removed faces beside it.
+    // Not the shape with the other pieces removed as well: removed faces
+    // that do not touch the piece came back as a shell of their own
+    // (upstream too) -- the outside of a box round a pocket's piece.
+    TopoDS_Shell aShell;
+    BRep_Builder().MakeShell(aShell);
+    for (int i = 1; i <= aNbF; ++i)
+    {
+      if (aPiece[i] == p || (aPiece[i] < 0 && aBeside[p][i]))
+      {
+        BRep_Builder().Add(aShell, aFaces(i));
+      }
+    }
     BRepOffset_MakeOffset aMO;
-    aMO.Initialize(myInitialShape,
+    aMO.Initialize(aShell,
                    myOffset,
                    myTol,
                    myMode,
@@ -1584,11 +1617,11 @@ bool BRepOffset_MakeOffset::MakeThickSolidByPieces(const Message_ProgressRange& 
     for (int i = 1; i <= aNbF; ++i)
     {
       const TopoDS_Face& aF = TopoDS::Face(aFaces(i));
-      if (aPiece[i] != p)
+      if (aPiece[i] < 0 && aBeside[p][i])
       {
         aMO.AddFace(aF);
       }
-      else if (const double* anOff = myFaceOffset.Seek(aF))
+      else if (const double* anOff = aPiece[i] == p ? myFaceOffset.Seek(aF) : nullptr)
       {
         aMO.SetOffsetOnFace(aF, *anOff);
       }
@@ -1613,11 +1646,8 @@ bool BRepOffset_MakeOffset::MakeThickSolidByPieces(const Message_ProgressRange& 
       myError = aMO.Error() != BRepOffset_NoError ? aMO.Error() : BRepOffset_UnknownError;
       return true;
     }
-    // A piece is one closed shell around material. The pieces of a pocket
-    // -- the walls and floor inside, the outside of the shape -- are not
-    // built right yet (a blind hole's top removed: an invalid piece, one with
-    // a stray shell, one inside out), and a union of them would pass for an
-    // answer where the shape used to be refused.
+    // A piece is one closed shell around material; a union of pieces built
+    // wrong would pass for an answer where the shape used to be refused.
     {
       int aNbShells = 0;
       for (TopExp_Explorer anExp(aMO.Shape(), TopAbs_SHELL); anExp.More(); anExp.Next())
