@@ -1352,6 +1352,15 @@ void BRepOffset_Inter3d::ContextIntByInt(
               //            myAsDes->Add(CF,NE.Oriented(E.Orientation()));
               SHOW_TOPO_SHAPE(NE, "ExtentBE");
             }
+            // A seam bounds CF on both sides; the map of CF's edges holds
+            // it once, where an explorer -- ContextIntByArc's -- meets it
+            // once each way. Given once, the loop on CF built no band and
+            // kept the whole face (a cylinder's cap outward, its side
+            // removed, the Intersection join).
+            if (BRep_Tool::IsClosed(E, CF))
+            {
+              myAsDes->Add(CF, MES(E).Oriented(TopAbs::Reverse(E.Orientation())));
+            }
           }
           continue;
         }

@@ -1593,8 +1593,7 @@ bool BRepOffset_MakeOffset::MakeThickSolidByPieces(const Message_ProgressRange& 
         aMO.SetOffsetOnFace(aF, *anOff);
       }
     }
-    // A piece that throws is refused like one that is not done: the
-    // Intersection join with one face left throws in the history it fills.
+    // A piece that throws is refused like one that is not done.
     try
     {
       aMO.MakeThickSolid(aPS.Next());
@@ -2335,7 +2334,13 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
     if (MES.IsBound(OF))
     {
       OF = TopoDS::Face(MES(OF));
-      if (IMOE.HasImage(OF))
+      // A removed face is in aLFaces for the intersections only, and keeps
+      // the image SetFaces gave it: its enlarged face's splits are no offset
+      // face. They are there when the face that stays is alone beside it --
+      // a box down to its bottom, the Intersection join -- and binding them
+      // threw (BRepAlgo_Image::Bind). It goes the way a removed face goes
+      // otherwise, its edges recorded and nothing bound.
+      if (IMOE.HasImage(OF) && !myFaces.Contains(FI))
       {
         const NCollection_List<TopoDS_Shape>& LOFE = IMOE.Image(OF);
         myInitOffsetFace.Bind(FI, LOFE);
