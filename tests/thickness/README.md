@@ -158,8 +158,9 @@ they overlap; one solid left is returned as it is. The pieces' history is
 merged, so `Generated`/`Modified` answer as for one shape (FreeCAD's element
 names carry `THK`). A piece that is not one valid closed shell of positive
 volume refuses the whole, as before: a pocket's walls and floor, with the
-outside of the shape removed around them (a blind hole's top removed), do not
-come out right yet, and their union would pass for an answer.
+outside of the shape removed around them (a blind hole's top removed), did
+not come out right, and their union would pass for an answer (sec 27.103
+below).
 
 Making the short cases right needed a fix of its own, in `BRepAlgo_Loop`:
 keeping only the bottom of a box shorter than twice the thickness, inward,
@@ -210,6 +211,36 @@ side are answered with the Intersection join too, at the Arc join's volumes
 (one face to a piece, no edge between faces that stay for the joins to
 differ on). The pocket shapes and the torus's face stay refused, NotDone
 now instead of `Bind` or `NoSuchObject` thrown.
+
+## Pockets left in pieces (2026-10-01, sec 27.103)
+
+Remove the face round a pocket's rim and the pocket's walls and floor are a
+piece of their own. Two faults kept such pieces refused. A piece was the
+shape with the other pieces removed as well, and the removed faces that do
+not touch it came back as a shell of their own -- the outside of the box
+round the pocket (upstream does the same). A piece is now an open shell: its
+faces and the removed faces beside it. Then the removed top's free rim: a
+removed face's edges that no kept face shares are stretched and put in its
+loop, where an edge between two removed faces belongs; a free one bounds no
+material, and the loop closed the stretched square round the hole's rim and
+the offset rim, so the wires nested a step off and the ring between them was
+never built. Free edges are left out of the loop now (upstream drops them
+only because they happen not to chain). And with the Intersection join and
+intersection on, the outside's piece threw (`NoSuchObject`) asking the
+analysis for the ancestors of the top's free rim, which it does not know.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `blind_top_*` | box 10 x 10 x 5, a blind hole of radius 2, 3 deep, top removed | outward two solids, 300 + 15 pi + 2 pi / 3 and the pot, 10 pi; inward the pot sits on the floor's plate and they fuse (Arc join, and Intersection join with intersection on). By hand |
+| `blind_wall_out_join` | the same, the hole's wall removed | the outside with the hole cut through its top plate, and the floor's plate |
+| `blind_pot_shell_*` | the hole's wall and floor and the top as an open shell, the top removed | the free rim alone: the fork gave the pot without its ring outward (invalid) and the hole itself inward; upstream is right |
+| `pocket_top_*` | box with a square pocket, top removed | inward the pocket's piece floats in the cavity, two solids |
+| `cylpocket_top_out_join`, `cylboss_shoulder_in` | round pocket in a cylinder, boss on one, the face round it removed | 127 pi + 19 pi; 69 pi + 24 pi |
+
+The sweep: in scope unchanged. Every pocket and boss shape is answered now,
+in every mode -- `boxhole2` Face3 and Face7, `pocket` Face3, `cylpocket`
+Faces 1, 2 and 4, `cylboss` Faces 1, 2 and 4 -- and all 68 runs check by
+hand. The torus's face is the one refusal left.
 
 ## Determinism cases (intersection mode, Arc join)
 

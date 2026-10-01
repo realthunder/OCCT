@@ -210,6 +210,43 @@ pieces_case("box_bottom_alone_join_in", Part.makeBox(10, 10, 6), [1, 2, 3, 4, 6]
 pieces_case("cyl_side_join_out",      cyl, [1], +1.0, [16 * math.pi] * 2, False, 2)
 pieces_case("cyl_side_join_in_inter", cyl, [1], -1.0, [16 * math.pi] * 2, True, 2)
 
+# A pocket's walls and floor are a piece of their own when the face round its
+# rim is removed (sec 27.103). A piece is now an open shell, its faces and the
+# removed faces beside it: the shape with the other pieces removed brought the
+# rest of the removed faces back as a shell of their own (upstream too). And
+# the top's loop closed its free rim, stretched, into a wire round the rest,
+# so the piece between the hole's rim and the offset rim was never built.
+# Each value is worked out by hand: box 10 x 10 x 5 with a blind hole of
+# radius 2, 3 deep (Face3 the top, Face7 the hole's wall); outward, the outside
+# with arcs (300 + 15 pi + 2 pi / 3) and the hole's pot (10 pi); inward, the
+# pot sits on the floor's plate and they fuse.
+blind = Part.makeBox(10, 10, 5).cut(Part.makeCylinder(2, 3, App.Vector(5, 5, 2)))
+pieces_case("blind_top_out", blind, [3], +1.0,
+            [300 + 15 * math.pi + 2 * math.pi / 3, 10 * math.pi])
+pieces_case("blind_top_in", blind, [3], -1.0,
+            [244 + 19 * math.pi + math.pi ** 2 / 2 * (2 + 4 / (3 * math.pi))])
+pieces_case("blind_top_in_inter_join", blind, [3], -1.0, [244 + 24 * math.pi], True, 2)
+pieces_case("blind_wall_out_join", blind, [7], +1.0, [508 - 4 * math.pi, 4 * math.pi], False, 2)
+# The hole's wall and floor and the top beside them as an open shell, the top
+# removed: its square rim is free. The fork gave the pot without its rim's
+# ring outward (invalid, two shells) and the hole itself inward; upstream is
+# right.
+pot = Part.Shell([blind.Faces[i - 1] for i in (7, 8, 3)])
+pieces_case("blind_pot_shell_out", pot, [3], +1.0, [10 * math.pi])
+pieces_case("blind_pot_shell_in", pot, [3], -1.0,
+            [19 * math.pi + math.pi ** 2 / 2 * (2 + 4 / (3 * math.pi))])
+# Box 10 x 10 x 6 with a square pocket 5 x 5, 3 deep: inward the pocket's
+# piece floats in the cavity, apart from the walls.
+pocket = Part.makeBox(10, 10, 6).cut(Part.makeBox(5, 5, 3, App.Vector(2.5, 2.5, 3)))
+pieces_case("pocket_top_in", pocket, [3], -1.0, [280, 85 + 8 * math.pi + 2 * math.pi / 3])
+pieces_case("pocket_top_out_inter_join", pocket, [3], +1.0, [408, 57], True, 2)
+# Round pocket in a cylinder 6 x 6, and a boss on one, the shoulder removed.
+cylpocket_top = Part.makeCylinder(6, 6).cut(Part.makeCylinder(3, 3, App.Vector(0, 0, 3)))
+pieces_case("cylpocket_top_out_join", cylpocket_top, [2], +1.0,
+            [127 * math.pi, 19 * math.pi], False, 2)
+cylboss = Part.makeCylinder(6, 4).fuse(Part.makeCylinder(3, 4, App.Vector(0, 0, 4)))
+pieces_case("cylboss_shoulder_in", cylboss, [2], -1.0, [69 * math.pi, 24 * math.pi])
+
 # Cylinder with a centered hole: Face1 = outer lateral, Face2 = bottom,
 # Face3 = top, Face4 = hole lateral.
 ann = Part.makeCylinder(5, 10).cut(Part.makeCylinder(2, 10))
