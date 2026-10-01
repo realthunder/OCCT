@@ -4,7 +4,7 @@
 import json, os, re, sys
 from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cases import CASES, STAGES as STAGE
+from cases import CASES, INPUT, STAGES as STAGE
 P = os.environ["THICK_WORK"]
 OUT = sys.argv[1]; os.makedirs(OUT, exist_ok=True)
 R = {k: json.load(open(P + "/r/%s/results.json" % k)) for k in os.listdir(P + "/r")
@@ -18,7 +18,9 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "tshape": "T", "pocketbox": "box with a 6x6 pocket", "conehole": "cone with a through hole",
          "pocket5": "box with a 5x5 pocket", "blindhole": "box with a blind hole",
          "filletbox": "box with filleted vertical edges, r2", "filletbox25": "box with filleted vertical edges, r2.5",
-         "shortcyl": "cylinder 1.5 high", "shortbox": "box 10 x 10 x 1.5", "box6": "box 10 x 10 x 6"}
+         "shortcyl": "cylinder 1.5 high", "shortbox": "box 10 x 10 x 1.5", "box6": "box 10 x 10 x 6",
+         "blindpot": "a blind hole's wall and floor and the top, an open shell",
+         "cylboss": "cylinder with a boss", "sector": "ring sector pad across angle 0"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"]:
@@ -26,7 +28,8 @@ def status(d):
             sealed = " (%d solids)" % d["solids"]
         else:
             sealed = " (a skin and a void)" if d.get("shells", 1) == 2 else ""
-        return "valid, volume %.2f%s" % (d["volume"], sealed), (20, 120, 40)
+        note = " (%s)" % d["note"] if d.get("note") else ""
+        return "valid, volume %.2f%s%s" % (d["volume"], sealed, note), (20, 120, 40)
     p = []
     for x in d["problems"]:
         x = re.sub(r"threw \d+", "threw ", x)
@@ -52,11 +55,19 @@ for name in names:
     d = ImageDraw.Draw(img)
     d.text((10, 8), name, font=FT, fill=(0, 0, 0))
     nf = 6 if sk.startswith(("box", "short")) and "cyl" not in sk else 3
-    faces = "Face%d" % fi if not isinstance(fi, list) else "all but Face%d" % (
-        [i for i in range(1, nf + 1) if i not in fi][0])
+    if not isinstance(fi, list):
+        faces = "Face%d" % fi
+    elif len(fi) == nf - 1:
+        faces = "all but Face%d" % [i for i in range(1, nf + 1) if i not in fi][0]
+    else:
+        faces = "Faces " + ", ".join(str(i) for i in fi)
+    if name in INPUT:
+        expect = "the input unchanged, %.2f" % ref
+    else:
+        expect = "%.2f" % ref if ref else "a valid solid"
     desc = "%s, %s removed, %s, %s%s; expected %s  (fix: sec %s)" % (
         NAMES[sk], faces, "outward +1" if val > 0 else "inward -1", JOIN[join], ", intersection on" if inter else "",
-        "%.2f" % ref if ref else "a valid solid", sec)
+        expect, sec)
     d.text((10, 36), desc, font=F, fill=(60, 60, 60))
     cols = [("up", "up", "upstream OCCT 8.0.1"), ("before", st, "fork before (%s)" % commit), ("after", "after", "fork after")]
     for ci, (v, k, title) in enumerate(cols):

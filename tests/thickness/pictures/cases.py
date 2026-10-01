@@ -1,6 +1,8 @@
 # The cases pictured in models/pictures: the suite's (run_tests.py) that a fix
 # turned from failing to passing, each with the stage of the fix -- the fork
 # commit just before it (STAGES) is the "before" column.
+import math
+
 try:
     import FreeCAD as App, Part
 except ImportError:  # plain Python reads the tables only
@@ -24,6 +26,7 @@ STAGES = {
     "s101": ("b21dabe1c4", "27.101"),
     "s102": ("d4d2fe0719", "27.102"),
     "s103": ("d8d480ef65", "27.103"),
+    "s104": ("839a3e4606", "27.104"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -33,6 +36,22 @@ UPSTREAM = ("91be8c4c71", [
     "src/ModelingAlgorithms/TKOffset/BRepOffset/" + f for f in (
         "BRepOffset_Tool.cxx", "BRepOffset_Inter2d.cxx", "BRepOffset_Inter2d.hxx",
         "BRepOffset_Inter3d.cxx", "BRepOffset_MakeLoops.cxx", "BRepOffset_MakeOffset.cxx")])
+def _blindpot():
+    # The blind hole's wall and floor and the top beside them, an open shell:
+    # Face3 is the top.
+    b = SHAPES["blindhole"]()
+    return Part.Shell([b.Faces[i - 1] for i in (7, 8, 3)])
+
+
+def _sector(past):
+    # A ring sector straddling angle 0, padded 27, its arcs' parameters
+    # running from past - a to past + a: Face3 is the outer arc's.
+    o = Part.ArcOfCircle(Part.Circle(V(0, 0, 0), V(0, 0, 1), 59.3), past - 0.29, past + 0.29).toShape()
+    i = Part.ArcOfCircle(Part.Circle(V(0, 0, 0), V(0, 0, 1), 46.85), past - 0.23, past + 0.23).toShape()
+    sides = [Part.makeLine(i.Vertexes[k].Point, o.Vertexes[k].Point) for k in (0, 1)]
+    return Part.Face(Part.Wire(Part.__sortEdges__([o, sides[0], i, sides[1]]))).extrude(V(0, 0, 27))
+
+
 def _fillet(r):
     b = Part.makeBox(10, 8, 6)
     return b.makeFillet(r, [b.Edges[i] for i in (0, 2, 4, 6)])
@@ -53,6 +72,9 @@ SHAPES = {
     "shortcyl": lambda: Part.makeCylinder(4, 1.5),
     "shortbox": lambda: Part.makeBox(10, 10, 1.5),
     "box6": lambda: Part.makeBox(10, 10, 6),
+    "blindpot": lambda: _blindpot(),
+    "cylboss": lambda: Part.makeCylinder(6, 4).fuse(Part.makeCylinder(3, 4, V(0, 0, 4))),
+    "sector": lambda: _sector(2 * math.pi),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -116,6 +138,13 @@ CASES = {
     "blind_top_in": ("s103", "blindhole", 3, -1, False, 0, 315.6543),
     "pocket_top_in": ("s103", "pocket5", 3, -1, False, 0, 392.2271),
     "cylpocket_top_join_out": ("s103", "cylpocket", 2, +1, False, 2, 458.6725),
+    "blind_top_in_inter_join": ("s103", "blindhole", 3, -1, True, 2, 319.3982),
+    "blind_wall_out_join": ("s103", "blindhole", 7, +1, False, 2, 508.0),
+    "blind_pot_shell_out": ("s103", "blindpot", 3, +1, False, 0, 31.4159),
+    "blind_pot_shell_in": ("s103", "blindpot", 3, -1, False, 0, 71.6543),
+    "pocket_top_out_inter_join": ("s103", "pocket5", 3, +1, True, 2, 465.0),
+    "cylboss_shoulder_in": ("s103", "cylboss", 2, -1, False, 0, 292.1681),
+    "sector_outer_arc_input": ("s104", "sector", [3, 5, 6], +1, False, 0, 9405.6558),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).
@@ -132,6 +161,15 @@ SOLIDS = {
     "blind_top_out": 2,
     "pocket_top_in": 2,
     "cylpocket_top_join_out": 2,
+    "blind_wall_out_join": 2,
+    "pocket_top_out_inter_join": 2,
+    "cylboss_shoulder_in": 2,
+}
+# Cases pictured for what the thickness leaves of its input: the panels show
+# the input after the call, and the reference volume is the input's own
+# (sec 27.104: the thickness was right and left its input inside out).
+INPUT = {
+    "sector_outer_arc_input",
 }
 # The captured user models; upstream 8.0.1 passes them all, so not pictured.
 DOCS = {

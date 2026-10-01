@@ -87,6 +87,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.101 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.102 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.103 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.104 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -96,11 +97,12 @@ counts the holed cone's sealed void right (sec 27.100), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
 those two runs before it.
 
-Of the 60 pictured cases, 24 are ones upstream gets right and the fork had
+Of the 67 pictured cases, 27 are ones upstream gets right and the fork had
 broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
-cone's top with intersection on, sec 27.100, and a short box's and a box's
-bottom alone, sec 27.101 and 27.102). The other 36 fail upstream too: the
-fork now does better than upstream there.
+cone's top with intersection on, sec 27.100, a short box's and a box's bottom
+alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, and the
+input left inside out, sec 27.104). The other 40 fail upstream too: the fork
+now does better than upstream there.
 
 Nothing in the suite fails now, and every run of the sweep in scope is
 right. Out of scope, sec 27.101 answers the faces left in pieces where each
@@ -406,6 +408,34 @@ cavity, apart from the walls.
 ![blind_top_in](pictures/blind_top_in.png)
 ![pocket_top_in](pictures/pocket_top_in.png)
 ![cylpocket_top_join_out](pictures/cylpocket_top_join_out.png)
+![blind_top_in_inter_join](pictures/blind_top_in_inter_join.png)
+![blind_wall_out_join](pictures/blind_wall_out_join.png)
+![pocket_top_out_inter_join](pictures/pocket_top_out_inter_join.png)
+![cylboss_shoulder_in](pictures/cylboss_shoulder_in.png)
+
+The free rim alone: the hole's wall and floor and the top beside them as an
+open shell, the top removed. Upstream is right; the fork gave the pot
+without its ring outward and the hole itself inward.
+
+![blind_pot_shell_out](pictures/blind_pot_shell_out.png)
+![blind_pot_shell_in](pictures/blind_pot_shell_in.png)
+
+### Sec 27.104: the input left as it was
+
+The result was right; the input was not. A PartDesign Pad of an arc whose
+parameters run past 2 pi, under a Thickness removing the arc's face and the
+caps, came back inside out on a box that does not freeze shape values
+(FreeCAD's copy-on-write protects a frozen one): the thickness had edited
+its input. The loop's pruning builds a test face of each wire on the face's
+own surface from the loop's own edges, some of them the input's, and ran
+ShapeFix on it when it was invalid; ShapeFix shifted a shared edge's pcurve
+by a period, on that surface -- the input face's own pcurve. It works on a
+copy now. Here a ring sector straddling angle 0, padded 27, its outer arc's
+face and caps removed; the panels show the input after the call. Upstream
+throws, and leaves the input alone. The suite now runs unfrozen and checks
+every input.
+
+![sector_outer_arc_input](pictures/sector_outer_arc_input.png)
 
 ## The captured models
 
@@ -432,6 +462,9 @@ ten minutes on the dev box, most of it building libraries:
    env).
 
 A case added to `cases.py` with its stage gets its picture on the next run.
+A case listed in `INPUT` is pictured for what the call leaves of its input:
+the panels show the input after the thickness, judged against its own volume.
+The cases run unfrozen, as the suite does.
 The renderer turns the transaction log off; the pictures need no history.
 (While drawing, the log's worker once crashed writing a shape the viewer
 was meshing: FreeCAD's docs/TransactionLog.md sec 27.97, fixed in sec 27.98.)

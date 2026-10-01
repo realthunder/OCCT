@@ -6,8 +6,10 @@
 import os, sys, json
 sys.path.insert(0, os.environ["THICK_TOOLS"])
 import FreeCAD as App, Part
-from cases import SHAPES, CASES, DOCS, SHELLS, SOLIDS
+from cases import SHAPES, CASES, DOCS, SHELLS, SOLIDS, INPUT
 OUT = os.environ["OUT"]; os.makedirs(OUT, exist_ok=True)
+# Unfrozen, as the suite runs: a frozen input would hide an edit of it.
+App.ParamGet("User parameter:BaseApp/Preferences/Mod/Part").SetBool("ImmutableShapeValues", False)
 stages = os.environ.get("STAGES", "all").split()
 only = os.environ.get("ONLY", "").split()
 def emit(s): os.write(1, (s + "\n").encode())
@@ -41,6 +43,19 @@ for name, (st, sk, fi, val, inter, join, ref) in CASES.items():
     c, n = face_info(faces[0])
     s.exportBrep(os.path.join(OUT, name + ".input.brep"))
     d = {"center": c, "normal": n, "value": val, "ref": ref, "input_volume": s.Volume}
+    if name in INPUT:
+        # What the call leaves of its input: that is what is judged and shown.
+        try:
+            s.makeThickness(faces, val, 1e-7, inter, False, 0, join)
+            note = ""
+        except Exception as e:
+            note = "the thickness threw"
+        p, vol = judge(s, ref)
+        s.exportBrep(os.path.join(OUT, name + ".brep"))
+        d.update(ok=not p, problems=p, volume=vol, shells=len(s.Shells), solids=len(s.Solids), note=note)
+        res[name] = d
+        emit("%-32s %s %s" % (name, "OK " if d["ok"] else "BAD", "; ".join(d["problems"]) or "input vol=%.4f" % d["volume"]))
+        continue
     try:
         r = s.makeThickness(faces, val, 1e-7, inter, False, 0, join)
         p, vol = judge(r, ref, SHELLS.get(name, 1), SOLIDS.get(name, 1))
