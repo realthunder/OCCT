@@ -4682,6 +4682,89 @@ void BRepOffset_MakeOffset::MakeSolid(const Message_ProgressRange& theRange)
 
 //=================================================================================================
 
+// A face of a thick solid's shell with an edge no other face of the shell
+// has -- and not one the shell may leave free -- hangs on it: a piece of an
+// offset face cut off beyond the rest, where the section of a curved removed
+// face runs round past the walls beside it (a fillet removed, inward: the
+// circle its surface cuts in the floor's offset crosses the walls' offsets
+// before it reaches the tubes). It hangs by the edges it shares with the faces
+// it lies between. Such faces are dropped, then any this leaves hanging, as
+// long as the shell keeps a piece of a removed face -- the rim that closes
+// the opening; what is left is kept if nothing hangs any more. Otherwise the
+// shell is left as it came, for Deboucle3D to judge.
+static TopoDS_Shape DropHangingFaces(
+  const TopoDS_Shape&                                           theShape,
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theFree,
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theRim)
+{
+  BRep_Builder aBB;
+  if (theShape.ShapeType() == TopAbs_COMPOUND)
+  {
+    TopoDS_Compound aC;
+    aBB.MakeCompound(aC);
+    for (TopoDS_Iterator aIt(theShape); aIt.More(); aIt.Next())
+    {
+      aBB.Add(aC, DropHangingFaces(aIt.Value(), theFree, theRim));
+    }
+    return aC;
+  }
+  if (theShape.ShapeType() != TopAbs_SHELL)
+  {
+    return theShape;
+  }
+  TopoDS_Shape aShell = theShape;
+  for (;;)
+  {
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      aMEF;
+    TopExp::MapShapesAndAncestors(aShell, TopAbs_EDGE, TopAbs_FACE, aMEF);
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aHanging;
+    for (int i = 1; i <= aMEF.Extent(); ++i)
+    {
+      const NCollection_List<TopoDS_Shape>& aLF = aMEF(i);
+      const TopoDS_Edge&                    anE = TopoDS::Edge(aMEF.FindKey(i));
+      if (aLF.Extent() != 1 || theFree.Contains(anE) || BRep_Tool::Degenerated(anE)
+          || (anE.Orientation() == TopAbs_INTERNAL
+              && aLF.First().Orientation() != TopAbs_INTERNAL))
+      {
+        continue;
+      }
+      aHanging.Add(aLF.First());
+    }
+    if (aHanging.IsEmpty())
+    {
+      if (aShell.IsSame(theShape))
+      {
+        return theShape;
+      }
+      aShell.Closed(BRep_Tool::IsClosed(aShell));
+      SHOW_TOPO_SHAPE(aShell, "HangingFacesDropped");
+      return aShell;
+    }
+    TopoDS_Shell aRest;
+    aBB.MakeShell(aRest);
+    bool hasRim = false;
+    for (TopoDS_Iterator aIt(aShell); aIt.More(); aIt.Next())
+    {
+      if (aHanging.Contains(aIt.Value()))
+      {
+        SHOW_TOPO_SHAPE(aIt.Value(), "HangingFace");
+        continue;
+      }
+      aBB.Add(aRest, aIt.Value());
+      hasRim = hasRim || theRim.Contains(aIt.Value());
+    }
+    if (!hasRim)
+    {
+      return theShape;
+    }
+    aRest.Orientation(aShell.Orientation());
+    aShell = aRest;
+  }
+}
+
+//=================================================================================================
+
 void BRepOffset_MakeOffset::SelectShells()
 {
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> FreeEdges;
@@ -4753,6 +4836,27 @@ void BRepOffset_MakeOffset::SelectShells()
     }
   }
 #endif
+
+  if (!myFaces.IsEmpty())
+  {
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aRim;
+    for (int i = 1; i <= myFaces.Extent(); ++i)
+    {
+      if (myImageOffset.HasImage(myFaces(i)))
+      {
+        NCollection_List<TopoDS_Shape> aLI;
+        myImageOffset.LastImage(myFaces(i), aLI);
+        for (NCollection_List<TopoDS_Shape>::Iterator itI(aLI); itI.More(); itI.Next())
+        {
+          aRim.Add(itI.Value());
+        }
+      }
+    }
+    if (!aRim.IsEmpty())
+    {
+      myOffsetShape = DropHangingFaces(myOffsetShape, FreeEdges, aRim);
+    }
+  }
 
   myOffsetShape = BRepOffset_Tool::Deboucle3D(myOffsetShape, FreeEdges);
 }
