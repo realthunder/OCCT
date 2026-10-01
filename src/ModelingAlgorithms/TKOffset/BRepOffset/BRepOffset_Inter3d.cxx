@@ -1164,6 +1164,60 @@ static bool RunTheSameWay(const TopoDS_Edge& theE, const TopoDS_Edge& theRef)
   return aD.Dot(aDR) >= 0.;
 }
 
+//=======================================================================
+// function : MapFreeBounds
+// purpose  : The edges of the removed faces that no other face shares: the
+//            boundary of an open shell (the analysis knows the faces that
+//            stay only). Such an edge bounds no material, so it has no place
+//            in a removed face's loop; stretched and kept there, the loop
+//            closed it into a wire round everything else, and the nesting of
+//            the wires came out a step off -- a pocket's wall and floor, as
+//            an open shell with the top beside it: the top's piece between
+//            the rim and the offset rim was never built.
+//=======================================================================
+static void MapFreeBounds(
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theContextFaces,
+  const BRepOffset_Analyse&                                            theAnalyse,
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>&              theFree)
+{
+  NCollection_DataMap<TopoDS_Shape, int, TopTools_ShapeMapHasher> aCount;
+  for (int i = 1; i <= theContextFaces.Extent(); ++i)
+  {
+    const TopoDS_Face&                                     aF = TopoDS::Face(theContextFaces(i));
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+    for (TopExp_Explorer anExp(aF, TopAbs_EDGE); anExp.More(); anExp.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(anExp.Current());
+      if (!aSeen.Add(anE))
+      {
+        continue;
+      }
+      if (BRep_Tool::IsClosed(anE, aF) || BRep_Tool::Degenerated(anE))
+      {
+        aCount.Bind(anE, 2);
+        continue;
+      }
+      if (int* aN = aCount.ChangeSeek(anE))
+      {
+        ++*aN;
+      }
+      else
+      {
+        aCount.Bind(anE, 1);
+      }
+    }
+  }
+  for (NCollection_DataMap<TopoDS_Shape, int, TopTools_ShapeMapHasher>::Iterator anIt(aCount);
+       anIt.More();
+       anIt.Next())
+  {
+    if (anIt.Value() == 1 && !theAnalyse.HasAncestor(anIt.Key()))
+    {
+      theFree.Add(anIt.Key());
+    }
+  }
+}
+
 //=================================================================================================
 
 void BRepOffset_Inter3d::ContextIntByInt(
@@ -1191,6 +1245,9 @@ void BRepOffset_Inter3d::ContextIntByInt(
   // so force it to true
   (void)_ExtentContext;
   bool ExtentContext = true;
+
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFree;
+  MapFreeBounds(ContextFaces, Analyse, aFree);
 
   aNb = ContextFaces.Extent();
   for (i = 1; i <= aNb; i++)
@@ -1298,6 +1355,10 @@ void BRepOffset_Inter3d::ContextIntByInt(
         }
         if (!Analyse.HasAncestor(E))
         {
+          if (aFree.Contains(E))
+          {
+            continue;
+          }
           //----------------------------------------------------------------
           // the edges of faces of context that are not in the initial shape
           // can appear in the result.
@@ -1538,6 +1599,9 @@ void BRepOffset_Inter3d::ContextIntByArc(
   (void)_InSide;
   bool InSide = false;
 
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFree;
+  MapFreeBounds(ContextFaces, Analyse, aFree);
+
   for (j = 1; j <= ContextFaces.Extent(); j++)
   {
     const TopoDS_Face& CF = TopoDS::Face(ContextFaces(j));
@@ -1561,6 +1625,10 @@ void BRepOffset_Inter3d::ContextIntByArc(
       SHOW_TOPO_SHAPE(E, "ContextEdge");
       if (!Analyse.HasAncestor(E))
       {
+        if (aFree.Contains(E))
+        {
+          continue;
+        }
         if (InSide)
         {
           SHOW_TOPO_SHAPE(E, "Inside");

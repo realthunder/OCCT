@@ -2365,7 +2365,9 @@ void BRepOffset_BuildOffsetFaces::FindInvalidEdges(
             const TopoDS_Shape& aV = aExpE.Current();
             aMV.Add(aV);
           }
-          if (myAnalyzer)
+          // An edge of a removed face alone (the rim of an open shell) has
+          // no ancestor among the faces that stay, and none to add.
+          if (myAnalyzer && myAnalyzer->HasAncestor(aEOrF))
           {
             for (NCollection_List<TopoDS_Shape>::Iterator itFA(myAnalyzer->Ancestors(aEOrF));
                  itFA.More();
