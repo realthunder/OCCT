@@ -539,6 +539,12 @@ void BRepOffset_Inter3d::ConnexIntByInt(
   NCollection_List<TopoDS_Shape>::Iterator                      it, it1, itF1, itF2;
   //
   TopExp::MapShapes(SI, TopAbs_EDGE, VEmap);
+  // The edges of the faces closing a removed face's tangent edge
+  // (BRepOffset_Analyse::TreatTangentCaps) join them to their neighbours.
+  for (NCollection_List<TopoDS_Shape>::Iterator itNF(Analyse.NewFaces()); itNF.More(); itNF.Next())
+  {
+    TopExp::MapShapes(itNF.Value(), TopAbs_EDGE, VEmap);
+  }
   // Take the vertices for treatment
   Message_ProgressScope aPSOuter(theRange, nullptr, 10);
   if (bIsPlanar)
@@ -1243,6 +1249,53 @@ void BRepOffset_Inter3d::ContextIntByInt(
         // faces connected by the edge
         //
         E = *(TopoDS_Edge*)&aS;
+        // A tangent edge closed by a wall (TreatTangentCaps): the cap is cut
+        // by the wall, along the wall's edge on it, not by the kept face's
+        // offset, which runs parallel to it.
+        const TopoDS_Edge& aEW = Analyse.EdgeReplacement(CF, E);
+        if (!aEW.IsSame(E) && Analyse.HasAncestor(aEW))
+        {
+          const TopoDS_Face aWall = TopoDS::Face(Analyse.Ancestors(aEW).First());
+          OF                       = TopoDS::Face(MapSF(aWall).Face());
+          if (!MES.IsBound(OF))
+          {
+            BRepOffset_Tool::EnLargeFace(OF, NF, true, true);
+            MES.Bind(OF, NF);
+          }
+          else
+          {
+            NF = TopoDS::Face(MES(OF));
+          }
+          if (!IsDone(NF, CF))
+          {
+            NCollection_List<TopoDS_Shape> LInt1, LInt2;
+            BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, aEW, CF, aWall);
+            SetDone(NF, CF);
+            SHOW_TOPO_SHAPE(CF, "CapClosureCut", LInt1);
+            if (!LInt1.IsEmpty())
+            {
+              Store(CF, NF, LInt1, LInt2);
+              if (LInt1.Extent() == 1)
+              {
+                Build.Bind(aEW, LInt1.First());
+              }
+              else
+              {
+                B.MakeCompound(C);
+                for (it.Initialize(LInt1); it.More(); it.Next())
+                {
+                  B.Add(C, it.Value());
+                }
+                Build.Bind(aEW, C);
+              }
+            }
+            else
+            {
+              Failed.Append(aEW);
+            }
+          }
+          continue;
+        }
         if (!Analyse.HasAncestor(E))
         {
           //----------------------------------------------------------------

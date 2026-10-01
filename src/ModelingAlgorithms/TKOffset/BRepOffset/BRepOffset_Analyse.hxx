@@ -26,6 +26,7 @@
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_DataMap.hxx>
 #include <NCollection_IndexedDataMap.hxx>
+#include <NCollection_IndexedMap.hxx>
 #include <ChFiDS_TypeOfConcavity.hxx>
 #include <NCollection_Map.hxx>
 
@@ -140,6 +141,30 @@ public: //! @name Results
   //! If no replacement exists, returns the edge
   Standard_EXPORT const TopoDS_Edge& EdgeReplacement(const TopoDS_Face& theFace,
                                                      const TopoDS_Edge& theEdge) const;
+
+  //! Thick solid, Intersection join: where a removed face (a cap) is tangent
+  //! to a kept face along a straight edge, the kept face's offset runs
+  //! parallel to the cap and meets it far round or not at all. The gap is
+  //! closed by the sharp counterpart of the Arc join's tube: a strip of the
+  //! kept face's tangent plane, a thickness wide into the cap, offset with
+  //! the face, and a wall standing on the strip's far edge across the
+  //! thickness, not offset (as TreatTangentFaces builds between tangent
+  //! faces with different offsets). Both are new faces; a planar kept face
+  //! is its own strip, and the wall meets it instead (its tangent edge is
+  //! replaced by the wall's far edge). In the cap, the tangent edge is
+  //! replaced by the wall's edge on it (EdgeReplacement), whose one ancestor
+  //! is the wall; the strip, if any, is the tangent edge's second ancestor.
+  Standard_EXPORT void TreatTangentCaps(
+    const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theCaps,
+    const double                                                         theOffset);
+
+  //! The offset of a new face: a TreatTangentCaps strip's is the faces',
+  //! the others' none.
+  double NewFaceOffset(const TopoDS_Shape& theF) const
+  {
+    const double* aP = myFaceOffsetMap.Seek(theF);
+    return aP ? *aP : 0.;
+  }
 
   //! Returns the shape descendants.
   Standard_EXPORT const NCollection_List<TopoDS_Shape>* Descendants(

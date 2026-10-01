@@ -975,6 +975,12 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
     myAnalyse.SetFaceOffsetMap(myFaceOffset);
   }
   myAnalyse.Perform(myFaceComp, TolAngle, aPS.Next(aSteps(PIOperation_Analyse)));
+  // The Intersection join builds no tubes: where a removed face is tangent to
+  // a kept one, the gap is closed with a square corner instead.
+  if (myJoin == GeomAbs_Intersection && !myFaces.IsEmpty() && !(myInter && myIsPlanar))
+  {
+    myAnalyse.TreatTangentCaps(myFaces, myOffset);
+  }
   TopExp_Explorer anEExp(myFaceComp, TopAbs_EDGE);
   for (; anEExp.More(); anEExp.Next())
   {
@@ -1436,7 +1442,7 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
   for (NCollection_List<TopoDS_Shape>::Iterator it(aNewFaces); it.More(); it.Next())
   {
     const TopoDS_Face& aF = TopoDS::Face(it.Value());
-    BRepOffset_Offset  OF(aF, 0.0, ShapeTgt, OffsetOutside, myJoin);
+    BRepOffset_Offset  OF(aF, myAnalyse.NewFaceOffset(aF), ShapeTgt, OffsetOutside, myJoin);
     theMapSF.Bind(aF, OF);
   }
 }
@@ -2022,6 +2028,46 @@ void BRepOffset_MakeOffset::ReplaceRoots()
 {
   // Replace the artificial faces and edges in InitOffset maps with the original ones.
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> View;
+  // The faces closing a removed face's tangent edge come from that edge
+  // (BRepOffset_Analyse::TreatTangentCaps): the wall, the one ancestor of the
+  // edge replacing it in the removed face, and the strip, the edge's second.
+  for (int i = 1; i <= myFaces.Extent(); ++i)
+  {
+    const TopoDS_Face& aCF = TopoDS::Face(myFaces(i));
+    for (TopExp_Explorer anExpE(aCF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+    {
+      const TopoDS_Edge& aE  = TopoDS::Edge(anExpE.Current());
+      const TopoDS_Edge& aEW = myAnalyse.EdgeReplacement(aCF, aE);
+      if (aEW.IsSame(aE) || !myAnalyse.HasAncestor(aEW) || !myAnalyse.HasAncestor(aE))
+      {
+        continue;
+      }
+      // The strip, when the kept face is not its own tangent plane.
+      const NCollection_List<TopoDS_Shape>& aLA = myAnalyse.Ancestors(aE);
+      const TopoDS_Shape aWall  = myAnalyse.Ancestors(aEW).First();
+      const TopoDS_Shape aStrip = aLA.Extent() == 2 ? aLA.Last() : TopoDS_Shape();
+      for (const TopoDS_Shape& aF : {aWall, aStrip})
+      {
+        if (aF.IsNull())
+        {
+          continue;
+        }
+        if (!myInitOffsetFace.HasImage(aF))
+        {
+          continue;
+        }
+        if (!myInitOffsetFace.HasImage(aE))
+        {
+          myInitOffsetFace.ReplaceRoot(aF, aE);
+          continue;
+        }
+        // The edge is a root already: one root, both faces' images.
+        const NCollection_List<TopoDS_Shape> aLI = myInitOffsetFace.Image(aF);
+        myInitOffsetFace.Add(aE, aLI);
+        myInitOffsetFace.RemoveRoot(aF);
+      }
+    }
+  }
   for (TopExp_Explorer anExpF(myFaceComp, TopAbs_EDGE); anExpF.More(); anExpF.Next())
   {
     const TopoDS_Shape& aF = anExpF.Current();
@@ -4781,6 +4827,21 @@ void BRepOffset_MakeOffset::SelectShells()
       }
     }
   }
+  // A removed face's tangent edge closed by a wall (BRepOffset_Analyse::
+  // TreatTangentCaps) may have a strip for a second ancestor, but it is a
+  // free border all the same.
+  for (int i = 1; i <= myFaces.Extent(); ++i)
+  {
+    const TopoDS_Face& aCF = TopoDS::Face(myFaces(i));
+    for (TopExp_Explorer anExpE(aCF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+    {
+      const TopoDS_Edge& aE = TopoDS::Edge(anExpE.Current());
+      if (!myAnalyse.EdgeReplacement(aCF, aE).IsSame(aE))
+      {
+        FreeEdges.Add(aE);
+      }
+    }
+  }
   // myShape has free borders and there are no caps
   // no unwinding 3d.
   if (!FreeEdges.IsEmpty() && myFaces.IsEmpty())
@@ -5743,6 +5804,16 @@ bool TrimEdges(
         continue;
       }
       SHOW_TOPO_SHAPE(aS, "Trimming");
+      // An edge the face holds through another (BRepOffset_Analyse::
+      // EdgeReplacement) and no section of its own: its image is the other's,
+      // trimmed with the face owning it -- the tangent edge of a planar face
+      // closed by a wall (TreatTangentCaps).
+      if (aS.ShapeType() == TopAbs_EDGE && !theBuild.IsBound(aS)
+          && !Analyse.EdgeReplacement(FI, TopoDS::Edge(aS)).IsSame(aS))
+      {
+        SHOW_TOPO_SHAPE(aS, "TrimReplaced");
+        continue;
+      }
       //
       if (theBuild.IsBound(aS))
       {
@@ -5811,7 +5882,12 @@ bool TrimEdges(
           SHOW_TOPO_SHAPE(aS, "NoTrim3_");
           continue;
         }
-        if (aMFGenerated.Contains(FI) && aDMEF.FindFromKey(aS).Extent() == 1)
+        // A wall between tangent faces takes its edges from intersections; a
+        // strip closing a removed face's tangent edge is offset and takes the
+        // offset edge it shares with its tangent neighbour
+        // (BRepOffset_Analyse::TreatTangentCaps).
+        if (aMFGenerated.Contains(FI) && aDMEF.FindFromKey(aS).Extent() == 1
+            && Analyse.NewFaceOffset(FI) == 0.)
         {
           SHOW_TOPO_SHAPE(aS, "NoTrim4_");
           continue;
