@@ -10,6 +10,7 @@
 #
 # See README.md for what each case covers and the history of each problem.
 
+import math
 import os
 import sys
 import traceback
@@ -116,6 +117,43 @@ def thickness_case(name, shape, face_index, value, expect, ref_volume=None, inte
     report(name, ok, expect == "xfail", detail)
 
 
+def pieces_case(name, shape, face_indices, value, solids, inter=False):
+    """makeThickness(mode=Skin, join=Arc) removing the 1-based faces in
+    `face_indices`. `solids` lists the volume of each solid expected, in any
+    order: one is a Solid, several a Compound of them. Each must be valid
+    with one closed shell -- a void is a wrong answer here."""
+    detail = ""
+    try:
+        r = shape.makeThickness([shape.Faces[i - 1] for i in face_indices], value, 1e-7,
+                                inter, False, 0, 0)
+        problems = []
+        want = "Solid" if len(solids) == 1 else "Compound"
+        if r.ShapeType != want:
+            problems.append("type=%s" % r.ShapeType)
+        if not r.isValid():
+            problems.append("invalid")
+        if len(r.Solids) != len(solids):
+            problems.append("solids=%d" % len(r.Solids))
+        for s in r.Solids:
+            if len(s.Shells) != 1 or not s.Shells[0].isClosed():
+                problems.append("shells=%d" % len(s.Shells))
+                break
+        if not problems:
+            got = sorted(s.Volume for s in r.Solids)
+            for g, w in zip(got, sorted(solids)):
+                if abs(g - w) > RELTOL * abs(w):
+                    problems.append("volumes %s != %s" % (
+                        ["%.4f" % v for v in got], ["%.4f" % v for v in sorted(solids)]))
+                    break
+        ok = not problems
+        detail = "; ".join(problems) if problems else "vols=%s" % ", ".join(
+            "%.4f" % s.Volume for s in r.Solids)
+    except Exception as e:
+        ok = False
+        detail = "EXCEPTION " + str(e).strip().splitlines()[-1]
+    report(name, ok, False, detail)
+
+
 document_case("issue1_ellipse_thickness", "issue1_ellipse_thickness.FCStd",
               volumes={"Thickness": 3598.2930})
 document_case("issue2_broken_loft", "issue2_broken_loft.FCStd",
@@ -126,13 +164,39 @@ document_case("issue4_revolution_thickness", "issue4_revolution_thickness.FCStd"
               volumes={"Thickness": 431.4454})
 
 # Plain cylinder: Face1 = lateral (seam), Face2 = bottom, Face3 = top.
+# Removing the lateral face leaves the two caps, which share no edge: each is
+# a thick solid of its own, a disc of radius 4 and the thickness, 16 pi.
 cyl = Part.makeCylinder(4, 20)
-thickness_case("cyl_side_out",    cyl, 1, +1.0, "xfail")
-thickness_case("cyl_side_in",     cyl, 1, -1.0, "xfail")
+pieces_case("cyl_side_out",       cyl, [1], +1.0, [16 * math.pi] * 2)
+pieces_case("cyl_side_in",        cyl, [1], -1.0, [16 * math.pi] * 2)
+pieces_case("cyl_side_in_inter",  cyl, [1], -1.0, [16 * math.pi] * 2, True)
 thickness_case("cyl_bottom_out",  cyl, 2, +1.0, "pass", 637.5858)
 thickness_case("cyl_bottom_in",   cyl, 2, -1.0, "pass", 468.0973)
 thickness_case("cyl_top_out",     cyl, 3, +1.0, "pass", 637.5858)
 thickness_case("cyl_top_in",      cyl, 3, -1.0, "pass", 468.0973)
+
+# The faces that stay fall apart into pieces (README.md, "Pieces"). Each
+# piece is a thick solid of its own; pieces that overlap are fused. Box Faces
+# 1-4 are its sides, Face5 the bottom, Face6 the top.
+box = Part.makeBox(10, 10, 20)
+pieces_case("box_sides_out",      box, [1, 2, 3, 4], +1.0, [100.0, 100.0])
+pieces_case("box_sides_in",       box, [1, 2, 3, 4], -1.0, [100.0, 100.0])
+pieces_case("box_sides_in_inter", box, [1, 2, 3, 4], -1.0, [100.0, 100.0], True)
+ring = Part.makeCylinder(5, 10).cut(Part.makeCylinder(2, 10))
+pieces_case("ring_walls_in",      ring, [1, 4], -1.0, [21 * math.pi] * 2)
+# Shorter than twice the thickness: inward, the two discs overlap, and their
+# union is the whole cylinder.
+pieces_case("short_cyl_side_in",  Part.makeCylinder(4, 1.5), [1], -1.0, [24 * math.pi])
+
+# Only the bottom of a box shorter than twice the thickness stays: a plate of
+# the thickness. The loop split each removed side at the bottom's offset and
+# kept the piece nearer an end of the side's edge, the one beyond the offset
+# here; the thick solid came out as the box with the plate's complement as a
+# void, or, before the sealed cavity, with an empty shell (upstream is right).
+pieces_case("short_box_bottom_in", Part.makeBox(10, 10, 1.5), [1, 2, 3, 4, 6], -1.0, [100.0])
+pieces_case("short_box_bottom_in_inter", Part.makeBox(10, 10, 1.5), [1, 2, 3, 4, 6], -1.0,
+            [100.0], True)
+pieces_case("short_cyl_bottom_in", Part.makeCylinder(4, 1.5), [1, 2], -1.0, [16 * math.pi])
 
 # Cylinder with a centered hole: Face1 = outer lateral, Face2 = bottom,
 # Face3 = top, Face4 = hole lateral.

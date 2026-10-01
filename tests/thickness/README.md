@@ -65,12 +65,12 @@ The case names are older than a look at the faces: `makeCylinder` puts its
 top (z = height) at Face2 and its bottom at Face3, so `*_bottom_*` removes the
 top. The names are kept.
 
-Status on `LinkVibe-801` (2026-09-30):
+Status on `LinkVibe-801` (2026-10-01):
 
 | Case | Status | Symptom |
 |------|--------|---------|
 | `cyl_*_out/in` (top, bottom), `hole_*` (all eight) | PASS | |
-| `cyl_side_out/in` (remove lateral face) | **XFAIL** | `StdFail_NotDone` -- the only removed face is the seam-carrying lateral face. Upstream 8.0.1 throws the same. |
+| `cyl_side_out/in` (remove lateral face) | PASS since sec 27.101 | was `StdFail_NotDone`, upstream too: not the seam but the caps left in two pieces (`BRepOffset_NotConnectedShell`). Now a compound of two discs, see "Faces left in pieces" below |
 
 Six of these were XFAIL from 2026-08-01 to 2026-09-30 and are fixed (FreeCAD
 docs/TransactionLog.md sec 27.89). All six were casualties of the fix chain,
@@ -146,6 +146,53 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 The 712-run sweep against upstream after these: the fork right in all 150
 runs of every mode (upstream 106-112, counting the sealed void right),
 worse than upstream in no run.
+
+## Faces left in pieces, and a short wall (2026-10-01, sec 27.101)
+
+`BRepOffset_MakeOffset::CheckInputData` refuses a shape whose faces that stay
+fall apart into pieces sharing no edge once the removed faces are gone
+(`BRepOffset_NotConnectedShell`), upstream too. `MakeThickSolidByPieces` now
+makes each piece a thick solid of its own -- the shape with the other pieces
+removed as well -- and returns their union: a compound of solids, fused where
+they overlap; one solid left is returned as it is. The pieces' history is
+merged, so `Generated`/`Modified` answer as for one shape (FreeCAD's element
+names carry `THK`). A piece that is not one valid closed shell of positive
+volume refuses the whole, as before: a pocket's walls and floor, with the
+outside of the shape removed around them (a blind hole's top removed), do not
+come out right yet, and their union would pass for an answer. The
+Intersection join throws on a piece of one face (below), so it refuses too.
+
+Making the short cases right needed a fix of its own, in `BRepAlgo_Loop`:
+keeping only the bottom of a box shorter than twice the thickness, inward,
+the loop split each removed side at the bottom's offset and kept the piece
+nearer an end of the side's edge -- above the offset there. Now the piece
+from the end on a const edge (the face that stays) is kept when only one end
+is; otherwise the nearer end's, as before. The thick solid had come out as
+the box with the plate's complement as a void (sec 27.100's sealed cavity)
+and, before that, with an empty shell; upstream is right.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `cyl_side_*` | cylinder, side removed (Arc join, intersection off and on) | two discs of 16 pi, a compound |
+| `box_sides_*` | box 10 x 10 x 20, four sides removed | two plates of 100 |
+| `ring_walls_in` | cylinder with a hole, both walls removed | two rings of 21 pi |
+| `short_cyl_side_in` | cylinder 1.5 high, side removed, inward | the discs overlap and fuse: the whole cylinder, 24 pi |
+| `short_box_bottom_in*`, `short_cyl_bottom_in` | box and cylinder 1.5 high, everything but the bottom removed, inward | the loop's piece above the offset; a plate, one shell |
+
+The sweep: the 150 runs of every mode in scope are unchanged. Of the runs out
+of scope -- a face whose removal leaves pieces -- the cylinder's, the cone's and
+the elliptic pad's side, Arc join, are answered now, by hand: 2 x 16 pi; the
+frustum slabs 84.58 + 10.36 = 94.94 outward and 72.80 + 15.07 = 87.87 inward;
+2 x 50 pi. The pocket shapes (`boxhole2` Face3 and Face7, `pocket` Face3,
+`cylpocket` Face2, `cylboss` Face2) stay refused.
+
+Found, not fixed: the Intersection join with one face left -- a cylinder with
+its side and a cap removed, a box with five faces removed -- throws
+`BRepAlgo_Image::Bind` in `BuildOffsetByInter`: the fork puts the removed
+faces in its face list, and a removed face already has its own image. The
+other two branches there skip a face that has one; guarding this one too
+gives the box's plate, but the cylinder's cap outward comes out as the whole
+cylinder, so the guard is not in. Upstream answers these.
 
 ## Determinism cases (intersection mode, Arc join)
 
