@@ -111,6 +111,7 @@
 //
 #include <BOPAlgo_MakerVolume.hxx>
 #include <BOPTools_AlgoTools.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 
 #include <algorithm>
 #include <climits>
@@ -897,6 +898,95 @@ static bool HasConcaveRemovedFace(
   return false;
 }
 
+//=======================================================================
+// function : WallsCrossAtRemovedFace
+// purpose  : Whether the inward offsets of two faces beside one removed face,
+//            not touching each other, meet: the wall between them is thinner
+//            than twice the thickness (a holed cone, its top removed: the
+//            cone's offset and the hole's cross below the top). Intersection
+//            off never intersects them -- they are not neighbours -- and the
+//            thick solid came out a "valid" shell crossing itself, larger
+//            than its input.
+//=======================================================================
+static bool WallsCrossAtRemovedFace(
+  const TopoDS_Shape&                                                  theShape,
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theRemoved,
+  const double                                                         theOffset,
+  const double                                                         theTol)
+{
+  if (theOffset >= 0. || theRemoved.IsEmpty())
+  {
+    return false;
+  }
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    anEF;
+  TopExp::MapShapesAndAncestors(theShape, TopAbs_EDGE, TopAbs_FACE, anEF);
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> anOffsets;
+  for (int i = 1; i <= theRemoved.Extent(); ++i)
+  {
+    // The faces beside this removed face, in the shape's order.
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aBeside;
+    for (TopExp_Explorer anExp(theRemoved(i), TopAbs_EDGE); anExp.More(); anExp.Next())
+    {
+      const NCollection_List<TopoDS_Shape>* aLF = anEF.Seek(anExp.Current());
+      if (!aLF)
+      {
+        continue;
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator anIt(*aLF); anIt.More(); anIt.Next())
+      {
+        if (!theRemoved.Contains(anIt.Value()))
+        {
+          aBeside.Add(anIt.Value());
+        }
+      }
+    }
+    for (int j = 1; j <= aBeside.Extent(); ++j)
+    {
+      for (int k = j + 1; k <= aBeside.Extent(); ++k)
+      {
+        const TopoDS_Shape& aF1 = aBeside(j);
+        const TopoDS_Shape& aF2 = aBeside(k);
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aV1;
+        for (TopExp_Explorer anExp(aF1, TopAbs_VERTEX); anExp.More(); anExp.Next())
+        {
+          aV1.Add(anExp.Current());
+        }
+        bool isTouching = false;
+        for (TopExp_Explorer anExp(aF2, TopAbs_VERTEX); anExp.More() && !isTouching;
+             anExp.Next())
+        {
+          isTouching = aV1.Contains(anExp.Current());
+        }
+        if (isTouching)
+        {
+          continue;
+        }
+        const TopoDS_Shape* aOff[2] = {anOffsets.Seek(aF1), anOffsets.Seek(aF2)};
+        for (int m = 0; m < 2; ++m)
+        {
+          if (!aOff[m])
+          {
+            const TopoDS_Face& aF = TopoDS::Face(m == 0 ? aF1 : aF2);
+            BRepOffset_Offset  anOF(aF, theOffset, false, GeomAbs_Arc);
+            if (anOF.Status() != BRepOffset_Good)
+            {
+              return false;
+            }
+            aOff[m] = anOffsets.Bound(aF, anOF.Face());
+          }
+        }
+        BRepExtrema_DistShapeShape aDist(*aOff[0], *aOff[1]);
+        if (aDist.IsDone() && aDist.Value() <= theTol)
+        {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRange)
@@ -929,6 +1019,13 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
       && HasConcaveRemovedFace(myShape, myFaces))
   {
     myInter = false;
+  }
+  // Intersection off where the walls beside a removed face are too thin for
+  // it: built with intersection on, which finds the cavity sealed below the
+  // removed face (MakeSealedThickSolid).
+  else if (!myInter && WallsCrossAtRemovedFace(myShape, myFaces, myOffset, myTol))
+  {
+    myInter = true;
   }
   SetFacesWithOffset();
 
@@ -1241,6 +1338,123 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   myDone = true;
 }
 
+//=======================================================================
+// function : MakeSealedThickSolid
+// purpose  : A thick solid inward whose cavity reaches none of the removed
+//            faces: the walls near them are thinner than twice the
+//            thickness (a holed cone, its top removed: the cone's offset and
+//            the hole's cross below the top). The material is every point
+//            within the thickness of a face that stays, so the cavity --
+//            what is farther from all of them -- is closed, and the removed
+//            faces stay as skin over it. The offset faces show it: in a
+//            thick solid they stay open where the cavity meets the removed
+//            faces, and here every one of them is in a closed shell.
+//
+//            Then the solid is the original skin, the removed faces in it,
+//            and a void of each such shell; the gluing below would leave the
+//            skin open at the removed faces.
+//=======================================================================
+static bool MakeSealedThickSolid(
+  const TopoDS_Shape&                                                  theShape,
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theCorks,
+  const BRepAlgo_Image&                                                theImageOffset,
+  const TopoDS_Shape&                                                  theOffsetShape,
+  const double                                                         theOffset,
+  TopoDS_Shape&                                                        theResult)
+{
+  if (theOffset >= 0. || theCorks.IsEmpty() || theOffsetShape.IsNull())
+  {
+    return false;
+  }
+
+  // The voids: every offset face in a closed shell.
+  BRepTools_Quilt aVoidGlue;
+  bool            isAny = false;
+  for (TopExp_Explorer anExp(theOffsetShape, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    aVoidGlue.Add(anExp.Current());
+    isAny = true;
+  }
+  if (!isAny)
+  {
+    return false;
+  }
+  NCollection_List<TopoDS_Shape> aVoids;
+  for (TopExp_Explorer anExp(aVoidGlue.Shells(), TopAbs_SHELL); anExp.More(); anExp.Next())
+  {
+    if (!BRep_Tool::IsClosed(anExp.Current()))
+    {
+      return false;
+    }
+    aVoids.Append(anExp.Current());
+  }
+
+  // The skin: the faces that stay, as they were, and the removed ones.
+  BRepTools_Quilt aSkinGlue;
+  for (TopExp_Explorer anExp(theShape, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    if (theImageOffset.HasImage(anExp.Current()))
+    {
+      return false;
+    }
+    aSkinGlue.Add(anExp.Current());
+  }
+  for (int i = 1; i <= theCorks.Extent(); ++i)
+  {
+    aSkinGlue.Add(theCorks(i));
+  }
+  TopoDS_Shell aSkin;
+  int          aNbSkin = 0;
+  for (TopExp_Explorer anExp(aSkinGlue.Shells(), TopAbs_SHELL); anExp.More(); anExp.Next())
+  {
+    aSkin = TopoDS::Shell(anExp.Current());
+    ++aNbSkin;
+  }
+  if (aNbSkin != 1 || !BRep_Tool::IsClosed(aSkin))
+  {
+    return false;
+  }
+
+  // Oriented by volume: the skin's material inside, each void's outside.
+  auto volume = [](const TopoDS_Shape& theS) {
+    BRep_Builder aB;
+    TopoDS_Solid aSolid;
+    aB.MakeSolid(aSolid);
+    aB.Add(aSolid, theS);
+    GProp_GProps aProps;
+    BRepGProp::VolumeProperties(aSolid, aProps);
+    return aProps.Mass();
+  };
+  const double aSkinVol = volume(aSkin);
+  if (aSkinVol < 0.)
+  {
+    aSkin.Reverse();
+  }
+  BRep_Builder aB;
+  TopoDS_Solid aRes;
+  aB.MakeSolid(aRes);
+  aB.Add(aRes, aSkin);
+  double aVoidVol = 0.;
+  for (NCollection_List<TopoDS_Shape>::Iterator anIt(aVoids); anIt.More(); anIt.Next())
+  {
+    TopoDS_Shape aVoid = anIt.Value();
+    const double aVol  = volume(aVoid);
+    if (aVol > 0.)
+    {
+      aVoid.Reverse();
+    }
+    aVoidVol += std::abs(aVol);
+    aB.Add(aRes, aVoid);
+  }
+  if (aVoidVol >= std::abs(aSkinVol))
+  {
+    return false;
+  }
+  aRes.Closed(true);
+  theResult = aRes;
+  return true;
+}
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange)
@@ -1261,6 +1475,13 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   // limited by caps.
   //--------------------------------------------------------------------
   bool isOriented = false;
+  TopoDS_Shape aSealed;
+  if (MakeSealedThickSolid(myShape, myFaces, myImageOffset, myOffsetShape, myOffset, aSealed))
+  {
+    myOffsetShape = aSealed;
+    myDone        = true;
+    return;
+  }
   if (!myFaces.IsEmpty())
   {
     TopoDS_Solid    Res;
