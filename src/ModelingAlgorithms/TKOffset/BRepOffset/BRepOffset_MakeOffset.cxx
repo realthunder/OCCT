@@ -2637,13 +2637,6 @@ void BRepOffset_MakeOffset::ToContext(
     for (j = 1; j <= myFaces.Extent(); j++)
     {
       const TopoDS_Face& CF = TopoDS::Face(myFaces(j));
-      // A curved removed face -- a fillet removed -- is left as it was: the
-      // offsets beside it cut its surface in whole circles and the loop on
-      // the periodic face does not sort the pieces (not done).
-      if (BRepAdaptor_Surface(CF, false).GetType() != GeomAbs_Plane)
-      {
-        continue;
-      }
       for (exp.Init(CF, TopAbs_EDGE); exp.More(); exp.Next())
       {
         const TopoDS_Edge& E = TopoDS::Edge(exp.Current());
