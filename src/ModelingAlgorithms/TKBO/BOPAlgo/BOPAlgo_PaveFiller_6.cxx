@@ -3963,6 +3963,8 @@ void BOPAlgo_PaveFiller::UpdateBlocksWithSharedVertices()
   int                  i, nF1, nF2, aNbC, j, nV, nVSD;
   double               aTolV;
   NCollection_Map<int> aMF;
+  // Old vertices UpdateVertex() has replaced by new ones
+  NCollection_Map<int> aMVReplaced;
   //
   for (i = 0; i < aNbFF; ++i)
   {
@@ -4042,13 +4044,44 @@ void BOPAlgo_PaveFiller::UpdateBlocksWithSharedVertices()
         const TopoDS_Vertex& aV = *((TopoDS_Vertex*)&myDS->Shape(nV));
         aTolV                   = BRep_Tool::Tolerance(aV);
         //
-        UpdateVertex(nV, aTolV);
+        if (UpdateVertex(nV, aTolV) != nV)
+        {
+          aMVReplaced.Add(nV);
+        }
         myDS->InitPaveBlocksForVertex(nV);
       }
     } // for (j=0; j<aNbC; ++j) {
   } // for (i=0; i<aNbFF; ++i) {
   //
   UpdateCommonBlocksWithSDVertices();
+  //
+  // The faces' ON vertices were taken before these vertices were replaced,
+  // and nothing takes them again before MakeBlocks() puts them on the
+  // section curves: a section edge would end on the old vertex while the
+  // split edges of the faces end on the new one, the section edge would
+  // not connect, and the faces it should split would stay whole: a fuse of
+  // two solids sharing a face came out empty. Whether a shared vertex is
+  // replaced here can turn on 1e-14 in the input (tests/occ-issues local02).
+  if (!aMVReplaced.IsEmpty())
+  {
+    const int aNbS = myDS->NbSourceShapes();
+    for (int nF = 0; nF < aNbS; ++nF)
+    {
+      if (myDS->ShapeInfo(nF).ShapeType() != TopAbs_FACE || !myDS->HasFaceInfo(nF))
+      {
+        continue;
+      }
+      NCollection_Map<int>& aMVOn = myDS->ChangeFaceInfo(nF).ChangeVerticesOn();
+      for (NCollection_Map<int>::Iterator aItV(aMVReplaced); aItV.More(); aItV.Next())
+      {
+        nV = aItV.Value();
+        if (aMVOn.Remove(nV))
+        {
+          aMVOn.Add(myDS->GetSameDomainIndex(nV));
+        }
+      }
+    }
+  }
 }
 
 //=================================================================================================
