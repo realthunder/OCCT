@@ -39,6 +39,7 @@
 #include <gp_Pnt2d.hxx>
 #include <gp_Ax2.hxx>
 #include <Precision.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeFix_Wire.hxx>
 #include <TopExp.hxx>
@@ -1331,7 +1332,13 @@ void SplitWires(NCollection_List<TopoDS_Shape>& OutputWires,
       if (!anAnalyzer.IsValid())
       {
         SHOW_TOPO_SHAPE(aNF, "MakeTestBeforeFix");
-        ShapeFix_Shape aFix(aNF);
+        // The test face only classifies. It is made of the loop's own edges
+        // on the face's own surface, and ShapeFix edits the edges it is given
+        // in place: shifting a pcurve by a period rewrote the input face's
+        // pcurve of an edge it shares with the shape, and the caller's shape
+        // came back inside out (a pad's arc face under a thickness). Fix a
+        // copy.
+        ShapeFix_Shape aFix(BRepBuilderAPI_Copy(aNF, true).Shape());
         aFix.Perform();
         aNF = TopoDS::Face(aFix.Shape());
       }
