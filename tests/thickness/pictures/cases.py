@@ -20,6 +20,7 @@ STAGES = {
     "s93": ("e5e6d02f70", "27.93"),
     "s95": ("9a14fb9db5", "27.95"),
     "s96": ("c4be5548f9", "27.96"),
+    "s100": ("457b652f42", "27.100"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -95,6 +96,15 @@ CASES = {
     "filletbox_fillet_join_out": ("s96", "filletbox", 3, +1, False, 2, 424.7690),
     "filletbox25_fillet_join_in": ("s96", "filletbox25", 3, -1, False, 2, 258.4221),
     "filletbox25_fillet_join_out": ("s96", "filletbox25", 3, +1, False, 2, 407.4611),
+    "conehole_top_in": ("s100", "conehole", 2, -1, False, 0, 358.3146),
+    "conehole_top_inter_in": ("s100", "conehole", 2, -1, True, 0, 358.3146),
+    "conehole_bottom_in": ("s100", "conehole", 3, -1, False, 0, 307.1946),
+}
+# Cases whose right result is more than one shell: the holed cone's top, its
+# cavity sealed below the removed face (a skin and a void).
+SHELLS = {
+    "conehole_top_in": 2,
+    "conehole_top_inter_in": 2,
 }
 # The captured user models; upstream 8.0.1 passes them all, so not pictured.
 DOCS = {

@@ -10,12 +10,12 @@ measured against upstream for the first time and the thickness failures were
 chased down, one cause at a time. This page shows what each fix did, in
 pictures. The build log -- every cause, what was tried, the hand-worked
 volumes, the gates -- is FreeCAD's docs/TransactionLog.md sec 27.88 to
-27.96; "sec" below means a section there.
+27.96 and sec 27.100; "sec" below means a section there.
 
 Where things are:
 
 - The fork's suite: `tests/thickness/run_tests.py` (`FreeCADCmd
-  tests/thickness/run_tests.py`; PASS 60, XFAIL 2) and its `README.md`, the
+  tests/thickness/run_tests.py`; PASS 66, XFAIL 2) and its `README.md`, the
   case-by-case reference.
 - The pictures: `pictures/<case>.png` beside this page, one per case of the
   suite that a fix turned from failing to passing.
@@ -56,13 +56,15 @@ red faces fail `isValid()`; faces of no area are left out, and the picture
 says how many.
 
 Upstream's column is one run of many: upstream visits offsets in hash order
-and its wrong results vary from run to run (sec 27.88). Of the 46, two came
+and its wrong results vary from run to run (sec 27.88). Of the first 46, two came
 out different on a second run (`tshape_bar_top_out`, `filletbox_end_out`),
 wrong both times. The fork's columns are the same every run.
 
 A result can be right only when it is a valid solid with one closed shell and
-the expected volume; the volumes are upstream's where upstream is right, and
-otherwise worked out by hand (FreeCAD's TransactionLog.md has each derivation).
+the expected volume -- or, where no cavity can reach the removed face (sec
+27.100), two closed shells, the skin and a void; the volumes are upstream's
+where upstream is right, and otherwise worked out by hand (FreeCAD's
+TransactionLog.md has each derivation).
 
 ## How it stood, and how it stands
 
@@ -81,20 +83,24 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.93 | 0 | 122 | 141 / 141 | 137 / 137 | 106 / 107 / 110 / 111 |
 | sec 27.95 | 0 | 138 | 149 / 149 | 137 / 137 | 106 / 107 / 110 / 111 |
 | sec 27.96 | 0 | 162 | 149 / 149 | 149 / 149 | 106 / 107 / 110 / 111 |
+| sec 27.100 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
 sec 27.91 rebuilt the pocketed box (walls 2.5, not twice the thickness), so
-counts before sec 27.91 do not compare with those after it.
+counts before sec 27.91 do not compare with those after it. The last row
+counts the holed cone's sealed void right (sec 27.100), which upstream's
+intersection mode gives -- by that rule the fork was worse than upstream in
+those two runs before it.
 
-Of the 46 pictured cases, 21 are ones upstream gets right and the fork had
-broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91). The other
-25 fail upstream too: the fork now does better than upstream there.
+Of the 49 pictured cases, 22 are ones upstream gets right and the fork had
+broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, and the
+holed cone's top with intersection on, sec 27.100). The other 27 fail
+upstream too: the fork now does better than upstream there.
 
-What is still failing (upstream too): the holed cone's top inward, in every
-mode -- the wall is thinner than twice the thickness and no hollow result
-exists -- and, in the suite, `cyl_side_out/in`, a cylinder with its only
-seam-carrying lateral face removed (`StdFail_NotDone`).
+What is still failing (upstream too): in the suite, `cyl_side_out/in`, a
+cylinder with its only seam-carrying lateral face removed
+(`StdFail_NotDone`). Every run of the sweep is right.
 
 ## The fixes
 
@@ -290,6 +296,36 @@ Upstream fails all eight.
 ![filletbox_fillet_join_out](pictures/filletbox_fillet_join_out.png)
 ![filletbox25_fillet_join_in](pictures/filletbox25_fillet_join_in.png)
 ![filletbox25_fillet_join_out](pictures/filletbox25_fillet_join_out.png)
+
+### Sec 27.100: a cavity sealed below the removed face
+
+A cone with a through hole, its top removed, inward: the wall is 1.4 thick
+at the top, thinner than twice the thickness, and the cone's and the hole's
+inner offsets cross at z=6.485. No cavity reaches the removed face. The
+material is every point within the thickness of a face that stays, so the
+cavity -- farther than that from all of them -- is closed, and the top stays
+as skin over it: the user's choice of answer, two shells, the input's skin
+and a void of 112.92. The fork gave a "valid" solid larger than its input
+with intersection off (a shell crossing itself) and invalid ones with it on.
+
+Three causes. With intersection on, the loop on the cone's periodic offset
+let the band from the top circle down to the crossing, found first, take
+the crossing circle from the band below it -- the cavity -- which was never
+built: a band beyond the seam's span now gives way to one on it, and the
+band is made straight from the seam's two pcurves (`ShapeFix_Wire` turned
+the seam's pcurves round for one band and left the next running the wrong
+way). With every offset face then in a closed shell, the thick solid is the
+skin, the removed face kept, with those shells as voids. With intersection
+off the two offsets were never intersected -- they are not neighbours; walls
+beside a removed face too thin for it are now built with intersection on.
+That also fixed the cone's bottom removed with intersection off, whose
+cavity ran on past the crossing, "valid" and 0.761 too much (upstream says
+invalid). Upstream's intersection mode gives the sealed void; its default
+mode is invalid.
+
+![conehole_top_in](pictures/conehole_top_in.png)
+![conehole_top_inter_in](pictures/conehole_top_inter_in.png)
+![conehole_bottom_in](pictures/conehole_bottom_in.png)
 
 ## The captured models
 

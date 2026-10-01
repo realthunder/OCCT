@@ -6,19 +6,19 @@
 import os, sys, json
 sys.path.insert(0, os.environ["THICK_TOOLS"])
 import FreeCAD as App, Part
-from cases import SHAPES, CASES, DOCS
+from cases import SHAPES, CASES, DOCS, SHELLS
 OUT = os.environ["OUT"]; os.makedirs(OUT, exist_ok=True)
 stages = os.environ.get("STAGES", "all").split()
 only = os.environ.get("ONLY", "").split()
 def emit(s): os.write(1, (s + "\n").encode())
-def judge(r, ref):
+def judge(r, ref, shells=1):
     p = []
     if r.ShapeType != "Solid": p.append("type=%s" % r.ShapeType)
     try:
         if not r.isValid(): p.append("invalid")
     except Exception: p.append("check threw")
-    if len(r.Shells) != 1: p.append("shells=%d" % len(r.Shells))
-    elif not r.Shells[0].isClosed(): p.append("open shell")
+    if len(r.Shells) != shells: p.append("shells=%d" % len(r.Shells))
+    elif not all(sh.isClosed() for sh in r.Shells): p.append("open shell")
     try: vol = r.Volume
     except Exception: vol = None
     if not p and ref is not None and vol is not None and abs(vol - ref) > 1e-3 * abs(ref):
@@ -41,9 +41,9 @@ for name, (st, sk, fi, val, inter, join, ref) in CASES.items():
     d = {"center": c, "normal": n, "value": val, "ref": ref, "input_volume": s.Volume}
     try:
         r = s.makeThickness([f], val, 1e-7, inter, False, 0, join)
-        p, vol = judge(r, ref)
+        p, vol = judge(r, ref, SHELLS.get(name, 1))
         r.exportBrep(os.path.join(OUT, name + ".brep"))
-        d.update(ok=not p, problems=p, volume=vol)
+        d.update(ok=not p, problems=p, volume=vol, shells=len(r.Shells))
     except Exception as e:
         d.update(ok=False, problems=["threw " + (str(e).strip().splitlines() or [type(e).__name__])[-1]], volume=None)
     res[name] = d

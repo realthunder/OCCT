@@ -21,7 +21,8 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"]:
-        return "valid, volume %.2f" % d["volume"], (20, 120, 40)
+        sealed = " (a skin and a void)" if d.get("shells", 1) == 2 else ""
+        return "valid, volume %.2f%s" % (d["volume"], sealed), (20, 120, 40)
     p = []
     for x in d["problems"]:
         x = re.sub(r"threw \d+", "threw ", x)
