@@ -309,6 +309,29 @@ thickness_case("filletbox_side_out", filletbox, 6, +1.0, "pass", 388.8188)
 # fillet's slab and two quarter tori, plus two tubes and four sphere pieces.
 thickness_case("filletbox_fillet_in",  filletbox, 3, -1.0, "pass", 267.0193)
 thickness_case("filletbox_fillet_out", filletbox, 3, +1.0, "pass", 405.9034)
+# The same faces with the Intersection join, which builds no tubes: the
+# neighbour's offset ran round its cylinder to the removed face (a lip,
+# 382.017 for the end face outward) or never met it (inward: the input came
+# back unhollowed; a fillet face threw). The gap is closed by the tube's sharp
+# counterpart: a strip of the neighbour's tangent plane a thickness into the
+# removed face, offset with it, and a wall square to the removed face at the
+# strip's far edge; cubes where the Arc join has sphere eighths (FreeCAD
+# docs/TransactionLog.md sec 27.96). Worked out by hand: the sharp-grown skin
+# less the slab in front of the removed face, plus the squares; inward the
+# channel narrowed by a square at each side; for a fillet the squares reach
+# its cylinder (Green's theorem for the cavity's corner). At r=2 the wall of
+# one tangent edge lies in the plane of the other side's offset; the r=2.5
+# fillet has no such coincidence.
+thickness_case("filletbox_end_join_in",    filletbox, 1, -1.0, "pass", 262.8319, False, 2)
+thickness_case("filletbox_end_join_out",   filletbox, 1, +1.0, "pass", 422.7964, False, 2)
+thickness_case("filletbox_side_join_in",   filletbox, 6, -1.0, "pass", 254.8319, False, 2)
+thickness_case("filletbox_side_join_out",  filletbox, 6, +1.0, "pass", 406.7964, False, 2)
+thickness_case("filletbox_fillet_join_in",  filletbox, 3, -1.0, "pass", 268.7129, False, 2)
+thickness_case("filletbox_fillet_join_out", filletbox, 3, +1.0, "pass", 424.7690, False, 2)
+filletbox25 = Part.makeBox(10, 8, 6)
+filletbox25 = filletbox25.makeFillet(2.5, [filletbox25.Edges[i] for i in (0, 2, 4, 6)])
+thickness_case("filletbox25_fillet_join_in",  filletbox25, 3, -1.0, "pass", 258.4221, False, 2)
+thickness_case("filletbox25_fillet_join_out", filletbox25, 3, +1.0, "pass", 407.4611, False, 2)
 
 nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
