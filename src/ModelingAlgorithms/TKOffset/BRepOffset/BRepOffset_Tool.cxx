@@ -5203,7 +5203,52 @@ void BRepOffset_Tool::ExtentFace(
           //-------------------
           // edge is not ferme.
           //-------------------
-          if (Or == TopAbs_FORWARD)
+          // A whole turn between two vertices is two arcs, and the order of
+          // the vertices' parameters says nothing of which: a rim in two
+          // arcs had both replaced by the one half of the section circle,
+          // and the face came out with no area. The arc is the one whose
+          // middle is nearest the middle of the edge it replaces.
+          bool isArcOfTurn = false;
+          {
+            BRepAdaptor_Curve aTurn(TopoDS::Edge(Build(E)));
+            if (aTurn.IsPeriodic() && std::abs(l - f - aTurn.Period()) < Precision::PConfusion()
+                && std::abs(U1 - U2) > Precision::PConfusion() && !BRep_Tool::Degenerated(E))
+            {
+              const double      aLow = std::min(U1, U2), aHigh = std::max(U1, U2);
+              BRepAdaptor_Curve anOld(E);
+              const gp_Pnt      aMid =
+                anOld.Value((anOld.FirstParameter() + anOld.LastParameter()) / 2.);
+              const bool isBeyond = aMid.Distance(aTurn.Value((aHigh + aLow + aTurn.Period()) / 2.))
+                                    < aMid.Distance(aTurn.Value((aLow + aHigh) / 2.));
+              // The arc runs from the vertex of its lower parameter.
+              const bool isFromV1 = (U1 < U2) != isBeyond;
+              B.Add(NE, (isFromV1 ? NV1 : NV2).Oriented(TopAbs_FORWARD));
+              B.Add(NE, (isFromV1 ? NV2 : NV1).Oriented(TopAbs_REVERSED));
+              if (isBeyond)
+              {
+                B.Range(NE, aHigh, aLow + aTurn.Period());
+              }
+              else
+              {
+                B.Range(NE, aLow, aHigh);
+              }
+              if (isFromV1)
+              {
+                ConstShapes.Bind(E, NE);
+                NE.Orientation(E.Orientation());
+              }
+              else
+              {
+                ConstShapes.Bind(E, NE.Oriented(TopAbs_REVERSED));
+                NE.Orientation(TopAbs::Reverse(E.Orientation()));
+              }
+              isArcOfTurn = true;
+            }
+          }
+          if (isArcOfTurn)
+          {
+          }
+          else if (Or == TopAbs_FORWARD)
           {
             if (U1 > U2)
             {
