@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cases import CASES, NAMES, STAGES
+from cases import CASES, NAMES, STAGES, UVLABEL, VIEW
 
 P = os.environ["FILLET_WORK"]
 R = {k: json.load(open(P + "/r/%s/results.json" % k)) for k in os.listdir(P + "/r")
@@ -31,8 +31,8 @@ if sys.argv[1] == "jobs":
         for v, k in (("up", "up"), ("before", st), ("after", "after")):
             f = P + "/r/%s/%s.brep" % (k, name)
             ghost = not os.path.exists(f)
-            # the whole shape: the box and cylinder span -2..10 on each axis
-            for row, (center, height) in enumerate((((4, 4, 5), 19.0),
+            # the whole shape, then the fillet's end
+            for row, (center, height) in enumerate((VIEW[sk],
                                                     (focus, 4 * radius + 3))):
                 panels.append(dict(brep=inp if ghost else f, ghost=ghost, mark=not ghost,
                                    eye=list(look), center=list(center), height=height,
@@ -129,9 +129,10 @@ for name in sys.argv[2:] or list(CASES):
         for ci, uv in enumerate(uvs):
             x = ci * W
             P2 = lambda p: (x + mx + (p[0] - u0) * sx, y0 + my + (v1 - p[1]) * sy)
-            d.text((x + 10, y0 + 6), "the cylinder face in (u, v)", font=F, fill=(110, 110, 110))
+            label, grid = UVLABEL[sk]
+            d.text((x + 10, y0 + 6), label + " in (u, v)", font=F, fill=(110, 110, 110))
             k = 0
-            while k * (math.pi / 2) <= u1 + 1e-9:
+            while grid and k * (math.pi / 2) <= u1 + 1e-9:
                 if k * (math.pi / 2) >= u0 - 1e-9:
                     gx = P2((k * math.pi / 2, v0))[0]
                     d.line([(gx, y0 + my - 4), (gx, y0 + UVH - 20)], fill=(225, 225, 225), width=1)

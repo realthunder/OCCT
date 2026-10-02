@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, os.environ["FILLET_TOOLS"])
 import FreeCAD as App
 import Part
-from cases import CASES, SHAPES, UVFACE, edge_between
+from cases import CASES, SHAPES, UVFACE, UVFACE_CASE, edge_between
 
 OUT = os.environ["OUT"]
 os.makedirs(OUT, exist_ok=True)
@@ -66,7 +66,7 @@ for name, (st, sk, ends, radius, ref, focus, look) in CASES.items():
         if not p and ref is not None and abs(vol - ref) > 1e-4 * abs(ref):
             p.append("volume %.4f, expected %.4f" % (vol, ref))
         r.exportBrep(os.path.join(OUT, name + ".brep"))
-        d["uv"] = uv_outline(r, UVFACE[sk])
+        d["uv"] = uv_outline(r, UVFACE_CASE.get(name, UVFACE[sk]))
         d.update(ok=not p, problems=p, volume=vol)
     except Exception as e:
         d.update(ok=False, problems=["threw " + str(e).strip().splitlines()[-1]], volume=None)

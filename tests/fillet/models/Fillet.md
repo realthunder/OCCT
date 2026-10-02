@@ -26,15 +26,15 @@ Three rows:
 
 - the whole result;
 - the result zoomed on the fillet's end, where the fault is;
-- the face at the fillet's end drawn in its own (u, v) parameters -- each
-  edge's pcurve on it, as the face's wire holds the edge, which is what
-  `BRepCheck` reads. A closed wire is a closed outline; an end of a pcurve
-  that meets no other pcurve's end is circled red. The gridlines are at
-  multiples of pi/2 in u.
+- one face of the result drawn in its own (u, v) parameters, the face the
+  fault is in (its label names it) -- each edge's pcurve on it, as the
+  face's wire holds the edge, which is what `BRepCheck` reads. A closed wire
+  is a closed outline; an end of a pcurve that meets no other pcurve's end
+  is circled red. On a cylinder the gridlines are at multiples of pi/2 in u.
 
 Under each column heading: "valid, volume V" in green, or what was wrong in
 red. Faces that fail `isValid()` are drawn red; red edges are edges not
-used once each way round by the faces (none in these).
+used once each way round by the faces.
 
 ## The fixes
 
@@ -80,6 +80,58 @@ Not pictured: there is no result to show. A fillet of radius 2 on the
 cylinder's top or bottom arc has no line on the top face, only a point; the
 corner code dereferenced the missing curve and the process died. It is
 refused now (`StdFail_NotDone`); the suite's `arc_*_r2_no_crash`.
+
+### A corner whose faces are split in coplanar pieces (`cf96757c36`, realthunder/FreeCAD#962)
+
+A PartDesign body without Refine keeps a wall as several coplanar faces, cut
+apart by the booleans that made it. #962's Fillet (radius 0.8, twelve edges)
+was invalid, and five of its edges were invalid alone. Four of them are the
+outer edges of slots cut down to a floor: the fillet ends on the floor, which
+it has to extend into its end -- `PerformOneCorner`'s OnSame corner. The
+slot's wall is two faces there, its piece at the outer face 0.692 wide (0.787
+for the other pair of slots), and from that radius on the corner went wrong.
+
+The corner is built from the face holding the fillet's common point on the
+floor, the face on the other side, and the edge between the floor and that
+other face, which is extended to the fillet. With the fillet wider than the
+wall's narrow piece, the common point lies on the next piece, and the corner
+took the narrow piece's own bottom edge as the edge to extend. In the
+pictures the narrow piece survives whole, red, and the floor keeps its
+bottom edge, dangling: the third row's open end. The fix extends the edge
+between the floor and the far face, and removes the edges of the floor
+between the vertex and the common point the way the filleted edge itself
+goes. The block below is the same thing made small -- a slot whose wall is
+split 0.7 from the outer face -- and it comes out as the unsplit slot does.
+
+![slot_split_wall_r0.8](pictures/slot_split_wall_r0.8.png)
+![issue962_e101_r0.8](pictures/issue962_e101_r0.8.png)
+
+The fifth edge, 50, ends under a chamfer, and there the split is on the
+other side: the wall beside the edge (y=10.2) is two faces, and the edge to
+extend belongs to the other one. Its orientation in the wall was not looked
+up -- it defaulted to forward -- and the wall, red, lost the fillet's line.
+The third row looks the same in all three columns: the wall's outline closes
+in each, and what was wrong was the direction of one of its edges, which an
+outline does not show.
+
+![issue962_e50_r0.8](pictures/issue962_e50_r0.8.png)
+
+The most ordinary case of the three needs no slot: a fin padded flush with a
+block's side, its vertical edge filleted down to the block. The outer face is
+two faces, the fin's and the block's, split at the block's top, and the
+fillet's line on the fin's face ends on that split. The corner moved that
+end off the edge and gave the extension -- which runs along the split -- to
+the fin's face: the fin's face, red, holds the whole split edge and no
+fillet line (the third row's stray stroke). Now the end stays on the edge,
+and the extension bounds the block's face. The volume was right all along;
+only the faces were not.
+
+![fin_on_block_r0.8](pictures/fin_on_block_r0.8.png)
+
+Still open: #962's Fillet with all twelve edges -- two edges at the block's
+foot, each fine alone, together rewrite one coplanar seam twice
+(`issue962_e36_e49_r0.8`, XFAIL) -- and the fin with its wall split as well
+(`fin_on_block_wall_r0.8`, XFAIL).
 
 ## Making the pictures
 

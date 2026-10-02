@@ -74,10 +74,77 @@ there is null. `PerformOneCorner` (through `IntersUpdateOnSame`) and
 |------|----------------|
 | `arc_top_r2_no_crash`, `arc_bottom_r2_no_crash` | the fillet is refused, the process lives, the input is as it was |
 
+## A corner whose faces are split in coplanar pieces (realthunder/FreeCAD#962, 2026-10-02)
+
+The model is a PartDesign body without Refine: its walls are kept as several
+coplanar faces, split by the booleans that made them. Its Fillet (radius 0.8,
+twelve edges) was invalid, and five of the edges alone were too
+(`models/issue962_pocket002.brep` is the Fillet's input, the body's
+Pocket002). Four are the outer edges of slots cut down to a floor -- the
+edge ends on the floor, which the fillet extends (`PerformOneCorner`'s
+OnSame case) -- where the slot's wall is two faces, its piece at the outer
+face only 0.692 or 0.787 wide. The fifth, edge 50, ends under a chamfer, and
+the wall beside it (y=10.2) is two faces split at that end.
+
+`PerformOneCorner` builds such a corner from the face Fad holding the
+fillet's common point on the end face Fv, the face Fop on the other side, and
+the edge Arcprol between Fv and Fop, which it extends to the fillet. Three
+assumptions about those broke on split faces. Fix `cf96757c36`:
+
+- **The fillet wider than Fad's piece at the vertex**: its common point lies
+  on the next piece of the wall, so the arc it is on is not an edge of the
+  vertex, and the first other edge of Fv at the vertex -- the narrow piece's
+  own bottom edge -- was taken as Arcprol. Volumes off by +11 to -24 (the
+  slots), invalid from radius 0.7 on. Arcprol is now the edge between Fv and
+  Fop (or a face tangent to Fop); and the edges of Fv from the vertex to the
+  common point's arc, which nothing else cut away (the narrow piece survived
+  whole, its bottom edge dangling in the floor), go the way of the spine's
+  edge.
+- **Arcprol not in Fop but in Fop's tangent neighbour** (edge 50): its
+  orientation in Fop defaulted to FORWARD, and Fop lost the fillet's line --
+  an open wire. It is now taken from the neighbour, in the shell, and carried
+  into Fop's frame.
+- **The extension along the split itself**: a fin padded flush with the
+  block's side (`fin_on_block_*`) -- the most ordinary of the three. The
+  fillet's line on the fin's face ends on the edge between the fin's and the
+  block's face, `IntersUpdateOnSame` reset the point off that edge, and the
+  extension, which runs along it, was given to the fin's face: a
+  self-intersecting wire at every radius. The point stays on the edge, and
+  the extension bounds the block's face.
+
+Upstream's files at the fork's base give the same results as the fork before
+the fix.
+
+| Case | What it covers |
+|------|----------------|
+| `slot_split_{wall,outer,both}_r*` | a block with a slot down to a floor, its wall split 0.7 from the outer face, its outer face split below the floor, or both: each must give the unsplit slot's volume, radius 0.5 to 2 |
+| `issue962_e10{1,2,4,5}_r0.8` | the model's slots: all four at 11580.7739 (identical slots) |
+| `issue962_e50_r0.3`, `issue962_e50_r0.8` | the edge under the chamfer |
+| `fin_on_block_r*`, `fin_arc_on_block_r*` | a fin flush with the block's side, flat or with a top arc tangent to its outer face; the flat one must remove what the slot does |
+| `fin_on_block_wall_r0.3` | the same fin, its wall split as the slot's, narrower than the piece |
+
+Checked against the fix: every edge of 22 shapes -- the inputs of the fillet
+and chamfer features of #273, #474, #631, #876 and #962, #309's and #523's
+shapes, and small models of each case -- at radii 0.3, 0.8 and 2: 112
+results go from invalid to valid (#962's Pocket002 and Pad004 among them),
+the other 3590 are the same as before. FreeCAD's `TestPartApp` (139) and
+`TestPartDesignApp` (77) pass.
+
+#962's Fillet is still invalid with all twelve edges: two of them, 36 and
+49, the foot of the block where it meets the arm (x=38.5, z -9.75..-3.75),
+are each valid alone, and the Fillet without either one is valid, but the
+two together come out invalid, 7225 too large (`issue962_e36_e49_r0.8`). The block's bottom and the arm's
+are coplanar faces split along x=38.5; one corner extends that seam to its
+fillet and the other trims it, and the result holds both versions. Both
+corners are `PerformIntersectionAtEnd`'s. Not reproduced on a block and an
+arm alone.
+
 ## Known broken (XFAIL)
 
 | Case | Symptom |
 |------|---------|
+| `issue962_e36_e49_r0.8` | invalid, 7225 too large: two corners rewrite one coplanar seam (see #962 above) |
+| `fin_on_block_wall_r0.8` | `StdFail_NotDone` (a walking failure): the fin flush with the block, its wall split as well, the fillet wider than the wall's piece |
 | `seam_end_bottom_r2` | invalid, where its mirror image across z=5 (`seam_end_top_r2`) is valid: at radius 2 the fillet's end reaches the far end of the cylinder's face too (u = pi/2, the vertex at (0, 2)) |
 | `mirror_top_r2` | `StdFail_NotDone`, the same reach on the side without the seam |
 

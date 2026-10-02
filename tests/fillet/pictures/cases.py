@@ -13,6 +13,7 @@ MODELS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models"
 # stage -> (the fork commit just before the fix, the fix)
 STAGES = {
     "s523": ("f723999a15", "16df68d224"),
+    "s962": ("d8ba4ad7eb", "cf96757c36"),
 }
 # Upstream: the toolkit's files that differ from the fork, at the fork's base.
 UPSTREAM = "91be8c4c71"
@@ -26,17 +27,80 @@ def _brep(name):
     return make
 
 
+def _slot_wall():
+    # run_tests.py's slotted block, its slot's wall split 0.7 from the outer face
+    V = App.Vector
+    s = Part.makeBox(10, 10, 14).cut(Part.makeBox(12, 3, 10, V(-1, 3, 5)))
+    return s.generalFuse([Part.LineSegment(V(9.3, 3, 5), V(9.3, 3, 20)).toShape()])[0].Solids[0]
+
+
+def _fin():
+    # run_tests.py's fin padded flush with the block's side
+    V = App.Vector
+    return Part.makeBox(10, 10, 5).fuse(Part.makeBox(10, 3, 9, V(0, 0, 5)))
+
+
 SHAPES = {
     "boxcyl": _brep("issue523_box_cylinder.brep"),
+    "slotwall": _slot_wall,
+    "p962": _brep("issue962_pocket002.brep"),
+    "fin": _fin,
 }
+
+
+def _plane_at(axis, value, lo=None, hi=None):
+    """A planar face lying in <axis> = value, its bounding box's centre
+    between lo and hi on the other axes (dicts axis -> bound)."""
+    def pick(f):
+        if f.Surface.__class__.__name__ != "Plane":
+            return False
+        b = f.BoundBox
+        mn, mx = getattr(b, axis.upper() + "Min"), getattr(b, axis.upper() + "Max")
+        if abs(mn - value) > 1e-6 or abs(mx - value) > 1e-6:
+            return False
+        c = b.Center
+        return all(lo[a] <= getattr(c, a) for a in lo or {}) and all(
+            getattr(c, a) <= hi[a] for a in hi or {})
+    return pick
+
+
 # shape -> the face whose (u, v) outline the third row draws, found in a result
 UVFACE = {
     # the corner's cylinder, not a fillet of the same radius
     "boxcyl": (lambda f: f.Surface.__class__.__name__ == "Cylinder"
                and abs(f.Surface.Radius - 2) < 1e-6 and abs(abs(f.Surface.Axis.z) - 1) < 1e-9),
+    # the slot's floor, where the fillet ends
+    "slotwall": _plane_at("z", 5),
+    # the slot's floor at e101's foot (y 13.7..17.1); for e50 see UVFACE_CASE
+    "p962": _plane_at("z", 14, {"y": 13.0}, {"y": 17.1}),
+    # the fin's outer face, which the fillet's line runs on
+    "fin": _plane_at("x", 10, {"z": 5.0 + 1e-6}),
+}
+# case -> a third-row face other than its shape's
+UVFACE_CASE = {
+    # the wall y=10.2 beside e50, its piece from x=38.5 on (the hexagon's)
+    "issue962_e50_r0.8": _plane_at("y", 10.2, {"x": 40.0}, {"x": 50.0}),
 }
 NAMES = {
     "boxcyl": "10 box with a 3/4 cylinder r2 at a corner (#523, Part Connect)",
+    "slotwall": "10x10x14 block, a slot down to z=5, the slot's wall two faces split 0.7 "
+                "from the outer face",
+    "p962": "#962's Pocket002, the Fillet's input (a PartDesign body without Refine)",
+    "fin": "10x10x5 block with a 10x3x9 fin padded flush with its side x=10",
+}
+# shape -> the whole shape's view: (center, height)
+VIEW = {
+    "boxcyl": ((4, 4, 5), 19.0),  # the box and cylinder span -2..10 on each axis
+    "slotwall": ((5, 5, 7), 20.0),
+    "p962": ((16, 4, 11), 62.0),
+    "fin": ((5, 5, 7), 20.0),
+}
+# shape -> (what the third row's face is, whether to draw u gridlines at pi/2)
+UVLABEL = {
+    "boxcyl": ("the cylinder face", True),
+    "slotwall": ("the slot's floor", False),
+    "p962": ("the face at the fillet's end", False),
+    "fin": ("the fin's outer face", False),
 }
 # name -> (stage, shape, the edge by its ends, radius, expected volume,
 #          the point to zoom on, the direction the camera looks from)
@@ -49,6 +113,14 @@ CASES = {
                           (2, 0, 10), (0.55, -1, 0.75)),
     "seam_end_top_r2": ("s523", "boxcyl", ((2, 0, 10), (10, 0, 10)), 2.0, 1087.3009,
                         (2, 0, 10), (0.55, -1, 0.75)),
+    "slot_split_wall_r0.8": ("s962", "slotwall", ((10, 3, 5), (10, 3, 14)), 0.8, 1128.7639,
+                             (10, 3, 5), (1, 0.9, 0.8)),
+    "issue962_e101_r0.8": ("s962", "p962", ((50, 13.7, 22), (50, 13.7, 14)), 0.8, 11580.7739,
+                           (50, 13.7, 14), (1, 0.9, 0.8)),
+    "issue962_e50_r0.8": ("s962", "p962", ((38.5, 10.2, -3.75), (38.5, 10.2, 14)), 0.8,
+                          11581.7861, (38.5, 10.2, 14), (-1, -1, 0.6)),
+    "fin_on_block_r0.8": ("s962", "fin", ((10, 3, 5), (10, 3, 14)), 0.8, 768.7639,
+                          (10, 3, 5), (1, 0.9, 0.8)),
 }
 
 

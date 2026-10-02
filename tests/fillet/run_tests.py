@@ -108,7 +108,7 @@ def document_case(name, filename, volumes=None):
 # ---------------------------------------------------------------------------
 
 def fillet_case(name, shape, edge_index, radius, expect, ref_volume=None):
-    """makeFillet(radius, [Edge<edge_index>]).
+    """makeFillet(radius, [Edge<edge_index>]); edge_index may be a list.
 
     expect='pass':  a valid solid, one closed shell, the input left as it was,
                     and ref_volume when given.
@@ -117,7 +117,8 @@ def fillet_case(name, shape, edge_index, radius, expect, ref_volume=None):
     """
     try:
         before = signature(shape)
-        r = shape.makeFillet(radius, [shape.Edges[edge_index - 1]])
+        indices = edge_index if isinstance(edge_index, list) else [edge_index]
+        r = shape.makeFillet(radius, [shape.Edges[i - 1] for i in indices])
         problems = []
         if signature(shape) != before:
             problems.append("input changed: valid=%s vol=%.4f" % signature(shape))
@@ -188,6 +189,93 @@ for i in range(1, len(bc.Edges) + 1):
 # top face is a point. It crashed in IntersUpdateOnSame.
 nocrash_case("arc_top_r2_no_crash", bc, arc_top, 2.0)
 nocrash_case("arc_bottom_r2_no_crash", bc, arc_bottom, 2.0)
+
+# realthunder/FreeCAD#962: a fillet whose end lies on a face split into
+# coplanar pieces (a PartDesign body without Refine). A 10x10x14 block with a
+# slot cut down to z=5 (y 3..6); the fillet is on the outer edge of the slot,
+# x=10, y=3, which ends on the slot's floor.
+V = App.Vector
+
+
+def slotted(wall=False, outer=False):
+    """The slotted block; `wall` splits the slot's wall (y=3) by a vertical
+    edge 0.7 from the outer face, `outer` splits the outer face (x=10) by the
+    spine's own line below the floor."""
+    s = Part.makeBox(10, 10, 14).cut(Part.makeBox(12, 3, 10, V(-1, 3, 5)))
+    for on, (a, b) in ((outer, (V(10, 3, 0), V(10, 3, 5))),
+                       (wall, (V(9.3, 3, 5), V(9.3, 3, 20)))):
+        if on:
+            s = s.generalFuse([Part.LineSegment(a, b).toShape()])[0].Solids[0]
+    return s
+
+
+plain = slotted()
+spine = edge_between(plain, (10, 3, 5), (10, 3, 14))
+for r in (0.5, 0.8, 1.0, 2.0):
+    ref = plain.makeFillet(r, [plain.Edges[spine - 1]]).Volume
+    for tag, s in (("wall", slotted(wall=True)), ("outer", slotted(outer=True)),
+                   ("both", slotted(wall=True, outer=True))):
+        # wider than the wall's piece at the vertex from 0.7 on
+        fillet_case("slot_split_%s_r%g" % (tag, r), s,
+                    edge_between(s, (10, 3, 5), (10, 3, 14)), r, "pass", ref)
+
+# The model's own shape: the Pocket002 the fillet is made on. Edges 101, 102,
+# 104 and 105 are the outer edges of four slots like the block's, the wall's
+# piece at the floor 0.692 and 0.787 wide; edge 50 ends where the wall
+# (y=10.2) continues as another face above the end face, a chamfer.
+p2 = Part.read(os.path.join(MODELS, "issue962_pocket002.brep"))
+for name, a, b in (("e101", (50, 13.7, 22), (50, 13.7, 14)),
+                   ("e102", (50, 17.1, 14), (50, 17.1, 22)),
+                   ("e104", (50, 20.3, 22), (50, 20.3, 14)),
+                   ("e105", (50, 23.7, 14), (50, 23.7, 22))):
+    fillet_case("issue962_%s_r0.8" % name, p2, edge_between(p2, a, b), 0.8, "pass",
+                11580.7739)
+e50 = edge_between(p2, (38.5, 10.2, -3.75), (38.5, 10.2, 14))
+fillet_case("issue962_e50_r0.3", p2, e50, 0.3, "pass", 11583.8075)
+fillet_case("issue962_e50_r0.8", p2, e50, 0.8, "pass", 11581.7861)
+# Each fine alone, together the two edges at the foot of the block (x=38.5,
+# z -9.75..-3.75) give an invalid solid 7225 larger: both corners rewrite the
+# seam between the bottom's two coplanar faces, one extending it and one
+# trimming it, and both versions stay.
+e36 = edge_between(p2, (38.5, 27.2, -3.75), (38.5, 27.2, -9.75))
+e49 = edge_between(p2, (38.5, 10.2, -3.75), (38.5, 10.2, -9.75))
+fillet_case("issue962_e36_e49_r0.8", p2, [e36, e49], 0.8, "xfail")
+
+# A fin padded flush with the block's side: the outer face is two faces, the
+# fin's and the block's, split at the floor's height, and the fillet's line on
+# the fin's face ends on that split. It must take what it takes from the slot.
+def fin_on_block(wall=False, arc=False):
+    if arc:  # the fin's top an arc tangent to its outer face
+        prof = Part.Wire([Part.LineSegment(V(0, 0, 5), V(10, 0, 5)).toShape(),
+                          Part.LineSegment(V(10, 0, 5), V(10, 0, 8)).toShape(),
+                          Part.Arc(V(10, 0, 8), V(4 + 6 * 0.5 ** 0.5, 0, 8 + 6 * 0.5 ** 0.5),
+                                   V(4, 0, 14)).toShape(),
+                          Part.LineSegment(V(4, 0, 14), V(0, 0, 14)).toShape(),
+                          Part.LineSegment(V(0, 0, 14), V(0, 0, 5)).toShape()])
+        f = Part.Face(prof).extrude(V(0, 3, 0))
+    else:
+        f = Part.makeBox(10, 3, 9, V(0, 0, 5))
+    s = Part.makeBox(10, 10, 5).fuse(f)
+    if wall:
+        s = s.generalFuse([Part.LineSegment(V(9.3, 3, 5), V(9.3, 3, 20)).toShape()])[0].Solids[0]
+    return s
+
+
+for r in (0.3, 0.8, 2.0):
+    taken = plain.Volume - plain.makeFillet(r, [plain.Edges[spine - 1]]).Volume
+    fin = fin_on_block()
+    fillet_case("fin_on_block_r%g" % r, fin, edge_between(fin, (10, 3, 5), (10, 3, 14)), r,
+                "pass", fin.Volume - taken)
+fin = fin_on_block(arc=True)
+for r in (0.3, 0.8):
+    fillet_case("fin_arc_on_block_r%g" % r, fin, edge_between(fin, (10, 3, 5), (10, 3, 8)), r,
+                "pass")
+# and its wall split as the slot's: a walking failure from 0.8 on
+fin = fin_on_block(wall=True)
+fillet_case("fin_on_block_wall_r0.3", fin, edge_between(fin, (10, 3, 5), (10, 3, 14)), 0.3,
+            "pass", 770 - (plain.Volume - plain.makeFillet(0.3, [plain.Edges[spine - 1]]).Volume))
+fillet_case("fin_on_block_wall_r0.8", fin, edge_between(fin, (10, 3, 5), (10, 3, 14)), 0.8,
+            "xfail")
 
 counts = {}
 for _, verdict, _ in results:

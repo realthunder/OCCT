@@ -60,7 +60,7 @@ the table above come first:
 | 523 | Fillet invalid -- **fixed**, `../fillet/` |
 | 631 | valid (10005.3404, alt 42806.4887): wrong-but-valid needs a geometric check |
 | 876 | valid by `isValid()` and the BOP check through Fillet001; the Pocket result is the 3-face 475.17 solid, still wrong. Its first fillets moved by 0.0173 with the #523 fix (right period, closer to tangent) |
-| 962 | Fillet, Fillet003, Fillet004 invalid; Body001 invalid |
+| 962 | Fillet, Fillet003, Fillet004 invalid; Body001 invalid. The recompute stops at Sketch004 ("malformed constraints" after an element remap), so these are the stored shapes. Fillet's five failing edges (101, 102, 104, 105, 50) **fixed**, `../fillet/` (`cf96757c36`: corners on walls split in coplanar pieces); with all twelve edges it is still invalid, from the pair 36 + 49 (`issue962_e36_e49_r0.8`) |
 
 ## Recomputes clean — needs a scripted repro (the bug is in a step, not the stored state)
 
