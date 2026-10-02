@@ -22,6 +22,7 @@
 #include <BOPDS_DS.hxx>
 #include <BOPTools_AlgoTools.hxx>
 #include <BOPTools_AlgoTools2D.hxx>
+#include <BRep_RepresentationLock.hxx>
 #include <BRep_TEdge.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepAdaptor_Curve.hxx>
@@ -3800,6 +3801,58 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF, TopoDS_Face* theTwin = nu
     aPos.YReverse();
   }
   occ::handle<Geom_SphericalSurface> aNewS = new Geom_SphericalSurface(aPos, aSph.Radius());
+  // A twin made before, for an earlier thickness of the same shape: its edges
+  // hold their pcurves on that turned sphere already, and take no more. The
+  // axis found is the same every time.
+  if (theTwin)
+  {
+    occ::handle<Geom_SphericalSurface> aKept;
+    for (int i = 1; i <= anEMap.Extent() && aKept.IsNull(); ++i)
+    {
+      const occ::handle<BRep_TEdge> aTE = occ::down_cast<BRep_TEdge>(anEMap(i).TShape());
+      // A frozen edge may take a cache on another thread meanwhile.
+      const BRep_RepresentationLock aLock(aTE.get());
+      for (NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(aTE->Curves());
+           anIt.More() && aKept.IsNull();
+           anIt.Next())
+      {
+        if (!anIt.Value()->IsCurveOnSurface())
+        {
+          continue;
+        }
+        const occ::handle<Geom_SphericalSurface> aCand =
+          occ::down_cast<Geom_SphericalSurface>(anIt.Value()->Surface());
+        if (!aCand.IsNull() && aCand != aSphS
+            && std::abs(aCand->Radius() - aSph.Radius()) <= Precision::Confusion()
+            && aCand->Position().Location().IsEqual(aPos.Location(), Precision::Confusion())
+            && aCand->Position().Direction().IsEqual(aPos.Direction(), Precision::Angular())
+            && aCand->Position().XDirection().IsEqual(aPos.XDirection(), Precision::Angular())
+            && aCand->Position().Direct() == aPos.Direct())
+        {
+          aKept = aCand;
+        }
+      }
+    }
+    for (int i = 1; i <= anEMap.Extent() && !aKept.IsNull(); ++i)
+    {
+      double aF, aL;
+      if (BRep_Tool::CurveOnSurface(TopoDS::Edge(anEMap(i)), aKept, aNewLoc, aF, aL).IsNull())
+      {
+        aKept.Nullify();
+      }
+    }
+    if (!aKept.IsNull())
+    {
+      BRep_Builder aTB;
+      aTB.MakeFace(*theTwin, aKept, aNewLoc, BRep_Tool::Tolerance(theF));
+      for (TopoDS_Iterator anIt(theF.Oriented(TopAbs_FORWARD)); anIt.More(); anIt.Next())
+      {
+        aTB.Add(*theTwin, anIt.Value());
+      }
+      theTwin->Orientation(theF.Orientation());
+      return true;
+    }
+  }
   NCollection_DataMap<TopoDS_Shape, occ::handle<Geom2d_Curve>, TopTools_ShapeMapHasher> aPCurves;
   for (int i = 1; i <= anEMap.Extent(); ++i)
   {
