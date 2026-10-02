@@ -27,12 +27,40 @@ those need a scripted repro before they can join the suite.
 | 363 | `issue363_thickness_multi.FCStd` | "Unexpected result with thickness and other issues" — richest thickness repro in the corpus | errors: Chamfer, Thickness, Thickness001, Thickness002; invalid: Body, Thickness001 |
 | 474 | `issue474_fillet_edit_crash.FCStd` | Editing Fillet003 crashes; root cause per RT: sketch misalignment OCC fillet can't absorb; release crash needs `BUILD_RELEASE_DISABLE_EXCEPTIONS=Off` builds | **crash on recompute** |
 | 521 | `issue521_thickness_intersection.FCStd` | Thickness **Intersection option** not working | error: Thickness |
-| 523 | `issue523_fillet_explodes.FCStd` | Face "explodes" when applying a fillet radius | invalid: Fillet |
+| 523 | `issue523_fillet_explodes.FCStd` | Face "explodes" when applying a fillet radius | invalid: Fillet. **Fixed 2026-10-02** (`16df68d224`): the cylinder's seam was left on its three-quarter face as an edge with both pcurves, and the fillet corner read the one a period away; see `../fillet/` |
 | 580 | `issue580_mirror_crash.FCStd` | Mirror produces an invalid shape; the following fuse crashes (whole-shape mirror via MultiTransform) | error: Chamfer; invalid: Body |
 | 613 | `issue613_thickness_two_faces.FCStd` | Thickness with two faces selected opens only one of them | error: Fillet; invalid: Body, Thickness |
 | 617 | `issue617_intersection_pad.FCStd` | Pad from faces built on a revolution/sketch intersection: extremely slow, then broken geometry (`_simple` variant currently recomputes clean) | error: Pad; invalid: Body, Pad |
 | 876 | `issue876_fillet_pocket_flip.FCStd` | Fillet produces invalid geometry; downstream Pocket **adds** material instead of cutting | invalid: Fillet001 |
 | 962 | `issue962_fillet_artifact.FCStd` | Strange artifact | invalid: Body001, Fillet, Fillet003, Fillet004 |
+
+## Rescan of the fillet, chamfer and draft models (2026-10-02, macOS)
+
+The same method on the macOS box: release build (`build/mac-relwithdebinfo-801`),
+`LinkVibe-801` at `f723999a15`, OCCT installed RelWithDebInfo. Two corrections to
+the table above come first:
+
+- **#333, #334 "crash on recompute" was not the recompute.** Both files hold a
+  `Mesh::Feature`, and the scan read `getattr(obj, "Shape")` on it, which falls
+  back to `Part.getShape()` -> `Mesh::Feature::getSubObject()` with no subname
+  -> a null name into `Data::IndexedName`'s list constructor -> `strlen(NULL)`.
+  A FreeCAD bug (the sibling constructor guards null), not OCCT's. Read through
+  `PropertiesList`, both recompute.
+- **#474 no longer crashes**, and **#309's fillet is valid** (Edge8, radius 1:
+  12751.0044) -- upstream's 0032929 (`24e4b3c83b`) is in the fork.
+
+| # | Now (fork before `16df68d224`) |
+|---|---|
+| 273 | Body valid; Pad003 invalid, Sketch003 in error (both files). The chamfer crash needs the interactive chamfer scripted |
+| 309 | fixed (see above) |
+| 333 | no crash; Sketch006 "No planar face in AttachEngine3D" (its support remapped to a curved face) |
+| 334 | no crash; Draft003 invalid, Body invalid |
+| 360 | not finished: the recompute ran 25 min and the scan was stopped for memory on the 8 GB box |
+| 474 | no crash; Fillet003 and four sketches in error |
+| 523 | Fillet invalid -- **fixed**, `../fillet/` |
+| 631 | valid (10005.3404, alt 42806.4887): wrong-but-valid needs a geometric check |
+| 876 | valid by `isValid()` and the BOP check through Fillet001; the Pocket result is the 3-face 475.17 solid, still wrong. Its first fillets moved by 0.0173 with the #523 fix (right period, closer to tangent) |
+| 962 | Fillet, Fillet003, Fillet004 invalid; Body001 invalid. The recompute stops at Sketch004 ("malformed constraints" after an element remap), so these are the stored shapes. Fillet's five failing edges (101, 102, 104, 105, 50) **fixed**, `../fillet/` (`cf96757c36`: corners on walls split in coplanar pieces); and with all twelve edges since `b38f0d910c` (the pair 36 + 49 rewrote one coplanar seam twice): 11552.7830, `issue962_fillet_r0.8` |
 
 ## Recomputes clean — needs a scripted repro (the bug is in a step, not the stored state)
 

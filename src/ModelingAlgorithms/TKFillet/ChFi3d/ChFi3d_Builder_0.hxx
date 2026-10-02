@@ -111,6 +111,13 @@ void ChFi3d_conexfaces(const TopoDS_Edge& E,
 
 ChFiDS_State ChFi3d_EdgeState(TopoDS_Edge* E, const ChFiDS_Map& EFMap);
 
+TopoDS_Edge ChFi3d_EdgeOnSplitToVertex(const TopoDS_Edge&   E,
+                                       const TopoDS_Face&   F,
+                                       const TopoDS_Face&   Fv,
+                                       const TopoDS_Vertex& V,
+                                       const ChFiDS_Map&    EFMap,
+                                       const ChFiDS_Map&    VEMap);
+
 bool ChFi3d_KParticular(const occ::handle<ChFiDS_Spine>& Spine,
                         const int                        IE,
                         const BRepAdaptor_Surface&       S1,
