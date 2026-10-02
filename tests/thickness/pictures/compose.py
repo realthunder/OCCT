@@ -20,7 +20,8 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "filletbox": "box with filleted vertical edges, r2", "filletbox25": "box with filleted vertical edges, r2.5",
          "shortcyl": "cylinder 1.5 high", "shortbox": "box 10 x 10 x 1.5", "box6": "box 10 x 10 x 6",
          "blindpot": "a blind hole's wall and floor and the top, an open shell",
-         "cylboss": "cylinder with a boss", "sector": "ring sector pad across angle 0", "sphere": "sphere"}
+         "cylboss": "cylinder with a boss", "sector": "ring sector pad across angle 0", "sphere": "sphere",
+         "dome": "half a sphere", "cap": "sphere above latitude 30", "cone": "cone with its apex"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"] and d.get("refused"):
@@ -70,7 +71,7 @@ for name in names:
     else:
         expect = "%.2f" % ref if ref else "a valid solid"
     desc = "%s, %s removed, %s, %s%s; expected %s  (fix: sec %s)" % (
-        NAMES[sk], faces, "outward +1" if val > 0 else "inward -1", JOIN[join], ", intersection on" if inter else "",
+        NAMES[sk], faces, "outward %+g" % val if val > 0 else "inward %+g" % val, JOIN[join], ", intersection on" if inter else "",
         expect, sec)
     d.text((10, 36), desc, font=F, fill=(60, 60, 60))
     cols = [("up", "up", "upstream OCCT 8.0.1"), ("before", st, "fork before (%s)" % commit), ("after", "after", "fork after")]

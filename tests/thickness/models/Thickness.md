@@ -15,7 +15,7 @@ volumes, the gates -- is FreeCAD's docs/TransactionLog.md sec 27.88 to
 Where things are:
 
 - The fork's suite: `tests/thickness/run_tests.py` (`FreeCADCmd
-  tests/thickness/run_tests.py`; PASS 82) and its `README.md`, the
+  tests/thickness/run_tests.py`; PASS 110) and its `README.md`, the
   case-by-case reference.
 - The pictures: `pictures/<case>.png` beside this page, one per case of the
   suite that a fix turned from failing to passing.
@@ -89,6 +89,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.103 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.104 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.105 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.106 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -98,11 +99,12 @@ counts the holed cone's sealed void right (sec 27.100), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
 those two runs before it.
 
-Of the 69 pictured cases, 27 are ones upstream gets right and the fork had
+Of the 73 pictured cases, 31 are ones upstream gets right and the fork had
 broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
 cone's top with intersection on, sec 27.100, a short box's and a box's bottom
-alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, and the
-input left inside out, sec 27.104). The other 42 fail upstream too: the fork
+alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, the
+input left inside out, sec 27.104, and the faces closed at a pole, sec
+27.106). The other 42 fail upstream too: the fork
 now does better than upstream there.
 
 Nothing in the suite fails now, and every run of the sweep in scope is
@@ -111,6 +113,10 @@ piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
 the pieces that are pockets and bosses: every one checks by hand. The one
 refusal left in the sweep is the torus's face, and it is right: with its one
 face removed no face stays (sec 27.105, which refuses the sphere's too).
+
+The sweep's 16 solids have no face closed at a pole -- no dome, no cone with
+its apex -- which is how sec 27.106's fault, there since the chain was
+ported, went unseen: the sweep's lines are the same before and after it.
 
 ## The fixes
 
@@ -450,6 +456,36 @@ where it is.
 
 ![sphere_face_refused_in](pictures/sphere_face_refused_in.png)
 ![box_all_faces_refused_in](pictures/box_all_faces_refused_in.png)
+
+### Sec 27.106: a face closed at a pole
+
+A dome -- half a sphere -- with its flat face removed leaves one face, the
+sphere, bounded by its seam, the pole and the equator. On a periodic face
+the loop builds a seam wire from a closed edge, a piece of the seam, and the
+closed edge at the seam's far end; but it keeps degenerated edges, the
+pole's, out of its vertex map (they would come out as one-edge wires of
+their own), so at the pole it found no closed edge and built no seam wire.
+The equator was left as a wire on its own, which bounds nothing: the offset
+sphere came back a face of no area, the result invalid, 216.55 outward and
+231.51 inward by 0.5. It had been so since the chain was ported; upstream is
+right. The band is now closed by the pole's degenerated edge where the seam
+ends at one. A cap, a bowl, a sphere cut above its equator and a cone with
+its apex went the same way and come right with it. The rim is closed in the
+removed face's plane, so each volume is a difference of sphere caps, pi h^2
+(3R - h) / 3: the dome (2/3) pi (5.5^3 - 5^3) = 86.6556 outward and (2/3) pi
+(5^3 - 4.5^3) = 70.9476 inward; the cap above latitude 30, inward, 81.8123 -
+48.1711 = 33.6412. The cone's skin is the cone a thickness out, its apex
+rounded by a ball of the thickness, less the cone: 52.4095.
+
+![dome_flat_out](pictures/dome_flat_out.png)
+![dome_flat_in](pictures/dome_flat_in.png)
+![cap_flat_in](pictures/cap_flat_in.png)
+![cone_base_out](pictures/cone_base_out.png)
+
+Found beside it, not fixed, and wrong upstream too: a cone with its apex,
+base removed, inward with the Arc join throws (the offset cone face runs
+through its own new apex), and apex down with the Intersection join comes
+back unhollowed; half a dome (a 180 degree turn) fails in most modes.
 
 ## The captured models
 

@@ -28,6 +28,7 @@ STAGES = {
     "s103": ("d8d480ef65", "27.103"),
     "s104": ("839a3e4606", "27.104"),
     "s105": ("f723999a15", "27.105"),
+    "s106": ("dc3a7b85d1", "27.106"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -77,6 +78,9 @@ SHAPES = {
     "cylboss": lambda: Part.makeCylinder(6, 4).fuse(Part.makeCylinder(3, 4, V(0, 0, 4))),
     "sector": lambda: _sector(2 * math.pi),
     "sphere": lambda: Part.makeSphere(5),
+    "dome": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 360),
+    "cap": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 30, 90, 360),
+    "cone": lambda: Part.makeCone(0, 4, 6),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -149,6 +153,10 @@ CASES = {
     "sector_outer_arc_input": ("s104", "sector", [3, 5, 6], +1, False, 0, 9405.6558),
     "sphere_face_refused_in": ("s105", "sphere", 1, -1, False, 0, None),
     "box_all_faces_refused_in": ("s105", "box6", [1, 2, 3, 4, 5, 6], -1, False, 0, None),
+    "dome_flat_out": ("s106", "dome", 2, +0.5, False, 0, 86.6556),
+    "dome_flat_in": ("s106", "dome", 2, -0.5, False, 0, 70.9476),
+    "cap_flat_in": ("s106", "cap", 2, -0.5, False, 0, 33.6412),
+    "cone_base_out": ("s106", "cone", 2, +0.5, False, 0, 52.4095),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).
