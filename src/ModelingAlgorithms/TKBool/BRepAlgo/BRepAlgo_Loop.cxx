@@ -2037,6 +2037,327 @@ static bool FindLoopsByAngle(
   return true;
 }
 
+// The same walk on a periodic face with its seam: the vertices are told apart
+// by where they lie in (u, v) as well -- a vertex on the seam is two nodes, a
+// period apart, and a pole as many as edges end at it -- the seam is two
+// edges, one for each of its pcurves, and the degenerated edges walk with the
+// rest. The face's own wire runs up the one seam and down the other; a seam
+// whose two pcurves lie the other way round for that has them exchanged, and
+// one that two loops want both ways is no seam of this face: false, and
+// nothing found.
+static bool FindLoopsInUV(
+  const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+                                                                MVE,
+  const NCollection_List<TopoDS_Shape>&                         theDegenEdges,
+  const TopoDS_Face&                                            theFace,
+  MapOfWire&                                                    theWires,
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theOutside)
+{
+  const TopoDS_Face               aFace = TopoDS::Face(theFace.Oriented(TopAbs_FORWARD));
+  const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(aFace);
+  const double                    aPU   = aSurf->IsUPeriodic() ? aSurf->UPeriod() : 0.;
+  const double                    aPV   = aSurf->IsVPeriodic() ? aSurf->VPeriod() : 0.;
+  const double                    aTolU = aPU > 0. ? aPU / 4. : RealLast();
+  const double                    aTolV = aPV > 0. ? aPV / 4. : RealLast();
+  double                          aU1, aU2, aV1, aV2;
+  aSurf->Bounds(aU1, aU2, aV1, aV2);
+  BRep_Builder aB;
+
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEdges;
+  for (int i = 1; i <= MVE.Extent(); ++i)
+  {
+    for (NCollection_List<TopoDS_Shape>::Iterator it(MVE(i)); it.More(); it.Next())
+    {
+      anEdges.Add(it.Value().Oriented(TopAbs_FORWARD));
+    }
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator it(theDegenEdges); it.More(); it.Next())
+  {
+    anEdges.Add(it.Value().Oriented(TopAbs_FORWARD));
+  }
+
+  // An edge once, a seam twice: with its own pcurve, and with the one its
+  // reversed self has.
+  struct Piece
+  {
+    TopoDS_Edge               myE;
+    occ::handle<Geom2d_Curve> myC;
+    double                    myF, myL;
+    bool                      myIsSeam, myIsSecond;
+    int                       myN1, myN2;
+  };
+  struct Node
+  {
+    TopoDS_Vertex myV;
+    gp_Pnt2d      myP;
+  };
+  std::vector<Piece> aPieces(1);
+  std::vector<Node>  aNodes(1);
+  auto               aNodeOf = [&](const TopoDS_Vertex& theV, const gp_Pnt2d& theP) {
+    for (size_t n = 1; n < aNodes.size(); ++n)
+    {
+      if (aNodes[n].myV.IsSame(theV) && std::abs(aNodes[n].myP.X() - theP.X()) < aTolU
+          && std::abs(aNodes[n].myP.Y() - theP.Y()) < aTolV)
+      {
+        return int(n);
+      }
+    }
+    aNodes.push_back({theV, theP});
+    return int(aNodes.size()) - 1;
+  };
+  for (int e = 1; e <= anEdges.Extent(); ++e)
+  {
+    const TopoDS_Edge& E = TopoDS::Edge(anEdges(e));
+    TopoDS_Vertex      V1, V2;
+    TopExp::Vertices(E, V1, V2);
+    if (V1.IsNull() || V2.IsNull())
+    {
+      return false;
+    }
+    const bool isSeam = !BRep_Tool::Degenerated(E) && BRep_Tool::IsClosed(E, aFace);
+    for (int k = 0; k < (isSeam ? 2 : 1); ++k)
+    {
+      Piece aP;
+      aP.myE        = E;
+      aP.myIsSeam   = isSeam;
+      aP.myIsSecond = k == 1;
+      aP.myC        = BRep_Tool::CurveOnSurface(k == 0 ? E : TopoDS::Edge(E.Reversed()),
+                                                aFace,
+                                                aP.myF,
+                                                aP.myL);
+      if (aP.myC.IsNull())
+      {
+        return false;
+      }
+      if (!isSeam && !BRep_Tool::Degenerated(E))
+      {
+        // A piece of a section that ran on past the seam has its pcurve a
+        // period over: it is moved back onto the face.
+        const gp_Pnt2d aMid = aP.myC->Value((aP.myF + aP.myL) / 2.);
+        const double   aKU  = aPU > 0. ? std::floor((aMid.X() - aU1) / aPU) : 0.;
+        const double   aKV  = aPV > 0. ? std::floor((aMid.Y() - aV1) / aPV) : 0.;
+        if (aKU != 0. || aKV != 0.)
+        {
+          aP.myC =
+            occ::down_cast<Geom2d_Curve>(aP.myC->Translated(gp_Vec2d(-aKU * aPU, -aKV * aPV)));
+          aB.UpdateEdge(E, aP.myC, aFace, BRep_Tool::Tolerance(E));
+        }
+      }
+      aP.myN1 = aNodeOf(V1, aP.myC->Value(aP.myF));
+      aP.myN2 = aNodeOf(V2, aP.myC->Value(aP.myL));
+      aPieces.push_back(aP);
+    }
+  }
+  const int aNbP = int(aPieces.size()) - 1;
+  // No seam, no face to close across it.
+  bool hasSeamPiece = false;
+  for (int p = 1; p <= aNbP && !hasSeamPiece; ++p)
+  {
+    hasSeamPiece = aPieces[p].myIsSeam;
+  }
+  if (!hasSeamPiece)
+  {
+    return false;
+  }
+
+  // Darts: 2p leaves the piece's first node, 2p+1 its last; rev(d) = d ^ 1.
+  const int                     aNbD = 2 * (aNbP + 1);
+  std::vector<double>           anAngle(aNbD, 0.);
+  std::vector<std::vector<int>> aOut(aNodes.size());
+  for (int p = 1; p <= aNbP; ++p)
+  {
+    for (int k = 0; k < 2; ++k)
+    {
+      const int d = 2 * p + k;
+      if (!DartAngle(aPieces[p].myC, aPieces[p].myF, aPieces[p].myL, k == 0, 0., anAngle[d]))
+      {
+        return false;
+      }
+      aOut[k == 0 ? aPieces[p].myN1 : aPieces[p].myN2].push_back(d);
+    }
+  }
+  auto anArrival = [&](int d) { return (d & 1) ? aPieces[d / 2].myN1 : aPieces[d / 2].myN2; };
+  auto aNext     = [&](int d) {
+    const int   aBack  = d ^ 1;
+    int         aBest  = -1;
+    double      aBestA = 0.;
+    for (int c : aOut[anArrival(d)])
+    {
+      const double a = ClockWiseAngle(anAngle[aBack], anAngle[c]);
+      if (aBest < 0 || a < aBestA)
+      {
+        aBest  = c;
+        aBestA = a;
+      }
+    }
+    return aBest;
+  };
+
+  // A seam's two pcurves the way its loops need them: 1 as they are, 2 the
+  // other way round.
+  std::vector<int> aSeamWay(aNbP + 1, 0);
+  std::vector<int> anOrbit(aNbD, 0);
+  int              aNbOrbits = 0;
+  std::vector<int> aLoop;
+  MapOfWire        aFound;
+  for (int d0 = 2; d0 < aNbD; ++d0)
+  {
+    if (anOrbit[d0])
+    {
+      continue;
+    }
+    ++aNbOrbits;
+    aLoop.clear();
+    int d = d0;
+    for (;;)
+    {
+      anOrbit[d] = aNbOrbits;
+      aLoop.push_back(d);
+      const int n = aNext(d);
+      if (n < 0)
+      {
+        return false;
+      }
+      if (n == d0)
+      {
+        break;
+      }
+      if (anOrbit[n])
+      {
+        return false;
+      }
+      d = n;
+    }
+    std::vector<int> aPruned;
+    for (int x : aLoop)
+    {
+      if (!aPruned.empty() && aPruned.back() == (x ^ 1))
+      {
+        aPruned.pop_back();
+      }
+      else
+      {
+        aPruned.push_back(x);
+      }
+    }
+    while (aPruned.size() >= 2 && aPruned.front() == (aPruned.back() ^ 1))
+    {
+      aPruned.pop_back();
+      aPruned.erase(aPruned.begin());
+    }
+    if (aPruned.empty())
+    {
+      continue;
+    }
+    double   anArea  = 0.;
+    gp_Pnt2d aPrev, aFirst;
+    bool     isFirst = true;
+    for (int x : aPruned)
+    {
+      const Piece& aP = aPieces[x / 2];
+      for (int k = 0; k < 4; ++k)
+      {
+        const double   t  = (x & 1) ? 1. - k / 4. : k / 4.;
+        const gp_Pnt2d aQ = aP.myC->Value(aP.myF + (aP.myL - aP.myF) * t);
+        if (isFirst)
+        {
+          aFirst  = aQ;
+          isFirst = false;
+        }
+        else
+        {
+          anArea += aPrev.X() * aQ.Y() - aQ.X() * aPrev.Y();
+        }
+        aPrev = aQ;
+      }
+    }
+    anArea += aPrev.X() * aFirst.Y() - aFirst.X() * aPrev.Y();
+    if (anArea <= 0.)
+    {
+      continue;
+    }
+    TopoDS_Wire aW;
+    aB.MakeWire(aW);
+    bool hasSeam = false;
+    for (int x : aPruned)
+    {
+      const Piece& aP    = aPieces[x / 2];
+      const bool   isRev = (x & 1) != 0;
+      if (aP.myIsSeam)
+      {
+        int&      aWay  = aSeamWay[x / 2 - (aP.myIsSecond ? 1 : 0)];
+        const int aNeed = aP.myIsSecond != isRev ? 2 : 1;
+        if (aWay != 0 && aWay != aNeed)
+        {
+          return false;
+        }
+        aWay = aNeed;
+      }
+      hasSeam = hasSeam || aP.myIsSeam;
+      aB.Add(aW, aP.myE.Oriented(isRev ? TopAbs_REVERSED : TopAbs_FORWARD));
+    }
+    aW.Closed(true);
+    WireInfo anInfo(aW, hasSeam);
+    for (const auto& v : anInfo.Edges)
+    {
+      anInfo.Outside = anInfo.Outside || theOutside.Contains(v.first);
+    }
+    aFound.Add(anInfo);
+    SHOW_TOPO_SHAPE(aW, "UVWire");
+  }
+  if (aFound.IsEmpty())
+  {
+    return false;
+  }
+  // A piece cut from a seam that was stretched can have its two pcurves the
+  // other way round from the way a wire of this face runs them -- the forward
+  // one where the face lies to its right. They change places.
+  for (int p = 1; p <= aNbP; ++p)
+  {
+    if (aSeamWay[p] == 2)
+    {
+      aB.UpdateEdge(aPieces[p].myE,
+                    aPieces[p + 1].myC,
+                    aPieces[p].myC,
+                    aFace,
+                    BRep_Tool::Tolerance(aPieces[p].myE));
+    }
+  }
+  theWires = aFound;
+  return true;
+}
+
+// Whether a wire runs once round a period of its face: the sum of its
+// pcurves' steps in (u, v) is a period, where a wire that bounds something
+// comes back to where it started.
+static bool RunsRoundPeriod(const TopoDS_Wire& theW, const TopoDS_Face& theFace)
+{
+  const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(theFace);
+  double                          aDU = 0., aDV = 0.;
+  for (TopoDS_Iterator anIt(theW); anIt.More(); anIt.Next())
+  {
+    const TopoDS_Edge&              anE = TopoDS::Edge(anIt.Value());
+    double                          aF, aL;
+    const occ::handle<Geom2d_Curve> aC = BRep_Tool::CurveOnSurface(anE, theFace, aF, aL);
+    if (aC.IsNull())
+    {
+      return false;
+    }
+    const gp_Vec2d aStep(aC->Value(aF), aC->Value(aL));
+    const double   aSign = anE.Orientation() == TopAbs_REVERSED ? -1. : 1.;
+    aDU += aSign * aStep.X();
+    aDV += aSign * aStep.Y();
+  }
+  // Whole periods and nothing else: a wire with a piece mirrored past a pole
+  // steps half a turn there, and is not one of these.
+  auto isWhole = [](const double theStep, const double thePeriod) {
+    const double aTurns = std::abs(theStep) / thePeriod;
+    return aTurns > 0.5 && std::abs(aTurns - std::round(aTurns)) < 1.e-3;
+  };
+  return (aSurf->IsUPeriodic() && isWhole(aDU, aSurf->UPeriod()))
+         || (aSurf->IsVPeriodic() && isWhole(aDV, aSurf->VPeriod()));
+}
+
 // Whether FindLoop walks the angles (1, the default), searches (0), or does
 // both and reports where the minimal wires differ (2):
 // BREPALGO_LOOP_WALK=0/1/check.
@@ -2468,6 +2789,29 @@ void BRepAlgo_Loop::FindLoop()
           }
         }
       }
+    }
+  }
+
+  // A wire that runs once round the face's period and has no seam in it
+  // bounds nothing: the rim of a dome in two arcs, where the seam's band is
+  // only built on a rim that is one closed edge. The offset of such a dome
+  // came out as a face of no area between its rim and nothing -- an invalid
+  // solid where upstream is right. The face is walked in (u, v) instead.
+  if (IsPeriodic && !isGivenUp)
+  {
+    bool hasRound = false;
+    for (itW = MapIteratorOfMapOfWire(NewWires); itW.More() && !hasRound; itW.Next())
+    {
+      // One closed edge alone is the seam bands' business above, and what
+      // they leave of it is left on purpose.
+      hasRound = !itW.Value().HasSeam && itW.Value().aWire.NbChildren() > 1
+                 && RunsRoundPeriod(itW.Value().aWire, myFace);
+    }
+    MapOfWire aUVWires;
+    if (hasRound && FindLoopsInUV(MVE, DegenEdges, myFace, aUVWires, myOutsideEdges))
+    {
+      SHOW_TOPO_SHAPE(myFace, "LoopWalkedInUV");
+      NewWires = aUVWires;
     }
   }
 
