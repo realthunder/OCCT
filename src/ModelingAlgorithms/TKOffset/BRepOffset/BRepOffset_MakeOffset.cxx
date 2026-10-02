@@ -77,7 +77,6 @@
 #include <GeomProjLib.hxx>
 #include <GeomAPI_PointsToBSpline.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
-#include <GeomAPI_IntSS.hxx>
 #include <GeomAPI_IntCS.hxx>
 #include <gp_Circ.hxx>
 #include <GeomConvert.hxx>
@@ -3369,6 +3368,13 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
 // The arc on a removed face (the cap) of the sphere of radius theR round the
 // vertex theV, from theA to theB: where the sphere meets the cap's surface.
 // It carries its pcurve on the cap.
+// Built point by point, as the tube's edge above: in each plane through the
+// cap's normal at theV, turned from theA's to theB's the short way, the
+// circle round theV meets the cap. The section of the sphere and the surface
+// comes in as many lines as the intersection cares to cut it in, and where
+// they join depends on how the shape lies: theA and theB on two of them, no
+// arc was found -- a filleted box turned in space, its fillet removed, came
+// back a valid solid of 459.398 for 405.903.
 static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
                                          const TopoDS_Vertex&             theA,
                                          const TopoDS_Vertex&             theB,
@@ -3380,61 +3386,88 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
   const gp_Pnt aPV = BRep_Tool::Pnt(theV);
   const gp_Pnt aPA = BRep_Tool::Pnt(theA);
   const gp_Pnt aPB = BRep_Tool::Pnt(theB);
-  occ::handle<Geom_SphericalSurface> aSph =
-    new Geom_SphericalSurface(gp_Ax3(aPV, gp::DZ()), theR);
-  GeomAPI_IntSS anInt(aSph, theSurf, Precision::Confusion());
-  if (!anInt.IsDone())
+  GeomAPI_ProjectPointOnSurf aPrV(aPV, theSurf);
+  if (aPrV.NbPoints() == 0)
   {
     return aResult;
   }
-  const double aTol = 1.e-4 * std::max(1., theR);
-  for (int i = 1; i <= anInt.NbLines(); ++i)
+  double aU, aV;
+  aPrV.LowerDistanceParameters(aU, aV);
+  gp_Pnt aPS;
+  gp_Vec aDU, aDV;
+  theSurf->D1(aU, aV, aPS, aDU, aDV);
+  gp_Vec aN = aDU ^ aDV;
+  if (aN.Magnitude() < gp::Resolution())
   {
-    const occ::handle<Geom_Curve>& aL = anInt.Line(i);
-    GeomAPI_ProjectPointOnCurve    aPrA(aPA, aL), aPrB(aPB, aL);
-    if (aPrA.NbPoints() == 0 || aPrB.NbPoints() == 0 || aPrA.LowerDistance() > aTol
-        || aPrB.LowerDistance() > aTol)
-    {
-      continue;
-    }
-    double uA = aPrA.LowerDistanceParameter();
-    double uB = aPrB.LowerDistanceParameter();
-    // The shorter way round from A to B on a closed line.
-    TopoDS_Vertex aVF = theA, aVL = theB;
-    if (aL->IsPeriodic())
-    {
-      const double aT = aL->Period();
-      while (uB < uA)
-      {
-        uB += aT;
-      }
-      if (uB - uA > aT / 2.)
-      {
-        std::swap(uA, uB);
-        while (uB < uA)
-        {
-          uB += aT;
-        }
-        std::swap(aVF, aVL);
-      }
-    }
-    else if (uB < uA)
-    {
-      std::swap(uA, uB);
-      std::swap(aVF, aVL);
-    }
-    BRepLib_MakeEdge aME(aL, aVF, aVL, uA, uB);
-    if (!aME.IsDone())
-    {
-      continue;
-    }
-    aResult = aME.Edge();
-    occ::handle<Geom2d_Curve> aPC = GeomProjLib::Curve2d(aL, uA, uB, theSurf);
-    if (!aPC.IsNull())
-    {
-      BRep_Builder().UpdateEdge(aResult, aPC, theCap, Precision::Confusion());
-    }
     return aResult;
+  }
+  aN.Normalize();
+  const gp_Vec aVA(aPV, aPA), aVB(aPV, aPB);
+  gp_Vec       aDA = aVA - aN * aVA.Dot(aN), aDB = aVB - aN * aVB.Dot(aN);
+  if (aDA.Magnitude() < gp::Resolution() || aDB.Magnitude() < gp::Resolution())
+  {
+    return aResult;
+  }
+  aDA.Normalize();
+  aDB.Normalize();
+  const double aTheta = std::atan2(aDA.Crossed(aDB).Dot(aN), aDA.Dot(aDB));
+  if (std::abs(aTheta) < Precision::Angular())
+  {
+    return aResult;
+  }
+  const int                  aNb = 21;
+  NCollection_Array1<gp_Pnt> aPnts(1, aNb);
+  NCollection_Array1<double> aPars(1, aNb);
+  for (int i = 1; i <= aNb; ++i)
+  {
+    const double aT = double(i - 1) / (aNb - 1);
+    aPars(i)        = aT;
+    if (i == 1 || i == aNb)
+    {
+      aPnts(i) = i == 1 ? aPA : aPB;
+      continue;
+    }
+    const gp_Vec aW = aDA * std::cos(aTheta * aT) + (aN ^ aDA) * std::sin(aTheta * aT);
+    occ::handle<Geom_Circle> aCirc =
+      new Geom_Circle(gp_Ax2(aPV, gp_Dir(aW ^ aN), gp_Dir(aW)), theR);
+    GeomAPI_IntCS anInt(aCirc, theSurf);
+    if (!anInt.IsDone())
+    {
+      return aResult;
+    }
+    int    iBest = 0;
+    double aBest = 0.;
+    for (int k = 1; k <= anInt.NbPoints(); ++k)
+    {
+      const double aDot = gp_Vec(aPV, anInt.Point(k)).Dot(aW);
+      if (aDot > aBest)
+      {
+        aBest = aDot;
+        iBest = k;
+      }
+    }
+    if (iBest == 0)
+    {
+      return aResult;
+    }
+    aPnts(i) = anInt.Point(iBest);
+  }
+  GeomAPI_PointsToBSpline anApprox(aPnts, aPars, 3, 8, GeomAbs_C2, Precision::Confusion());
+  if (!anApprox.IsDone())
+  {
+    return aResult;
+  }
+  const occ::handle<Geom_Curve> aL = anApprox.Curve();
+  BRepLib_MakeEdge              aME(aL, theA, theB, 0., 1.);
+  if (!aME.IsDone())
+  {
+    return aResult;
+  }
+  aResult                       = aME.Edge();
+  occ::handle<Geom2d_Curve> aPC = GeomProjLib::Curve2d(aL, 0., 1., theSurf);
+  if (!aPC.IsNull())
+  {
+    BRep_Builder().UpdateEdge(aResult, aPC, theCap, Precision::Confusion());
   }
   return aResult;
 }
