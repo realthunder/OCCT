@@ -171,11 +171,58 @@ change for change, and a mesh of the result gives 2.2. The corner's blend is
 a B-spline far larger than its trimmed piece, and the volume integration
 over it is off; the shape is right.
 
+## A fillet ending on a wall kept in coplanar pieces (2026-10-02)
+
+The last of the corner cases above, left open by the fix there: the fin
+padded flush with the block's side, its wall split 0.7 from the outer face
+as the slot's (`fin_on_block_wall_*`). Each of the two alone works -- the
+slot with the split wall, the fin with the whole one -- and so did the two
+together up to radius 0.5; from 0.7 on, `StdFail_NotDone`, a walking
+failure.
+
+With the wall split, the fillet's support at the spine is the wall's
+narrow piece, and its line on the wall lies on the wide piece, whose edge
+on the floor stops at x=9.3, short of the spine's end vertex (10,3,5). The
+walk along the spine stops at z=5, where the fin's face ends; on the slot
+the outer face goes on below the floor, and one walk takes the fillet past
+it into the extension. `StartSol`, restarting the walk there, takes an
+edge of the end that does not touch the spine's end vertex for an
+obstacle: the floor became a face to roll along, and the walk failed.
+Behind it, `PerformOneCorner` counted only the fin's common point as on
+the vertex, took the block's side for the end face instead of the floor,
+and threw "bouchon non ecrit" (the cap is not written).
+
+Fix `2ac4fee0c6`: `ChFi3d_EdgeOnSplitToVertex` follows such an edge along
+the end face, through faces tangent to its own across edges of the way, to
+the vertex. `StartSol` takes it for the end, as the whole wall's edge, and
+the corner counts the common point as on the vertex, classifying the
+vertex with the edge the arc continues as there. From there on the corner
+is the slot's: the narrow piece's edge on the floor goes with the spine's
+edge.
+
+| Case | What it covers |
+|------|----------------|
+| `fin_on_block_wall_r{0.3,0.8,2}` | the fin flush with the block, its wall split as the slot's: what the unsplit fin takes |
+
+Checked against the fix: every edge of 25 shapes (the sweep's 22, the
+slab, the split fin and the split slot) at radii 0.3, 0.8 and 2: 2 results
+go from failing to valid -- the split fin's own edge at 0.8 and 2 -- and
+the other 3919 are the same. FreeCAD's `TestPartApp` (139) and
+`TestPartDesignApp` (77) pass.
+
+Still open (XFAIL), on the split slot as on the split fin: a radius
+within about 1e-4 of the piece's width, 0.7. The fillet's line on the wall
+then runs along the split itself, its whole length; the start of the walk
+wants a point inside both faces (`BRepBlend_Walking::PerformFirstSection`),
+and it is on the boundary of both pieces everywhere. 0.69999 and 0.701
+work; 0.7 and 0.70001 fail to start, 0.7001 comes out invalid. It wants the
+walk to take the tangent pieces as one face, a larger change.
+
 ## Known broken (XFAIL)
 
 | Case | Symptom |
 |------|---------|
-| `fin_on_block_wall_r0.8` | `StdFail_NotDone` (a walking failure): the fin flush with the block, its wall split as well, the fillet wider than the wall's piece |
+| `slot_split_wall_r0.7`, `fin_on_block_wall_r0.7` | `StdFail_NotDone` (no start for the walk): the radius equal to the wall's piece, the fillet's line on the wall running along the split |
 | `seam_end_bottom_r2` | invalid, where its mirror image across z=5 (`seam_end_top_r2`) is valid: at radius 2 the fillet's end reaches the far end of the cylinder's face too (u = pi/2, the vertex at (0, 2)) |
 | `mirror_top_r2` | `StdFail_NotDone`, the same reach on the side without the seam |
 

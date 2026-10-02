@@ -300,12 +300,17 @@ fin = fin_on_block(arc=True)
 for r in (0.3, 0.8):
     fillet_case("fin_arc_on_block_r%g" % r, fin, edge_between(fin, (10, 3, 5), (10, 3, 8)), r,
                 "pass")
-# and its wall split as the slot's: a walking failure from 0.8 on
+# and its wall split as the slot's: wider than the wall's piece from 0.7 on,
+# the fillet's line on the wall leaves the piece where the fin's face ends
 fin = fin_on_block(wall=True)
-fillet_case("fin_on_block_wall_r0.3", fin, edge_between(fin, (10, 3, 5), (10, 3, 14)), 0.3,
-            "pass", 770 - (plain.Volume - plain.makeFillet(0.3, [plain.Edges[spine - 1]]).Volume))
-fillet_case("fin_on_block_wall_r0.8", fin, edge_between(fin, (10, 3, 5), (10, 3, 14)), 0.8,
-            "xfail")
+for r in (0.3, 0.8, 2.0):
+    taken = plain.Volume - plain.makeFillet(r, [plain.Edges[spine - 1]]).Volume
+    fillet_case("fin_on_block_wall_r%g" % r, fin, edge_between(fin, (10, 3, 5), (10, 3, 14)), r,
+                "pass", fin.Volume - taken)
+# exactly as wide as the wall's piece: the fillet's line on the wall runs
+# along the split itself
+for tag, s in (("slot_split_wall", slotted(wall=True)), ("fin_on_block_wall", fin)):
+    fillet_case("%s_r0.7" % tag, s, edge_between(s, (10, 3, 5), (10, 3, 14)), 0.7, "xfail")
 
 counts = {}
 for _, verdict, _ in results:

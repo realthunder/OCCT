@@ -15,6 +15,7 @@ STAGES = {
     "s523": ("f723999a15", "16df68d224"),
     "s962": ("d8ba4ad7eb", "cf96757c36"),
     "s962b": ("1482f7d4e2", "b38f0d910c"),
+    "s962c": ("e3a3779048", "2ac4fee0c6"),
 }
 # Upstream: the toolkit's files that differ from the fork, at the fork's base.
 UPSTREAM = "91be8c4c71"
@@ -41,6 +42,12 @@ def _fin():
     return Part.makeBox(10, 10, 5).fuse(Part.makeBox(10, 3, 9, V(0, 0, 5)))
 
 
+def _fin_wall():
+    # the fin, its wall split 0.7 from the outer face as the slot's
+    V = App.Vector
+    return _fin().generalFuse([Part.LineSegment(V(9.3, 3, 5), V(9.3, 3, 20)).toShape()])[0].Solids[0]
+
+
 def _arm_on_block():
     # run_tests.py's arm fused to a block, the seam of their bottoms from y=27.2 to 10.2
     V = App.Vector
@@ -56,6 +63,7 @@ SHAPES = {
     "slotwall": _slot_wall,
     "p962": _brep("issue962_pocket002.brep"),
     "fin": _fin,
+    "finwall": _fin_wall,
     "armfoot": _arm_on_block,
 }
 
@@ -87,6 +95,8 @@ UVFACE = {
     "p962": _plane_at("z", 14, {"y": 13.0}, {"y": 17.1}),
     # the fin's outer face, which the fillet's line runs on
     "fin": _plane_at("x", 10, {"z": 5.0 + 1e-6}),
+    # the block's top beside the fin, where the fillet ends
+    "finwall": _plane_at("z", 5),
     # the arm's bottom, which holds the seam at x=38.5
     "armfoot": _plane_at("z", -9.75, None, {"x": 38.5}),
 }
@@ -103,6 +113,7 @@ NAMES = {
                 "from the outer face",
     "p962": "#962's Pocket002, the Fillet's input (a PartDesign body without Refine)",
     "fin": "10x10x5 block with a 10x3x9 fin padded flush with its side x=10",
+    "finwall": "the fin flush with the block, its wall two faces split 0.7 from the outer face",
     "armfoot": "an arm fused to an 11.5x17x6 block, their bottoms two faces split along x=38.5",
 }
 # shape -> the whole shape's view: (center, height)
@@ -111,6 +122,7 @@ VIEW = {
     "slotwall": ((5, 5, 7), 20.0),
     "p962": ((16, 4, 11), 62.0),
     "fin": ((5, 5, 7), 20.0),
+    "finwall": ((5, 5, 7), 20.0),
     "armfoot": ((30, 9, -6.75), 42.0),
 }
 # shape -> (what the third row's face is, whether to draw u gridlines at pi/2)
@@ -119,6 +131,7 @@ UVLABEL = {
     "slotwall": ("the slot's floor", False),
     "p962": ("the face at the fillet's end", False),
     "fin": ("the fin's outer face", False),
+    "finwall": ("the block's top", False),
     "armfoot": ("the arm's bottom", False),
 }
 _FOOT = [((38.5, 27.2, -3.75), (38.5, 27.2, -9.75)), ((38.5, 10.2, -3.75), (38.5, 10.2, -9.75))]
@@ -151,6 +164,8 @@ CASES = {
                                (38.5, 10.2, -9.75), (-0.3, -1, -0.8)),
     "issue962_fillet_r0.8": ("s962b", "p962", _FILLET962, 0.8, 11552.7830,
                              (38.5, 10.2, -9.75), (-0.3, -1, -0.8)),
+    "fin_on_block_wall_r0.8": ("s962c", "finwall", ((10, 3, 5), (10, 3, 14)), 0.8, 768.7639,
+                               (10, 3, 5), (1, 0.9, 0.8)),
 }
 # multi-edge case -> what its edges are, for the picture's heading
 EDGES = {

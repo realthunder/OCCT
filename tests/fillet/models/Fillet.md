@@ -146,8 +146,25 @@ the seam running one way only, as here.
 ![arm_on_block_foot_r0.8](pictures/arm_on_block_foot_r0.8.png)
 ![issue962_fillet_r0.8](pictures/issue962_fillet_r0.8.png)
 
-Still open: the fin with its wall split as well (`fin_on_block_wall_r0.8`,
-XFAIL).
+### A fillet ending on a wall kept in coplanar pieces (`2ac4fee0c6`)
+
+The two shapes of the corner fix put together: the fin flush with the
+block's side, its wall split 0.7 from the outer face as the slot's. With the
+fillet wider than the wall's narrow piece, its line on the wall runs on the
+wide piece, whose edge on the floor stops short of the vertex the fillet
+ends at. The fillet stopped where the fin's face ends, and both the restart
+of its walk and the corner took that edge for an obstacle, not for the end
+of the wall: the walk failed, upstream and in the fork alike, and both
+columns show the input. Now the edge counts as the wall's own, reaching
+the vertex through the narrow piece, and the corner is the slot's: the
+narrow piece goes, and the block's top closes around the fillet's end. The
+volume is the unsplit fin's.
+
+![fin_on_block_wall_r0.8](pictures/fin_on_block_wall_r0.8.png)
+
+Still open: a radius equal to the narrow piece's width, 0.7, where the
+fillet's line on the wall runs along the split itself (`slot_split_wall_r0.7`,
+`fin_on_block_wall_r0.7`, XFAIL).
 
 ## Making the pictures
 
