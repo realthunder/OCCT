@@ -600,16 +600,51 @@ thickness_case("halfdome_side_join_in",    halfdome, 3, -0.5, "xfail", None, Fal
 # it, closed by a tube with the Arc join (417.3038 outward: the rounded skin
 # 455.5869 less the slab, three quarter tubes and two ball eighths over the
 # removed half, plus the tube and two eighths at the joint; 274.7124 inward:
-# 480 - 192 - 6 (3 - pi / 4)). With the Intersection join the wall is not
-# built yet (440 and 276): it was the box back, 480, and is refused now.
+# 480 - 192 - 6 (3 - pi / 4)).
 splitbox = Part.makeBox(4, 8, 6).fuse(Part.makeBox(6, 8, 6, App.Vector(4, 0, 0)))
 split_top = [i + 1 for i, f in enumerate(splitbox.Faces)
              if abs(f.BoundBox.ZMin - 6) < 1e-9 and f.BoundBox.XMax < 4.5][0]
 thickness_case("splitbox_top_piece_out", splitbox, split_top, +1.0, "pass", 417.3038)
 thickness_case("splitbox_top_piece_in",  splitbox, split_top, -1.0, "pass", 274.7124)
-thickness_case("splitbox_top_piece_join_out", splitbox, split_top, +1.0, "xfail", 440.0, False, 2)
-thickness_case("splitbox_top_piece_join_in",  splitbox, split_top, -1.0, "xfail", 276.0, False, 2)
-
+# The Intersection join closes the gap with a wall a thickness into the
+# removed piece: the sharp skin, 480 either way, less the slab over the
+# removed piece short of the wall, 4 x 10 x 1 (440), or less the cavity 192
+# and the shaft up to the wall, 2 x 6 x 1 (276). Three faults, models/
+# Thickness.md "Sec 27.108": the wall and the face at the joint's end were
+# intersected twice (their section two edges, the wall never built); coplanar
+# pieces meeting at a vertex were intersected with each other's neighbours
+# (two edges on one line, no piece of a split face built -- an end face
+# removed failed too, and upstream gives the box back); and the side beside
+# the removed piece had no edge to the other piece of the top, between the
+# wall and the joint.
+thickness_case("splitbox_top_piece_join_out", splitbox, split_top, +1.0, "pass", 440.0, False, 2)
+thickness_case("splitbox_top_piece_join_in",  splitbox, split_top, -1.0, "pass", 276.0, False, 2)
+thickness_case("splitbox_top_piece_inter_join_out", splitbox, split_top, +1.0, "pass", 440.0, True, 2)
+thickness_case("splitbox_top_piece_inter_join_in",  splitbox, split_top, -1.0, "pass", 276.0, True, 2)
+# An end face: no removed face beside a coplanar one, the joint alone.
+split_end = [i + 1 for i, f in enumerate(splitbox.Faces) if f.BoundBox.XMax < 1e-9][0]
+thickness_case("splitbox_end_join_out", splitbox, split_end, +1.0, "pass", 400.0, False, 2)
+thickness_case("splitbox_end_join_in",  splitbox, split_end, -1.0, "pass", 264.0, False, 2)
+# A piece of a side, and the larger piece of the top: 480 - 4 x 8 x 1 and
+# 480 - 192 - 2 x 4 x 1; 480 - 6 x 10 x 1 and 480 - 192 - 4 x 6 x 1.
+split_side = [i + 1 for i, f in enumerate(splitbox.Faces)
+              if f.BoundBox.YMax < 1e-9 and f.BoundBox.XMax < 4.5][0]
+split_top_2 = [i + 1 for i, f in enumerate(splitbox.Faces)
+               if abs(f.BoundBox.ZMin - 6) < 1e-9 and f.BoundBox.XMin > 3.5][0]
+thickness_case("splitbox_side_piece_join_out", splitbox, split_side, +1.0, "pass", 448.0, False, 2)
+thickness_case("splitbox_side_piece_join_in",  splitbox, split_side, -1.0, "pass", 280.0, False, 2)
+thickness_case("splitbox_top_other_piece_join_out", splitbox, split_top_2, +1.0, "pass", 420.0, False, 2)
+thickness_case("splitbox_top_other_piece_join_in",  splitbox, split_top_2, -1.0, "pass", 264.0, False, 2)
+# The top alone in two pieces, the sides whole: the face at the joint's end
+# is one face.
+from BOPTools import SplitAPI
+topsplit = SplitAPI.slice(Part.makeBox(10, 8, 6),
+                          [Part.makeLine(App.Vector(4, 0, 6), App.Vector(4, 8, 6))],
+                          "Split").Solids[0]
+topsplit_top = [i + 1 for i, f in enumerate(topsplit.Faces)
+                if abs(f.BoundBox.ZMin - 6) < 1e-9 and f.BoundBox.XMax < 4.5][0]
+thickness_case("topsplit_top_piece_join_out", topsplit, topsplit_top, +1.0, "pass", 440.0, False, 2)
+thickness_case("topsplit_top_piece_join_in",  topsplit, topsplit_top, -1.0, "pass", 276.0, False, 2)
 
 
 # Where the fork has no answer yet it must have none: the input back, "valid"

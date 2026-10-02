@@ -20,6 +20,7 @@
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_Image.hxx>
 #include <BRepLib_MakeVertex.hxx>
@@ -520,6 +521,29 @@ void BRepOffset_Inter3d::ConnexIntByArc(const NCollection_List<TopoDS_Shape>& /*
 
 //=================================================================================================
 
+// Whether two faces lie on one plane.
+static bool OnOnePlane(const TopoDS_Face& theF1, const TopoDS_Face& theF2)
+{
+  BRepAdaptor_Surface aS1(theF1, false), aS2(theF2, false);
+  if (aS1.GetType() != GeomAbs_Plane || aS2.GetType() != GeomAbs_Plane)
+  {
+    return false;
+  }
+  const gp_Pln aP1 = aS1.Plane(), aP2 = aS2.Plane();
+  return aP1.Axis().Direction().IsParallel(aP2.Axis().Direction(), Precision::Angular())
+         && aP1.Distance(aP2.Location()) <= Precision::Confusion();
+}
+
+// Whether two faces on one plane face the same way.
+static bool FaceTheSameWay(const TopoDS_Face& theF1, const TopoDS_Face& theF2)
+{
+  BRepAdaptor_Surface aS1(theF1, false), aS2(theF2, false);
+  const bool isSameDir = aS1.Plane().Axis().Direction().Dot(aS2.Plane().Axis().Direction()) > 0.;
+  const bool isSameOri = (theF1.Orientation() == TopAbs_REVERSED)
+                         == (theF2.Orientation() == TopAbs_REVERSED);
+  return isSameDir == isSameOri;
+}
+
 void BRepOffset_Inter3d::ConnexIntByInt(
   const TopoDS_Shape&                                                                  SI,
   const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
@@ -623,6 +647,21 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         const NCollection_List<TopoDS_Shape>& aLE = Analyse.Ancestors(aS);
         for (NCollection_List<TopoDS_Shape>::Iterator itLE(aLE); itLE.More(); itLE.Next())
         {
+          // The end of a removed face's tangent edge also lists the edges of
+          // its closure on the face at that end (TreatTangentCaps, for
+          // BRepOffset_Inter2d), which do not reach it. Their faces do not
+          // meet at the vertex: taken for faces that do, the wall and the
+          // face at the end were intersected here as well as through their
+          // edge, and their one section became two edges.
+          bool isAtVertex = false;
+          for (TopoDS_Iterator aItV(itLE.Value()); aItV.More() && !isAtVertex; aItV.Next())
+          {
+            isAtVertex = aS.IsSame(aItV.Value());
+          }
+          if (!isAtVertex)
+          {
+            continue;
+          }
           const NCollection_List<TopoDS_Shape>& aLEA = Analyse.Ancestors(itLE.Value());
           for (NCollection_List<TopoDS_Shape>::Iterator itLEA(aLEA); itLEA.More(); itLEA.Next())
           {
@@ -718,6 +757,60 @@ void BRepOffset_Inter3d::ConnexIntByInt(
 
           if (!itLE2.More())
           {
+            // Two faces meeting at the vertex alone are intersected there --
+            // unless one of them only carries on, in its own plane, a face
+            // the other already meets along an edge at the vertex: a box
+            // fused of two and not refined, every face across the joint in
+            // two coplanar pieces. Their offsets lie on one plane, the
+            // section is the one through that edge again, and with both the
+            // face had two edges on one line, one of them running on past
+            // the joint: no wire closed, and the face was never built.
+            auto carriesOn = [&](const TopoDS_Shape& theA, const TopoDS_Shape& theB) {
+              const NCollection_List<TopoDS_Shape>* pLEA = Analyse.Descendants(theA);
+              if (!pLEA || !MapSF.IsBound(theB))
+              {
+                return false;
+              }
+              const TopoDS_Face aOB = TopoDS::Face(MapSF(theB).Face());
+              for (NCollection_List<TopoDS_Shape>::Iterator itC(aLF); itC.More(); itC.Next())
+              {
+                const TopoDS_Shape& aFC = itC.Value();
+                if (aFC.IsSame(theA) || aFC.IsSame(theB) || !MapSF.IsBound(aFC))
+                {
+                  continue;
+                }
+                const NCollection_List<TopoDS_Shape>* pLEC = Analyse.Descendants(aFC);
+                if (!pLEC)
+                {
+                  continue;
+                }
+                bool isShared = false;
+                for (NCollection_List<TopoDS_Shape>::Iterator itEA(*pLEA);
+                     itEA.More() && !isShared;
+                     itEA.Next())
+                {
+                  const TopoDS_Shape& aEA = itEA.Value();
+                  if (!pLEC->Contains(aEA) || !Analyse.HasAncestor(aEA)
+                      || Analyse.Ancestors(aEA).Extent() != 2)
+                  {
+                    continue;
+                  }
+                  for (TopoDS_Iterator aItV(aEA); aItV.More() && !isShared; aItV.Next())
+                  {
+                    isShared = aS.IsSame(aItV.Value());
+                  }
+                }
+                if (isShared && OnOnePlane(TopoDS::Face(MapSF(aFC).Face()), aOB))
+                {
+                  return true;
+                }
+              }
+              return false;
+            };
+            if (carriesOn(aFV1, aFV2) || carriesOn(aFV2, aFV1))
+            {
+              continue;
+            }
             aLF1.Append(aFV1);
             aLF2.Append(aFV2);
           }
@@ -834,6 +927,76 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         NF2 = TopoDS::Face(MES(OF2));
       }
       //
+      if (!bEdge && !IsDone(NF1, NF2))
+      {
+        // Two faces meeting at a vertex alone, one of them on the plane of a
+        // face the other is cut by already: their section is that edge, and
+        // the face takes it rather than a second edge on the same line -- a
+        // box fused of two, one piece of its top removed: the closure of the
+        // removed piece's tangent edge runs a thickness into it, and the
+        // side beside it meets the other piece of the top there, on the line
+        // where the side beyond the joint meets that piece.
+        NCollection_List<TopoDS_Shape> aLShared;
+        TopoDS_Face                    aTaker;
+        for (int k = 0; k < 2 && aLShared.IsEmpty(); ++k)
+        {
+          const TopoDS_Face& aFP = k == 0 ? NF1 : NF2;
+          const TopoDS_Face& aFQ = k == 0 ? NF2 : NF1;
+          for (it.Initialize(myAsDes->Descendant(aFQ)); it.More(); it.Next())
+          {
+            const TopoDS_Shape& aNE = it.Value();
+            if (aNE.ShapeType() != TopAbs_EDGE || !myAsDes->HasAscendant(aNE))
+            {
+              continue;
+            }
+            for (it1.Initialize(myAsDes->Ascendant(aNE)); it1.More(); it1.Next())
+            {
+              const TopoDS_Shape& aFX = it1.Value();
+              if (aFX.ShapeType() != TopAbs_FACE || aFX.IsSame(aFQ) || aFX.IsSame(aFP)
+                  || !OnOnePlane(TopoDS::Face(aFX), aFP)
+                  || !FaceTheSameWay(TopoDS::Face(aFX), aFP))
+              {
+                continue;
+              }
+              // The edge as the face on the same plane holds it.
+              for (NCollection_List<TopoDS_Shape>::Iterator itX(myAsDes->Descendant(aFX));
+                   itX.More();
+                   itX.Next())
+              {
+                if (itX.Value().IsSame(aNE))
+                {
+                  aLShared.Append(itX.Value());
+                  aTaker = aFP;
+                  break;
+                }
+              }
+              break;
+            }
+          }
+        }
+        if (!aLShared.IsEmpty())
+        {
+          SHOW_TOPO_SHAPE(aTaker, "InterSharedOnPlane", aLShared);
+          myTouched.Add(aTaker);
+          myAsDes->Add(aTaker, aLShared);
+          SetDone(NF1, NF2);
+          TopoDS_Compound C;
+          B.MakeCompound(C);
+          if (Build.IsBound(aS))
+          {
+            for (TopExp_Explorer aExp(Build(aS), TopAbs_EDGE); aExp.More(); aExp.Next())
+            {
+              B.Add(C, aExp.Current());
+            }
+          }
+          for (it.Initialize(aLShared); it.More(); it.Next())
+          {
+            B.Add(C, it.Value());
+          }
+          Build.Bind(aS, C);
+          continue;
+        }
+      }
       if (!IsDone(NF1, NF2))
       {
         NCollection_List<TopoDS_Shape> LInt1, LInt2;

@@ -94,6 +94,13 @@ void BRepOffset_MakeLoops::Build(const NCollection_List<TopoDS_Shape>& LF,
       {
         Loops.AddEdge(E, AsDes->Descendant(E));
         AddedEdges.Append(E);
+        // A section three faces share (BRepOffset_Inter3d::ConnexIntByInt:
+        // two of them on one plane) is cut here for all of them, and each
+        // takes its own pieces: the ones this face has no use for stay.
+        if (AsDes->HasAscendant(E) && AsDes->Ascendant(E).Extent() > 2)
+        {
+          Loops.KeepPieces(E);
+        }
       }
     }
     //------------------------

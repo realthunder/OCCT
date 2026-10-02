@@ -117,6 +117,7 @@ void BRepAlgo_Loop::Init(const TopoDS_Face& F)
   myNewWires.Clear();
   myNewFaces.Clear();
   myCutEdges.Clear();
+  myKeptEdges.Clear();
   myFace = F;
 }
 
@@ -184,6 +185,13 @@ void BRepAlgo_Loop::AddEdge(TopoDS_Edge& E, const NCollection_List<TopoDS_Shape>
   myEdges.Append(E);
   myVerOnEdges.Bind(E, LV);
   SHOW_TOPO_SHAPE(E, "AddEdge", LV);
+}
+
+//=================================================================================================
+
+void BRepAlgo_Loop::KeepPieces(const TopoDS_Edge& E)
+{
+  myKeptEdges.Add(E);
 }
 
 //=================================================================================================
@@ -294,10 +302,15 @@ static TopoDS_Vertex UpdateClosedEdge(const TopoDS_Edge&                  E,
 static void PurgeNewEdges(
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
                                                                 NewEdges,
-  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& UsedEdges)
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& UsedEdges,
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theKept)
 {
   for (int ii = 1; ii <= NewEdges.Extent(); ++ii)
   {
+    if (theKept.Contains(NewEdges.FindKey(ii)))
+    {
+      continue;
+    }
     NCollection_List<TopoDS_Shape>&          LNE = NewEdges.ChangeFromIndex(ii);
     NCollection_List<TopoDS_Shape>::Iterator itL(LNE);
     while (itL.More())
@@ -2605,7 +2618,7 @@ void BRepAlgo_Loop::FindLoop()
     }
   }
 
-  PurgeNewEdges(myCutEdges, UsedEdges);
+  PurgeNewEdges(myCutEdges, UsedEdges, myKeptEdges);
 }
 
 //=================================================================================================

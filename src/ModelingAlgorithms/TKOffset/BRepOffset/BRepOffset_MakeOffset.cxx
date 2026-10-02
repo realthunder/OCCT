@@ -867,7 +867,8 @@ void BRepOffset_MakeOffset::SetFacesWithOffset()
 
 //=================================================================================================
 
-// Whether a removed face meets a neighbour that stays at a concave edge.
+// Whether a removed face meets a neighbour that stays at a concave edge, or
+// at a tangent one.
 static bool HasConcaveRemovedFace(
   const TopoDS_Shape&                                                  theShape,
   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theRemoved)
@@ -894,7 +895,8 @@ static bool HasConcaveRemovedFace(
     {
       continue;
     }
-    if (ChFi3d::DefineConnectType(anE, aF1, aF2, aSinTol, false) == ChFiDS_Concave)
+    const ChFiDS_TypeOfConcavity aType = ChFi3d::DefineConnectType(anE, aF1, aF2, aSinTol, false);
+    if (aType == ChFiDS_Concave || aType == ChFiDS_Tangential)
     {
       return true;
     }
@@ -1011,7 +1013,10 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   // cut it there: the rim came out invalid (the L-box's notch walls, the T's
   // bar tops and post walls, a pocket's walls -- upstream fails them too).
   // The loops cut it: such a shape is built as with intersection off, and
-  // myInter is given back on the way out.
+  // myInter is given back on the way out. So is a shape whose removed face
+  // is tangent to a neighbour -- one piece of a face in two coplanar pieces:
+  // the splits know nothing of the wall that closes the gap
+  // (BRepOffset_Analyse::TreatTangentCaps).
   struct InterRestore
   {
     bool& myRef;
