@@ -2714,7 +2714,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   // 0 very often causes unpredictable undulations of solution
   int                         degree = 3, nbcurvpnt = 10, nbiter = 1;
   int                         constr = 1; // G1
-  GeomPlate_BuildPlateSurface PSurf(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
+  GeomPlate_BuildPlateSurface PSurfG1(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
+  // the boundaries as given, and their numbers of points, should the plate
+  // have to be built again on positions alone
+  NCollection_Sequence<occ::handle<Adaptor3d_Curve>> aBounds;
+  NCollection_Sequence<int>                          aBoundPts;
   // calculation of curves on surface for each stripe
   for (ic = 0; ic < nedge; ic++)
   {
@@ -2744,7 +2748,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
       Order.SetValue(ic, constr);
       occ::handle<GeomPlate_CurveConstraint> Cont =
         new GeomPlate_CurveConstraint(HCons, Order.Value(ic), nbcurvpnt, tolapp3d, angular, 0.1);
-      PSurf.Add(Cont);
+      PSurfG1.Add(Cont);
+      aBounds.Append(HCons);
+      aBoundPts.Append(nbcurvpnt);
 
       // calculate indexes of points and of the curve for the DS
       isfirst = (sens.Value(ic) == 1);
@@ -3168,7 +3174,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           }
           occ::handle<GeomPlate_CurveConstraint> Cont =
             new GeomPlate_CurveConstraint(HCons, Order.Value(n3d), 10, tolapp3d, angular, 0.1);
-          PSurf.Add(Cont);
+          PSurfG1.Add(Cont);
+          aBounds.Append(HCons);
+          aBoundPts.Append(10);
 
           // calculation of curve 3d if it is not a projection
           if (curveint.IsNull())
@@ -3339,7 +3347,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           Order.SetValue(n3d, 1);
           occ::handle<GeomPlate_CurveConstraint> Cont =
             new GeomPlate_CurveConstraint(HCons, Order.Value(n3d), 10, tolapp3d, angular, 0.1);
-          PSurf.Add(Cont);
+          PSurfG1.Add(Cont);
+          aBounds.Append(HCons);
+          aBoundPts.Append(10);
           TopOpeBRepDS_Curve tcurv3d(cproj, error);
           indcurve3d.SetValue(n3d, DStr.AddCurve(tcurv3d));
           Interfp1 = ChFi3d_FilPointInDS(TopAbs_FORWARD, indcurve3d.Value(n3d), indpoint1, pardeb);
@@ -3474,7 +3484,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         Order.SetValue(n3d, 0);
         occ::handle<GeomPlate_CurveConstraint> Cont =
           new GeomPlate_CurveConstraint(HCons, Order.Value(n3d), 10, tolapp3d, angular, 0.1);
-        PSurf.Add(Cont);
+        PSurfG1.Add(Cont);
+        aBounds.Append(HCons);
+        aBoundPts.Append(10);
         TopOpeBRepDS_Curve tcurv3d(ctrim, 1.e-4);
         indcurve3d.SetValue(n3d, DStr.AddCurve(tcurv3d));
         Interfp1 =
@@ -3491,7 +3503,47 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   ChFi3d_InitChron(ch); // init performances for plate
 #endif
 
-  PSurf.Perform();
+  PSurfG1.Perform();
+
+  // Held tangent to the stripes, a plate can fold to meet them where a
+  // stripe's end meets a face at a sharp angle, and miss its own boundary
+  // by a good part of the radius; its approximation, allowed ten times that,
+  // then strays further, and the corner keeps edges of as large a
+  // tolerance, a face looping over itself, a volume nobody can integrate.
+  // A plate that misses its boundary by more than PlateG0Fallback is built
+  // again on the positions alone, and taken if it fits better: a crease
+  // along the stripes instead of a fold.
+  const double                PlateG0Fallback = 1.e-2;
+  GeomPlate_BuildPlateSurface PSurfG0(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
+  bool                        isG0 = false;
+  if (PSurfG1.IsDone() && PSurfG1.G0Error() > PlateG0Fallback)
+  {
+    bool hasG1 = false;
+    for (int k = Order.Lower(); k <= Order.Upper(); k++)
+    {
+      hasG1 = hasG1 || Order.Value(k) > 0;
+    }
+    if (hasG1)
+    {
+      for (int k = 1; k <= aBounds.Length(); k++)
+      {
+        PSurfG0.Add(new GeomPlate_CurveConstraint(aBounds.Value(k),
+                                                  0,
+                                                  aBoundPts.Value(k),
+                                                  tolapp3d,
+                                                  angular,
+                                                  0.1));
+      }
+      PSurfG0.Perform();
+      isG0 = PSurfG0.IsDone() && PSurfG0.G0Error() < PSurfG1.G0Error();
+    }
+  }
+  if (isG0)
+  {
+    // no edge of the corner is tangent to its stripe now
+    Order.Init(0);
+  }
+  GeomPlate_BuildPlateSurface& PSurf = isG0 ? PSurfG0 : PSurfG1;
 
 #ifdef OCCT_DEBUG
   ChFi3d_ResultChron(ch, t_plate); // result performances for plate
