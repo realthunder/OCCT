@@ -1086,11 +1086,20 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
                 }
               }
             };
+            // Into the edge's own range, either way: the projection answers
+            // in the curve's first period, and an edge whose range starts
+            // below it -- a meridian stretched back past its start, from
+            // -pi/2 -- lost the crossing just before the start, at 2 pi less
+            // a little.
             if (C->IsPeriodic())
             {
               while (P < aF)
               {
                 P += C->Period();
+              }
+              while (P > aL && P - C->Period() >= aF)
+              {
+                P -= C->Period();
               }
             }
             if (D < Tol && P > aF && P < aL)
