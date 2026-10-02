@@ -7506,6 +7506,27 @@ bool BRepOffset_MakeOffset::IsPlanar()
     }
   }
 
+  // A removed face of a sphere that reaches a pole stands in for its wall,
+  // which lies on the sphere past its outline and so round the pole: the
+  // face is replaced, as a face made planar is, by its twin on the sphere
+  // with the axis turned off it (BRepOffset_Tool::TurnedOffPole).
+  for (int i = 1; i <= myOriginalFaces.Extent(); ++i)
+  {
+    const TopoDS_Face aF = TopoDS::Face(myOriginalFaces(i));
+    TopoDS_Face       aTwin;
+    if (myFacePlanfaceMap.IsBound(aF) || !BRepOffset_Tool::TurnedOffPole(aF, aTwin))
+    {
+      continue;
+    }
+    myFacePlanfaceMap.Bind(aF, aTwin);
+    if (myFaces.Contains(aF))
+    {
+      myFaces.RemoveKey(aF);
+      myFaces.Add(aTwin);
+    }
+    SHOW_TOPO_SHAPE(aTwin, "RemovedFaceTurned");
+  }
+
   return (!aIsNonPlanarFound);
 }
 

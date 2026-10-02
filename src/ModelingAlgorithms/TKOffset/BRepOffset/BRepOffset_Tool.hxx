@@ -126,6 +126,13 @@ public:
                                           bool&                     enlargeVfirst,
                                           bool&                     enlargeVlast);
 
+  //! A face of a sphere that reaches a pole, on less than a whole turn, on
+  //! the same sphere with its axis turned off the face: <theTwin> is a new
+  //! face with the wires of <theF>, whose edges take a pcurve on the turned
+  //! sphere beside their own. <theF> is not changed. False where the face is
+  //! no such face, or no axis keeps both poles clear of it.
+  Standard_EXPORT static bool TurnedOffPole(const TopoDS_Face& theF, TopoDS_Face& theTwin);
+
   //! Returns True if The Surface of <NF> has changed.
   //! if <ChangeGeom> is TRUE the surface can be
   //! changed .
