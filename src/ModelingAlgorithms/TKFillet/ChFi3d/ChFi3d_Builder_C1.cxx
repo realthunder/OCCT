@@ -482,6 +482,33 @@ static void ComputeCurve2d(const occ::handle<Geom_Curve>& Ct,
   }
 }
 
+//=======================================================================
+// function : PCurveInFace
+// purpose  : the pcurve of <E> on <F>, for <E> as it lies in <F>. An edge
+//           with two pcurves on the surface of <F> that occurs in <F> only
+//           once -- a seam left on a piece of a split closed face -- would
+//           otherwise give the pcurve of its own orientation, which may lie
+//           a period away from the face.
+//=======================================================================
+
+static occ::handle<Geom2d_Curve> PCurveInFace(const TopoDS_Edge& E,
+                                              const TopoDS_Face& F,
+                                              double&            f,
+                                              double&            l)
+{
+  if (BRep_Tool::IsClosed(E, F) && !BRepTools::IsReallyClosed(E, F))
+  {
+    for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More(); ex.Next())
+    {
+      if (ex.Current().IsSame(E))
+      {
+        return BRep_Tool::CurveOnSurface(TopoDS::Edge(ex.Current()), F, f, l);
+      }
+    }
+  }
+  return BRep_Tool::CurveOnSurface(E, F, f, l);
+}
+
 //=================================================================================================
 
 static void ChFi3d_Recale(const BRepAdaptor_Surface& Bs,
@@ -949,7 +976,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     }
     else
     {
-      Hc1 = BRep_Tool::CurveOnSurface(CV1.Arc(), Fv, Ubid, Ubid);
+      Hc1 = PCurveInFace(CV1.Arc(), Fv, Ubid, Ubid);
       if (Hc1.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -962,7 +989,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     }
     else
     {
-      Hc2 = BRep_Tool::CurveOnSurface(CV2.Arc(), Fv, Ubid, Ubid);
+      Hc2 = PCurveInFace(CV2.Arc(), Fv, Ubid, Ubid);
       if (Hc2.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -1442,14 +1469,14 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
 #endif
     const ChFiDS_FaceInterference& Fiop = Fd->Interference(IFopArc);
     gp_Pnt2d                       pop1, pop2, pv1, pv2;
-    Hc = BRep_Tool::CurveOnSurface(Arcprol, Fop, Ubid, Ubid);
+    Hc = PCurveInFace(Arcprol, Fop, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");
     }
     pop1 = Hc->Value(parVtx);
     pop2 = Fiop.PCurveOnFace()->Value(Fiop.Parameter(isfirst));
-    Hc   = BRep_Tool::CurveOnSurface(Arcprol, Fv, Ubid, Ubid);
+    Hc   = PCurveInFace(Arcprol, Fv, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -4972,7 +4999,7 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
       //  Modified by Sergey KHROMOV - Fri Dec 21 18:08:29 2001 End
       // Arcprol is an edge of tangency, ultimate adjustment by an extrema curve/curve is attempted.
       double                    ff, ll;
-      occ::handle<Geom2d_Curve> gpcprol = BRep_Tool::CurveOnSurface(Arcprol, Fv, ff, ll);
+      occ::handle<Geom2d_Curve> gpcprol = PCurveInFace(Arcprol, Fv, ff, ll);
       if (gpcprol.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -5015,7 +5042,7 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     }
     else
     {
-      Hc1 = BRep_Tool::CurveOnSurface(CV1.Arc(), Fv, Ubid, Ubid);
+      Hc1 = PCurveInFace(CV1.Arc(), Fv, Ubid, Ubid);
       if (Hc1.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -5028,7 +5055,7 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     }
     else
     {
-      Hc2 = BRep_Tool::CurveOnSurface(CV2.Arc(), Fv, Ubid, Ubid);
+      Hc2 = PCurveInFace(CV2.Arc(), Fv, Ubid, Ubid);
       if (Hc2.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -5340,14 +5367,14 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     }
     //  Modified by skv - Thu Aug 21 11:55:58 2008 OCC20222 End
     // fin modif
-    Hc = BRep_Tool::CurveOnSurface(Arcprolbis, Fop, Ubid, Ubid);
+    Hc = PCurveInFace(Arcprolbis, Fop, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");
     }
     pop1 = Hc->Value(parVtx);
     pop2 = Fiop.PCurveOnFace()->Value(Fiop.Parameter(isfirst));
-    Hc   = BRep_Tool::CurveOnSurface(Arcprol, Fv, Ubid, Ubid);
+    Hc   = PCurveInFace(Arcprol, Fv, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");
