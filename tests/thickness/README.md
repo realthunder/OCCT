@@ -20,7 +20,8 @@ The suite runs with FreeCAD's shape values unfrozen (`ImmutableShapeValues`
 off), as any build that does not freeze them runs: a frozen input is
 protected by copy-on-write from an algorithm that edits it, and the suite
 must see such an edit. `THICK_FREEZE=1` runs it frozen. Every case also
-checks that its input comes back as it went in (valid, the same volume).
+checks that its input comes back as it went in (valid, the same volume, no
+tolerance grown).
 
 Exit code 0 = no regression (every expected-pass case passed). Known-broken
 cases are marked `XFAIL` in the script; when one starts passing the suite
@@ -338,7 +339,7 @@ No case of these is marked `XFAIL` any more.
 | `halfdome_side_join_in`, `halfdome_other_side_join_in`, `halfdome_side_inter_join_in` | the quarter ball, a side removed, Intersection join, inward | 59.1071; were refused: the wall's end edge on the sphere was never intersected, and the removed side's section was the half circle beyond the pole |
 | `halfdome_bottom_join_out`, `_inter_join_out`, `halfdome_side_join_out`, `halfdome_other_side_join_out` | the same, outward | 67.0206, 81.7345; were refused: the offset sphere has to run round its pole, and is put on the same sphere with its axis turned |
 | `lune_side_join_*`, `eighth_ball_*_join_out`, `dome120_*_join_*` | a quarter ball on its side (both poles), an eighth of a ball, a third of a dome | the turned axis on other faces at a pole: 67.0206 / 51.3127, 46.7279, 53.3701 / 57.4660 / 41.2951 |
-| `halfball_side_join_refused_*` | half a ball cut through both poles, a flat half removed, Intersection join | refused: no axis is clear of its outline, and the wall built outside its band was a valid solid that is not the skin (111.2647 for 113.0909) |
+| (`halfball_side_join_refused_*`, until sec 27.110) | half a ball cut through both poles, a flat half removed, Intersection join | was refused: no axis is clear of its outline, and the wall built outside its band was a valid solid that is not the skin (111.2647 for 113.0909). Answered since sec 27.110 (`halfball_flat_join_*`); a wall outside its band is still refused |
 
 ## More than half a turn, three tubes at a pole, the sphere removed (2026-10-02, sec 27.109)
 
@@ -356,12 +357,24 @@ by `sweep/polehand.py`.
 | `eighth_ball_sphere_*`, `dome120_sphere_*`, `halfdome_sphere_*`, `lune_sphere_*`, `dome270_sphere_*` | the sphere itself removed | the wall on the ball of 5 past the pole, on a turned twin of the removed face: 32.3576 / 33.2167 / 25.7418, 35.2709 / 35.8993, 41.0976 / 41.6307 / 36.6474, 49.5532 / 50.0446 / 47.3132 / 47.5529; outward refused or threw, each one |
 | `dome270_sphere_out_thick`, `dome270_sphere_join_out_thick` | the same at a thickness of 1 | 99.0413, 100.7985; threw |
 | `halfball_flat_out/in`, `halfball_sphere_in` | half a ball cut through both poles | 111.6001, 88.5482, 39.1390: right before, pinned here |
-| `halfball_flat_join_out/in`, `halfball_sphere_out`, `halfball_sphere_join_out` | the same, the modes that need its sphere past both poles | `XFAIL`: 113.0909, 89.0272, 39.1390. Refused (`halfball_side_join_refused_out` holds that a refusal it is, not a solid of some other volume) |
+| `halfball_flat_join_out/in`, `halfball_sphere_out`, `halfball_sphere_join_out` | the same, the modes that need its sphere past both poles | 113.0909, 89.0272, 39.1390; `XFAIL` until sec 27.110 |
 
-The four `XFAIL` cases are the only ones: half a ball's outline is a whole
-great circle, no axis clears it, and its offset sphere holds its poles
-inside, which takes a seam the turned face does not have
-(`models/Thickness.md`, "Left open").
+## Half a ball, and a shape that is placed or turned (2026-10-02, sec 27.110)
+
+`models/Thickness.md`, "Sec 27.110", has the causes. No case is marked
+`XFAIL`.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `halfball_flat_join_out/in`, `halfball_flat2_join_out/in` | half a ball cut through both poles, a flat half removed, Intersection join | 113.0909, 89.0272; were refused: the sphere, a whole great circle for its outline, is now cut along its equator first (`MakeThickSolidOfSplit`) |
+| `halfball_sphere_out`, `halfball_sphere_join_out`, `halfball_sphere_join_in` | the same, the sphere removed | 39.1390; outward refused or threw: the removed face is cut along a meridian into two lunes, each with a twin |
+| `luneball_spheres_*` | the half ball with its sphere in two lunes already, both removed | 39.1390; outward invalid (a twin's pcurve ended where the edge did; a crossing before an edge's start was lost), inward a segmentation fault (a section's block without an edge) |
+| `eqball_flat_join_out/in`, `eqball_flat_out/in` | the half ball with its sphere in two domes already, a flat half removed | 113.0909 (threw), 89.0272 (a valid solid of 90.2265: the equator's pcurve on the turned sphere 0.23 off its curve); 111.6001 and 88.5482 with the Arc join, right before |
+| `placed_cyl_side_pieces_out`, `placed_cyl_top_in_after`, `placed_cyl_top_out_after` | a cylinder under a location: its side removed, then its top, on the same shape | 2 x 25.1327, then 89.9281 and 110.4400; the first left two of the input's vertices at a tolerance of 8.5, and the second was a valid solid of 272.73: a seam's second pcurve checked without the edge's location |
+| `placed_dome_flat_*`, `placed_cone_base_*`, `placed_coneup_base_out`, `placed_halfdome_*`, `placed_dome270_side_join_out`, `placed_halfball_*` | shapes with a pole under a location | their plain volumes; were refused (a pole not known for one), or the cone's offset ran to the apex before the move, or the apex circle's normal was no vector |
+| `turned_filletbox_fillet*_out`, `turned_filletbox_fillet_in`, `placed_filletbox_fillet_out` | the filleted box turned in space, a fillet removed | 405.9034, 267.0193; outward a valid solid of 459.398 or refused: the corner arc on the cap was taken from a section whose lines join elsewhere once the shape is turned |
+| `halfcap_*`, `turned_halfcap_*`, `placed_halfcap_*` | half of a sphere's cap above latitude 30: the sphere, the bottom, a side removed inward | 19.2316, 22.0431, 28.8642; turned or placed, the sphere removed was refused (Arc) or a valid solid of 8.126 (Intersection join): a whole circle of section lost the piece its own vertex lies in, and a section was turned by its far side |
+| `bullet_side_join_out`, `turned_`, `placed_` | a dome on a cylinder, the cylinder removed outward, Intersection join | a disc of 39.2699 and the dome's skin, 61.4616; turned, 151.12: of two section circles as near as each other the first found was taken |
 
 ## Determinism cases (intersection mode, Arc join)
 
@@ -377,20 +390,31 @@ the same every run, not that it is right. The boss and the box with a blind
 hole settled on an invalid solid until sec 27.89's loop fixes; all three are
 valid now, the boss and the box with the hole at upstream's volumes.
 
-## The sweep (2026-10-02, sec 27.106 and 27.109)
+## The sweep (2026-10-02, sec 27.106, 27.109 and 27.110)
 
-The suite pins chosen cases; the sweep covers the ground between them: 22
+The suite pins chosen cases; the sweep covers the ground between them: 24
 solids, every face removed in turn, +1 and -1, intersection off and on, the
-Arc and the Intersection join -- 880 runs. It is what found most of the
-faults above, and it lived in a scratch directory until sec 27.106. The
-last six solids are sec 27.109's: a ball cut by its equator and by planes
-through its axis, a face of a sphere at a pole with flat neighbours.
+Arc and the Intersection join -- 928 runs. It is what found most of the
+faults above, and it lived in a scratch directory until sec 27.106. Six
+solids are sec 27.109's: a ball cut by its equator and by planes through
+its axis, a face of a sphere at a pole with flat neighbours. The last two
+are sec 27.110's: a third and half of a ball from pole to pole.
 
 ```
 sweep/sweep.sh out.txt            # the fork as built; about three minutes
-sweep/sweep.sh up.txt <libdir>    # another build's TKBool/TKOffset preloaded
+sweep/sweep.sh up.txt <libdir>    # another build's TKBool/TKOffset (and TKTopAlgo) preloaded
 python3 sweep/check.py out.txt    # exit 1 unless every run is right
+SWEEP_PLACE=placed sweep/sweep.sh placed.txt   # every solid under a location
+SWEEP_PLACE=baked sweep/sweep.sh baked.txt     # every solid's geometry turned and moved
+SWEEP_PLACE=baked SWEEP_PLACEMENT="-7 2 11 -2 1 0.5 137" sweep/sweep.sh baked2.txt   # elsewhere
 ```
+
+A solid weighs the same wherever it lies, so `reference.txt` judges the
+placed and the turned sweep as it does the plain one. Sec 27.110 added the
+two: placed, 144 of 228 probe runs on pole solids differed from plain
+before it, and turned, six of the sweep's did. (`baked` is FreeCAD's
+`transformShape` with a copy: the geometry is turned, and the shape is left
+with a location that is the identity -- not none, which is its own case.)
 
 `check.py` judges a run by `sweep/reference.txt`: the volume to 2e-3, the
 number of solids and of shells, or a refusal, and the input left alone. The
@@ -401,27 +425,29 @@ line says where its value comes from:
 
 | | Runs | The value is |
 |---|---|---|
-| `U` | 490 | what upstream's chain gives too: two implementations agree |
-| `H` | 250 | worked by hand in `sweep/hand.py`, from the closing and join rules the fixes settled; the formulas are there. The pole solids' 100 are worked numerically by `sweep/polehand.py` (its table is `polehand.txt`), which at a thickness of 0.5 gives the 76 volumes the suite had for them |
+| `U` | 492 | what upstream's chain gives too: two implementations agree |
+| `H` | 296 | worked by hand in `sweep/hand.py`, from the closing and join rules the fixes settled; the formulas are there. The pole solids' 146 are worked numerically by `sweep/polehand.py` (its table is `polehand.txt`), which at a thickness of 0.5 gives the 76 volumes the suite had for the first six of them |
 | `S` | 120 | the reference volume of a case of `run_tests.py`, worked by hand there (matched by value, not by case) |
 | `R` | 20 | a ruling: a sphere's or a torus's one face removed is refused (16); the holed cone's top inward is a skin and a sealed void (4) |
 
-The fork is right on 880 of 880; upstream's chain on 492 (the 490, and the
-sealed void with intersection on). `check.py out.txt --write-ref up.txt`
+The fork is right on 928 of 928 -- plain, frozen, placed and turned;
+upstream's chain on 494 (the 492, and the sealed void with intersection
+on). `check.py out.txt --write-ref up.txt`
 rebuilds the reference from a sweep of the fork and one of upstream, and
 refuses a run none of the four confirms: a changed value needs a hand value
 or a suite case before it can become the reference.
 
-The sweep has no cone with its apex, no shape cut across a seam, and not
-the half ball cut through both its poles, whose open cases the suite marks;
+The sweep has no cone with its apex, no shape cut across a seam, and no
+ball wedge from pole to pole on more than half a turn, whose sphere removed
+is still wrong (`models/Thickness.md`, sec 27.110, "Found beside these");
 what it does not cover it does not vouch for (sec 27.104, sec 27.106).
 
 ## Pictures
 
 `models/pictures/<case>.png` shows, for each case a fix turned from failing
-to passing, three results side by side -- upstream's chain files at
-`91be8c4c71`, the fork just before the fix, the fork now -- each whole and
-cut open. `models/Thickness.md` walks through them fix by fix and says
+to passing, the shape given with its removed faces in magenta and three
+results beside it -- upstream's chain files at `91be8c4c71`, the fork just
+before the fix, the fork now -- each whole and cut open. `models/Thickness.md` walks through them fix by fix and says
 how to read them. `pictures/make_pictures.sh` makes them again (scratch
 libraries for upstream and for each stage, the cases run on each, rendered
 under Xvfb); add a case to `pictures/cases.py`, with its stage, to picture it.
@@ -436,5 +462,5 @@ tests/thickness/
     Thickness.md     the fixes, before and after, in pictures
     pictures/        before and after, one PNG per fixed case
   pictures/          the tools that make them (make_pictures.sh)
-  sweep/             the 712-run sweep, its reference and its hand values
+  sweep/             the 928-run sweep, its reference and its hand values
 ```

@@ -1,7 +1,8 @@
 # FreeCAD (GUI, under xvfb-run) render.py -- one PNG per panel of $JOBS.
 #
 # A panel is a result (or, when the thickness threw, the input, greyed) seen
-# from the removed face's side, z up. With "cut", the half towards the camera
+# from the removed face's side, z up. An "input" panel is the shape given,
+# its removed faces ("removed", indices into its faces) in magenta. With "cut", the half towards the camera
 # is cut away by a plane through the removed face's centre (axis-aligned where
 # one splits the input evenly, else through a curved face's axis) and the cut
 # faces are orange; when the boolean fails or the solid is inside out a clip
@@ -95,6 +96,16 @@ for job in jobs["panels"]:
     shape = Part.Shape(); shape.read(job["brep"])
     ghost = job.get("ghost", False)
     meta = {}
+    # The removed faces, as they are in the shape read: after a cut, the
+    # faces lying on one of them are found again by their edges.
+    removed = [shape.Faces[i] for i in job.get("removed", [])] if job.get("input") else []
+    def on_removed(g):
+        if not removed: return False
+        for f in removed:
+            if f.Surface.__class__ is not g.Surface.__class__: continue
+            pts = [e.valueAt((e.FirstParameter + e.LastParameter) / 2) for e in g.Edges if not e.Degenerated]
+            if pts and all(f.distToShape(Part.Vertex(p))[0] < 1e-5 for p in pts): return True
+        return False
     # A face without bounds (upstream's inward cone, a volume of 2e100)
     # cannot be meshed -- the mesher crashes on it; it is left out.
     def bounded(f):
@@ -152,6 +163,7 @@ for job in jobs["panels"]:
     bad, badf = ([], [])
     if job.get("mark") and not job.get("cut"):
         bad, badf = defects(shape)
+    remf = [i for i, f in enumerate(shape.Faces) if on_removed(f)]
     obj = doc.addObject("Part::Feature", "S"); obj.Shape = shape
     if bad:
         eo = doc.addObject("Part::Feature", "Bad"); eo.Shape = Part.makeCompound(bad)
@@ -164,10 +176,11 @@ for job in jobs["panels"]:
     vo.Deviation = 0.05
     if ghost:
         vo.Transparency = 60
-    if cap or badf:
+    if cap or badf or remf:
         cols = [base + (1.0,)] * len(shape.Faces)
         for i in cap or []: cols[i] = (0.93, 0.55, 0.25, 1.0)
         for i in badf: cols[i] = (0.95, 0.25, 0.25, 1.0)
+        for i in remf: cols[i] = (0.85, 0.25, 0.65, 1.0)
         try:
             vo.DiffuseColor = cols
         except Exception:

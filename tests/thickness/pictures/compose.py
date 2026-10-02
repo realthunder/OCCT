@@ -24,7 +24,13 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "dome": "half a sphere", "cap": "sphere above latitude 30", "cone": "cone with its apex",
          "halfdome": "half a dome (a quarter ball)", "splitbox": "box fused of two, not refined",
          "eighth": "an eighth of a ball", "dome120": "a third of a dome",
-         "dome270": "three quarters of a dome", "lune": "a quarter ball on its side (both poles)"}
+         "dome270": "three quarters of a dome", "lune": "a quarter ball on its side (both poles)",
+         "placed_dome": "half a sphere under a placement", "placed_cone": "cone with its apex under a placement",
+         "placed_coneup": "cone, apex up, under a placement", "placed_halfdome": "half a dome under a placement",
+         "turned_halfcap": "half of a sphere's cap above latitude 30, turned in space",
+         "turned_bullet": "a dome on a cylinder, turned in space",
+         "turned_filletbox": "the filleted box (r2) turned in space", "halfball": "half a ball cut through both poles",
+         "luneball": "half a ball, its sphere in two lunes", "eqball": "half a ball, its sphere in two domes"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"] and d.get("refused"):
@@ -60,7 +66,7 @@ for name in names:
     commit, sec = STAGE[st]
     W, H = 360, 300
     top = 64; lab = 64
-    img = Image.new("RGB", (3 * W, top + lab + 2 * H), "white")
+    img = Image.new("RGB", (4 * W, top + lab + 2 * H), "white")
     d = ImageDraw.Draw(img)
     d.text((10, 8), name, font=FT, fill=(0, 0, 0))
     nf = 6 if sk.startswith(("box", "short")) and "cyl" not in sk else 3
@@ -80,9 +86,14 @@ for name in names:
         NAMES[sk], faces, "outward %+g" % val if val > 0 else "inward %+g" % val, JOIN[join], ", intersection on" if inter else "",
         expect, sec)
     d.text((10, 36), desc, font=F, fill=(60, 60, 60))
+    # The shape given, the removed faces in magenta: whole, and cut open.
+    d.text((10, top), "the shape given", font=FB, fill=(0, 0, 0))
+    d.text((10, top + 21), "%s, removed: magenta" % faces, font=F, fill=(170, 50, 130))
+    for cut in (0, 1):
+        img.paste(Image.open(P + "/png/%s.in.%d.png" % (name, cut)).convert("RGB"), (0, top + lab + cut * H))
     cols = [("up", "up", "upstream OCCT 8.0.1"), ("before", st, "fork before (%s)" % commit), ("after", "after", "fork after")]
     for ci, (v, k, title) in enumerate(cols):
-        x = ci * W
+        x = (ci + 1) * W
         s, colr = status(R[k][name])
         d.text((x + 10, top), title, font=FB, fill=(0, 0, 0))
         # wrap the status to the column
@@ -113,9 +124,9 @@ for name in names:
                 d.text((x + 10, top + lab + H + 8), "clipped (the cut failed or is inside out)", font=F, fill=(110, 110, 110))
         if len(lines) > 1:
             d.text((x + 10, top + 40), " ".join(lines[1:]), font=F, fill=colr)
-    for ci in (1, 2):
+    for ci in (1, 2, 3):
         d.line([(ci * W, top), (ci * W, top + lab + 2 * H)], fill=(200, 200, 200), width=1)
-    d.line([(0, top + lab + H), (3 * W, top + lab + H)], fill=(225, 225, 225), width=1)
+    d.line([(0, top + lab + H), (4 * W, top + lab + H)], fill=(225, 225, 225), width=1)
     img = img.quantize(colors=128, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
     img.save(os.path.join(OUT, name + ".png"), optimize=True)
     print(name, os.path.getsize(os.path.join(OUT, name + ".png")))

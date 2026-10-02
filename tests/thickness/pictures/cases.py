@@ -32,6 +32,7 @@ STAGES = {
     "s107": ("b6404e079a", "27.107"),
     "s108": ("705644654e", "27.108"),
     "s109": ("e63b3f86cc", "27.109"),
+    "s110": ("ffc01775a7", "27.110"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -60,6 +61,35 @@ def _sector(past):
 def _fillet(r):
     b = Part.makeBox(10, 8, 6)
     return b.makeFillet(r, [b.Edges[i] for i in (0, 2, 4, 6)])
+def _placement():
+    return App.Placement(V(3, 4, 5), App.Rotation(V(1, 2, 3), 40))
+
+
+def _placed(shape):
+    # Under a location: an object's placement.
+    shape.Placement = _placement()
+    return shape
+
+
+def _turned(shape):
+    # The geometry itself turned and moved, no location on it.
+    shape.transformShape(_placement().Matrix, True)
+    return shape
+
+
+def _halfball(cut=None):
+    # Half a ball cut through both its poles; with cut, its sphere in two
+    # faces already, by a general fuse with a meridian or the equator.
+    b = Part.makeSphere(5, V(), V(0, 0, 1), -90, 90, 180)
+    if cut == "meridian":
+        e = Part.Arc(V(0, 0, -5), V(0, 5, 0), V(0, 0, 5)).toShape()
+    elif cut == "equator":
+        e = Part.ArcOfCircle(Part.Circle(V(), V(0, 0, 1), 5), 0, math.pi).toShape()
+    else:
+        return b
+    return b.generalFuse([e])[0].Solids[0]
+
+
 SHAPES = {
     "cyl": lambda: Part.makeCylinder(4, 20),
     "ann": lambda: Part.makeCylinder(5, 10).cut(Part.makeCylinder(2, 10)),
@@ -90,6 +120,17 @@ SHAPES = {
     "dome120": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 120),
     "dome270": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 270),
     "lune": lambda: Part.makeSphere(5, V(), V(0, 0, 1), -90, 90, 90),
+    "placed_dome": lambda: _placed(Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 360)),
+    "placed_cone": lambda: _placed(Part.makeCone(0, 4, 6)),
+    "placed_coneup": lambda: _placed(Part.makeCone(4, 0, 6)),
+    "placed_halfdome": lambda: _placed(Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 180)),
+    "turned_filletbox": lambda: _turned(_fillet(2)),
+    "turned_halfcap": lambda: _turned(Part.makeSphere(5, V(), V(0, 0, 1), 30, 90, 180)),
+    "turned_bullet": lambda: _turned(Part.makeCylinder(5, 4, V(0, 0, -4)).fuse(
+        Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 360)).removeSplitter()),
+    "halfball": lambda: _halfball(),
+    "luneball": lambda: _halfball("meridian"),
+    "eqball": lambda: _halfball("equator"),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -196,6 +237,21 @@ CASES = {
     "lune_sphere_in": ("s109", "lune", 1, -0.5, False, 0, 36.6474),
     "dome270_sphere_join_out": ("s109", "dome270", 1, +0.5, False, 2, 50.0446),
     "dome270_sphere_out_thick": ("s109", "dome270", 1, +1.0, False, 0, 99.0413),
+    "placed_dome_flat_out": ("s110", "placed_dome", 2, +0.5, False, 0, 86.6556),
+    "placed_cone_base_join_out": ("s110", "placed_cone", 2, +0.5, False, 2, 52.4563),
+    "placed_coneup_base_out": ("s110", "placed_coneup", 2, +0.5, False, 0, 52.4095),
+    "placed_halfdome_bottom_join_out": ("s110", "placed_halfdome", 2, +0.5, False, 2, 67.0206),
+    "turned_filletbox_out": ("s110", "turned_filletbox", 4, +1, False, 0, 405.9034),
+    "turned_halfcap_sphere_in": ("s110", "turned_halfcap", 1, -0.5, False, 0, 19.2316),
+    "turned_halfcap_sphere_join_in": ("s110", "turned_halfcap", 1, -0.5, False, 2, 19.2316),
+    "turned_bullet_side_join_out": ("s110", "turned_bullet", 1, +0.5, False, 2, 100.7315),
+    "halfball_flat_join_out": ("s110", "halfball", 2, +0.5, False, 2, 113.0909),
+    "halfball_flat_join_in": ("s110", "halfball", 2, -0.5, False, 2, 89.0272),
+    "halfball_sphere_out": ("s110", "halfball", 1, +0.5, False, 0, 39.1390),
+    "halfball_sphere_join_out": ("s110", "halfball", 1, +0.5, False, 2, 39.1390),
+    "luneball_spheres_out": ("s110", "luneball", [1, 2], +0.5, False, 0, 39.1390),
+    "eqball_flat_join_out": ("s110", "eqball", 3, +0.5, False, 2, 113.0909),
+    "eqball_flat_join_in": ("s110", "eqball", 3, -0.5, False, 2, 89.0272),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).
@@ -215,6 +271,7 @@ SOLIDS = {
     "blind_wall_out_join": 2,
     "pocket_top_out_inter_join": 2,
     "cylboss_shoulder_in": 2,
+    "turned_bullet_side_join_out": 2,
 }
 # Cases pictured for what the thickness leaves of its input: the panels show
 # the input after the call, and the reference volume is the input's own

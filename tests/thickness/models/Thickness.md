@@ -15,7 +15,7 @@ volumes, the gates -- is FreeCAD's docs/TransactionLog.md sec 27.88 to
 Where things are:
 
 - The fork's suite: `tests/thickness/run_tests.py` (`FreeCADCmd
-  tests/thickness/run_tests.py`; PASS 189, XFAIL 4) and its `README.md`, the
+  tests/thickness/run_tests.py`; PASS 239) and its `README.md`, the
   case-by-case reference.
 - The pictures: `pictures/<case>.png` beside this page, one per case of the
   suite that a fix turned from failing to passing.
@@ -32,8 +32,9 @@ join (Arc or Intersection) and whether intersection mode is on; the expected
 volume, or "a valid solid" where no reference exists; and the section of
 FreeCAD's TransactionLog.md that fixed it.
 
-Three columns:
+Four columns:
 
+- **the shape given** -- the input, the removed face or faces in magenta.
 - **upstream OCCT 8.0.1** -- upstream's eleven files of the fix chain at the
   fork's base (`91be8c4c71`), compiled into scratch `TKBool`/`TKOffset`
   libraries and preloaded, the rest of the fork as it is.
@@ -41,9 +42,10 @@ Three columns:
   before the fix (named in the heading), the same way.
 - **fork after** -- the fork now.
 
-Two rows: the result seen from the removed face's side, and the result cut
-open -- the half towards the camera cut away by a plane through the removed
-face's centre, the cut faces orange, so the walls show their thickness.
+Two rows: the shape or the result seen from the removed face's side, and
+the same cut open -- the half towards the camera cut away by a plane through
+the removed face's centre, the cut faces orange, so the walls show their
+thickness.
 
 Under each column heading: "valid, volume V" in green, or what was wrong in
 red. "Unhollowed" is a result whose volume is the input's: the opening was
@@ -93,6 +95,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.107 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.108 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.109, 22 solids | 0 | 264 | 192 / 192 | 192 / 192 | 123 / 125 / 127 / 129 |
+| sec 27.110, 24 solids | 0 | 306 | 204 / 204 | 204 / 204 | 123 / 125 / 130 / 132 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -102,18 +105,23 @@ counts the holed cone's sealed void right (sec 27.100), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
 those two runs before it. Sec 27.109 added six solids with a sphere at a
 pole to the sweep, 42 runs a mode, all in scope: its row counts 192 a mode.
+Sec 27.110 added half a ball and a third of one, from pole to pole, 12 runs
+a mode: 204. From that section on the sweep is also run with every solid
+under a location and with its geometry turned in space (`SWEEP_PLACE`): the
+same 928 volumes, all right.
 
-Of the 103 pictured cases, 31 are ones upstream gets right and the fork had
+Of the 118 pictured cases, 33 are ones upstream gets right and the fork had
 broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
 cone's top with intersection on, sec 27.100, a short box's and a box's bottom
 alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, the
-input left inside out, sec 27.104, and the faces closed at a pole, sec
-27.106). The other 72 fail upstream too: the fork
+input left inside out, sec 27.104, the faces closed at a pole, sec
+27.106, and half of a cap turned in space, its sphere removed, sec 27.110).
+The other 85 fail upstream too: the fork
 now does better than upstream there.
 
-Nothing in the suite fails. Four cases are marked known broken, half a ball
-cut through both its poles (sec 27.109, "Left open"): refused, where an
-answer exists. Every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
+Nothing in the suite fails, and no case is marked known broken: half a
+ball cut through both its poles, which sec 27.109 left open, is answered in
+sec 27.110. Every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
 piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
 the pieces that are pockets and bosses: every one checks by hand. The one
 refusal left in the sweep is the torus's face, and it is right: with its one
@@ -894,7 +902,230 @@ the face given, and the outline walk and the bookkeeping of a face's own
 edges know only those. Tried, it turned the refusal into an invalid solid,
 and was taken out. The suite marks the four cases known broken, with their
 volumes: 113.0909 and 89.0272 for a flat half removed, 39.1390 for the
-sphere removed outward, either join. They are refused, not wrong.
+sphere removed outward, either join. They are refused, not wrong. Sec
+27.110 takes it up: the face is cut in two first, and both parts are faces
+the loops know.
+
+### Sec 27.110: half a ball, and a shape that is placed or turned
+
+Sec 27.109 left half a ball cut through both its poles. On the way to it a
+second fault showed, wider than the first: the same solid gave another
+result -- or none, or a wrong one -- when it carried a location, and
+sometimes when its geometry was turned in space. Every volume here is one
+an earlier section had settled, or `sweep/polehand.py`'s.
+
+**A shape that is placed.** A location is what an object's placement
+becomes: the shape is the shape it is where it was made. Of 228 runs on
+shapes with a pole, a cylinder and a torus -- every face, both ways, both
+joins -- 144 gave another result placed than plain. Four causes, three of
+them upstream's code:
+
+*A seam checked without its location* (`ea5b8c15ff`,
+`BRepCheck_Edge::Tolerance`). The check compares an edge's curve with its
+pcurves on their surfaces; the first pcurve's surface is taken under the
+edge's location, a seam's second one without it, and the tolerance comes
+out as large as the move. `UpdateTolerance` asks it for every new edge and
+gives the answer to the edge and to its vertices: a cylinder moved by
+(3, 4, 5), its side removed, came back with its own two vertices at a
+tolerance of 7.42 -- the input edited, still valid and of the same volume
+-- and the next thickness of that shape, its top removed inward, was a
+valid solid of 272.73 for 89.93. Not pictured: there is nothing to see in
+a tolerance. The suite's check of the input now holds the largest
+tolerance in it beside its validity and volume.
+
+*A pole not known for one* (`e600b02563`, `CheckInputData`). The poles of a
+face are listed so that their normals are not tested; they were taken as
+placed and compared with points of the surface as it lies before the
+location. Every placed shape with a pole was refused.
+
+![placed_dome_flat_out](pictures/placed_dome_flat_out.png)
+
+*The apex left behind* (same commit, `BRepOffset_Offset`). The apex of an
+offset cone is taken on the surface and made a vertex of the offset face,
+which lies under the face's location: the offset of a moved cone ran from
+its base to where the apex was before the move.
+
+![placed_cone_base_join_out](pictures/placed_cone_base_join_out.png)
+
+*A normal out of rounding* (same commit, `CorrectConicalFaces`). The
+circle an apex becomes outward has its normal taken from its start, middle
+and end. The end of a whole circle is its start; the normal was what the
+rounding left of their difference -- right, by luck, for a cone as it is
+made, and no vector at all for one moved by whole numbers, where `gp_Dir`
+threw. The points a third and two thirds along are taken.
+
+![placed_coneup_base_out](pictures/placed_coneup_base_out.png)
+
+And the turned sphere of sec 27.108 was made only for a face without a
+location; it is worked out as placed and kept as it lies before that.
+
+![placed_halfdome_bottom_join_out](pictures/placed_halfdome_bottom_join_out.png)
+
+**A shape turned in space** (`f828a88a9d`, `TangentCornerArcOnCap`). With
+the placed runs right, six of the sweep's still differed -- and differed as
+much with the geometry itself turned, no location on it: a filleted box, a
+fillet removed outward with the Arc join. At a corner of a removed face
+tangent to its neighbour the sphere round the vertex meets the removed
+face's surface in an arc (sec 27.93), which was taken from the section of
+the two: the line both its ends lie on. The section comes in as many lines
+as the intersection cuts it in, and where they join depends on how the
+shape lies. Turned by 40 degrees about (1, 2, 3) the arc's ends lay on two
+lines; no arc was found, the corner was left without its sphere, silently,
+and the result was a valid solid of 459.398 for 405.903, or a refusal. The
+arc is built as the tube's edge is, point by point: in each plane through
+the cap's normal at the vertex, the circle round the vertex meets the cap.
+
+![turned_filletbox_out](pictures/turned_filletbox_out.png)
+
+**A circle that starts where it is wanted** (`855747c9f7`,
+`BRepOffset_Tool::StartSectionsFarFrom`). A section that is a whole turn of
+a circle comes closed on a vertex of its own, which the intersection puts
+where the circle's own axes have it. The edges that cross the circle cut it
+in as many pieces as there are crossings, and the trimming -- `TrimEdge`
+from the least parameter to the greatest, `ExtentFace` from the one new
+vertex to the other -- loses the piece that vertex lies in. Upstream's
+code, and it has always needed the vertex to fall in a piece nobody wants;
+as a shape is made it mostly does, and turned in space it falls anywhere.
+Half of a sphere's cap, turned by 40 degrees, its sphere removed inward:
+refused with the Arc join. The same shape's bottom or a side removed with
+the Intersection join was right before this section only because a shape
+turned that way still carries a location (an identity, but not none), for
+which its sphere was not put on a turned axis; turned like any other, it
+gave a valid solid of 11.598 for 22.043, and refusals. Such an edge is made
+again, on the same circle, starting at the point farthest from where the
+section is wanted -- the edge being intersected, the offset face being
+extended -- with its pcurves on both faces. One whose start is already in
+the far half stays as it is, and so does one that runs round a face's
+period, which starts on the seam, unless the face is a removed one and no
+whole turn itself.
+
+![turned_halfcap_sphere_in](pictures/turned_halfcap_sphere_in.png)
+
+Two more of the same kind, where the answer hung on what the intersection
+gave first. *Which way a section runs* (`1d4dba3c77`): sec 27.92 turns a
+section that runs against the offset of the removed face's edge, and
+compared the section's tangent at its middle with the edge's at the nearest
+extremum of distance -- for a section that is most of a circle, the
+farthest point, across the circle, where the two run opposite ways. They
+are compared where they come nearest. With the Intersection join the same
+cap came back a valid solid of 8.126 for 19.232.
+
+![turned_halfcap_sphere_join_in](pictures/turned_halfcap_sphere_join_in.png)
+
+*Which of two circles* (`d9eac5779b`, `CheckIntersFF`): of the blocks a
+section falls into, the one nearest the reference edge's middle is kept,
+and of two as near as each other the first found. A cylinder cuts the
+sphere round its end in two circles, one each side of the edge they share:
+a dome on a cylinder, the cylinder removed outward with the Intersection
+join, took the circle below the dome's edge once turned -- a compound of
+151.12 for 100.73 (a disc of 39.2699 and the dome's skin inside the
+cylinder's surface, 61.4616). The tie goes to the block nearest the face
+that stays.
+
+![turned_bullet_side_join_out](pictures/turned_bullet_side_join_out.png)
+
+Of 228 runs on nineteen shapes -- fifteen with a pole, a dome on a
+cylinder, a box, a cylinder, a torus; every face, both ways, both joins --
+none gives another result placed or turned than as made.
+
+**Half a ball, cut in two first** (`f70247dc14`,
+`MakeThickSolidOfSplit`). Its sphere's outline is a whole great circle. No
+axis keeps both poles off the face, so it cannot be put on a sphere with
+its axis turned; grown past the outline it holds its poles inside, and
+needs a seam no edge of the shape stands for (sec 27.109 tried one, and
+took it out). Any two parts of it are faces the loops know, and their
+common edge is an edge. The face is cut before anything else, by a general
+fuse of the solid with the cutting edge, which leaves the solid given as it
+is; the thick solid is made of the cut solid, and its images come back
+under the faces and edges given -- a face's are those of both its parts.
+Which way it is cut depends on what is done with it:
+
+- a face that stays, the Intersection join: along its equator, into two
+  domes, each reaching one pole and turned off it (sec 27.108);
+- a removed face, outward: along a meridian, into lunes of a quarter turn
+  at the most, each with a twin (sec 27.109).
+
+The other way round fails for each (below). With the Arc join a face that
+stays is not grown, and inward a removed face's wall lies within its
+outline: there the face stays whole, and the result is as it was.
+
+A flat half removed with the Intersection join: the ball of 5.5 above the
+kept half's plane a thickness out, as far as the wall a thickness past the
+axis, less the ball -- 113.0909; inward 89.0272. The sphere removed: a slab
+of the ball, 39.1390 either way.
+
+![halfball_flat_join_out](pictures/halfball_flat_join_out.png)
+![halfball_flat_join_in](pictures/halfball_flat_join_in.png)
+![halfball_sphere_out](pictures/halfball_sphere_out.png)
+![halfball_sphere_join_out](pictures/halfball_sphere_join_out.png)
+
+Three faults stood between the cut ball and those answers, each of them
+also the fault of a half ball that comes with its sphere in two faces --
+a fuse not refined:
+
+*A pcurve that ends where the edge did* (`737eb09241`). On a turned sphere
+an edge's pcurve is a B-spline, and the edge a circle; upstream's pcurves
+of circles are lines and circles, with no end. A removed face's twin had
+its pcurves interpolated between the edges' ends, and the edge two removed
+faces share is stretched for their walls and cut past its ends, where the
+pcurve was no curve: the walls came out unorientable
+(`BRepCheck_InvalidRange`). And `BRepOffset_Inter2d::ExtentEdge` prolongs
+a bounded pcurve by a straight segment in (u, v), where a circle's image
+bends, then stretches the edge itself to most of its turn, far past the
+segments: the equator between two domes came back with a pcurve 0.23 off
+its curve under a tolerance to match, and the solid, valid, weighed
+90.2265 for 89.0272 -- its mesh 89.026. Both pcurves are now interpolated
+through the circle's points as far as the turned sphere lets the circle be
+followed, ten degrees off its poles and five off its seam, and an edge on
+a periodic curve keeps to the range of a bounded pcurve.
+
+![eqball_flat_join_in](pictures/eqball_flat_join_in.png)
+![eqball_flat_join_out](pictures/eqball_flat_join_out.png)
+
+*A crossing before the start* (`5c6ec717f1`, `BRepAlgo_Loop`). The loop
+finds the vertices lying on an edge by projection, which on a periodic
+curve answers in the curve's first period; the parameter was raised into
+the edge's range and never lowered. A meridian from 0 to pi, stretched to
+run from -pi/2, lost the crossing just before its start, and the wall its
+end.
+
+![luneball_spheres_out](pictures/luneball_spheres_out.png)
+
+*A block without an edge* (`1147ed323c`, `BRepOffset_Tool::Inter3D`). Two
+faces of one sphere meet along the edge they share and nowhere else; the
+filler leaves that section's block without an edge, index -1, and it was
+read as a shape: the two lunes removed inward, a segmentation fault.
+Upstream's code. Not pictured: the stage's libraries crash on it.
+
+**The sweep** gained two solids from pole to pole, a third of a ball and
+half of one, 48 runs judged by `sweep/polehand.py`: 928 runs, the fork
+right on every one -- plain, frozen, under a location, and turned in space
+three ways (`SWEEP_PLACEMENT`). Upstream
+is right on 6 of the 48; of the other 42, 22 are refused, 4 invalid, and
+16 are valid solids of the wrong volume.
+
+**Found beside these, not fixed.** All wrong before this section too.
+
+- A ball wedge from pole to pole on more than half a turn, its sphere
+  removed (`makeSphere(5, .., -90, 90, 270)` and `240`): outward it is
+  refused, three lunes not being two; inward, where the face stays whole,
+  the result is invalid with the Arc join and with the Intersection join a
+  valid solid of 298.45 for 41.63. On 150 degrees the sphere removed
+  outward with the Arc join is refused. 9 of 72 runs on six such wedges
+  (90 to 270 degrees; every face, both ways, both joins); the other 63 are
+  right, and every one of them with a flat side removed.
+- The half ball that comes cut the other way round. In two lunes, a flat
+  half removed with the Intersection join: refused outward, and inward a
+  valid solid of 182.21 for 89.03. In two domes, both removed: refused
+  with the Arc join, invalid outward with the Intersection join. Joining
+  the faces of one sphere before cutting them would answer both.
+- The half ball in two domes, both removed, fails first where the flat
+  halves' offsets are rebuilt against the two domes' one sphere: the two
+  new edges lie on one circle, and asked where they cross, `Inter2d`
+  answers with an end of one of them. Given the old vertex's foot on the
+  circle instead, the flats come out right and the walls still come back
+  as the domes -- the crossing of the stretched equator with those edges
+  is never looked for. That is as far as it was taken.
 
 ## The captured models
 
@@ -917,14 +1148,17 @@ ten minutes on the dev box, most of it building libraries:
    RPATH, so `LD_LIBRARY_PATH` does not reach them) and once on the fork as
    built, keeping each result as a `.brep` and a `results.json`.
 3. `mkjobs.py` and `render.py` draw the panels in the FreeCAD GUI under
-   `xvfb-run`; `compose.py` lays them out (Pillow, from the FreeCAD conda
-   env).
+   `xvfb-run` -- the shape given with its removed faces in magenta, then
+   each result -- and `compose.py` lays them out (Pillow, from the FreeCAD
+   conda env).
 
 A case added to `cases.py` with its stage gets its picture on the next run.
 A case listed in `INPUT` is pictured for what the call leaves of its input:
 the panels show the input after the thickness, judged against its own volume.
 A case in `REFUSED` is right when the call throws; its panels show the input.
-The cases run unfrozen, as the suite does.
+The cases run unfrozen, as the suite does. The "after" column is the fork
+as installed, and the other two run with the installed `TKTopAlgo`: a fault
+that lies there (sec 27.110's seam tolerance) shows in no column.
 The renderer turns the transaction log off; the pictures need no history.
 (While drawing, the log's worker once crashed writing a shape the viewer
 was meshing: FreeCAD's docs/TransactionLog.md sec 27.97, fixed in sec 27.98.)
