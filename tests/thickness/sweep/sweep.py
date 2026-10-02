@@ -1,11 +1,13 @@
-# The thickness sweep: 22 solids, every face removed in turn, +1 and -1,
-# intersection off and on, the Arc and the Intersection join -- 880 runs.
+# The thickness sweep: 24 solids, every face removed in turn, +1 and -1,
+# intersection off and on, the Arc and the Intersection join -- 928 runs.
 # Run under FreeCADCmd (sweep.sh restarts it after a crash). One line a run:
 #   R <k> <tag> OK|BAD:<why>|EXC <what> [vol=.. solids=.. shells=..] [INPUT-CHANGED]
 # env: MODES="nj0 Ij2 ..." to restrict, START=<k>, THICK_FREEZE=1 to freeze
 # shape values (unfrozen by default, as run_tests.py), SWEEP_PLACE=placed to
 # give every solid a location (an object's placement) or =baked to turn and
 # move its geometry instead: the volumes are the same wherever a solid lies.
+# SWEEP_PLACEMENT="x y z ax ay az degrees" is where, (3 4 5) and 40 degrees
+# about (1 2 3) when not given.
 import os
 import FreeCAD
 import Part
@@ -55,10 +57,17 @@ SHAPES = {
     "dome120": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 120),
     "dome270": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 270),
     "lune90": lambda: Part.makeSphere(5, V(), V(0, 0, 1), -90, 90, 90),
+    # From pole to pole on a third and on half a turn: the half ball's sphere
+    # has a whole great circle for its outline (MakeThickSolidOfSplit).
+    "ball120": lambda: Part.makeSphere(5, V(), V(0, 0, 1), -90, 90, 120),
+    "halfball": lambda: Part.makeSphere(5, V(), V(0, 0, 1), -90, 90, 180),
 }
 MODES = os.environ.get("MODES", "").split()
 PLACE = os.environ.get("SWEEP_PLACE", "")
 PLACEMENT = FreeCAD.Placement(V(3, 4, 5), FreeCAD.Rotation(V(1, 2, 3), 40))
+if os.environ.get("SWEEP_PLACEMENT"):  # "x y z ax ay az degrees"
+    _p = [float(x) for x in os.environ["SWEEP_PLACEMENT"].split()]
+    PLACEMENT = FreeCAD.Placement(V(*_p[:3]), FreeCAD.Rotation(V(*_p[3:6]), _p[6]))
 
 
 def make(mk):

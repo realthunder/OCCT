@@ -1,8 +1,9 @@
 # polehand.py [thickness]  -- writes the table polehand.txt holds (thickness 1)
 #
 # Hand values for the sweep's pole solids: a ball of R cut by its equator
-# (z > 0, the domes) and by two planes through its axis that leave a wedge of
-# angle A in (x, y), from the +x half plane round to angle A. Numeric: a
+# (z > 0, the domes) or left whole from pole to pole, and by two planes
+# through its axis that leave a wedge of angle A in (x, y), from the +x half
+# plane round to angle A. Numeric: a
 # midpoint rule over (x, y), the extent in z worked exactly at each point.
 #
 # hand.py reads the table, so that check.py needs no numpy; this script is how
@@ -207,7 +208,9 @@ SHAPES = {"dome": (2 * math.pi, True, ("sphere", "bottom")),
           "quartdome": (math.pi / 2, True, ("sphere", "bottom", "side", "side")),
           "dome120": (2 * math.pi / 3, True, ("sphere", "bottom", "side", "side")),
           "dome270": (1.5 * math.pi, True, ("sphere", "bottom", "side", "side")),
-          "lune90": (math.pi / 2, False, ("sphere", "side", "side"))}
+          "lune90": (math.pi / 2, False, ("sphere", "side", "side")),
+          "ball120": (2 * math.pi / 3, False, ("sphere", "side", "side")),
+          "halfball": (math.pi, False, ("sphere", "side", "side"))}
 
 if __name__ == "__main__":
     t = float(sys.argv[1]) if len(sys.argv) > 1 else 1.0

@@ -104,6 +104,13 @@ def document_case(name, filename, volumes=None):
         report(name, False, False, traceback.format_exc().splitlines()[-1])
 
 
+def placed(shape):
+    """The shape under a location: an object's placement."""
+    moved = shape.copy()
+    moved.Placement = App.Placement(App.Vector(3, 4, 5), App.Rotation(App.Vector(1, 2, 3), 40))
+    return moved
+
+
 # ---------------------------------------------------------------------------
 # Programmatic cases: thickness of simple solids, removing one face at a time.
 # ---------------------------------------------------------------------------
@@ -675,19 +682,49 @@ thickness_case("dome270_sphere_in",           dome270,  1, -0.5, "pass", 47.3132
 thickness_case("dome270_sphere_join_in",      dome270,  1, -0.5, "pass", 47.5529, False, 2)
 thickness_case("dome270_sphere_out_thick",      dome270, 1, +1.0, "pass", 99.0413)
 thickness_case("dome270_sphere_join_out_thick", dome270, 1, +1.0, "pass", 100.7985, False, 2)
-# Still open: half a ball cut through both its poles. Its outline is a whole
+# Half a ball cut through both its poles. Its sphere's outline is a whole
 # great circle and no axis clears it; grown past that circle it holds its
-# poles inside, which takes a seam (README.md). Refused, not wrong: 113.0909
-# and 89.0272 for a flat half removed with the Intersection join, 39.1390
-# for the sphere removed outward, either join.
+# poles inside. It is cut in two first (MakeThickSolidOfSplit): along its
+# equator where it stays, along a meridian where it is removed. 113.0909 and
+# 89.0272 for a flat half removed with the Intersection join, the wall a
+# thickness past the axis; 39.1390 for the sphere removed, a slab of the
+# ball half a unit thick.
 halfball = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180)
-thickness_case("halfball_flat_join_out",   halfball, 2, +0.5, "xfail", 113.0909, False, 2)
-thickness_case("halfball_flat_join_in",    halfball, 2, -0.5, "xfail", 89.0272, False, 2)
-thickness_case("halfball_sphere_out",      halfball, 1, +0.5, "xfail", 39.1390)
-thickness_case("halfball_sphere_join_out", halfball, 1, +0.5, "xfail", 39.1390, False, 2)
+thickness_case("halfball_flat_join_out",   halfball, 2, +0.5, "pass", 113.0909, False, 2)
+thickness_case("halfball_flat_join_in",    halfball, 2, -0.5, "pass", 89.0272, False, 2)
+thickness_case("halfball_flat2_join_out",  halfball, 3, +0.5, "pass", 113.0909, False, 2)
+thickness_case("halfball_flat2_join_in",   halfball, 3, -0.5, "pass", 89.0272, False, 2)
+thickness_case("halfball_sphere_out",      halfball, 1, +0.5, "pass", 39.1390)
+thickness_case("halfball_sphere_join_out", halfball, 1, +0.5, "pass", 39.1390, False, 2)
 thickness_case("halfball_sphere_in",       halfball, 1, -0.5, "pass", 39.1390)
+thickness_case("halfball_sphere_join_in",  halfball, 1, -0.5, "pass", 39.1390, False, 2)
 thickness_case("halfball_flat_out",        halfball, 2, +0.5, "pass", 111.6001)
 thickness_case("halfball_flat_in",         halfball, 2, -0.5, "pass", 88.5482)
+# The same, placed.
+thickness_case("placed_halfball_flat_join_out", placed(halfball), 2, +0.5, "pass", 113.0909, False, 2)
+thickness_case("placed_halfball_sphere_out",    placed(halfball), 1, +0.5, "pass", 39.1390)
+
+# Half a ball that comes with its sphere in two faces already -- a fuse not
+# refined. In two lunes, both removed: the edge between them is stretched
+# past the poles for the wall, where a twin's pcurve, interpolated between
+# the edge's ends, was no curve (invalid), and inward the section of the two
+# lunes' offsets has a block without an edge (a segmentation fault). In two
+# domes, a flat half removed with the Intersection join: the equator between
+# them is stretched most of a turn, far past what its pcurve on a turned
+# sphere was prolonged to -- valid, 0.23 off under a tolerance to match, and
+# 90.2265 for 89.0272.
+luneball = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180).generalFuse(
+    [Part.Arc(App.Vector(0, 0, -5), App.Vector(0, 5, 0), App.Vector(0, 0, 5)).toShape()])[0].Solids[0]
+pieces_case("luneball_spheres_out",      luneball, [1, 2], +0.5, [39.1390])
+pieces_case("luneball_spheres_join_out", luneball, [1, 2], +0.5, [39.1390], False, 2)
+pieces_case("luneball_spheres_in",       luneball, [1, 2], -0.5, [39.1390])
+pieces_case("luneball_spheres_join_in",  luneball, [1, 2], -0.5, [39.1390], False, 2)
+eqball = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180).generalFuse(
+    [Part.ArcOfCircle(Part.Circle(App.Vector(), App.Vector(0, 0, 1), 5), 0, math.pi).toShape()])[0].Solids[0]
+thickness_case("eqball_flat_join_out", eqball, 3, +0.5, "pass", 113.0909, False, 2)
+thickness_case("eqball_flat_join_in",  eqball, 3, -0.5, "pass", 89.0272, False, 2)
+thickness_case("eqball_flat_out",      eqball, 3, +0.5, "pass", 111.6001)
+thickness_case("eqball_flat_in",       eqball, 3, -0.5, "pass", 88.5482)
 
 # A box fused of two and not refined: every face across the joint is in two
 # coplanar pieces. One piece of the top removed: its neighbour is tangent to
@@ -782,14 +819,6 @@ def refused_case(name, shape, face_indices, value, inter=False, join=0):
 for value, tag in ((+1.0, "out"), (-1.0, "in")):
     refused_case("sphere_face_refused_" + tag, Part.makeSphere(5), [1], value)
     refused_case("torus_face_refused_" + tag, Part.makeTorus(8, 2), [1], value)
-# Half a ball cut through both its poles: its sphere cannot be grown round
-# them (no axis clear of an outline that is a whole great circle), the wall
-# closing the tangent edge between its two flat halves is not cut where it
-# should be, and came out as half a disc -- a valid solid of 111.2647 where
-# the skin is 113.0909. A wall outside its band is refused.
-halfball = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180)
-refused_case("halfball_side_join_refused_out", halfball, [2], +0.5, False, 2)
-refused_case("halfball_side_join_refused_in",  halfball, [2], -0.5, False, 2)
 refused_case("sphere_face_join_refused_in", Part.makeSphere(5), [1], -1.0, False, 2)
 refused_case("box_all_faces_refused_in", Part.makeBox(10, 10, 6), [1, 2, 3, 4, 5, 6], -1.0)
 refused_case("box_all_faces_inter_refused_out", Part.makeBox(10, 10, 6), [1, 2, 3, 4, 5, 6], +1.0,
@@ -875,11 +904,43 @@ determinism_case("arc_inter_boxhole_same_every_run",
 # was made (BRepOffset_Offset); the normal of a whole circle taken from its
 # start, middle and end (CorrectConicalFaces), which is rounding, or nothing.
 # And the turned sphere of sec 27.108 was not made for a face that is placed.
-def placed(shape):
+# A shape turned in space is the same shape too. The corner arc of a removed
+# face tangent to its neighbour was taken from a section whose lines join
+# where the intersection cares to cut them, and for a filleted box turned by
+# 40 degrees its ends fell on two of them: no arc, no sphere at the corner,
+# and a valid solid of 459.398 for 405.903.
+def turned(shape):
+    """The shape with its geometry turned and moved, no location on it."""
     moved = shape.copy()
-    moved.Placement = App.Placement(App.Vector(3, 4, 5), App.Rotation(App.Vector(1, 2, 3), 40))
+    moved.transformShape(
+        App.Placement(App.Vector(3, 4, 5), App.Rotation(App.Vector(1, 2, 3), 40)).Matrix, True)
     return moved
 
+
+for _i in (3, 4, 8, 9):
+    thickness_case("turned_filletbox_fillet%d_out" % _i, turned(filletbox), _i, +1.0, "pass", 405.9034)
+thickness_case("turned_filletbox_fillet_in", turned(filletbox), 3, -1.0, "pass", 267.0193)
+thickness_case("placed_filletbox_fillet_out", placed(filletbox), 4, +1.0, "pass", 405.9034)
+
+# A circle of section is a whole turn, closed on a vertex of its own that the
+# intersection puts where it likes -- elsewhere once the shape is turned. Cut
+# by the edges that cross it, the piece that vertex lies in was lost
+# (TrimEdge, ExtentFace), and it was the piece needed as often as not: half
+# of a sphere's cap, a face removed inward, gave a valid solid of 11.598 for
+# 22.043 and of 8.126 for 19.232 turned, or was refused. And a cylinder cuts
+# the sphere round its end in two circles as far from their edge as each
+# other, of which the first found was taken: a dome on a cylinder, the
+# cylinder removed, 151.12 for 100.73 turned.
+halfcap = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 30, 90, 180)
+bullet = Part.makeCylinder(5, 4, App.Vector(0, 0, -4)).fuse(
+    Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 360)).removeSplitter()
+for _tag, _how in (("", lambda s: s), ("turned_", turned), ("placed_", placed)):
+    thickness_case(_tag + "halfcap_sphere_in",          _how(halfcap), 1, -0.5, "pass", 19.2316)
+    thickness_case(_tag + "halfcap_sphere_join_in",     _how(halfcap), 1, -0.5, "pass", 19.2316, False, 2)
+    thickness_case(_tag + "halfcap_bottom_join_in",     _how(halfcap), 2, -0.5, "pass", 22.0431, False, 2)
+    thickness_case(_tag + "halfcap_side_join_in",       _how(halfcap), 3, -0.5, "pass", 28.8642, False, 2)
+    thickness_case(_tag + "halfcap_other_side_join_in", _how(halfcap), 4, -0.5, "pass", 28.8642, False, 2)
+    pieces_case(_tag + "bullet_side_join_out", _how(bullet), [1], +0.5, [39.2699, 61.4616], False, 2)
 
 placed_cyl = placed(Part.makeCylinder(4, 6))
 pieces_case("placed_cyl_side_pieces_out", placed_cyl, [1], +0.5, [25.1327, 25.1327])
