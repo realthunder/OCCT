@@ -83,6 +83,8 @@
 #include <GeomLib.hxx>
 #include <GeomProjLib.hxx>
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 #include <Geom_SphericalSurface.hxx>
 #include <gp.hxx>
@@ -3495,15 +3497,16 @@ void BRepOffset_Tool::CheckBounds(const TopoDS_Face&        F,
 
 //=================================================================================================
 
-// A face of a sphere that reaches a pole, on less than a half turn, is put on
-// the same sphere with its axis turned: the middle of the face on the new
-// equator, opposite the new seam, the new poles a quarter turn away along
-// its middle meridian. Grown past the meridians that bound it, such a face
-// has to run round its pole -- half a dome hollowed outward, its flat
-// neighbours' offsets cutting the offset sphere behind the pole -- and in its
-// own parameters that is a whole turn of U with a seam up to the pole, where
-// U is only grown by a tenth of what is left of the turn. On the turned
-// sphere the same region is a plain patch, clear of both poles and the seam.
+// A face of a sphere that reaches a pole, on less than a whole turn, is put on
+// the same sphere with its axis turned: both new poles off the face and as
+// far from its outline as they can be, the new seam through the middle of
+// what the face leaves free of the turn. Grown past the meridians that bound
+// it, such a face has to run round its pole -- half a dome hollowed outward,
+// its flat neighbours' offsets cutting the offset sphere behind the pole --
+// and in its own parameters that is a whole turn of U with a seam up to the
+// pole, where U is only grown by a tenth of what is left of the turn. On the
+// turned sphere the same region is a plain patch, clear of both poles and
+// the seam.
 // The pole is an ordinary point there, and its degenerated edge takes a
 // pcurve that stays on that point: an edge of no extent in (u, v) as in
 // space, which the loops leave out of their wires (BRepAlgo_Loop::FindLoop).
@@ -3536,23 +3539,17 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF)
   }
   double aUF1, aUF2, aVF1, aVF2;
   CompactUVBounds(theF, aUF1, aUF2, aVF1, aVF2);
-  if (aUF2 - aUF1 > M_PI + Precision::PConfusion() || aUF2 - aUF1 < Precision::PConfusion())
+  if (aUF2 - aUF1 > 2. * M_PI - Precision::PConfusion() || aUF2 - aUF1 < Precision::PConfusion())
   {
     return false;
   }
   const gp_Sphere aSph = aSphS->Sphere();
-  const double    aUm = (aUF1 + aUF2) / 2., aVm = (aVF1 + aVF2) / 2.;
-  const gp_Pnt    aC = aSph.Location();
-  const gp_Dir    aMid(gp_Vec(aC, ElSLib::Value(aUm, aVm, aSph)));
+  const gp_Pnt    aC   = aSph.Location();
 
   BRepLib::BuildCurves3d(theF);
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEMap;
   TopExp::MapShapes(theF, TopAbs_EDGE, anEMap);
 
-  // The new axis: square to the middle of the face, and of those directions
-  // the one that keeps its two poles farthest from the face's outline. A
-  // face with no such direction -- half a ball cut through its poles, its
-  // outline a whole great circle -- stays as it is.
   std::vector<gp_Vec> anOutline;
   for (int i = 1; i <= anEMap.Extent(); ++i)
   {
@@ -3578,31 +3575,98 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF)
       }
     }
   }
-  const gp_Dir anE1(gp_Vec(aC, ElSLib::Value(aUm, aVm - M_PI / 2., aSph)));
-  const gp_Dir anE2 = aMid.Crossed(anE1);
-  double       aBest = 2.;
-  gp_Dir       anAxis = anE1;
-  for (int k = 0; k < 180; ++k)
+
+  // The new axis: of the directions that keep both poles a twelfth of a turn
+  // from the face's outline at the least, and off the face, the one that
+  // keeps them farthest. A face with no such direction -- half a ball cut
+  // through its poles, its outline a whole great circle -- stays as it is.
+  struct Candidate
   {
-    const double aT = k * M_PI / 180.;
-    const gp_Vec aA = gp_Vec(anE1) * std::cos(aT) + gp_Vec(anE2) * std::sin(aT);
-    double       aMax = 0.;
-    for (const gp_Vec& aD : anOutline)
+    double myDot;
+    gp_Vec myAxis;
+  };
+
+  std::vector<Candidate> aCandidates;
+  const gp_Ax3&          anOld  = aSph.Position();
+  const double           aLimit = std::cos(M_PI / 6.);
+  for (int k = 0; k <= 45; ++k)
+  {
+    const double aT  = k * M_PI / 90.;
+    const int    aNb = k == 0 ? 1 : 180;
+    for (int j = 0; j < aNb; ++j)
     {
-      aMax = std::max(aMax, std::abs(aA.Dot(aD)));
-    }
-    if (aMax < aBest - 1.e-9)
-    {
-      aBest  = aMax;
-      anAxis = gp_Dir(aA);
+      const double aPh = j * M_PI / 90.;
+      const gp_Vec aA =
+        gp_Vec(anOld.Direction()) * std::cos(aT)
+        + (gp_Vec(anOld.XDirection()) * std::cos(aPh) + gp_Vec(anOld.YDirection()) * std::sin(aPh))
+            * std::sin(aT);
+      double aMax = 0.;
+      for (const gp_Vec& aD : anOutline)
+      {
+        aMax = std::max(aMax, std::abs(aA.Dot(aD)));
+        if (aMax > aLimit)
+        {
+          break;
+        }
+      }
+      if (aMax <= aLimit)
+      {
+        aCandidates.push_back({aMax, aA});
+      }
     }
   }
-  // The poles a twelfth of a turn from the outline, at the least.
-  if (aBest > std::cos(M_PI / 6.))
+  std::stable_sort(aCandidates.begin(),
+                   aCandidates.end(),
+                   [](const Candidate& theA, const Candidate& theB) {
+                     return std::llround(theA.myDot * 1.e8) < std::llround(theB.myDot * 1.e8);
+                   });
+  BRepTopAdaptor_FClass2d aClass(theF, Precision::PConfusion());
+  auto                    isOnFace = [&](const gp_Vec& theD) {
+    double aU, aV;
+    ElSLib::Parameters(aSph, aC.Translated(theD * aSph.Radius()), aU, aV);
+    return aClass.Perform(gp_Pnt2d(aU, aV)) != TopAbs_OUT;
+  };
+  bool   isFound = false;
+  gp_Dir anAxis;
+  for (const Candidate& aCand : aCandidates)
+  {
+    if (!isOnFace(aCand.myAxis) && !isOnFace(-aCand.myAxis))
+    {
+      anAxis  = gp_Dir(aCand.myAxis);
+      isFound = true;
+      break;
+    }
+  }
+  if (!isFound)
   {
     return false;
   }
-  gp_Ax3 aPos(aC, anAxis, aMid.Reversed());
+  // The new seam: the middle of the widest stretch of the turn round the new
+  // axis that the outline leaves free.
+  const gp_Sphere     aTurned(gp_Ax3(aC, anAxis), aSph.Radius());
+  std::vector<double> aUs;
+  for (const gp_Vec& aD : anOutline)
+  {
+    double aU, aV;
+    ElSLib::Parameters(aTurned, aC.Translated(aD * aSph.Radius()), aU, aV);
+    aUs.push_back(aU);
+  }
+  std::sort(aUs.begin(), aUs.end());
+  double aGap = aUs.front() + 2. * M_PI - aUs.back(), aSeamU = aUs.back() + aGap / 2.;
+  for (size_t i = 1; i < aUs.size(); ++i)
+  {
+    if (aUs[i] - aUs[i - 1] > aGap + 1.e-9)
+    {
+      aGap   = aUs[i] - aUs[i - 1];
+      aSeamU = (aUs[i] + aUs[i - 1]) / 2.;
+    }
+  }
+  if (aGap < M_PI / 18.)
+  {
+    return false;
+  }
+  const gp_Dir aSeam(gp_Vec(aC, ElSLib::Value(aSeamU, 0., aTurned)));
+  gp_Ax3       aPos(aC, anAxis, aSeam);
   if (!aSph.Position().Direct())
   {
     aPos.YReverse();
