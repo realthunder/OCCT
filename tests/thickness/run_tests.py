@@ -116,7 +116,8 @@ def placed(shape):
 # ---------------------------------------------------------------------------
 
 def thickness_case(name, shape, face_index, value, expect, ref_volume=None, inter=False, join=0):
-    """makeThickness(mode=Skin, join=Arc unless given) removing 1-based face `face_index`.
+    """makeThickness(mode=Skin, join=Arc unless given) removing 1-based face `face_index`
+    (or the faces of a list of them).
 
     expect='pass':  result must be a valid solid, one closed shell, and match
                     ref_volume (captured from a verified-good run).
@@ -125,7 +126,8 @@ def thickness_case(name, shape, face_index, value, expect, ref_volume=None, inte
     """
     detail = ""
     try:
-        faces = [shape.Faces[face_index - 1]]
+        indices = face_index if isinstance(face_index, list) else [face_index]
+        faces = [shape.Faces[i - 1] for i in indices]
         before = signature(shape)
         r = shape.makeThickness(faces, value, 1e-7, inter, False, 0, join)
         problems = input_problems(shape, before)
@@ -921,6 +923,77 @@ for _i in (3, 4, 8, 9):
     thickness_case("turned_filletbox_fillet%d_out" % _i, turned(filletbox), _i, +1.0, "pass", 405.9034)
 thickness_case("turned_filletbox_fillet_in", turned(filletbox), 3, -1.0, "pass", 267.0193)
 thickness_case("placed_filletbox_fillet_out", placed(filletbox), 4, +1.0, "pass", 405.9034)
+
+# Known broken, each with the volume it should give (models/Thickness.md,
+# sec 27.110, "Found beside these").
+# - The half ball as a cut or a refine leaves it: one disc for its flat. The
+#   disc removed with the Intersection join is refused (and searched its
+#   loops without end until the search was given a number of steps); the
+#   sphere removed is refused outward with the Intersection join.
+# - A ball wedge from pole to pole on more than half a turn, its sphere
+#   removed: three lunes outward, refused; on 240 degrees inward with the
+#   Arc join a valid solid of 40.4447. On 150 degrees outward, Arc: refused.
+# - The half ball cut the other way round: in two lunes with a flat half
+#   removed, in two domes with both removed.
+onedisc = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180).removeSplitter()
+thickness_case("halfball1_disc_out",         onedisc, 2, +0.5, "pass", 86.6556)
+thickness_case("halfball1_disc_in",          onedisc, 2, -0.5, "pass", 70.9476)
+thickness_case("halfball1_sphere_join_in",   onedisc, 1, -0.5, "pass", 39.1390, False, 2)
+thickness_case("halfball1_disc_join_out",    onedisc, 2, +0.5, "xfail", 86.6556, False, 2)
+thickness_case("halfball1_disc_join_in",     onedisc, 2, -0.5, "xfail", 70.9476, False, 2)
+thickness_case("halfball1_sphere_out",       onedisc, 1, +0.5, "pass", 39.1390)
+thickness_case("halfball1_sphere_join_out",  onedisc, 1, +0.5, "xfail", 39.1390, False, 2)
+thickness_case("halfball1_sphere_in",        onedisc, 1, -0.5, "pass", 39.1390)
+ball270 = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 270)
+ball240 = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 240)
+ball150 = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 150)
+thickness_case("ball270_sphere_in",          ball270, 1, -0.5, "pass", 41.0978)
+thickness_case("ball270_sphere_join_in",     ball270, 1, -0.5, "pass", 41.6307, False, 2)
+thickness_case("ball270_sphere_out",         ball270, 1, +0.5, "xfail", 36.6474)
+thickness_case("ball270_sphere_join_out",    ball270, 1, +0.5, "xfail", 36.6474, False, 2)
+thickness_case("ball240_sphere_out",         ball240, 1, +0.5, "xfail", 37.6996)
+thickness_case("ball240_sphere_join_out",    ball240, 1, +0.5, "xfail", 37.6996, False, 2)
+thickness_case("ball240_sphere_in",          ball240, 1, -0.5, "xfail", 39.9613)
+thickness_case("ball150_sphere_out",         ball150, 1, +0.5, "xfail", 39.7919)
+_meridian = Part.Arc(App.Vector(0, 0, -5), App.Vector(0, 5, 0), App.Vector(0, 0, 5)).toShape()
+_equator = Part.ArcOfCircle(Part.Circle(App.Vector(), App.Vector(0, 0, 1), 5), 0, math.pi).toShape()
+_halfball = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180)
+_lunes = _halfball.generalFuse([_meridian])[0].Solids[0]
+_domes = _halfball.generalFuse([_equator])[0].Solids[0]
+thickness_case("luneball_flat_join_out",     _lunes, 3, +0.5, "xfail", 113.0909, False, 2)
+thickness_case("luneball_flat_join_in",      _lunes, 3, -0.5, "xfail", 89.0272, False, 2)
+thickness_case("eqball_spheres_join_in",     _domes, [1, 2], -0.5, "pass", 39.1390, False, 2)
+thickness_case("eqball_spheres_out",         _domes, [1, 2], +0.5, "xfail", 39.1390)
+thickness_case("eqball_spheres_in",          _domes, [1, 2], -0.5, "xfail", 39.1390)
+thickness_case("eqball_spheres_join_out",    _domes, [1, 2], +0.5, "xfail", 39.1390, False, 2)
+
+# A dome whose rim is in two arcs: the seam's band was only built on a rim
+# that is one closed edge, and the offset of the dome came out as a face of no
+# area -- an invalid solid of 240.68 for 86.6556 where upstream is right. The
+# face is walked in (u, v) with its seam instead. With the sphere removed the
+# flat's two arcs were both replaced by the one half of the section circle;
+# with the flat in two halves as well, the circle was cut by the line between
+# them at the one point it starts on.
+_dome_y = Part.makeSphere(5, App.Vector(), App.Vector(0, 1, 0), 0, 90, 360)
+_rim = [e for e in _dome_y.Edges if not e.Degenerated and abs(e.Length - 10 * math.pi) < 1e-6][0]
+_seam_end = _rim.Vertexes[0].Point
+dome2 = _dome_y.generalFuse([Part.Vertex(_seam_end * -1)])[0].Solids[0]
+dome2f = _dome_y.generalFuse([Part.makeLine(_seam_end, _seam_end * -1)])[0].Solids[0]
+thickness_case("dome2_flat_out",          dome2, 2, +0.5, "pass", 86.6556)
+thickness_case("dome2_flat_in",           dome2, 2, -0.5, "pass", 70.9476)
+thickness_case("dome2_flat_join_out",     dome2, 2, +0.5, "pass", 86.6556, False, 2)
+thickness_case("dome2_flat_join_in",      dome2, 2, -0.5, "pass", 70.9476, False, 2)
+thickness_case("dome2_sphere_out",        dome2, 1, +0.5, "pass", 39.1390)
+thickness_case("dome2_sphere_in",         dome2, 1, -0.5, "pass", 39.1390)
+thickness_case("dome2_sphere_join_out",   dome2, 1, +0.5, "pass", 39.1390, False, 2)
+thickness_case("dome2_sphere_join_in",    dome2, 1, -0.5, "pass", 39.1390, False, 2)
+thickness_case("dome2f_sphere_out",       dome2f, 1, +0.5, "pass", 39.1390)
+thickness_case("dome2f_sphere_in",        dome2f, 1, -0.5, "pass", 39.1390)
+thickness_case("dome2f_sphere_join_out",  dome2f, 1, +0.5, "pass", 39.1390, False, 2)
+thickness_case("dome2f_sphere_join_in",   dome2f, 1, -0.5, "pass", 39.1390, False, 2)
+# Known broken: one half of the flat removed, the Intersection join.
+thickness_case("dome2f_flat_join_out",    dome2f, 2, +0.5, "xfail", 113.0909, False, 2)
+thickness_case("dome2f_flat_join_in",     dome2f, 2, -0.5, "xfail", 89.0272, False, 2)
 
 # A circle of section is a whole turn, closed on a vertex of its own that the
 # intersection puts where it likes -- elsewhere once the shape is turned. Cut
