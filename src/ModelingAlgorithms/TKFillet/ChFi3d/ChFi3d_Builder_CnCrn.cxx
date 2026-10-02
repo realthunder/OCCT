@@ -3510,10 +3510,10 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   // by a good part of the radius; its approximation, allowed ten times that,
   // then strays further, and the corner keeps edges of as large a
   // tolerance, a face looping over itself, a volume nobody can integrate.
-  // A plate that misses its boundary by more than PlateG0Fallback is built
-  // again on the positions alone, and taken if it fits better: a crease
-  // along the stripes instead of a fold.
-  const double                PlateG0Fallback = 1.e-2;
+  // A plate that misses its boundary by more than PlateG0Fallback() is
+  // built again on the positions alone, and taken if it fits better: a
+  // crease along the stripes instead of a fold.
+  const double                PlateG0Fallback = ChFi3d_Builder::PlateG0Fallback();
   GeomPlate_BuildPlateSurface PSurfG0(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
   bool                        isG0 = false;
   if (PSurfG1.IsDone() && PSurfG1.G0Error() > PlateG0Fallback)

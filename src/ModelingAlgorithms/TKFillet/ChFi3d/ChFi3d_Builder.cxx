@@ -53,6 +53,8 @@
 #include <TopOpeBRepDS_Interference.hxx>
 #include <TopOpeBRepDS_PointIterator.hxx>
 
+#include <atomic>
+
 #ifdef OCCT_DEBUG
   #include <OSD_Chronometer.hxx>
 
@@ -74,6 +76,28 @@ extern void ChFi3d_InitChron(OSD_Chronometer& ch);
 extern void ChFi3d_ResultChron(OSD_Chronometer& ch, double& time);
 extern bool ChFi3d_GettraceCHRON();
 #endif
+
+//=================================================================================================
+
+namespace
+{
+std::atomic<double> THE_PLATE_G0_FALLBACK(1.e-3);
+}
+
+void ChFi3d_Builder::SetPlateG0Fallback(const double theDistance)
+{
+  THE_PLATE_G0_FALLBACK.store(theDistance, std::memory_order_relaxed);
+}
+
+double ChFi3d_Builder::PlateG0Fallback()
+{
+  return THE_PLATE_G0_FALLBACK.load(std::memory_order_relaxed);
+}
+
+double ChFi3d_SetPlateG0Fallback(const double theDistance)
+{
+  return THE_PLATE_G0_FALLBACK.exchange(theDistance, std::memory_order_relaxed);
+}
 
 //=================================================================================================
 

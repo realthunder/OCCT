@@ -179,6 +179,22 @@ public:
   //! Returns the Builder of topologic operations.
   Standard_EXPORT occ::handle<TopOpeBRepBuild_HBuilder> Builder() const;
 
+  //! Sets how far, at most, a corner's plate may miss its boundary while
+  //! held tangent to the stripes it closes. A corner of more than three
+  //! faces is filled by a GeomPlate patch held G1 to the stripes; where a
+  //! stripe's end meets a face at a sharp angle the patch folds to stay
+  //! tangent and misses its boundary, and the corner's edges carry the
+  //! miss, ten times over, as their tolerance. A patch missing it by more
+  //! than this is built again on positions alone (G0) and taken if it fits
+  //! better: a crease along the stripe instead of a fold. The default is
+  //! 1.e-3; Precision::Infinite() keeps every tangent patch, as upstream
+  //! OCCT does. The setting is global, read by every builder at the
+  //! corner, and safe to change from any thread.
+  Standard_EXPORT static void SetPlateG0Fallback(const double theDistance);
+
+  //! Returns the distance set by SetPlateG0Fallback().
+  Standard_EXPORT static double PlateG0Fallback();
+
   //! Method, implemented in the inheritants, calculates
   //! the elements of construction of the surface (fillet or
   //! chamfer).
@@ -844,5 +860,10 @@ private:
   TopoDS_Shape                   myShapeResult;
   TopoDS_Shape                   badShape;
 };
+
+//! SetPlateG0Fallback() for callers that look the toolkit's features up at
+//! run time (dlsym/GetProcAddress) rather than link against them; returns the
+//! distance set before.
+extern "C" Standard_EXPORT double ChFi3d_SetPlateG0Fallback(const double theDistance);
 
 #endif // _ChFi3d_Builder_HeaderFile
