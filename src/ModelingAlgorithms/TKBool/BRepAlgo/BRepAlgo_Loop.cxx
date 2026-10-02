@@ -2099,7 +2099,20 @@ void BRepAlgo_Loop::FindLoop()
           NE.Reverse();
         }
 
-        for (itl2.Initialize(MVE.FindFromKey(NNV)); itl2.More(); itl2.Next())
+        // The far end of the seam piece can be a pole: the band is then closed
+        // by the pole's degenerated edge, which is kept out of MVE -- a dome
+        // whose flat face is removed, its offset bounded by the seam, the
+        // pole and one circle. Without it no seam wire is built, and the
+        // circle is left as a wire on its own, bounding nothing.
+        NCollection_List<TopoDS_Shape> aFarEdges = MVE.FindFromKey(NNV);
+        for (itl2.Initialize(DegenEdges); itl2.More(); itl2.Next())
+        {
+          if (TopExp::FirstVertex(TopoDS::Edge(itl2.Value().Oriented(TopAbs_FORWARD))).IsSame(NNV))
+          {
+            aFarEdges.Append(itl2.Value());
+          }
+        }
+        for (itl2.Initialize(aFarEdges); itl2.More(); itl2.Next())
         {
           TopoDS_Edge NNE = TopoDS::Edge(itl2.Value());
           if (NNE.IsSame(CE))
@@ -2301,6 +2314,14 @@ void BRepAlgo_Loop::FindLoop()
       const TopoDS_Edge&  DE  = TopoDS::Edge(itl.Value());
       const TopoDS_Vertex aDV = TopExp::FirstVertex(TopoDS::Edge(DE.Oriented(TopAbs_FORWARD)));
       bool                added = false;
+      // Already in a seam band closed at the pole.
+      for (itl1.Initialize(myNewWires); itl1.More() && !added; itl1.Next())
+      {
+        for (TopoDS_Iterator aEIt(itl1.Value()); aEIt.More() && !added; aEIt.Next())
+        {
+          added = aEIt.Value().IsSame(DE);
+        }
+      }
       for (itl1.Initialize(myNewWires); itl1.More() && !added; itl1.Next())
       {
         TopoDS_Wire& W = TopoDS::Wire(itl1.ChangeValue());
