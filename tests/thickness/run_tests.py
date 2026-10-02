@@ -625,6 +625,66 @@ thickness_case("dome120_bottom_join_out", dome120, 2, +0.5, "pass", 53.3701, Fal
 thickness_case("dome120_side_join_out",   dome120, 3, +0.5, "pass", 57.4660, False, 2)
 thickness_case("dome120_side_join_in",    dome120, 3, -0.5, "pass", 41.2951, False, 2)
 
+# Sec 27.109. Three quarters of a dome: more than half a turn, and the edge
+# at its axis concave. The bottom removed outward came back the input,
+# 196.3495; a side removed was refused, or invalid with the Arc join inward
+# (the wall runs on past the pole to the other side's offset). Sharp: the
+# ball of 5.5 beside the kept planes a thickness out, less the dome; inward
+# the dome less the ball of 4.5 a thickness in from the kept faces. At a
+# thickness of 1 the side removed outward was a valid solid on the wrong
+# side of the kept one, 89.196.
+dome270 = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 270)
+thickness_case("dome270_bottom_join_out",       dome270, 2, +0.5, "pass", 87.3133, False, 2)
+thickness_case("dome270_bottom_inter_join_out", dome270, 2, +0.5, "pass", 87.3133, True, 2)
+thickness_case("dome270_side_join_out",         dome270, 3, +0.5, "pass", 113.7486, False, 2)
+thickness_case("dome270_other_side_join_out",   dome270, 4, +0.5, "pass", 113.7486, False, 2)
+thickness_case("dome270_side_join_in",          dome270, 3, -0.5, "pass", 83.7681, False, 2)
+thickness_case("dome270_other_side_join_in",    dome270, 4, -0.5, "pass", 83.7681, False, 2)
+thickness_case("dome270_side_in",               dome270, 3, -0.5, "pass", 83.7681)
+thickness_case("dome270_other_side_in",         dome270, 4, -0.5, "pass", 83.7681)
+thickness_case("dome270_side_join_out_thick",   dome270, 3, +1.0, "pass", 260.9367, False, 2)
+# The Arc join: three tubes meet at the pole of an eighth of a ball or a
+# third of a dome, the bottom removed outward, and the piece of sphere
+# between them was never built; a third of a dome, a side removed inward,
+# had the other side's offset extended into three quarters of a disc.
+thickness_case("eighth_ball_bottom_out", eighth,  2, +0.5, "pass", 45.5612)
+thickness_case("dome120_bottom_out",     dome120, 2, +0.5, "pass", 52.4334)
+thickness_case("dome120_side_in",        dome120, 3, -0.5, "pass", 41.2951)
+thickness_case("dome120_other_side_in",  dome120, 4, -0.5, "pass", 41.2951)
+# The sphere itself removed: the wall lies on the ball of 5, between the
+# outline and the kept planes' offsets, past the pole. Outward every shape
+# was refused or threw; inward two threw with the Arc join.
+thickness_case("eighth_ball_sphere_out",      eighth,   1, +0.5, "pass", 32.3576)
+thickness_case("eighth_ball_sphere_join_out", eighth,   1, +0.5, "pass", 33.2167, False, 2)
+thickness_case("eighth_ball_sphere_in",       eighth,   1, -0.5, "pass", 25.7418)
+thickness_case("dome120_sphere_out",          dome120,  1, +0.5, "pass", 35.2709)
+thickness_case("dome120_sphere_join_out",     dome120,  1, +0.5, "pass", 35.8993, False, 2)
+thickness_case("halfdome_sphere_out",         halfdome, 1, +0.5, "pass", 41.0976)
+thickness_case("halfdome_sphere_join_out",    halfdome, 1, +0.5, "pass", 41.6307, False, 2)
+thickness_case("halfdome_sphere_in",          halfdome, 1, -0.5, "pass", 36.6474)
+thickness_case("lune_sphere_out",             lune,     1, +0.5, "pass", 41.0976)
+thickness_case("lune_sphere_join_out",        lune,     1, +0.5, "pass", 41.6307, False, 2)
+thickness_case("lune_sphere_in",              lune,     1, -0.5, "pass", 36.6474)
+thickness_case("dome270_sphere_out",          dome270,  1, +0.5, "pass", 49.5532)
+thickness_case("dome270_sphere_join_out",     dome270,  1, +0.5, "pass", 50.0446, False, 2)
+thickness_case("dome270_sphere_in",           dome270,  1, -0.5, "pass", 47.3132)
+thickness_case("dome270_sphere_join_in",      dome270,  1, -0.5, "pass", 47.5529, False, 2)
+thickness_case("dome270_sphere_out_thick",      dome270, 1, +1.0, "pass", 99.0413)
+thickness_case("dome270_sphere_join_out_thick", dome270, 1, +1.0, "pass", 100.7985, False, 2)
+# Still open: half a ball cut through both its poles. Its outline is a whole
+# great circle and no axis clears it; grown past that circle it holds its
+# poles inside, which takes a seam (README.md). Refused, not wrong: 113.0909
+# and 89.0272 for a flat half removed with the Intersection join, 39.1390
+# for the sphere removed outward, either join.
+halfball = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180)
+thickness_case("halfball_flat_join_out",   halfball, 2, +0.5, "xfail", 113.0909, False, 2)
+thickness_case("halfball_flat_join_in",    halfball, 2, -0.5, "xfail", 89.0272, False, 2)
+thickness_case("halfball_sphere_out",      halfball, 1, +0.5, "xfail", 39.1390)
+thickness_case("halfball_sphere_join_out", halfball, 1, +0.5, "xfail", 39.1390, False, 2)
+thickness_case("halfball_sphere_in",       halfball, 1, -0.5, "pass", 39.1390)
+thickness_case("halfball_flat_out",        halfball, 2, +0.5, "pass", 111.6001)
+thickness_case("halfball_flat_in",         halfball, 2, -0.5, "pass", 88.5482)
+
 # A box fused of two and not refined: every face across the joint is in two
 # coplanar pieces. One piece of the top removed: its neighbour is tangent to
 # it, closed by a tube with the Arc join (417.3038 outward: the rounded skin

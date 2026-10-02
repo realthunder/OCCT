@@ -9,6 +9,7 @@
 #    the solid, inward at a concave one -- and is sharp where they cross;
 #  - faces left in pieces give one solid a piece, a pocket's piece floating
 #    in the cavity where nothing joins it to the walls.
+import os
 from math import pi
 
 EDGE = 1 - pi / 4          # a sharp unit corner less a quarter disc, per unit length
@@ -129,8 +130,19 @@ for a, b in ((7, 8), (7, 9), (7, 10)):
         HAND[("pocket", b, d)] = HAND[("pocket", a, d)]
 
 
+# The pole solids -- a ball cut by its equator and by planes through its axis
+# -- are worked numerically, by polehand.py, which says how; polehand.txt is
+# its table.
+POLES = {}
+for _line in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "polehand.txt")):
+    _tag, _vol = _line.split()
+    POLES[_tag] = float(_vol)
+
+
 def hand(tag):
     """The hand value of a run's tag (shape_fN_+1_n_j0), or None."""
     shape, face, direction, _, join = tag.split("_")
     v = HAND.get((shape, int(face[1:]), int(direction)))
-    return None if v is None else v.get(int(join[1:]))
+    if v is None:
+        return POLES.get("%s_%s_%s_%s" % (shape, face, direction, join))
+    return v.get(int(join[1:]))

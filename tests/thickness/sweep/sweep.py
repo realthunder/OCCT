@@ -1,5 +1,5 @@
-# The thickness sweep: 16 solids, every face removed in turn, +1 and -1,
-# intersection off and on, the Arc and the Intersection join -- 712 runs.
+# The thickness sweep: 22 solids, every face removed in turn, +1 and -1,
+# intersection off and on, the Arc and the Intersection join -- 880 runs.
 # Run under FreeCADCmd (sweep.sh restarts it after a crash). One line a run:
 #   R <k> <tag> OK|BAD:<why>|EXC <what> [vol=.. solids=.. shells=..] [INPUT-CHANGED]
 # env: MODES="nj0 Ij2 ..." to restrict, START=<k>, THICK_FREEZE=1 to freeze
@@ -45,6 +45,14 @@ SHAPES = {
     "fillet": filletbox,
     "tshape": lambda: Part.makeBox(12, 4, 4).fuse(
         Part.makeBox(4, 4, 10, V(4, 0, 0))).removeSplitter(),
+    # A ball of 5 cut by planes through its axis and by its equator: a face
+    # of a sphere that reaches a pole, with flat neighbours.
+    "dome": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 360),
+    "halfdome": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 180),
+    "quartdome": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 90),
+    "dome120": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 120),
+    "dome270": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 270),
+    "lune90": lambda: Part.makeSphere(5, V(), V(0, 0, 1), -90, 90, 90),
 }
 MODES = os.environ.get("MODES", "").split()
 start = int(os.environ.get("START", "0"))
