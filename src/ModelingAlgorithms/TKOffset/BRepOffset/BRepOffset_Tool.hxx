@@ -39,6 +39,8 @@ class TopoDS_Shape;
 class BRepAlgo_AsDes;
 class BRepAlgo_Image;
 class Geom_Curve;
+class Geom2d_Curve;
+class gp_Sphere;
 
 class BRepOffset_Tool
 {
@@ -132,6 +134,18 @@ public:
   //! sphere beside their own. <theF> is not changed. False where the face is
   //! no such face, or no axis keeps both poles clear of it.
   Standard_EXPORT static bool TurnedOffPole(const TopoDS_Face& theF, TopoDS_Face& theTwin);
+
+  //! The pcurve of the circle <theC> on <theSph>, with the circle's own
+  //! parameters, no farther from it than <theTol>. <theF> and <theL> are
+  //! moved out as far as the circle can be followed there: ten degrees off
+  //! the sphere's poles, five off its seam, most of what is left of its
+  //! turn. Null where <theC> is no circle or comes too near a pole.
+  Standard_EXPORT static occ::handle<Geom2d_Curve> PCurveOnSphere(
+    const occ::handle<Geom_Curve>& theC,
+    const gp_Sphere&               theSph,
+    double&                        theF,
+    double&                        theL,
+    const double                   theTol);
 
   //! Returns True if The Surface of <NF> has changed.
   //! if <ChangeGeom> is TRUE the surface can be

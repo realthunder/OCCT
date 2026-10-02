@@ -75,6 +75,7 @@
 #include <Geom_Surface.hxx>
 #include <Geom_SurfaceOfLinearExtrusion.hxx>
 #include <Geom_SurfaceOfRevolution.hxx>
+#include <Geom_Circle.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomAPI.hxx>
@@ -3620,6 +3621,69 @@ static occ::handle<Geom2d_Curve> InterpolatedOnSphere(const occ::handle<Geom_Cur
   return occ::handle<Geom2d_Curve>();
 }
 
+// How far a circle can be followed on theSph past its ends: theF and theL
+// are moved out, by steps of two degrees, while the circle stays ten degrees
+// off the sphere's poles and five off its seam, and to no more than most of
+// what is left of its turn. A removed face's wall lies past the face's
+// outline, and an edge two removed faces share is stretched for it: a pcurve
+// interpolated between the edge's ends alone is no curve beyond them.
+static bool ExtendOnSphere(const occ::handle<Geom_Curve>& theC,
+                           const gp_Sphere&               theSph,
+                           double&                        theF,
+                           double&                        theL)
+{
+  occ::handle<Geom_Curve> aC = theC;
+  if (aC->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
+  {
+    aC = occ::down_cast<Geom_TrimmedCurve>(aC)->BasisCurve();
+  }
+  if (!aC->IsKind(STANDARD_TYPE(Geom_Circle)))
+  {
+    return false;
+  }
+  const double aStep   = M_PI / 90.;
+  const double aMax    = (2. * M_PI - (theL - theF)) * 0.45;
+  auto         isClear = [&](const double theT) {
+    double aU, aV;
+    ElSLib::Parameters(theSph, aC->Value(theT), aU, aV);
+    return std::abs(aV) < M_PI / 2. - M_PI / 18. && aU > M_PI / 36. && aU < 2. * M_PI - M_PI / 36.;
+  };
+  double aDF = 0., aDL = 0.;
+  while (aDF + aStep <= aMax && isClear(theF - aDF - aStep))
+  {
+    aDF += aStep;
+  }
+  while (aDL + aStep <= aMax && isClear(theL + aDL + aStep))
+  {
+    aDL += aStep;
+  }
+  theF -= aDF;
+  theL += aDL;
+  return true;
+}
+
+//=================================================================================================
+
+occ::handle<Geom2d_Curve> BRepOffset_Tool::PCurveOnSphere(const occ::handle<Geom_Curve>& theC,
+                                                          const gp_Sphere&               theSph,
+                                                          double&                        theF,
+                                                          double&                        theL,
+                                                          const double                   theTol)
+{
+  double aF = theF, aL = theL;
+  if (!ExtendOnSphere(theC, theSph, aF, aL))
+  {
+    return occ::handle<Geom2d_Curve>();
+  }
+  occ::handle<Geom2d_Curve> aC2d = InterpolatedOnSphere(theC, aF, aL, theSph, theTol);
+  if (!aC2d.IsNull())
+  {
+    theF = aF;
+    theL = aL;
+  }
+  return aC2d;
+}
+
 // A face of a sphere that reaches a pole, on less than a whole turn, is put on
 // the same sphere with its axis turned: both new poles off the face and as
 // far from its outline as they can be, the new seam through the middle of
@@ -3906,9 +3970,16 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF, TopoDS_Face* theTwin = nu
     // turned sphere has to lie within it, which the projection does not
     // promise: the pcurve is interpolated, through as many points as that
     // takes.
-    double                    aTol = BRep_Tool::Tolerance(aE);
+    // The twin's reaches past the edge's ends as far as the sphere lets it
+    // (ExtendOnSphere); the edge keeps its range.
+    double aTol = BRep_Tool::Tolerance(aE);
+    double aFx = aF, aLx = aL;
+    if (theTwin)
+    {
+      ExtendOnSphere(aC3d, aNewS->Sphere(), aFx, aLx);
+    }
     occ::handle<Geom2d_Curve> aC2d =
-      theTwin ? InterpolatedOnSphere(aC3d, aF, aL, aNewS->Sphere(), 0.1 * aTol)
+      theTwin ? InterpolatedOnSphere(aC3d, aFx, aLx, aNewS->Sphere(), 0.1 * aTol)
               : GeomProjLib::Curve2d(aC3d, aF, aL, aNewS, aTol);
     if (aC2d.IsNull())
     {
