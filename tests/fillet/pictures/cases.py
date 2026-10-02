@@ -14,6 +14,7 @@ MODELS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models"
 STAGES = {
     "s523": ("f723999a15", "16df68d224"),
     "s962": ("d8ba4ad7eb", "cf96757c36"),
+    "s962b": ("1482f7d4e2", "b38f0d910c"),
 }
 # Upstream: the toolkit's files that differ from the fork, at the fork's base.
 UPSTREAM = "91be8c4c71"
@@ -40,11 +41,22 @@ def _fin():
     return Part.makeBox(10, 10, 5).fuse(Part.makeBox(10, 3, 9, V(0, 0, 5)))
 
 
+def _arm_on_block():
+    # run_tests.py's arm fused to a block, the seam of their bottoms from y=27.2 to 10.2
+    V = App.Vector
+    pts = [V(17.356, -9.425, -9.75), V(38.5, 10.2, -9.75), V(38.5, 27.2, -9.75),
+           V(10.898, 16.471, -9.75)]
+    arm = Part.Face(Part.makePolygon(list(reversed(pts)) + [pts[-1]])).extrude(V(0, 0, 6))
+    bp = [V(38.5, 27.2, -9.75), V(38.5, 10.2, -9.75), V(50, 10.2, -9.75), V(50, 27.2, -9.75)]
+    return Part.Face(Part.makePolygon(bp + [bp[0]])).extrude(V(0, 0, 6)).fuse(arm)
+
+
 SHAPES = {
     "boxcyl": _brep("issue523_box_cylinder.brep"),
     "slotwall": _slot_wall,
     "p962": _brep("issue962_pocket002.brep"),
     "fin": _fin,
+    "armfoot": _arm_on_block,
 }
 
 
@@ -75,11 +87,15 @@ UVFACE = {
     "p962": _plane_at("z", 14, {"y": 13.0}, {"y": 17.1}),
     # the fin's outer face, which the fillet's line runs on
     "fin": _plane_at("x", 10, {"z": 5.0 + 1e-6}),
+    # the arm's bottom, which holds the seam at x=38.5
+    "armfoot": _plane_at("z", -9.75, None, {"x": 38.5}),
 }
 # case -> a third-row face other than its shape's
 UVFACE_CASE = {
     # the wall y=10.2 beside e50, its piece from x=38.5 on (the hexagon's)
     "issue962_e50_r0.8": _plane_at("y", 10.2, {"x": 40.0}, {"x": 50.0}),
+    # the arm's bottom, which holds the seam at x=38.5
+    "issue962_fillet_r0.8": _plane_at("z", -9.75, None, {"x": 38.5}),
 }
 NAMES = {
     "boxcyl": "10 box with a 3/4 cylinder r2 at a corner (#523, Part Connect)",
@@ -87,6 +103,7 @@ NAMES = {
                 "from the outer face",
     "p962": "#962's Pocket002, the Fillet's input (a PartDesign body without Refine)",
     "fin": "10x10x5 block with a 10x3x9 fin padded flush with its side x=10",
+    "armfoot": "an arm fused to an 11.5x17x6 block, their bottoms two faces split along x=38.5",
 }
 # shape -> the whole shape's view: (center, height)
 VIEW = {
@@ -94,6 +111,7 @@ VIEW = {
     "slotwall": ((5, 5, 7), 20.0),
     "p962": ((16, 4, 11), 62.0),
     "fin": ((5, 5, 7), 20.0),
+    "armfoot": ((30, 9, -6.75), 42.0),
 }
 # shape -> (what the third row's face is, whether to draw u gridlines at pi/2)
 UVLABEL = {
@@ -101,8 +119,16 @@ UVLABEL = {
     "slotwall": ("the slot's floor", False),
     "p962": ("the face at the fillet's end", False),
     "fin": ("the fin's outer face", False),
+    "armfoot": ("the arm's bottom", False),
 }
-# name -> (stage, shape, the edge by its ends, radius, expected volume,
+_FOOT = [((38.5, 27.2, -3.75), (38.5, 27.2, -9.75)), ((38.5, 10.2, -3.75), (38.5, 10.2, -9.75))]
+_FILLET962 = [((50, 10.2, -3.75), (50, 10.2, 22)), ((50, 13.7, 22), (50, 13.7, 14)),
+              ((50, 17.1, 14), (50, 17.1, 22)), ((50, 20.3, 22), (50, 20.3, 14)),
+              ((50, 23.7, 14), (50, 23.7, 22)), ((50, 27.2, -3.75), (50, 27.2, 22)),
+              ((38.5, 27.2, -3.75), (38.5, 27.2, 14)), ((38.5, 10.2, -3.75), (38.5, 10.2, 14))] + _FOOT + [
+              ((10.898402, 16.470802, -3.75), (10.898402, 16.470802, -9.75)),
+              ((17.356038, -9.42499, -3.75), (17.356038, -9.42499, -9.75))]
+# name -> (stage, shape, the edge by its ends -- or a list of them --, radius, expected volume,
 #          the point to zoom on, the direction the camera looks from)
 CASES = {
     "seam_end_top_r1": ("s523", "boxcyl", ((2, 0, 10), (10, 0, 10)), 1.0, 1092.5263,
@@ -121,6 +147,15 @@ CASES = {
                           11581.7861, (38.5, 10.2, 14), (-1, -1, 0.6)),
     "fin_on_block_r0.8": ("s962", "fin", ((10, 3, 5), (10, 3, 14)), 0.8, 768.7639,
                           (10, 3, 5), (1, 0.9, 0.8)),
+    "arm_on_block_foot_r0.8": ("s962b", "armfoot", _FOOT, 0.8, 4603.6145,
+                               (38.5, 10.2, -9.75), (-0.3, -1, -0.8)),
+    "issue962_fillet_r0.8": ("s962b", "p962", _FILLET962, 0.8, 11552.7830,
+                             (38.5, 10.2, -9.75), (-0.3, -1, -0.8)),
+}
+# multi-edge case -> what its edges are, for the picture's heading
+EDGES = {
+    "arm_on_block_foot_r0.8": "the two at the foot, x=38.5, y=27.2 and y=10.2",
+    "issue962_fillet_r0.8": "the Fillet's twelve; zoomed on edge 49's foot",
 }
 
 

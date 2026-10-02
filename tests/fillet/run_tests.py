@@ -233,13 +233,43 @@ for name, a, b in (("e101", (50, 13.7, 22), (50, 13.7, 14)),
 e50 = edge_between(p2, (38.5, 10.2, -3.75), (38.5, 10.2, 14))
 fillet_case("issue962_e50_r0.3", p2, e50, 0.3, "pass", 11583.8075)
 fillet_case("issue962_e50_r0.8", p2, e50, 0.8, "pass", 11581.7861)
-# Each fine alone, together the two edges at the foot of the block (x=38.5,
-# z -9.75..-3.75) give an invalid solid 7225 larger: both corners rewrite the
-# seam between the bottom's two coplanar faces, one extending it and one
-# trimming it, and both versions stay.
+# Edges 36 and 49, the foot of the block where the arm meets it (x=38.5,
+# z -9.75..-3.75): each fine alone, together they gave an invalid solid 7225
+# too large. The bottom is two coplanar faces, the arm's and the block's,
+# split along x=38.5; one corner cut that seam, the other met its line past
+# the seam's end, and both versions of the seam stayed.
 e36 = edge_between(p2, (38.5, 27.2, -3.75), (38.5, 27.2, -9.75))
 e49 = edge_between(p2, (38.5, 10.2, -3.75), (38.5, 10.2, -9.75))
-fillet_case("issue962_e36_e49_r0.8", p2, [e36, e49], 0.8, "xfail")
+fillet_case("issue962_e36_e49_r0.8", p2, [e36, e49], 0.8, "pass", 11584.2053)
+# and the Fillet itself, all twelve edges
+twelve = [edge_between(p2, a, b) for a, b in (
+    ((50, 10.2, -3.75), (50, 10.2, 22)), ((50, 13.7, 22), (50, 13.7, 14)),
+    ((50, 17.1, 14), (50, 17.1, 22)), ((50, 20.3, 22), (50, 20.3, 14)),
+    ((50, 23.7, 14), (50, 23.7, 22)), ((50, 27.2, -3.75), (50, 27.2, 22)),
+    ((38.5, 27.2, -3.75), (38.5, 27.2, 14)), ((38.5, 27.2, -3.75), (38.5, 27.2, -9.75)),
+    ((38.5, 10.2, -3.75), (38.5, 10.2, 14)), ((38.5, 10.2, -3.75), (38.5, 10.2, -9.75)),
+    ((10.898402, 16.470802, -3.75), (10.898402, 16.470802, -9.75)),
+    ((17.356038, -9.42499, -3.75), (17.356038, -9.42499, -9.75)))]
+fillet_case("issue962_fillet_r0.8", p2, twelve, 0.8, "pass", 11552.7830)
+
+
+# The same foot made small: an arm (a prism of a quadrilateral) fused to a
+# block, the seam between their bottoms running from y=27.2 to y=10.2 -- the
+# direction that put the second corner's point past the seam's end.
+def arm_on_block():
+    pts = [V(17.356, -9.425, -9.75), V(38.5, 10.2, -9.75), V(38.5, 27.2, -9.75),
+           V(10.898, 16.471, -9.75)]
+    arm = Part.Face(Part.makePolygon(list(reversed(pts)) + [pts[-1]])).extrude(V(0, 0, 6))
+    bp = [V(38.5, 27.2, -9.75), V(38.5, 10.2, -9.75), V(50, 10.2, -9.75), V(50, 27.2, -9.75)]
+    return Part.Face(Part.makePolygon(bp + [bp[0]])).extrude(V(0, 0, 6)).fuse(arm)
+
+
+ab = arm_on_block()
+foot = [edge_between(ab, (38.5, 27.2, -3.75), (38.5, 27.2, -9.75)),
+        edge_between(ab, (38.5, 10.2, -3.75), (38.5, 10.2, -9.75))]
+for r in (0.5, 0.8, 1.5):
+    alone = sum(ab.Volume - ab.makeFillet(r, [ab.Edges[i - 1]]).Volume for i in foot)
+    fillet_case("arm_on_block_foot_r%g" % r, ab, foot, r, "pass", ab.Volume - alone)
 
 # A fin padded flush with the block's side: the outer face is two faces, the
 # fin's and the block's, split at the floor's height, and the fillet's line on

@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cases import CASES, NAMES, STAGES, UVLABEL, VIEW
+from cases import CASES, EDGES, NAMES, STAGES, UVLABEL, VIEW
 
 P = os.environ["FILLET_WORK"]
 R = {k: json.load(open(P + "/r/%s/results.json" % k)) for k in os.listdir(P + "/r")
@@ -78,8 +78,11 @@ for name in sys.argv[2:] or list(CASES):
     img = Image.new("RGB", (3 * W, top + lab + 2 * H + UVH), "white")
     d = ImageDraw.Draw(img)
     d.text((10, 8), name, font=FT, fill=(0, 0, 0))
-    desc = "%s; fillet r%g on the edge %s-%s; expected %.4f  (fix: %s)" % (
-        NAMES[sk], radius, ends[0], ends[1], ref, fix)
+    if isinstance(ends, list):
+        on = "%d edges (%s)" % (len(ends), EDGES.get(name, "see cases.py"))
+    else:
+        on = "the edge %s-%s" % (ends[0], ends[1])
+    desc = "%s; fillet r%g on %s; expected %.4f  (fix: %s)" % (NAMES[sk], radius, on, ref, fix)
     words, line, lines = desc.split(" "), "", []
     for wd in words:
         if d.textlength(line + " " + wd, font=F) > 3 * W - 20 and line:

@@ -52,7 +52,9 @@ for name, (st, sk, ends, radius, ref, focus, look) in CASES.items():
     before = (s.isValid(), round(s.Volume, 6))
     d = {"input_volume": s.Volume, "ref": ref}
     try:
-        r = s.makeFillet(radius, [edge_between(s, *ends)])
+        # one edge by its two ends, or a list of such pairs
+        pairs = ends if isinstance(ends, list) else [ends]
+        r = s.makeFillet(radius, [edge_between(s, *e) for e in pairs])
         p = []
         if (s.isValid(), round(s.Volume, 6)) != before:
             p.append("input changed")

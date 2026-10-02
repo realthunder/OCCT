@@ -128,10 +128,26 @@ only the faces were not.
 
 ![fin_on_block_r0.8](pictures/fin_on_block_r0.8.png)
 
-Still open: #962's Fillet with all twelve edges -- two edges at the block's
-foot, each fine alone, together rewrite one coplanar seam twice
-(`issue962_e36_e49_r0.8`, XFAIL) -- and the fin with its wall split as well
-(`fin_on_block_wall_r0.8`, XFAIL).
+### A seam two corners cut at its two ends (`b38f0d910c`, realthunder/FreeCAD#962)
+
+With those fixed, #962's Fillet was still invalid with all twelve edges, from
+two of them: the edges at the foot of the block where the arm meets it, each
+fine alone. The bottom is two faces, the arm's and the block's, split along
+x=38.5. The convex fillet on one edge cuts that seam short; the concave one
+on the other meets the seam's line just past its end, and the corner gave
+the seam that point anyway, outside the edge -- alone the face rebuild turns
+that into a longer edge, but with the other corner's cut on the same edge it
+built both versions, the cut one and the longer one. In the pictures the
+bottom faces are red and the arm's bottom has an extra stroke along the seam
+with two loose ends. Now the piece of the seam's line past its end is a
+curve of its own, and the seam is left to the other corner. It happens with
+the seam running one way only, as here.
+
+![arm_on_block_foot_r0.8](pictures/arm_on_block_foot_r0.8.png)
+![issue962_fillet_r0.8](pictures/issue962_fillet_r0.8.png)
+
+Still open: the fin with its wall split as well (`fin_on_block_wall_r0.8`,
+XFAIL).
 
 ## Making the pictures
 

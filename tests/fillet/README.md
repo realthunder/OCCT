@@ -130,20 +130,51 @@ results go from invalid to valid (#962's Pocket002 and Pad004 among them),
 the other 3590 are the same as before. FreeCAD's `TestPartApp` (139) and
 `TestPartDesignApp` (77) pass.
 
-#962's Fillet is still invalid with all twelve edges: two of them, 36 and
-49, the foot of the block where it meets the arm (x=38.5, z -9.75..-3.75),
-are each valid alone, and the Fillet without either one is valid, but the
-two together come out invalid, 7225 too large (`issue962_e36_e49_r0.8`). The block's bottom and the arm's
-are coplanar faces split along x=38.5; one corner extends that seam to its
-fillet and the other trims it, and the result holds both versions. Both
-corners are `PerformIntersectionAtEnd`'s. Not reproduced on a block and an
-arm alone.
+## A seam cut at both ends by two corners (realthunder/FreeCAD#962, 2026-10-02)
+
+With the five edges above fixed, #962's Fillet was still invalid with all
+twelve: edges 36 and 49, the foot of the block where the arm meets it
+(x=38.5, z -9.75..-3.75), were each valid alone, and the Fillet without
+either one was valid, but the two together came out invalid, 7225 too large.
+The bottom is two coplanar faces, the arm's and the block's, split along
+x=38.5 from y=27.2 to y=10.2. `PerformIntersectionAtEnd` builds both corners
+across that seam: e36's convex fillet cuts it at y=27.186, e49's concave one
+meets its line at y=10.136 -- past the seam's end. Each corner gave the seam
+a point interference at its parameter, the second one outside the edge's
+range; alone, the face rebuild turns that into a lengthened edge, but with
+the other corner's cut on the same edge it built both -- the cut edge
+(27.186..10.2) and the lengthened one (10.136..27.2) -- in both faces. It
+turns on the seam's direction: with the seam running the other way the
+point falls before the edge's start, and that composes.
+
+Fix `b38f0d910c`: across a seam of tangent faces, a point past the seam's end at
+the corner's vertex is not given to the seam; the piece of the seam's line
+from the vertex to the point becomes a curve of its own on both faces (the
+way the corner extends a face's edge when it has to extend the face), and
+the seam is left whole for the other corner. Only tangent seams: on a sharp
+edge (e49's top, where the arm's top meets the block's side) the curve did
+not close the faces, and the lengthening works there.
+
+| Case | What it covers |
+|------|----------------|
+| `issue962_e36_e49_r0.8` | the pair: the sum of the two alone |
+| `issue962_fillet_r0.8` | the Fillet, all twelve edges |
+| `arm_on_block_foot_r*` | an arm fused to a block, the seam between their bottoms from y=27.2 to 10.2: the pair at radius 0.5, 0.8 and 1.5 gives what the two give alone |
+
+Checked against the fix: the every-edge sweep (22 shapes, plus this slab)
+is unchanged, 3762 results -- one edge at a time never met this; FreeCAD's `TestPartApp` (139) and `TestPartDesignApp` (77)
+pass. The fork before the fix fails the five new cases.
+
+An aside found on the way: edge 56 alone reports a volume 5.04 smaller than
+its input where its mirror image, edge 50, reports 2.35 -- the faces match
+change for change, and a mesh of the result gives 2.2. The corner's blend is
+a B-spline far larger than its trimmed piece, and the volume integration
+over it is off; the shape is right.
 
 ## Known broken (XFAIL)
 
 | Case | Symptom |
 |------|---------|
-| `issue962_e36_e49_r0.8` | invalid, 7225 too large: two corners rewrite one coplanar seam (see #962 above) |
 | `fin_on_block_wall_r0.8` | `StdFail_NotDone` (a walking failure): the fin flush with the block, its wall split as well, the fillet wider than the wall's piece |
 | `seam_end_bottom_r2` | invalid, where its mirror image across z=5 (`seam_end_top_r2`) is valid: at radius 2 the fillet's end reaches the far end of the cylinder's face too (u = pi/2, the vertex at (0, 2)) |
 | `mirror_top_r2` | `StdFail_NotDone`, the same reach on the side without the seam |
