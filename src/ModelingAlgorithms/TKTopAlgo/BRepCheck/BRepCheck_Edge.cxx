@@ -654,7 +654,11 @@ double BRepCheck_Edge::Tolerance()
       if (cr->IsCurveOnClosedSurface())
       {
         occ::handle<Geom_Surface> Sref = cr->Surface();
-        Sref = occ::down_cast<Geom_Surface>(Sref->Transformed(cr->Location().Transformation()));
+        // Under the edge's own location, as the first pcurve above: left out,
+        // a seam of a shape that is placed came out as far from its curve as
+        // the shape is from where it was made.
+        const TopLoc_Location Loc = myShape.Location() * cr->Location();
+        Sref = occ::down_cast<Geom_Surface>(Sref->Transformed(Loc.Transformation()));
         const occ::handle<Geom2d_Curve>& PCref   = cr->PCurve2();
         occ::handle<GeomAdaptor_Surface> GAHSref = new GeomAdaptor_Surface(Sref);
         occ::handle<Geom2dAdaptor_Curve> GHPCref = new Geom2dAdaptor_Curve(PCref, First, Last);
