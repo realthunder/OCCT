@@ -306,6 +306,12 @@ static bool IntersUpdateOnSame(occ::handle<GeomAdaptor_Surface>& HGs,
   // add more or less restrictive criterions to
   // decide if the intersection is done with the face at
   // extended end or if the end is sharp.
+  // A fillet whose line on <Fop> collapsed to a point (its radius that of
+  // the face's curvature) has no curve there to intersect.
+  if (c3dFI.IsNull())
+  {
+    return false;
+  }
   double                         uf = FIop.FirstParameter();
   double                         ul = FIop.LastParameter();
   occ::handle<GeomAdaptor_Curve> Hc3df;
@@ -4979,7 +4985,11 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     // add here more or less restrictive criteria to
     // decide if the intersection with face is done at the
     // extended end or if there will be a cap on sharp end.
-    c3df                              = DStr.Curve(FiopArc.LineIndex()).Curve();
+    c3df = DStr.Curve(FiopArc.LineIndex()).Curve();
+    if (c3df.IsNull())
+    {
+      throw Standard_ConstructionError("IntersectMoreCorner : no fillet line on the face");
+    }
     double                         uf = FiopArc.FirstParameter();
     double                         ul = FiopArc.LastParameter();
     occ::handle<GeomAdaptor_Curve> Hc3df;
