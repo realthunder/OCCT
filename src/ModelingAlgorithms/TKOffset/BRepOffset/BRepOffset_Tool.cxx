@@ -4639,6 +4639,85 @@ void BRepOffset_Tool::BuildNeighbour(
 
 //=================================================================================================
 
+// The vertex between two new edges that lie on one curve -- the sections of
+// an offset face with two removed faces of one surface, the domes of a
+// sphere cut along its equator: where the vertex they had lies nearest that
+// curve. Two edges on one circle do not cross; asked for their crossing,
+// Inter2d answers with an end of one of them, wherever the section happened
+// to end. False where the edges are on two curves.
+static bool VertexOnOneCurve(const TopoDS_Edge&   theE1,
+                             const TopoDS_Edge&   theE2,
+                             const TopoDS_Vertex& theOld,
+                             const double         theTol,
+                             TopoDS_Vertex&       theV)
+{
+  BRepAdaptor_Curve aC1(theE1), aC2(theE2);
+  if (aC1.GetType() != aC2.GetType())
+  {
+    return false;
+  }
+  const double aTol = std::max(theTol, Precision::Confusion());
+  const gp_Pnt aP   = BRep_Tool::Pnt(theOld);
+  double       aU1 = 0., aU2 = 0.;
+  gp_Pnt       aFoot;
+  if (aC1.GetType() == GeomAbs_Circle)
+  {
+    const gp_Circ a1 = aC1.Circle(), a2 = aC2.Circle();
+    if (a1.Location().Distance(a2.Location()) > aTol || std::abs(a1.Radius() - a2.Radius()) > aTol
+        || !a1.Axis().Direction().IsParallel(a2.Axis().Direction(), Precision::Angular()))
+    {
+      return false;
+    }
+    aU1   = ElCLib::Parameter(a1, aP);
+    aU2   = ElCLib::Parameter(a2, aP);
+    aFoot = ElCLib::Value(aU1, a1);
+  }
+  else if (aC1.GetType() == GeomAbs_Line)
+  {
+    const gp_Lin a1 = aC1.Line(), a2 = aC2.Line();
+    if (!a1.Direction().IsParallel(a2.Direction(), Precision::Angular())
+        || a1.Distance(a2.Location()) > aTol)
+    {
+      return false;
+    }
+    aU1   = ElCLib::Parameter(a1, aP);
+    aU2   = ElCLib::Parameter(a2, aP);
+    aFoot = ElCLib::Value(aU1, a1);
+  }
+  else
+  {
+    return false;
+  }
+  // Each parameter in its edge's own range.
+  auto anInRange = [](const BRepAdaptor_Curve& theC, double& theU) {
+    const double aF = theC.FirstParameter(), aL = theC.LastParameter();
+    if (theC.IsPeriodic())
+    {
+      while (theU < aF - Precision::PConfusion())
+      {
+        theU += theC.Period();
+      }
+      while (theU > aL + Precision::PConfusion() && theU - theC.Period() >= aF - Precision::PConfusion())
+      {
+        theU -= theC.Period();
+      }
+    }
+    return theU >= aF - Precision::PConfusion() && theU <= aL + Precision::PConfusion();
+  };
+  if (!anInRange(aC1, aU1) || !anInRange(aC2, aU2))
+  {
+    return false;
+  }
+  BRep_Builder aB;
+  theV = BRepLib_MakeVertex(aFoot);
+  theV.Orientation(TopAbs_INTERNAL);
+  aB.UpdateVertex(theV, aU1, TopoDS::Edge(theE1.Oriented(TopAbs_FORWARD)), theTol);
+  aB.UpdateVertex(theV, aU2, TopoDS::Edge(theE2.Oriented(TopAbs_FORWARD)), theTol);
+  return true;
+}
+
+//=================================================================================================
+
 void BRepOffset_Tool::ExtentFace(
   const TopoDS_Face&                                                        F,
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ConstShapes,
@@ -4863,19 +4942,30 @@ void BRepOffset_Tool::ExtentFace(
             //---------------
             if (!Build.IsBound(V1))
             {
-              Inter2d(EF,
-                      TopoDS::Edge(Build(E)),
-                      TopoDS::Edge(Build(NEOnV1)),
-                      LV,
-                      /*TolConf*/ Precision::Confusion());
-
-              if (!LV.IsEmpty())
+              if (VertexOnOneCurve(TopoDS::Edge(Build(E)),
+                                   TopoDS::Edge(Build(NEOnV1)),
+                                   V1,
+                                   Precision::Confusion(),
+                                   V))
               {
-                V = aNearestTo(LV, V1);
+                LV.Clear();
               }
               else
               {
-                return;
+                Inter2d(EF,
+                        TopoDS::Edge(Build(E)),
+                        TopoDS::Edge(Build(NEOnV1)),
+                        LV,
+                        /*TolConf*/ Precision::Confusion());
+
+                if (!LV.IsEmpty())
+                {
+                  V = aNearestTo(LV, V1);
+                }
+                else
+                {
+                  return;
+                }
               }
             }
             else
@@ -4932,19 +5022,30 @@ void BRepOffset_Tool::ExtentFace(
 
             if (!Build.IsBound(V2))
             {
-              Inter2d(EF,
-                      TopoDS::Edge(Build(E)),
-                      TopoDS::Edge(Build(NEOnV2)),
-                      LV,
-                      /*TolConf*/ Precision::Confusion());
-
-              if (!LV.IsEmpty())
+              if (VertexOnOneCurve(TopoDS::Edge(Build(E)),
+                                   TopoDS::Edge(Build(NEOnV2)),
+                                   V2,
+                                   Precision::Confusion(),
+                                   V))
               {
-                V = aNearestTo(LV, V2);
+                LV.Clear();
               }
               else
               {
-                return;
+                Inter2d(EF,
+                        TopoDS::Edge(Build(E)),
+                        TopoDS::Edge(Build(NEOnV2)),
+                        LV,
+                        /*TolConf*/ Precision::Confusion());
+
+                if (!LV.IsEmpty())
+                {
+                  V = aNearestTo(LV, V2);
+                }
+                else
+                {
+                  return;
+                }
               }
             }
             else
