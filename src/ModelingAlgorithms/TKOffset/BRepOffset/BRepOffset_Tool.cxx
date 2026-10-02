@@ -1287,7 +1287,9 @@ static TopoDS_Edge Glue(const TopoDS_Edge&   E1,
 
 static void CheckIntersFF(const BOPDS_PDS&                                               pDS,
                           const TopoDS_Edge&                                             RefEdge,
-                          NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& TrueEdges)
+                          NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& TrueEdges,
+                          const TopoDS_Face& theRefFace1 = TopoDS_Face(),
+                          const TopoDS_Face& theRefFace2 = TopoDS_Face())
 {
   NCollection_DynamicArray<BOPDS_InterfFF>& aFFs = pDS->InterfFF();
   int                                       aNb  = aFFs.Length();
@@ -1346,6 +1348,23 @@ static void CheckIntersFF(const BOPDS_PDS&                                      
     gp_Pnt        Pref    = BAcurve.Value((BAcurve.FirstParameter() + BAcurve.LastParameter()) / 2);
     TopoDS_Vertex Vref    = BRepLib_MakeVertex(Pref);
     double        MinDist = RealLast();
+    // Two blocks as near as each other are told apart by the faces the
+    // section is of, the second -- the one that stays, beside a removed
+    // face -- before the first. A cylinder cuts the sphere round its end in
+    // two circles, one each side of the edge they share and as far from it:
+    // the first found was taken, and which is found first depends on how the
+    // shape lies in space. A dome on a cylinder, the cylinder removed: the
+    // circle below the dome's edge, turned by 40 degrees, and a valid solid
+    // of 151.12 for 100.73.
+    double aTieDist[2] = {RealLast(), RealLast()};
+    auto   aDistTo     = [](const TopoDS_Shape& theS, const TopoDS_Face& theF) {
+      if (theF.IsNull())
+      {
+        return 0.;
+      }
+      BRepExtrema_DistShapeShape aDSS(theS, theF);
+      return aDSS.IsDone() && aDSS.NbSolution() > 0 ? aDSS.Value() : RealLast();
+    };
     NCollection_List<TopoDS_Shape>::Iterator itl(CompList);
     for (; itl.More(); itl.Next())
     {
@@ -1357,11 +1376,30 @@ static void CheckIntersFF(const BOPDS_PDS&                                      
         continue;
       }
 
-      double aDist = Projector.Value();
-      if (aDist < MinDist)
+      double       aDist = Projector.Value();
+      const double aTol  = 1.e-6 * std::max(1., std::min(aDist, MinDist));
+      if (aDist < MinDist - aTol)
       {
         MinDist         = aDist;
         NearestCompound = aCompound;
+        aTieDist[0]     = RealLast();
+      }
+      else if (aDist <= MinDist + aTol && !NearestCompound.IsNull())
+      {
+        if (aTieDist[0] == RealLast())
+        {
+          aTieDist[0] = aDistTo(NearestCompound, theRefFace2);
+          aTieDist[1] = aDistTo(NearestCompound, theRefFace1);
+        }
+        const double aD2 = aDistTo(aCompound, theRefFace2);
+        const double aD1 = aDistTo(aCompound, theRefFace1);
+        if (aD2 < aTieDist[0] - aTol || (aD2 <= aTieDist[0] + aTol && aD1 < aTieDist[1] - aTol))
+        {
+          MinDist         = std::min(MinDist, aDist);
+          NearestCompound = aCompound;
+          aTieDist[0]     = aD2;
+          aTieDist[1]     = aD1;
+        }
       }
     }
   }
@@ -1512,7 +1550,7 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> TrueEdges;
   if (!RefEdge.IsNull())
   {
-    CheckIntersFF(aPF.PDS(), RefEdge, TrueEdges);
+    CheckIntersFF(aPF.PDS(), RefEdge, TrueEdges, theRefFace1, theRefFace2);
   }
 
   bool addPCurve1 = true;
