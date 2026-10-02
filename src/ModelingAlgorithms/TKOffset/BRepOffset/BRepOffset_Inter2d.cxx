@@ -2064,6 +2064,71 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
     TopoDS_Shape aLocalWire = W.Oriented(TopAbs_FORWARD);
     TopoDS_Shape aLocalFace = FI.Oriented(TopAbs_FORWARD);
     wexp.Init(TopoDS::Wire(aLocalWire), TopoDS::Face(aLocalFace));
+    // The pole of a sphere whose axis was turned off the face
+    // (BRepOffset_Tool::EnLargeFace) is an ordinary point of the offset face,
+    // and its degenerated edge no edge of the outline: the two edges that
+    // reach the pole are neighbours and meet each other there -- a removed
+    // face's border, stretched past the pole, is cut by the other edge's
+    // section. Not so where the two run on into each other, the meridians of
+    // half a turn, whose faces' offsets cut the sphere along one circle, nor
+    // where neither has a section.
+    auto haveOneSection = [&](const TopoDS_Shape& theE1, const TopoDS_Shape& theE2) {
+      if (!Build.IsBound(theE1) && !Build.IsBound(theE2))
+      {
+        return true;
+      }
+      TopoDS_Edge   aE1 = TopoDS::Edge(theE1), aE2 = TopoDS::Edge(theE2);
+      TopoDS_Vertex aV = CommonVertex(aE1, aE2);
+      if (aV.IsNull())
+      {
+        return true;
+      }
+      BRepAdaptor_Curve aC1(aE1), aC2(aE2);
+      gp_Pnt            aP;
+      gp_Vec            aD1, aD2;
+      aC1.D1(BRep_Tool::Parameter(aV, aE1), aP, aD1);
+      aC2.D1(BRep_Tool::Parameter(aV, aE2), aP, aD2);
+      return aD1.Magnitude() < gp::Resolution() || aD2.Magnitude() < gp::Resolution()
+             || aD1.IsParallel(aD2, 1.e-4);
+    };
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aTurnedPoles;
+    if (OFI)
+    {
+      NCollection_Sequence<TopoDS_Shape> aWEdges;
+      for (; wexp.More(); wexp.Next())
+      {
+        aWEdges.Append(wexp.Current());
+      }
+      const int aNbWE = aWEdges.Length();
+      for (int i = 1; i <= aNbWE && aNbWE > 2; ++i)
+      {
+        const TopoDS_Edge& aDE = TopoDS::Edge(aWEdges(i));
+        if (!BRep_Tool::Degenerated(aDE)
+            || haveOneSection(aWEdges(i == 1 ? aNbWE : i - 1), aWEdges(i == aNbWE ? 1 : i + 1)))
+        {
+          continue;
+        }
+        const TopoDS_Shape aGen = OFI->Generated(aDE);
+        if (aGen.IsNull() || aGen.ShapeType() != TopAbs_EDGE)
+        {
+          continue;
+        }
+        double                          aF, aL;
+        const occ::handle<Geom2d_Curve> aC2d =
+          BRep_Tool::CurveOnSurface(TopoDS::Edge(aGen), TopoDS::Face(OFI->Face()), aF, aL);
+        if (!aC2d.IsNull() && aC2d->Value(aF).Distance(aC2d->Value(aL)) <= Precision::PConfusion()
+            && aC2d->Value((aF + aL) / 2.).Distance(aC2d->Value(aF)) <= Precision::PConfusion())
+        {
+          aTurnedPoles.Add(aDE);
+        }
+      }
+      wexp.Init(TopoDS::Wire(aLocalWire), TopoDS::Face(aLocalFace));
+    }
+    auto isTurnedPole = [&](const TopoDS_Edge& theE) { return aTurnedPoles.Contains(theE); };
+    while (wexp.More() && isTurnedPole(wexp.Current()))
+    {
+      wexp.Next();
+    }
     if (!wexp.More())
     {
       continue; // Protection from case when explorer does not contain edges.
@@ -2076,6 +2141,10 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
       if (OFI || (Index & 1) == 0)
       {
         wexp.Next();
+        while (wexp.More() && isTurnedPole(wexp.Current()))
+        {
+          wexp.Next();
+        }
         if (wexp.More())
         {
           NextE = wexp.Current();
