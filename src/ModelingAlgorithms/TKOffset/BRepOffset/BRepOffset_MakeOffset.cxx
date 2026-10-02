@@ -1846,6 +1846,26 @@ bool BRepOffset_MakeOffset::MakeThickSolidByPieces(const Message_ProgressRange& 
 
 void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange)
 {
+  // Every face removed: no face stays to be thickened, and there is no
+  // answer. A sphere with its face removed came back as the sphere itself,
+  // "valid" and unhollowed (a torus was refused, further down).
+  if (!myOriginalFaces.IsEmpty() && !myThickening)
+  {
+    bool isAnyLeft = false;
+    for (TopExp_Explorer anExp(myInitialShape, TopAbs_FACE); anExp.More() && !isAnyLeft;
+         anExp.Next())
+    {
+      isAnyLeft = !myOriginalFaces.Contains(anExp.Current());
+    }
+    if (!isAnyLeft)
+    {
+      myDone  = false;
+      myError = BRepOffset_UnknownError;
+      myOffsetShape.Nullify();
+      return;
+    }
+  }
+
   if (MakeThickSolidByPieces(theRange))
   {
     return;
