@@ -3,7 +3,9 @@
 # Run under FreeCADCmd (sweep.sh restarts it after a crash). One line a run:
 #   R <k> <tag> OK|BAD:<why>|EXC <what> [vol=.. solids=.. shells=..] [INPUT-CHANGED]
 # env: MODES="nj0 Ij2 ..." to restrict, START=<k>, THICK_FREEZE=1 to freeze
-# shape values (unfrozen by default, as run_tests.py).
+# shape values (unfrozen by default, as run_tests.py), SWEEP_PLACE=placed to
+# give every solid a location (an object's placement) or =baked to turn and
+# move its geometry instead: the volumes are the same wherever a solid lies.
 import os
 import FreeCAD
 import Part
@@ -55,6 +57,24 @@ SHAPES = {
     "lune90": lambda: Part.makeSphere(5, V(), V(0, 0, 1), -90, 90, 90),
 }
 MODES = os.environ.get("MODES", "").split()
+PLACE = os.environ.get("SWEEP_PLACE", "")
+PLACEMENT = FreeCAD.Placement(V(3, 4, 5), FreeCAD.Rotation(V(1, 2, 3), 40))
+
+
+def make(mk):
+    s = mk()
+    if PLACE == "placed":
+        s.Placement = PLACEMENT
+    elif PLACE == "baked":
+        s.transformShape(PLACEMENT.Matrix, True)
+    return s
+
+
+def signature(s):
+    tol = max([0.0] + [x.Tolerance for x in s.Vertexes + s.Edges + s.Faces])
+    return (s.isValid(), round(s.Volume, 6), round(tol, 9))
+
+
 start = int(os.environ.get("START", "0"))
 k = -1
 for name, mk in SHAPES.items():
@@ -71,8 +91,8 @@ for name, mk in SHAPES.items():
                     if MODES and mode not in MODES:
                         continue
                     os.write(2, ("CASE %d %s\n" % (k, tag)).encode())
-                    s = mk()
-                    sig = (s.isValid(), round(s.Volume, 6))
+                    s = make(mk)
+                    sig = signature(s)
                     try:
                         r = s.makeThickness([s.Faces[i]], off, 1e-3, inter, False, 0, join)
                         p = []
@@ -88,7 +108,7 @@ for name, mk in SHAPES.items():
                     except Exception as e:
                         text = str(e).strip()
                         res = "EXC " + (text.splitlines()[-1][:40] if text else type(e).__name__)
-                    if (s.isValid(), round(s.Volume, 6)) != sig:
+                    if signature(s) != sig:
                         res += " INPUT-CHANGED"
                     out("R %d %-28s %s" % (k, tag, res))
 out("DONE")

@@ -37,15 +37,19 @@ App.ParamGet("User parameter:BaseApp/Preferences/Mod/Part").SetBool(
 
 
 def signature(shape):
-    """What a thickness must leave of its input: the shape valid, the volume."""
-    return (shape.isValid(), round(shape.Volume, 6))
+    """What a thickness must leave of its input: the shape valid, the volume,
+    and no tolerance grown -- a vertex of a moved cylinder came back with a
+    tolerance as large as the move, valid and of the same volume, and the
+    next thickness of that shape was wrong."""
+    tol = max([0.0] + [x.Tolerance for x in shape.Vertexes + shape.Edges + shape.Faces])
+    return (shape.isValid(), round(shape.Volume, 6), round(tol, 9))
 
 
 def input_problems(shape, before):
     after = signature(shape)
     if after == before:
         return []
-    return ["input changed: valid=%s vol=%.4f" % after]
+    return ["input changed: valid=%s vol=%.4f tol=%g" % after]
 
 results = []  # (name, verdict, detail); verdict in PASS/FAIL/XFAIL/UNEXPECTED-PASS
 
@@ -859,6 +863,36 @@ determinism_case("arc_inter_lbox_same_every_run",
 determinism_case("arc_inter_boxhole_same_every_run",
                  lambda: Part.makeBox(10, 10, 5).cut(
                      Part.makeCylinder(2, 3, App.Vector(5, 5, 2))), 2, +1.0)
+
+# A shape that carries a location -- an object with a placement -- is the
+# shape it is where it was made. Four faults, three of them upstream's, each
+# met only under a location: a seam's second pcurve checked without the
+# edge's location (BRepCheck_Edge::Tolerance), which gave a new seam edge and
+# the input vertices on it a tolerance as large as the move -- the thickness
+# after it on the same shape was a valid solid of 272.73 for 89.93; a pole
+# not known for one where the surface is sampled (CheckInputData), every
+# shape with a pole refused; the apex of an offset cone left where the cone
+# was made (BRepOffset_Offset); the normal of a whole circle taken from its
+# start, middle and end (CorrectConicalFaces), which is rounding, or nothing.
+# And the turned sphere of sec 27.108 was not made for a face that is placed.
+def placed(shape):
+    moved = shape.copy()
+    moved.Placement = App.Placement(App.Vector(3, 4, 5), App.Rotation(App.Vector(1, 2, 3), 40))
+    return moved
+
+
+placed_cyl = placed(Part.makeCylinder(4, 6))
+pieces_case("placed_cyl_side_pieces_out", placed_cyl, [1], +0.5, [25.1327, 25.1327])
+thickness_case("placed_cyl_top_in_after",   placed_cyl, 2, -0.5, "pass", 89.9281)
+thickness_case("placed_cyl_top_out_after",  placed_cyl, 2, +0.5, "pass", 110.4400)
+thickness_case("placed_dome_flat_out",      placed(Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 360)), 2, +0.5, "pass", 86.6556)
+thickness_case("placed_dome_flat_in",       placed(Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 360)), 2, -0.5, "pass", 70.9476)
+thickness_case("placed_cone_base_join_out", placed(Part.makeCone(0, 4, 6)), 2, +0.5, "pass", 52.4563, False, 2)
+thickness_case("placed_cone_base_in",       placed(Part.makeCone(0, 4, 6)), 2, -0.5, "pass", 38.8428)
+thickness_case("placed_coneup_base_out",    placed(Part.makeCone(4, 0, 6)), 2, +0.5, "pass", 52.4095)
+thickness_case("placed_halfdome_bottom_join_out", placed(Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 180)), 2, +0.5, "pass", 67.0206, False, 2)
+thickness_case("placed_halfdome_side_join_in", placed(Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 180)), 3, -0.5, "pass", 59.1071, False, 2)
+thickness_case("placed_dome270_side_join_out", placed(Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 270)), 3, +0.5, "pass", 113.7486, False, 2)
 
 counts = {}
 for _, verdict, _ in results:
