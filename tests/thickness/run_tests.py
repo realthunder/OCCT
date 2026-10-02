@@ -552,6 +552,84 @@ thickness_case("segment_flat_out",
 thickness_case("cone_base_out", Part.makeCone(0, 4, 6), 2, +0.5, "pass", 52.4095)
 thickness_case("cone_up_base_out", Part.makeCone(4, 0, 6), 2, +0.5, "pass", 52.4095)
 
+# The cone with its apex, the other ways. The offset cone is trimmed again at
+# its own apex, and the edge re-trimmed there kept an infinite range on its
+# 3d line: inward with the Arc join an intersection on it got a parameter of
+# 2e100 and threw; with the Intersection join, apex down, the face's bounds
+# were infinite, the enlarged cone kept the wrong side of its apex, never met
+# the base's plane, and the cone came back unhollowed, 100.5310 (upstream the
+# same in all of them). Inward the skin is the cone less the same cone with
+# its apex 0.5 / sin a higher: 38.8428; outward and sharp, 52.4563.
+for name, cone in (("cone", Part.makeCone(0, 4, 6)), ("cone_up", Part.makeCone(4, 0, 6))):
+    thickness_case(name + "_base_in",       cone, 2, -0.5, "pass", 38.8428)
+    thickness_case(name + "_base_join_in",  cone, 2, -0.5, "pass", 38.8428, False, 2)
+    thickness_case(name + "_base_join_out", cone, 2, +0.5, "pass", 52.4563, False, 2)
+
+# Half a dome: a quarter ball, its sphere bounded by two meridians meeting at
+# the pole, its flat side in two coplanar faces (Face3, Face4) and its bottom
+# Face2. Bottom removed, outward: the pole is a vertex on a free border with a
+# tube on each meridian, two images, and rebinding the first threw
+# (BRepAlgo_Image::Bind). A side removed: the other side is its tangent
+# neighbour, closed by a tube round the axis whose edge on the removed face
+# crosses the face's own outline -- a crossing inside both edges, which got
+# no vertex; the tube kept the edge whole where the rim took its pieces; and
+# the pole's edge was dropped where the wire reached the pole on a vertex of
+# its own. Inward, the offset sphere came with two more wires than it has.
+# Hand values, models/Thickness.md "Sec 27.107".
+halfdome = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 180)
+thickness_case("halfdome_bottom_out",      halfdome, 2, +0.5, "pass", 66.1779)
+thickness_case("halfdome_bottom_in",       halfdome, 2, -0.5, "pass", 51.3127)
+thickness_case("halfdome_bottom_join_in",  halfdome, 2, -0.5, "pass", 51.3127, False, 2)
+thickness_case("halfdome_side_out",        halfdome, 3, +0.5, "pass", 79.7628)
+thickness_case("halfdome_side_in",         halfdome, 3, -0.5, "pass", 58.8944)
+thickness_case("halfdome_other_side_out",  halfdome, 4, +0.5, "pass", 79.7628)
+# Still wrong: the mirror image inward (the offset sphere takes a wire round
+# what was cut away), and the Intersection join -- the bottom outward needs
+# the sphere grown round its pole, the sides a wall the loop does not close.
+# Refused or invalid, never the input back.
+thickness_case("halfdome_other_side_in",   halfdome, 4, -0.5, "xfail", 58.8944)
+thickness_case("halfdome_bottom_join_out", halfdome, 2, +0.5, "xfail", 67.0206, False, 2)
+thickness_case("halfdome_side_join_in",    halfdome, 3, -0.5, "xfail", None, False, 2)
+
+# A box fused of two and not refined: every face across the joint is in two
+# coplanar pieces. One piece of the top removed: its neighbour is tangent to
+# it, closed by a tube with the Arc join (417.3038 outward: the rounded skin
+# 455.5869 less the slab, three quarter tubes and two ball eighths over the
+# removed half, plus the tube and two eighths at the joint; 274.7124 inward:
+# 480 - 192 - 6 (3 - pi / 4)). With the Intersection join the wall is not
+# built yet (440 and 276): it was the box back, 480, and is refused now.
+splitbox = Part.makeBox(4, 8, 6).fuse(Part.makeBox(6, 8, 6, App.Vector(4, 0, 0)))
+split_top = [i + 1 for i, f in enumerate(splitbox.Faces)
+             if abs(f.BoundBox.ZMin - 6) < 1e-9 and f.BoundBox.XMax < 4.5][0]
+thickness_case("splitbox_top_piece_out", splitbox, split_top, +1.0, "pass", 417.3038)
+thickness_case("splitbox_top_piece_in",  splitbox, split_top, -1.0, "pass", 274.7124)
+thickness_case("splitbox_top_piece_join_out", splitbox, split_top, +1.0, "xfail", 440.0, False, 2)
+thickness_case("splitbox_top_piece_join_in",  splitbox, split_top, -1.0, "xfail", 276.0, False, 2)
+
+
+
+# Where the fork has no answer yet it must have none: the input back, "valid"
+# and unhollowed, is the one result that is never right. MakeThickSolid
+# refuses a result of the shape's own volume (inward) or of its volume with
+# the removed faces whole again (outward).
+def never_the_input_case(name, shape, face_index, value, inter=False, join=0):
+    before = signature(shape)
+    try:
+        r = shape.makeThickness([shape.Faces[face_index - 1]], value, 1e-7, inter, False, 0, join)
+        back = r.isValid() and abs(r.Volume - shape.Volume) <= RELTOL * abs(shape.Volume)
+        problems = input_problems(shape, before)
+        if back:
+            problems.append("the input back, vol=%.4f" % r.Volume)
+        report(name, not problems, False, "; ".join(problems) if problems else "vol=%.4f" % r.Volume)
+    except Exception:
+        problems = input_problems(shape, before)
+        report(name, not problems, False, "; ".join(problems) if problems else "refused")
+
+
+never_the_input_case("splitbox_top_piece_join_in_not_the_box", splitbox, split_top, -1.0, False, 2)
+never_the_input_case("halfdome_side_join_in_not_the_input", halfdome, 3, -0.5, False, 2)
+never_the_input_case("halfdome_side_join_out_not_the_input", halfdome, 3, +0.5, False, 2)
+
 # Every face removed: no face stays to be thickened, and the call is refused.
 # A sphere with its one face removed came back as the sphere itself, "valid"
 # and unhollowed; the torus was refused already (FreeCAD
