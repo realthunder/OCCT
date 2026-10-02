@@ -3911,9 +3911,25 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
   //---------------------------
   // extension de la geometrie.
   //---------------------------
-  if (CanExtentSurface && UpdatePCurve && theEnlargeU && theExtensionMode == 1)
+  // On a sphere whose axis was turned off it already -- a removed face's
+  // twin (TurnedOffPole) -- the old pole's edge has a pcurve that stays on
+  // one point.
+  bool isTurned = false;
+  for (TopExp_Explorer anExp(F, TopAbs_EDGE); anExp.More() && !isTurned; anExp.Next())
   {
-    TurnSphereOffPole(F);
+    const TopoDS_Edge& aE = TopoDS::Edge(anExp.Current());
+    if (BRep_Tool::Degenerated(aE))
+    {
+      double                          aF, aL;
+      const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(aE, F, aF, aL);
+      isTurned =
+        !aC2d.IsNull() && aC2d->Value(aF).Distance(aC2d->Value(aL)) <= Precision::PConfusion()
+        && aC2d->Value((aF + aL) / 2.).Distance(aC2d->Value(aF)) <= Precision::PConfusion();
+    }
+  }
+  if (!isTurned && CanExtentSurface && UpdatePCurve && theEnlargeU && theExtensionMode == 1)
+  {
+    isTurned = TurnSphereOffPole(F);
   }
   TopLoc_Location           L;
   occ::handle<Geom_Surface> S = BRep_Tool::Surface(F, L);
@@ -3988,7 +4004,13 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
     uperiodic     = true;
     double Period = S->UPeriod();
     double Delta  = Period - (UF2 - UF1);
-    double alpha  = 0.1;
+    // A sphere just turned has its seam in the middle of what the face
+    // leaves free of the turn, and may take most of it: a tenth was not
+    // enough for a thickness of a fifth of the radius, where the section of
+    // a neighbour's offset was cut short at the face's end and met the next
+    // section at its far crossing instead (three quarters of a dome, a side
+    // removed outward: a valid solid on the wrong side, 89.196 for 260.937).
+    double alpha  = isTurned ? 0.45 : 0.1;
     UU1           = UF1 - alpha * Delta;
     UU2           = UF2 + alpha * Delta;
     if ((UU2 - UU1) > Period)
