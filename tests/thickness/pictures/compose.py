@@ -21,7 +21,8 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "shortcyl": "cylinder 1.5 high", "shortbox": "box 10 x 10 x 1.5", "box6": "box 10 x 10 x 6",
          "blindpot": "a blind hole's wall and floor and the top, an open shell",
          "cylboss": "cylinder with a boss", "sector": "ring sector pad across angle 0", "sphere": "sphere",
-         "dome": "half a sphere", "cap": "sphere above latitude 30", "cone": "cone with its apex"}
+         "dome": "half a sphere", "cap": "sphere above latitude 30", "cone": "cone with its apex",
+         "halfdome": "half a dome (a quarter ball)", "splitbox": "box fused of two, not refined"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"] and d.get("refused"):
@@ -37,13 +38,16 @@ def status(d):
     for x in d["problems"]:
         x = re.sub(r"threw \d+", "threw ", x)
         x = x.replace(" BRep_API: command not done", "").replace("BRep_Tool:: ", "")
+        x = re.sub(r"\d{12,}(\.\d+)?", lambda m: "%.0e" % float(m.group(0)), x)
+        x = x.replace(" BRep_Builder::Infinite parameter", " (an infinite parameter)")
+        x = x.replace(" NCollection_DataMap::Find", " (a map lookup)")
         p.append(x)
     s = "; ".join(p)
     if d["volume"] is not None and d["volume"] < 0:
         p.insert(0, "inside out")
         s = "; ".join(p)
     if d["volume"] is not None and not any(x.startswith("volume") for x in d["problems"]):
-        s += "; volume %.2f" % d["volume"]
+        s += "; volume " + ("%.2f" if abs(d["volume"]) < 1e9 else "%.0e") % d["volume"]
     iv = R["after"][name].get("input_volume")
     if d["volume"] is not None and iv and abs(d["volume"] - iv) < 1e-3 * iv:
         s += " (unhollowed)"
@@ -99,8 +103,10 @@ for name in names:
             meta = json.load(open(pf + ".json")) if os.path.exists(pf + ".json") else {}
             if meta.get("huge") and cut == 0:
                 d.text((x + 10, top + lab + 8), "own scale: it spans %.0e mm" % meta["huge"], font=F, fill=(190, 30, 30))
+            if meta.get("unbounded") and cut == 0:
+                d.text((x + 10, top + lab + 8), "%d face(s) without bounds, not drawn" % meta["unbounded"], font=F, fill=(190, 30, 30))
             if meta.get("dropped") and cut == 0:
-                d.text((x + 10, top + lab + 8), "%d face(s) of no area, not drawn" % meta["dropped"], font=F, fill=(190, 30, 30))
+                d.text((x + 10, top + lab + (26 if meta.get("unbounded") else 8)), "%d face(s) of no area, not drawn" % meta["dropped"], font=F, fill=(190, 30, 30))
             if meta.get("clipped") and cut == 1:
                 d.text((x + 10, top + lab + H + 8), "clipped (the cut failed or is inside out)", font=F, fill=(110, 110, 110))
         if len(lines) > 1:

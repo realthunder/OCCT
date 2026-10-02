@@ -29,6 +29,7 @@ STAGES = {
     "s104": ("839a3e4606", "27.104"),
     "s105": ("f723999a15", "27.105"),
     "s106": ("dc3a7b85d1", "27.106"),
+    "s107": ("b6404e079a", "27.107"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -81,6 +82,8 @@ SHAPES = {
     "dome": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 360),
     "cap": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 30, 90, 360),
     "cone": lambda: Part.makeCone(0, 4, 6),
+    "halfdome": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 180),
+    "splitbox": lambda: Part.makeBox(4, 8, 6).fuse(Part.makeBox(6, 8, 6, V(4, 0, 0))),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -157,6 +160,11 @@ CASES = {
     "dome_flat_in": ("s106", "dome", 2, -0.5, False, 0, 70.9476),
     "cap_flat_in": ("s106", "cap", 2, -0.5, False, 0, 33.6412),
     "cone_base_out": ("s106", "cone", 2, +0.5, False, 0, 52.4095),
+    "cone_base_in": ("s107", "cone", 2, -0.5, False, 0, 38.8428),
+    "cone_base_join_in": ("s107", "cone", 2, -0.5, False, 2, 38.8428),
+    "halfdome_bottom_out": ("s107", "halfdome", 2, +0.5, False, 0, 66.1779),
+    "halfdome_side_out": ("s107", "halfdome", 3, +0.5, False, 0, 79.7628),
+    "halfdome_side_in": ("s107", "halfdome", 3, -0.5, False, 0, 58.8944),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).

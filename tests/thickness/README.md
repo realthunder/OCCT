@@ -307,11 +307,25 @@ pi h^2 (3R - h) / 3; the cone's is worked out in `models/Thickness.md`,
 | `segment_flat_out` | the sphere below latitude 30 | 127.8890; was invalid, 387.9306 |
 | `cone_base_out`, `cone_up_base_out` | cone with its apex, radius 4, height 6, base removed | 52.4095, the apex rounded; was invalid, 62.5293 |
 
-Still wrong, upstream too: the cone inward with the Arc join throws (apex
-down `BRep_Builder::Infinite parameter` from `BRepOffset_Inter2d`, apex up
-`NCollection_DataMap::Find` from `BRepOffset_Tool::ExtentFace`); apex down
-with the Intersection join the cone comes back unhollowed (100.5310); half a
-dome (180 degrees) fails in most modes. The sweep has no such solid.
+The cone inward and half a dome, found beside these: the next section.
+
+## A cone with its apex, half a dome, a split box (2026-10-02, sec 27.107)
+
+`models/Thickness.md`, "Sec 27.107", has the causes and the hand values.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `cone_base_in`, `cone_up_base_in` | cone with its apex, base removed, inward 0.5, Arc join | 38.8428; threw (`BRep_Builder::Infinite parameter`, `NCollection_DataMap::Find`): the edge at the offset cone's new apex had an infinite range |
+| `cone_*_base_join_in/out` | the same, Intersection join | 38.8428 and 52.4563; apex down the cone came back unhollowed, 100.5310 |
+| `halfdome_bottom_out/in`, `halfdome_bottom_join_in` | a quarter ball, bottom removed | 66.1779, 51.3127; outward threw (`BRepAlgo_Image::Bind`), the Intersection join threw |
+| `halfdome_side_out/in`, `halfdome_other_side_out` | one of its two coplanar side faces removed, Arc join | 79.7628, 58.8944; were invalid |
+| `splitbox_top_piece_out/in` | a box fused of two, one piece of its top removed, Arc join | 417.3038, 274.7124: right before, pinned here |
+| `*_not_the_input`, `*_not_the_box` | the Intersection-join cases below | refused; the split box came back whole, 480 |
+
+Known broken (`XFAIL`): `halfdome_other_side_in` (invalid),
+`halfdome_bottom_join_out` (67.0206), `halfdome_side_join_in`,
+`splitbox_top_piece_join_out/in` (440, 276) -- refused or invalid, never the
+input: `MakeThickSolid` refuses a result that is the shape itself.
 
 ## Determinism cases (intersection mode, Arc join)
 

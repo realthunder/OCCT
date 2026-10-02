@@ -88,11 +88,24 @@ for job in jobs["panels"]:
     w = n.cross(u)
     bb = App.BoundBox()
     for f in job["bbox_breps"]:
-        bb.add(bbcache_get(f))
+        # A result without bounds does not set the row's scale.
+        if bbcache_get(f).DiagonalLength < 1e6:
+            bb.add(bbcache_get(f))
     height = bb.DiagonalLength * 1.02
     shape = Part.Shape(); shape.read(job["brep"])
     ghost = job.get("ghost", False)
     meta = {}
+    # A face without bounds (upstream's inward cone, a volume of 2e100)
+    # cannot be meshed -- the mesher crashes on it; it is left out.
+    def bounded(f):
+        try:
+            return f.BoundBox.DiagonalLength < 1e6 and abs(f.Area) < 1e12
+        except Exception:
+            return False
+    if not ghost and not all(bounded(f) for f in shape.Faces):
+        keep = [f for f in shape.Faces if bounded(f)]
+        meta["unbounded"] = len(shape.Faces) - len(keep)
+        shape = Part.makeCompound(keep)
     sb = shape.BoundBox
     if not ghost and sb.DiagonalLength > 20 * bb.DiagonalLength:
         meta["huge"] = sb.DiagonalLength
@@ -123,6 +136,14 @@ for job in jobs["panels"]:
         except Exception:
             clipped = True
             meta["clipped"] = 1
+    # A cut that cannot be measured is no cut: the whole shape, clipped.
+    try:
+        [f.Area for f in shape.Faces]
+    except Exception:
+        shape = Part.Shape(); shape.read(job["brep"])
+        cap = None
+        clipped = True
+        meta["clipped"] = 1
     if any(f.Area < 1e-9 for f in shape.Faces):
         keep = [f for f in shape.Faces if f.Area >= 1e-9]
         meta["dropped"] = len(shape.Faces) - len(keep)

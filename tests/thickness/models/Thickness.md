@@ -15,7 +15,7 @@ volumes, the gates -- is FreeCAD's docs/TransactionLog.md sec 27.88 to
 Where things are:
 
 - The fork's suite: `tests/thickness/run_tests.py` (`FreeCADCmd
-  tests/thickness/run_tests.py`; PASS 110) and its `README.md`, the
+  tests/thickness/run_tests.py`; PASS 127, XFAIL 5) and its `README.md`, the
   case-by-case reference.
 - The pictures: `pictures/<case>.png` beside this page, one per case of the
   suite that a fix turned from failing to passing.
@@ -90,6 +90,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.104 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.105 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.106 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.107 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -99,16 +100,16 @@ counts the holed cone's sealed void right (sec 27.100), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
 those two runs before it.
 
-Of the 73 pictured cases, 31 are ones upstream gets right and the fork had
+Of the 78 pictured cases, 31 are ones upstream gets right and the fork had
 broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
 cone's top with intersection on, sec 27.100, a short box's and a box's bottom
 alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, the
 input left inside out, sec 27.104, and the faces closed at a pole, sec
-27.106). The other 42 fail upstream too: the fork
+27.106). The other 47 fail upstream too: the fork
 now does better than upstream there.
 
-Nothing in the suite fails now, and every run of the sweep in scope is
-right. Out of scope, sec 27.101 answers the faces left in pieces where each
+Nothing in the suite fails that is expected to pass (five cases are marked
+known broken, sec 27.107), and every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
 piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
 the pieces that are pockets and bosses: every one checks by hand. The one
 refusal left in the sweep is the torus's face, and it is right: with its one
@@ -496,10 +497,106 @@ their wires come from the vertex walk, and the pole is put back.
 ![cap_flat_in](pictures/cap_flat_in.png)
 ![cone_base_out](pictures/cone_base_out.png)
 
-Found beside it, not fixed, and wrong upstream too: a cone with its apex,
-base removed, inward with the Arc join throws (the offset cone face runs
-through its own new apex), and apex down with the Intersection join comes
-back unhollowed; half a dome (a 180 degree turn) fails in most modes.
+Found beside it, wrong upstream too, and taken up in sec 27.107: a cone with
+its apex inward, and half a dome.
+
+### Sec 27.107: a cone with its apex, half a dome, and the input never back
+
+**The cone.** The offset of a cone with its apex is a cone with its apex
+somewhere else, and `BRepOffset_Offset` trims the offset face again there:
+the edges ending at the apex get a new pcurve, with its range set on the
+face only. The 3d line computed for such an edge afterwards had no range at
+all, -2e100 to 2e100, and three faults came of it, each upstream's too.
+Inward with the Arc join, an intersection on the edge took a parameter of
+2e100 and `BRep_Builder` refused it (apex down), or the face could not be
+stretched to the removed base (`ExtentFace`, apex up). With the Intersection
+join and the apex down, the face's bounds were infinite, the enlarged cone
+kept the wrong side of its apex -- the nappe running away from the base --
+never met the base's plane, and the cone came back unhollowed, 100.5310. The
+iso runs with its pcurve, so the pcurve's range is the curve's
+(`aca7df93b0`). Inward the skin is the cone less the same cone with its apex
+0.5 / sin a = 0.9014 higher, 100.5310 - 61.6882 = 38.8428, with either join;
+outward and sharp, 52.4563.
+
+![cone_base_in](pictures/cone_base_in.png)
+![cone_base_join_in](pictures/cone_base_join_in.png)
+
+**Half a dome.** `Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 180)`: a
+quarter ball. Its sphere is bounded by two meridians meeting at the pole and
+half the equator; its flat side is two coplanar quarter discs, Face3 and
+Face4, meeting on the axis; Face2 is the bottom. No seam, a pole, and a
+tangent neighbour: six things went wrong (`d964dc081b`).
+
+*The bottom removed, outward.* A pole's degenerated edge has one face, so
+the pole counts as a vertex on a free border, and such a vertex has an image
+for each tube ending at it -- here the tubes of both meridians. `ToContext`
+rebinds an image it has stretched by removing it and binding the new one;
+with a second image still there, `BRepAlgo_Image::Bind` threw. The new image
+is added instead. With the Intersection join the loop dereferenced the
+vertices of an edge that has none; it passes over it. The skin is the sphere
+a thickness out, cut by the bottom's plane and by the flat side's plane a
+thickness out, the edge between them rounded: 66.1779 outward (67.0206
+sharp), and inward 130.8997 less the half cap of radius 4.5 above y = 0.5,
+51.3127, with either join.
+
+![halfdome_bottom_out](pictures/halfdome_bottom_out.png)
+
+*A side removed.* The other side is its tangent neighbour, and the Arc join
+closes the gap with a tube round the axis (sec 27.93) whose edge on the
+removed face, the line x = 0.5, runs through the face's own outline: it
+crosses the meridian at z = 4.975. Four things. The loop on the removed face
+finds where edges meet by projecting each edge's vertices on the others, and
+a crossing inside both edges has no vertex; on a planar face such a crossing
+now gets one. The tube was built before that loop cut its edge and kept the
+edge whole where the rim took the pieces -- a free edge; a face built before
+a later loop cut one of its edges now takes the pieces too
+(`MakeFaces`). The pole's degenerated edge, kept out of the loop's vertex
+map, was dropped where the wire reached the pole on a vertex of its own; it
+takes that vertex. And inward, the offset sphere -- trimmed short of its
+pole, its own edges running on past the cut -- came with three wires where
+it has one: on a periodic face the search keeps every closed wire, and it
+found the wire round what was cut away (run the other way) and one of no
+area along the pieces beyond. A wire bounding nothing now loses to one
+sharing an open edge with it that bounds something.
+
+Outward: the quarter shell of the sphere 43.3278, the bottom's slab 19.6350
+and the neighbour's 9.8175, a quarter torus on half the equator 3.2151 and
+on the neighbour's meridian 1.6075, a quarter tube on the neighbour's bottom
+edge 0.9817 and the tangent tube on the axis 0.9817, and three ball eighths
+of 0.0654 -- at the neighbour's corner and at the tube's two ends: 79.7628.
+Inward: 130.8997 less the half cap above z = 0.5 (79.5870), without the
+neighbour's slab in it (6.7991) and the quarter tube round the axis
+(0.7827): 58.8944.
+
+![halfdome_side_out](pictures/halfdome_side_out.png)
+![halfdome_side_in](pictures/halfdome_side_in.png)
+
+**The input never back** (`92568cb0da`). Where an offset never meets a
+removed face, the face is rebuilt whole and the result is the input,
+unhollowed and "valid" -- the cone above, and what the first of these
+changes turned the half dome's Intersection-join throws into. It is the one
+result that is never right, and `MakeThickSolid` now refuses it: a result of
+the shape's own volume inward, or outward of its volume with every removed
+face whole again (a skin can weigh what its shape does: a box 10 x 8 x 6 by
+1 has a skin of 480 too).
+
+**A box fused of two, not refined** -- every face across the joint in two
+coplanar pieces, one piece of the top removed -- is the plain form of the
+half dome's side. With the Arc join the fork was right already (upstream
+throws or returns the box): 417.3038 outward, the rounded skin 455.5869
+less the slab over the removed piece, three quarter tubes and two ball
+eighths, plus the tangent tube and its two eighths; 274.7124 inward, 480 -
+192 - 6 (3 - pi / 4). With the Intersection join the closure of sec 27.96
+did not apply, because the faces at the joint's ends are split too, and the
+box came back, 480. The closure now takes the piece beside the removed
+face; the wall it needs is not built yet, and the call is refused.
+
+**Still wrong**, and marked so in the suite (XFAIL): the half dome's other
+side inward (the mirror image: the wire round what was cut away runs the
+same way as the right one, and is kept -- an invalid result); the half dome
+with the Intersection join, bottom outward (the sphere would have to grow
+round its pole, 67.0206) and a side either way; the split box with the
+Intersection join (440 and 276). All refused or invalid; none the input.
 
 ## The captured models
 
