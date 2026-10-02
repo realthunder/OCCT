@@ -4476,7 +4476,11 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
       continue;
     }
     const TopoDS_Shape& E = myInitOffsetEdge.ImageFrom(NE);
-    if (myAsDes->HasAscendant(E))
+    // An edge for an edge. A vertex has edges for images too, the ends of
+    // the tubes that meet at it, and it has an ascendant where it bounds an
+    // edge only the removed face holds -- a pole's degenerated edge, which
+    // then had a tube's arc for a vertex.
+    if (E.ShapeType() == TopAbs_EDGE && myAsDes->HasAscendant(E))
     {
       SHOW_TOPO_SHAPE(E, "ReplaceAsDes");
       SHOW_TOPO_SHAPE(NE, "ReplaceAsDesWith");
