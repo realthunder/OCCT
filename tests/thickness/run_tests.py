@@ -926,10 +926,11 @@ thickness_case("placed_filletbox_fillet_out", placed(filletbox), 4, +1.0, "pass"
 
 # Known broken, each with the volume it should give (models/Thickness.md,
 # sec 27.110, "Found beside these").
-# - The half ball as a cut or a refine leaves it: one disc for its flat. The
-#   disc removed with the Intersection join is refused (and searched its
-#   loops without end until the search was given a number of steps); the
-#   sphere removed is refused outward with the Intersection join.
+# - (answered) The half ball as a cut or a refine leaves it: one disc for its
+#   flat. The disc removed with the Intersection join was refused (and
+#   searched its loops without end until the search was given a number of
+#   steps), the sphere removed was refused outward. The sphere is put on one
+#   turned onto its middle: a dome with its rim in two arcs.
 # - A ball wedge from pole to pole on more than half a turn, its sphere
 #   removed: three lunes outward, refused; on 240 degrees inward with the
 #   Arc join a valid solid of 40.4447. On 150 degrees outward, Arc: refused.
@@ -939,11 +940,23 @@ onedisc = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180).re
 thickness_case("halfball1_disc_out",         onedisc, 2, +0.5, "pass", 86.6556)
 thickness_case("halfball1_disc_in",          onedisc, 2, -0.5, "pass", 70.9476)
 thickness_case("halfball1_sphere_join_in",   onedisc, 1, -0.5, "pass", 39.1390, False, 2)
-thickness_case("halfball1_disc_join_out",    onedisc, 2, +0.5, "xfail", 86.6556, False, 2)
-thickness_case("halfball1_disc_join_in",     onedisc, 2, -0.5, "xfail", 70.9476, False, 2)
+thickness_case("halfball1_disc_join_out",    onedisc, 2, +0.5, "pass", 86.6556, False, 2)
+thickness_case("halfball1_disc_join_in",     onedisc, 2, -0.5, "pass", 70.9476, False, 2)
 thickness_case("halfball1_sphere_out",       onedisc, 1, +0.5, "pass", 39.1390)
-thickness_case("halfball1_sphere_join_out",  onedisc, 1, +0.5, "xfail", 39.1390, False, 2)
+thickness_case("halfball1_sphere_join_out",  onedisc, 1, +0.5, "pass", 39.1390, False, 2)
 thickness_case("halfball1_sphere_in",        onedisc, 1, -0.5, "pass", 39.1390)
+# The same from a cut, which hands over a compound of one solid; and under a
+# location, and turned in space.
+_cutball = Part.makeSphere(5).cut(Part.makeBox(20, 20, 20, App.Vector(-10, -20, -10)))
+thickness_case("cutball_disc_join_out",      _cutball, 2, +0.5, "pass", 86.6556, False, 2)
+thickness_case("cutball_disc_join_in",       _cutball, 2, -0.5, "pass", 70.9476, False, 2)
+thickness_case("cutball_sphere_out",         _cutball, 1, +0.5, "pass", 39.1390)
+thickness_case("cutball_sphere_join_out",    _cutball, 1, +0.5, "pass", 39.1390, False, 2)
+thickness_case("cutball_sphere_join_in",     _cutball, 1, -0.5, "pass", 39.1390, False, 2)
+thickness_case("placed_halfball1_disc_join_out",   placed(onedisc), 2, +0.5, "pass", 86.6556, False, 2)
+thickness_case("placed_halfball1_sphere_join_out", placed(onedisc), 1, +0.5, "pass", 39.1390, False, 2)
+thickness_case("turned_halfball1_disc_join_in",    turned(onedisc), 2, -0.5, "pass", 70.9476, False, 2)
+thickness_case("turned_halfball1_sphere_out",      turned(onedisc), 1, +0.5, "pass", 39.1390)
 ball270 = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 270)
 ball240 = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 240)
 ball150 = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 150)
