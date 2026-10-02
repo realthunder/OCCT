@@ -1332,6 +1332,11 @@ ten minutes on the dev box, most of it building libraries:
    conda env).
 
 A case added to `cases.py` with its stage gets its picture on the next run.
+`mkpage.py OUTDIR` then builds the "Thickness Before and After" page from
+them -- `index.html` and `img/`, one section per fix with its title from the
+heading here and its summary from `SUMMARY` in the script, which a new
+section adds to -- and the page is published again after every fix
+(`THICK_WORK`, `SUITE` and `SWEEP` set give it the counts).
 A case listed in `INPUT` is pictured for what the call leaves of its input:
 the panels show the input after the thickness, judged against its own volume.
 A case in `REFUSED` is right when the call throws; its panels show the input.
