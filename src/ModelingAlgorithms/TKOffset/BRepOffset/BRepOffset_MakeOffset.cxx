@@ -3096,7 +3096,15 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
       NCollection_List<TopoDS_Shape>        LE;
       myAnalyse.Edges(V, OT, LE);
 
-      if (LE.Extent() >= 3 && LE.Extent() == LA.Extent())
+      // A pole's degenerated edge is an ancestor of its vertex and no edge
+      // of the corner: an eighth of a ball has three tubes meeting at its
+      // pole, and the piece of sphere between them was never built.
+      int aNbLA = 0;
+      for (it.Initialize(LA); it.More(); it.Next())
+      {
+        aNbLA += BRep_Tool::Degenerated(TopoDS::Edge(it.Value())) ? 0 : 1;
+      }
+      if (LE.Extent() >= 3 && LE.Extent() == aNbLA)
       {
         NCollection_List<TopoDS_Shape> LOE;
         //--------------------------------------------------------
