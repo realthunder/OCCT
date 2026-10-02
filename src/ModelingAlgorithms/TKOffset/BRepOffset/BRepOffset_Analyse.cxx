@@ -31,6 +31,8 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
 #include <Geom_Curve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <GeomLProp_SLProps.hxx>
 #include <gp.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
@@ -1090,6 +1092,42 @@ void BRepOffset_Analyse::TreatTangentCaps(
         myAncestors.Add(aTi, aLT);
         myMapEdgeType.Bind(aTi, NCollection_List<BRepOffset_Interval>());
         EdgeAnalyse(aTi, aWall, aFV[i], aSinTol, myMapEdgeType(aTi));
+        // The wall's end edge is a line square to the kept face, and lies on
+        // the face at the end only where that face is a plane. On a curved
+        // one -- the sphere of half a dome, the tangent edge ending at its
+        // pole -- it has no pcurve to be analysed by: the edge is convex or
+        // concave as the wall runs behind the face or in front of it, seen
+        // from where the edge's middle falls on the face.
+        if (BRepAdaptor_Surface(aFV[i], false).GetType() != GeomAbs_Plane)
+        {
+          const gp_Pnt aPi  = BRep_Tool::Pnt(aVp[i]), aPn = BRep_Tool::Pnt(aVpn[i]);
+          const gp_Pnt aMid = aPi.XYZ() * 0.5 + aPn.XYZ() * 0.5;
+          const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(aFV[i]);
+          GeomAPI_ProjectPointOnSurf      aProj(aMid, aSurf);
+          if (aProj.NbPoints() > 0)
+          {
+            double aU, aVv;
+            aProj.LowerDistanceParameters(aU, aVv);
+            GeomLProp_SLProps aProps(aSurf, aU, aVv, 1, Precision::Confusion());
+            if (aProps.IsNormalDefined())
+            {
+              gp_Dir aNF = aProps.Normal();
+              if (aFV[i].Orientation() == TopAbs_REVERSED)
+              {
+                aNF.Reverse();
+              }
+              const gp_Vec aAlong(BRep_Tool::Pnt(aV[i]), BRep_Tool::Pnt(aV[1 - i]));
+              double aF1, aL1;
+              BRep_Tool::Range(aTi, aF1, aL1);
+              NCollection_List<BRepOffset_Interval>& aLI = myMapEdgeType(aTi);
+              aLI.Clear();
+              aLI.Append(BRepOffset_Interval(aF1,
+                                             aL1,
+                                             aAlong.Dot(gp_Vec(aNF)) < 0. ? ChFiDS_Convex
+                                                                          : ChFiDS_Concave));
+            }
+          }
+        }
 
         aLVp.Append(anInFace(aEp, aWall));
         aLVp.Append(aTi);

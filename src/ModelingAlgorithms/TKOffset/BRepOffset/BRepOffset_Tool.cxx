@@ -1654,8 +1654,51 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
         gp_Pnt            aRefPnt =
           aRefBAcurve.Value((aRefBAcurve.FirstParameter() + aRefBAcurve.LastParameter()) / 2);
 
+        // The angle below is taken to an extremum of the distance, which on
+        // an edge the reference point has no foot on is the farthest point,
+        // and it favours an edge whose middle lies far away: a plane through
+        // a sphere's axis cuts the enlarged sphere in two half circles, and
+        // the one beyond the pole was kept for the removed face's own
+        // meridian (half a dome, a side removed). The edge clearly nearest
+        // the reference point is the one; the angle decides between edges
+        // that are as near as each other.
+        {
+          const TopoDS_Vertex aRefV = BRepLib_MakeVertex(aRefPnt);
+          double              aMinDist = Precision::Infinite(), aNextDist = Precision::Infinite();
+          TopoDS_Edge         aNearest;
+          for (NCollection_List<TopoDS_Shape>::Iterator itN(L1); itN.More(); itN.Next())
+          {
+            BRepExtrema_DistShapeShape aDSS(aRefV, itN.Value());
+            if (!aDSS.IsDone() || aDSS.NbSolution() == 0)
+            {
+              aMinDist = Precision::Infinite();
+              aNearest.Nullify();
+              break;
+            }
+            const double aDist = aDSS.Value();
+            if (aDist < aMinDist)
+            {
+              aNextDist = aMinDist;
+              aMinDist  = aDist;
+              aNearest  = TopoDS::Edge(itN.Value());
+            }
+            else if (aDist < aNextDist)
+            {
+              aNextDist = aDist;
+            }
+          }
+          const double aDistTol =
+            std::max(10. * Precision::Confusion(), 0.01 * aRefPnt.Distance(aRefBAcurve.Value(
+                                                           aRefBAcurve.FirstParameter())));
+          if (!aNearest.IsNull() && aNextDist - aMinDist > aDistTol)
+          {
+            MinAngleEdge = aNearest;
+            MinAngle     = -1.;
+          }
+        }
+
         NCollection_List<TopoDS_Shape>::Iterator itl(L1);
-        for (; itl.More(); itl.Next())
+        for (; itl.More() && MinAngle >= 0.; itl.Next())
         {
           const TopoDS_Edge& anEdge = TopoDS::Edge(itl.Value());
 

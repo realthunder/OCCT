@@ -589,11 +589,18 @@ thickness_case("halfdome_other_side_out",  halfdome, 4, +0.5, "pass", 79.7628)
 # runs past the pole, out of the sphere's parameters): right for one side,
 # kept for the other. A piece beyond a stretched edge's own ends is outside.
 thickness_case("halfdome_other_side_in",   halfdome, 4, -0.5, "pass", 58.8944)
-# Still wrong: the Intersection join -- the bottom outward needs the sphere
-# grown round its pole, the sides a wall the loop does not close. Refused,
-# never the input back.
+# A side inward with the Intersection join: the closing wall ends on the
+# sphere at the pole, where its end edge -- a line -- has no pcurve to be
+# called convex by, and the wall was never cut by the sphere; and of the two
+# half circles the removed side's plane cuts the enlarged sphere in, the one
+# beyond the pole was kept. As the Arc join's 58.8944, with the square column
+# beside the axis, 0.9954, where that has the quarter tube, 0.7827: 59.1071.
+thickness_case("halfdome_side_join_in",       halfdome, 3, -0.5, "pass", 59.1071, False, 2)
+thickness_case("halfdome_other_side_join_in", halfdome, 4, -0.5, "pass", 59.1071, False, 2)
+thickness_case("halfdome_side_inter_join_in", halfdome, 3, -0.5, "pass", 59.1071, True, 2)
+# Still wrong: the Intersection join outward -- the sphere has to grow round
+# its pole, for the bottom and for a side. Refused, never the input back.
 thickness_case("halfdome_bottom_join_out", halfdome, 2, +0.5, "xfail", 67.0206, False, 2)
-thickness_case("halfdome_side_join_in",    halfdome, 3, -0.5, "xfail", None, False, 2)
 
 # A box fused of two and not refined: every face across the joint is in two
 # coplanar pieces. One piece of the top removed: its neighbour is tangent to
