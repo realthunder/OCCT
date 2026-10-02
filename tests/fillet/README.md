@@ -282,9 +282,15 @@ often cause unpredictable undulations". A G0 plate -- positions alone --
 fitted edge 56's boundary within 3.6e-4.
 
 Fix (`PerformMoreThreeCorner`): a plate that misses its boundary by more
-than 1e-2 is built again from the same boundaries at G0, and taken if it
-fits better; its edges are then not marked tangent to the stripes. A
-crease along the stripe instead of a fold. Edge 56 takes 2.433 by every
+than `ChFi3d_Builder::PlateG0Fallback()` is built again from the same
+boundaries at G0, and taken if it fits better; its edges are then not
+marked tangent to the stripes. A crease along the stripe instead of a
+fold. The distance is a global setting, `ChFi3d_Builder::SetPlateG0Fallback()`
+(and `ChFi3d_SetPlateG0Fallback`, extern "C", for a caller that looks it up
+at run time -- FreeCAD's Part preference `FilletPlateG0Fallback` does, so a
+FreeCAD built against upstream OCCT still loads). Default 1e-3;
+`Precision::Infinite()` keeps every tangent plate, as upstream does. Only
+static functions were added: the toolkit's ABI is unchanged. Edge 56 takes 2.433 by every
 measure now (GProp's default and adaptive modes agree to 1e-4), edge 50
 2.420, tolerances 0.014 and 0.009.
 
@@ -294,19 +300,20 @@ measure now (GProp's default and adaptive modes agree to 1e-4), edge 50
 | `issue962_e50_r0.8` | edge 50 now also held to tolerances under 0.05 (it had 0.195) |
 | `issue474_f003_e6_r{0.3,0.8,2}` | #474's Fillet003 input, edge 6: invalid at every radius (tolerances to 36, 244 too much volume at r 2), valid now |
 
-Checked against the fix: the every-edge sweep, 25 shapes, with each
-result's largest edge or vertex tolerance: 17 results go from invalid to
-valid, 107 valid ones end with less than half their tolerance (#474's edge
-17 at 0.8: 41.6 to 0.002; #273's edge 16 at 2: 9.6e5 to 0.18), none gets a
-larger one, and 2 go from valid to invalid: #962's edge 33 at 0.3, in the
-Fillet's input and the Chamfer's. That corner's G1 plate was no better --
+Checked against the fix, at the default 1e-3: the every-edge sweep, 25
+shapes, with each result's largest edge or vertex tolerance: 20 results go
+from invalid to valid, 156 valid ones end with less than half their
+tolerance (#474's edge 17 at 0.8: 41.6 to 0.002; #273's edge 16 at 2: 9.6e5
+to 0.18), none gets a larger one, and 2 go from valid to invalid: #962's
+edge 33 at 0.3, in the Fillet's input and the Chamfer's. That corner's G1 plate was no better --
 its outline crossed itself ten times and its surface folded, and the
 "valid" fillet of radius 0.3 removed 9.4 of volume where 0.6 is due --
 and the G0 one, which fits ten times better, has two of its boundary
-curves meeting head to head, which BRepCheck now rejects. With the rebuild
-at 1e-3 instead of 1e-2, 20 results became valid and 156 tighter, at the
-price of rebuilding most corners; 1e-2 leaves the merely mediocre G1
-plates (edge 36's, 3.3e-3) as they were. FreeCAD's `TestPartApp` (139),
+curves meeting head to head, which BRepCheck now rejects. At 1e-2 the
+change is smaller -- 17 valid, 107 tighter, the same 2 lost -- and leaves
+the merely mediocre G1 plates (edge 36's at 0.8, 3.3e-3) as they were; at
+1e-3 those are rebuilt too (edge 36's tolerance 0.0215 to 0.0123), most of
+the corners in all. FreeCAD's `TestPartApp` (139),
 `TestPartDesignApp` (77) and `TestSurfaceApp` pass.
 
 ## Known broken (XFAIL)

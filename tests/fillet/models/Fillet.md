@@ -208,8 +208,10 @@ the fillet's foot in the first two zooms -- missing its own boundary by
 corner kept edges of tolerance up to 1.18. Its control points reach so far
 out that the face's bounding box is 158 across, on a corner of 0.8. Such
 plates are common: of the 495 the every-edge sweep builds, 87 miss their
-boundary by more than 0.1. A plate missing it by more than 1e-2 is now
-built again on positions alone and taken if it fits better: the foot
+boundary by more than 0.1. A plate missing it by more than 1e-3 -- a
+setting, `ChFi3d_Builder::SetPlateG0Fallback()`, FreeCAD's Part preference
+`FilletPlateG0Fallback` -- is now built again on positions alone and taken
+if it fits better: the foot
 flares into the corner cleanly. The third row looks much the same in all
 three columns -- the old outline's loop, where one pcurve crosses itself
 near its end, is a few thousandths across, too small to see here; the zoom's lump is

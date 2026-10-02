@@ -263,13 +263,13 @@ twelve = [edge_between(p2, a, b) for a, b in (
     ((38.5, 10.2, -3.75), (38.5, 10.2, 14)), ((38.5, 10.2, -3.75), (38.5, 10.2, -9.75)),
     ((10.898402, 16.470802, -3.75), (10.898402, 16.470802, -9.75)),
     ((17.356038, -9.42499, -3.75), (17.356038, -9.42499, -9.75)))]
-fillet_case("issue962_fillet_r0.8", p2, twelve, 0.8, "pass", 11552.7859)
+fillet_case("issue962_fillet_r0.8", p2, twelve, 0.8, "pass", 11552.7705)
 
 
 # #474's Fillet003 input, edge 6: its corner plate missed its boundary by 1.8
 # at radius 2 -- invalid, tolerances 15 to 36, 244 too much volume at r 2.
 p474 = Part.read(os.path.join(MODELS, "issue474_fillet003_base.brep"))
-for r, vol in ((0.3, 1988.9079), (0.8, 1989.1088), (2.0, 1990.2561)):
+for r, vol in ((0.3, 1988.9101), (0.8, 1989.1235), (2.0, 1990.2561)):
     fillet_case("issue474_f003_e6_r%g" % r, p474, 6, r, "pass", vol, 0.05)
 
 # The same foot made small: an arm (a prism of a quadrilateral) fused to a
