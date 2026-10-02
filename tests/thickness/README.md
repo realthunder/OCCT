@@ -327,6 +327,42 @@ the same every run, not that it is right. The boss and the box with a blind
 hole settled on an invalid solid until sec 27.89's loop fixes; all three are
 valid now, the boss and the box with the hole at upstream's volumes.
 
+## The sweep (2026-10-02, sec 27.106)
+
+The suite pins chosen cases; the sweep covers the ground between them: 16
+solids, every face removed in turn, +1 and -1, intersection off and on, the
+Arc and the Intersection join -- 712 runs. It is what found most of the
+faults above, and it lived in a scratch directory until now.
+
+```
+sweep/sweep.sh out.txt            # the fork as built; about two minutes
+sweep/sweep.sh up.txt <libdir>    # another build's TKBool/TKOffset preloaded
+python3 sweep/check.py out.txt    # exit 1 unless every run is right
+```
+
+`check.py` judges a run by `sweep/reference.txt`: the volume to 2e-3, the
+number of solids and of shells, or a refusal, and the input left alone. The
+sweep used to be judged by a ratio -- valid, closed, a volume plausible for
+a skin -- which passed what it should not have: a lip of 382.017 where
+422.796 is right, 577.918, and 307.955 beside 307.1946. Every reference
+line says where its value comes from:
+
+| | Runs | The value is |
+|---|---|---|
+| `U` | 422 | what upstream's chain gives too: two implementations agree |
+| `H` | 150 | worked by hand in `sweep/hand.py`, from the closing and join rules the fixes settled; the formulas are there |
+| `S` | 120 | the reference volume of a case of `run_tests.py`, worked by hand there (matched by value, not by case) |
+| `R` | 20 | a ruling: a sphere's or a torus's one face removed is refused (16); the holed cone's top inward is a skin and a sealed void (4) |
+
+The fork is right on 712 of 712; upstream's chain on 424 (the 422, and the
+sealed void with intersection on). `check.py out.txt --write-ref up.txt`
+rebuilds the reference from a sweep of the fork and one of upstream, and
+refuses a run none of the four confirms: a changed value needs a hand value
+or a suite case before it can become the reference.
+
+The sweep has no face closed at a pole and no shape cut across a seam; what
+it does not cover it does not vouch for (sec 27.104, sec 27.106).
+
 ## Pictures
 
 `models/pictures/<case>.png` shows, for each case a fix turned from failing
@@ -347,4 +383,5 @@ tests/thickness/
     Thickness.md     the fixes, before and after, in pictures
     pictures/        before and after, one PNG per fixed case
   pictures/          the tools that make them (make_pictures.sh)
+  sweep/             the 712-run sweep, its reference and its hand values
 ```
