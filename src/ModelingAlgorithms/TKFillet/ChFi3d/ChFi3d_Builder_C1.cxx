@@ -808,11 +808,43 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
           break;
         }
       }
+      // An arc of a wall kept in tangent pieces reaches Vtx along its other
+      // face through the pieces: it is on Vtx as the whole wall's would be,
+      // and the edge of Vtx it continues as stands for it.
+      TopoDS_Edge EV1 = CV1.Arc(), EV2 = CV2.Arc();
+      for (int ons = 1; ons <= 2 && sur1 != sur2; ons++)
+      {
+        if (ons == 1 ? sur1 : sur2)
+        {
+          continue;
+        }
+        const TopoDS_Edge& anArc = ons == 1 ? CV1.Arc() : CV2.Arc();
+        const TopoDS_Face  aF    = TopoDS::Face(DStr.Shape(Fd->Index(ons)));
+        TopoDS_Face        anOther;
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(anArc)); itF.More(); itF.Next())
+        {
+          if (!aF.IsSame(itF.Value()))
+          {
+            anOther = TopoDS::Face(itF.Value());
+          }
+        }
+        if (aF.IsNull() || anOther.IsNull())
+        {
+          continue;
+        }
+        const TopoDS_Edge anEV =
+          ChFi3d_EdgeOnSplitToVertex(anArc, aF, anOther, Vtx, myEFMap, myVEMap);
+        if (!anEV.IsNull())
+        {
+          (ons == 1 ? EV1 : EV2)   = anEV;
+          (ons == 1 ? sur1 : sur2) = true;
+        }
+      }
       if (sur1 && sur2)
       {
         TopoDS_Edge E[3];
-        E[0] = CV1.Arc();
-        E[1] = CV2.Arc();
+        E[0] = EV1;
+        E[1] = EV2;
         E[2] = Arcspine;
         if (ChFi3d_EdgeState(E, myEFMap) != ChFiDS_OnDiff)
         {

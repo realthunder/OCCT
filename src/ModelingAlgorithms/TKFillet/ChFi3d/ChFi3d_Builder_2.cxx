@@ -1516,6 +1516,11 @@ bool ChFi3d_Builder::StartSol(
             break;
           }
         }
+        if (c1obstacle
+            && !ChFi3d_EdgeOnSplitToVertex(anArcEdge, F, Fv, Vref, myEFMap, myVEMap).IsNull())
+        {
+          c1obstacle = false;
+        }
       }
       if (c1obstacle)
       {
