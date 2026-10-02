@@ -524,6 +524,31 @@ nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
              7, -1.0, True, 2)
 
+# Every face removed: no face stays to be thickened, and the call is refused.
+# A sphere with its one face removed came back as the sphere itself, "valid"
+# and unhollowed; the torus was refused already (FreeCAD
+# docs/TransactionLog.md sec 27.105).
+def refused_case(name, shape, face_indices, value, inter=False, join=0):
+    before = signature(shape)
+    try:
+        r = shape.makeThickness([shape.Faces[i - 1] for i in face_indices], value, 1e-7,
+                                inter, False, 0, join)
+        report(name, False, False, "answered: %s valid=%s vol=%.4f" % (
+            r.ShapeType, r.isValid(), r.Volume))
+    except Exception:
+        problems = input_problems(shape, before)
+        report(name, not problems, False, "; ".join(problems) if problems else "refused")
+
+
+for value, tag in ((+1.0, "out"), (-1.0, "in")):
+    refused_case("sphere_face_refused_" + tag, Part.makeSphere(5), [1], value)
+    refused_case("torus_face_refused_" + tag, Part.makeTorus(8, 2), [1], value)
+refused_case("sphere_face_join_refused_in", Part.makeSphere(5), [1], -1.0, False, 2)
+refused_case("box_all_faces_refused_in", Part.makeBox(10, 10, 6), [1, 2, 3, 4, 5, 6], -1.0)
+refused_case("box_all_faces_inter_refused_out", Part.makeBox(10, 10, 6), [1, 2, 3, 4, 5, 6], +1.0,
+             True)
+
+
 # The input left as it was. A pad of a ring sector straddling angle 0, its
 # outer arc's face and both caps removed: the loop on the removed cylinder
 # found its test face invalid and ran ShapeFix on it, which shifted the pcurve
