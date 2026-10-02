@@ -4096,7 +4096,12 @@ bool BOPAlgo_PaveFiller::EstimatePaveOnCurve(const int          nV,
   const TopoDS_Vertex&  aV  = *((TopoDS_Vertex*)&myDS->Shape(nV));
   const IntTools_Curve& aIC = aNC.Curve();
   //
-  bIsVertexOnLine = myContext->IsVertexOnLine(aV, aIC, aTolR3D, aT);
+  // The tolerance PutPaveOnCurve() puts the vertex on the curve with. With
+  // less, a vertex at a distance between the two is not replaced here, yet
+  // PutPaveOnCurve() takes it onto the curve and raises its tolerance in
+  // place -- an input's vertex, in non-destructive mode (tests/occ-issues
+  // local04).
+  bIsVertexOnLine = myContext->IsVertexOnLine(aV, aIC, aTolR3D + myFuzzyValue, aT);
   return bIsVertexOnLine;
 }
 
