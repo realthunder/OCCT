@@ -23,23 +23,36 @@ MAC=$([ "$(uname)" = Darwin ] && echo 1 || true)
 if [ -n "$MAC" ]; then
     FCBUILD=${FCBUILD:-$HOME/works/sw/fcad/build/mac-relwithdebinfo-801}
     export OCCT_BUILD=${OCCT_BUILD:-$O/build_conda_rwdi_801}
-    LIBS="libTKFillet.8.0.dylib"
 else
     FCBUILD=${FCBUILD:-$HOME/works/sw/fcad/build/conda-relwithdebinfo-801}
     export OCCT_BUILD=${OCCT_BUILD:-$O/build_conda_relwithdebinfo_801}
-    LIBS="libTKFillet.so.8.0.1"
 fi
 W=$FILLET_WORK
 mkdir -p $W/r $W/old $W/home
 tables() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import cases; $1"; }
 
-# The libraries: "up" and one per stage.
+# The libraries: "up" and one per stage. A directory made earlier is reused
+# when it holds every toolkit its column needs.
+have_libs() {  # have_libs <dir> <toolkit...>
+    local d=$1 tk
+    shift
+    for tk in "$@"; do
+        ls $d/lib/lib$tk.* > /dev/null 2>&1 || return 1
+    done
+}
 UP=$(tables "print(cases.UPSTREAM)")
-[ -e $W/old/up/lib/$LIBS ] || $HERE/mkold.sh $UP $W/old/up > $W/old/up.log
+UPTKS=$(tables "print(' '.join(cases.UPSTREAM_TOOLKITS))")
+if ! have_libs $W/old/up $UPTKS; then
+    # upstream's TKFillet, and the files of other toolkits a fix touched
+    UPFILES="$(cd $O && git diff --name-only $UP HEAD -- src/*/TKFillet)
+             $(tables "print(' '.join(cases.UPSTREAM_EXTRA))")"
+    TOOLKITS="$UPTKS" $HERE/mkold.sh $UP $W/old/up $UPFILES > $W/old/up.log
+fi
 STAGES=$(tables "print(' '.join(cases.STAGES))")
 for st in $STAGES; do
     commit=$(tables "print(cases.STAGES['$st'][0])")
-    [ -e $W/old/$st/lib/$LIBS ] || $HERE/mkold.sh $commit $W/old/$st > $W/old/$st.log
+    tks=$(tables "print(cases.STAGE_TOOLKITS.get('$st', 'TKFillet'))")
+    have_libs $W/old/$st $tks || TOOLKITS="$tks" $HERE/mkold.sh $commit $W/old/$st > $W/old/$st.log
 done
 
 # Run a command with the libraries of <libdir> (or - for the fork as built).
@@ -52,7 +65,8 @@ with_libs() {
         # SIP strips DYLD_* from /bin/bash, which RUN is: set it inside.
         $RUN env DYLD_LIBRARY_PATH=$lib "$@"
     else
-        LD_PRELOAD="$(for l in $LIBS; do printf '%s ' $lib/$l; done)" $RUN "$@"
+        # every toolkit the directory holds
+        LD_PRELOAD="$(ls $lib/*.so.8.0.1 | tr '\n' ' ')" $RUN "$@"
     fi
 }
 
@@ -62,7 +76,7 @@ compute() {
     shift 2
     rm -rf $out
     env "$@" FILLET_TOOLS=$HERE OUT=$out FREECAD_USER_HOME=$W/home \
-        bash -c "$(declare -f with_libs); MAC=$MAC LIBS='$LIBS' RUN=$RUN with_libs $lib $FCBUILD/bin/FreeCADCmd $HERE/compute.py" \
+        bash -c "$(declare -f with_libs); MAC=$MAC RUN=$RUN with_libs $lib $FCBUILD/bin/FreeCADCmd $HERE/compute.py" \
         > $out.txt 2> $out.err
     grep -q '^DONE' $out.txt || { echo "compute $out failed, see $out.err"; exit 1; }
 }

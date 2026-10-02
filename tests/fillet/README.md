@@ -218,11 +218,55 @@ and it is on the boundary of both pieces everywhere. 0.69999 and 0.701
 work; 0.7 and 0.70001 fail to start, 0.7001 comes out invalid. It wants the
 walk to take the tangent pieces as one face, a larger change.
 
+## A corner plate whose boundary curve missed its first surface (realthunder/FreeCAD#962, 2026-10-02)
+
+#962's edge 36 alone -- the arm's side against the block's side at its
+foot, 21 degrees apart -- failed below radius 0.42 with a faulty vertex at
+its top (38.5,27.2,-3.75). Above the arm the block goes on, its side
+y=27.2 two coplanar faces split at the arm's top, and five faces meet at
+the vertex. `PerformIntersectionAtEnd` hands such a corner to
+`PerformMoreThreeCorner`, which fills it with a `GeomPlate` patch. With the
+fillet that narrow (its lines 0.19 r off the edge), one of the patch's
+boundary curves had no projection at all on the plate's first surface, and
+`GeomPlate_BuildPlateSurface::ProjectCurve` read the bounds of the first
+projected piece without asking whether there was one:
+`Standard_NoSuchObject`. A curve without a continuous projection is what
+`Perform` falls back on other first surfaces for -- the plate's
+approximation, then the plane -- and the plane takes all four curves.
+
+Fix `2b9df66c48` (TKGeomAlgo): no projected piece is a null curve, as no
+continuous one is. The patch fits within 1.4e-3, the fillet is valid at
+every radius, and the volume it takes grows with r^2 as the sliver's does
+-- measured on the result cut down to a box around the edge, since the
+whole shape's volume (11584) is too large for GProp to see 0.002 in.
+
+| Case | What it covers |
+|------|----------------|
+| `issue962_e36_r{0.1,0.3}` | the edge in #962's Pocket002: valid (no volume: the change is below GProp's precision on the whole shape) |
+| `arm_on_tall_block_r{0.1,0.3,2}` | the same corner made small: the arm fused to a block that goes on above it, the block's side split at the arm's top |
+
+Checked against the fix: the every-edge sweep, 25 shapes: 2 results go from
+an exception to valid (the edge, and the same corner in #962's Chamfer's
+input), 3914 are the same, and 5 go from an exception to an invalid shape
+-- #474 Fillet003's edge 52 at every radius, and #876's front edge at
+radius 2 in both of its fillets. Those corners now get past the plate and
+fail further on (in #474 a second plate fits only to 0.058); the sweep
+holds 140 other invalid results, which is how this API fails as often as
+it throws. PartDesign's Fillet reports either as an error; `Part::Fillet`
+and `makeFillet` hand the invalid shape back. FreeCAD's `TestPartApp`
+(139), `TestPartDesignApp` (77) and `TestSurfaceApp` pass.
+
+Found on the way, open (XFAIL): the same corner with the block's side one
+face, `arm_on_tall_block_whole_r0.5`, is invalid at every radius, with the
+fork before the fix as after -- the arm's top is extended past the block's
+wall by the fillet's reach (0.1875 r) and its wire crosses itself.
+
 ## Known broken (XFAIL)
 
 | Case | Symptom |
 |------|---------|
 | `slot_split_wall_r0.7`, `fin_on_block_wall_r0.7` | `StdFail_NotDone` (no start for the walk): the radius equal to the wall's piece, the fillet's line on the wall running along the split |
+| `arm_on_tall_block_whole_r0.5` | invalid at every radius: #962's edge 36 corner with the block's side one face; the arm's top, extended under the block's wall, crosses itself |
 | `seam_end_bottom_r2` | invalid, where its mirror image across z=5 (`seam_end_top_r2`) is valid: at radius 2 the fillet's end reaches the far end of the cylinder's face too (u = pi/2, the vertex at (0, 2)) |
 | `mirror_top_r2` | `StdFail_NotDone`, the same reach on the side without the seam |
 
@@ -230,7 +274,9 @@ walk to take the tangent pieces as one face, a larger change.
 
 `models/pictures/<case>.png` shows, for each case a fix turned from failing
 to passing, three results side by side -- upstream's `TKFillet` files at the
-fork's base (`91be8c4c71`), the fork just before the fix, the fork now --
+fork's base (`91be8c4c71`), with the files of other toolkits a fix changed
+(`UPSTREAM_EXTRA` in `pictures/cases.py`), the fork just before the fix, the
+fork now --
 each whole and zoomed on the fillet's end. `models/Fillet.md` walks
 through them. `pictures/make_pictures.sh` makes them again, on Linux or
 macOS; add a case to `pictures/cases.py`, with its stage, to picture it.

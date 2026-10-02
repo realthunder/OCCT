@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cases import CASES, EDGES, NAMES, STAGES, UVLABEL, VIEW
+from cases import CASES, EDGES, NAMES, STAGES, UVLABEL, VIEW, ZOOM
 
 P = os.environ["FILLET_WORK"]
 R = {k: json.load(open(P + "/r/%s/results.json" % k)) for k in os.listdir(P + "/r")
@@ -33,7 +33,7 @@ if sys.argv[1] == "jobs":
             ghost = not os.path.exists(f)
             # the whole shape, then the fillet's end
             for row, (center, height) in enumerate((VIEW[sk],
-                                                    (focus, 4 * radius + 3))):
+                                                    (focus, ZOOM.get(name, 4 * radius + 3)))):
                 panels.append(dict(brep=inp if ghost else f, ghost=ghost, mark=not ghost,
                                    eye=list(look), center=list(center), height=height,
                                    png=P + "/png/%s.%s.%d.png" % (name, v, row)))
@@ -82,7 +82,8 @@ for name in sys.argv[2:] or list(CASES):
         on = "%d edges (%s)" % (len(ends), EDGES.get(name, "see cases.py"))
     else:
         on = "the edge %s-%s" % (ends[0], ends[1])
-    desc = "%s; fillet r%g on %s; expected %.4f  (fix: %s)" % (NAMES[sk], radius, on, ref, fix)
+    expect = "expected %.4f" % ref if ref is not None else "expected a valid solid"
+    desc = "%s; fillet r%g on %s; %s  (fix: %s)" % (NAMES[sk], radius, on, expect, fix)
     words, line, lines = desc.split(" "), "", []
     for wd in words:
         if d.textlength(line + " " + wd, font=F) > 3 * W - 20 and line:

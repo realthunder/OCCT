@@ -17,9 +17,12 @@ Three columns:
 
 - **upstream OCCT 8.0.1** -- upstream's `TKFillet` files at the fork's base
   (`91be8c4c71`), compiled into a scratch `TKFillet` and loaded ahead of the
-  installed one, the rest of the fork as it is.
-- **fork before** -- the fork's `TKFillet` at the commit just before the fix
-  (named in the heading), the same way.
+  installed one, the rest of the fork as it is -- but for the files of other
+  toolkits a fix here changed, which are upstream's too (`GeomPlate`'s, in
+  `TKGeomAlgo`).
+- **fork before** -- the fork's `TKFillet` (and, for a fix outside it, that
+  toolkit) at the commit just before the fix (named in the heading), the
+  same way.
 - **fork after** -- the fork now.
 
 Three rows:
@@ -166,12 +169,39 @@ Still open: a radius equal to the narrow piece's width, 0.7, where the
 fillet's line on the wall runs along the split itself (`slot_split_wall_r0.7`,
 `fin_on_block_wall_r0.7`, XFAIL).
 
+### A corner plate whose boundary curve missed its first surface (`2b9df66c48`, realthunder/FreeCAD#962)
+
+#962's edge 36 alone, below radius 0.42. The edge is shallow -- the arm's
+side meets the block's side at 21 degrees -- and at its top five faces
+meet: the arm's top, the block's wall above the arm, and the block's side
+going on upward as a second, coplanar face. The fillet fills that corner
+with a `GeomPlate` patch. At small radii one of the patch's boundary
+curves had no projection at all on the plate's first surface, and the
+projection threw where the plate would have tried another surface: upstream
+and the fork alike, both columns show the input. The fix is in
+`GeomPlate` (`TKGeomAlgo`), so these two columns carry upstream's and the
+earlier fork's `GeomPlate` as well. Now the plate falls back on a plane, and
+the patch closes the fillet's end: in the zoom, the narrow fillet strip up
+the edge and the small patch at its top; in the third row, the patch's
+outline, closed, with a hook where two of its boundary curves meet. The
+small block is the same corner made small; it failed the same way.
+
+![issue962_e36_r0.3](pictures/issue962_e36_r0.3.png)
+![arm_on_tall_block_r0.3](pictures/arm_on_tall_block_r0.3.png)
+
+The fix lets five other fillets of the sweep get past their plate, and they
+fail further on, as an invalid shape instead of an exception (see
+`../README.md`). Also open: the same corner with the block's side one face
+(`arm_on_tall_block_whole_r0.5`, XFAIL), invalid at every radius, before
+the fix as after.
+
 ## Making the pictures
 
 `tests/fillet/pictures/make_pictures.sh` does it all, on Linux or macOS;
 a few minutes, most of it building one library per column:
 
-1. `mkold.sh` builds scratch `TKFillet` libraries -- upstream's files that
+1. `mkold.sh` builds scratch `TKFillet` libraries (and `TKGeomAlgo` where a
+   column needs it) -- upstream's files that
    differ from the fork, at `91be8c4c71`, and the fork's sources at each
    stage's "before" commit (`STAGES` in `cases.py`) -- from the build tree's
    own compile commands (`oldbuild.py`).

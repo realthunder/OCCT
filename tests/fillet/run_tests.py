@@ -271,6 +271,40 @@ for r in (0.5, 0.8, 1.5):
     alone = sum(ab.Volume - ab.makeFillet(r, [ab.Edges[i - 1]]).Volume for i in foot)
     fillet_case("arm_on_block_foot_r%g" % r, ab, foot, r, "pass", ab.Volume - alone)
 
+# Edge 36 alone at its top (38.5,27.2,-3.75): the arm's side meets the block's
+# side at 21 degrees, and above the arm the block goes on, its side y=27.2 two
+# coplanar faces split at the arm's top. The corner is a GeomPlate patch; below
+# radius 0.42 a curve of its boundary had no projection on the plate's first
+# surface, and the projection threw where Perform tries another surface. The
+# volumes taken are too small for the whole shape's (about 0.002 of 11584):
+# validity is the check.
+e36 = edge_between(p2, (38.5, 27.2, -3.75), (38.5, 27.2, -9.75))
+for r in (0.1, 0.3):
+    fillet_case("issue962_e36_r%g" % r, p2, e36, r, "pass")
+
+
+def arm_on_tall_block(split=True):
+    pts = [V(17.356, -9.425, -9.75), V(38.5, 10.2, -9.75), V(38.5, 27.2, -9.75),
+           V(10.898, 16.471, -9.75)]
+    arm = Part.Face(Part.makePolygon(list(reversed(pts)) + [pts[-1]])).extrude(V(0, 0, 6))
+    bp = [V(38.5, 27.2, -9.75), V(38.5, 10.2, -9.75), V(50, 10.2, -9.75), V(50, 27.2, -9.75)]
+    s = Part.Face(Part.makePolygon(bp + [bp[0]])).extrude(V(0, 0, 23.75)).fuse(arm)
+    if split:
+        cut = Part.LineSegment(V(38.5, 27.2, -3.75), V(50, 27.2, -3.75)).toShape()
+        s = s.generalFuse([cut])[0].Solids[0]
+    return s
+
+
+atb = arm_on_tall_block()
+top = edge_between(atb, (38.5, 27.2, -3.75), (38.5, 27.2, -9.75))
+for r in (0.1, 0.3, 2.0):
+    fillet_case("arm_on_tall_block_r%g" % r, atb, top, r, "pass")
+# the block's side one face: invalid at every radius, the arm's top extended
+# under the block's wall past the edge between them
+atb = arm_on_tall_block(split=False)
+fillet_case("arm_on_tall_block_whole_r0.5", atb,
+            edge_between(atb, (38.5, 27.2, -3.75), (38.5, 27.2, -9.75)), 0.5, "xfail")
+
 # A fin padded flush with the block's side: the outer face is two faces, the
 # fin's and the block's, split at the floor's height, and the fillet's line on
 # the fin's face ends on that split. It must take what it takes from the slot.

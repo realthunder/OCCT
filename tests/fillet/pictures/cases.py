@@ -16,9 +16,18 @@ STAGES = {
     "s962": ("d8ba4ad7eb", "cf96757c36"),
     "s962b": ("1482f7d4e2", "b38f0d910c"),
     "s962c": ("e3a3779048", "2ac4fee0c6"),
+    "s962d": ("d4f71dfae3", "2b9df66c48"),
 }
-# Upstream: the toolkit's files that differ from the fork, at the fork's base.
+# stage -> the toolkits its "before" library is built of, when not TKFillet alone
+STAGE_TOOLKITS = {
+    "s962d": "TKFillet TKGeomAlgo",
+}
+# Upstream: the toolkit's files that differ from the fork, at the fork's base --
+# TKFillet's all, and of the other toolkits only the files a fix of these
+# changed (the fork's TKGeomAlgo differs from upstream's in more than that).
 UPSTREAM = "91be8c4c71"
+UPSTREAM_TOOLKITS = ["TKFillet", "TKGeomAlgo"]
+UPSTREAM_EXTRA = ["src/ModelingAlgorithms/TKGeomAlgo/GeomPlate/GeomPlate_BuildPlateSurface.cxx"]
 
 
 def _brep(name):
@@ -48,6 +57,19 @@ def _fin_wall():
     return _fin().generalFuse([Part.LineSegment(V(9.3, 3, 5), V(9.3, 3, 20)).toShape()])[0].Solids[0]
 
 
+def _arm_on_tall_block():
+    # run_tests.py's arm fused to a block that goes on above it, the block's
+    # side y=27.2 two faces split at the arm's top
+    V = App.Vector
+    pts = [V(17.356, -9.425, -9.75), V(38.5, 10.2, -9.75), V(38.5, 27.2, -9.75),
+           V(10.898, 16.471, -9.75)]
+    arm = Part.Face(Part.makePolygon(list(reversed(pts)) + [pts[-1]])).extrude(V(0, 0, 6))
+    bp = [V(38.5, 27.2, -9.75), V(38.5, 10.2, -9.75), V(50, 10.2, -9.75), V(50, 27.2, -9.75)]
+    s = Part.Face(Part.makePolygon(bp + [bp[0]])).extrude(V(0, 0, 23.75)).fuse(arm)
+    cut = Part.LineSegment(V(38.5, 27.2, -3.75), V(50, 27.2, -3.75)).toShape()
+    return s.generalFuse([cut])[0].Solids[0]
+
+
 def _arm_on_block():
     # run_tests.py's arm fused to a block, the seam of their bottoms from y=27.2 to 10.2
     V = App.Vector
@@ -65,6 +87,7 @@ SHAPES = {
     "fin": _fin,
     "finwall": _fin_wall,
     "armfoot": _arm_on_block,
+    "armtall": _arm_on_tall_block,
 }
 
 
@@ -99,6 +122,9 @@ UVFACE = {
     "finwall": _plane_at("z", 5),
     # the arm's bottom, which holds the seam at x=38.5
     "armfoot": _plane_at("z", -9.75, None, {"x": 38.5}),
+    # the corner's plate at the edge's top
+    "armtall": (lambda f: f.Surface.__class__.__name__ == "BSplineSurface"
+                and f.BoundBox.isInside(App.Vector(38.5, 27.2, -3.76))),
 }
 # case -> a third-row face other than its shape's
 UVFACE_CASE = {
@@ -106,6 +132,9 @@ UVFACE_CASE = {
     "issue962_e50_r0.8": _plane_at("y", 10.2, {"x": 40.0}, {"x": 50.0}),
     # the arm's bottom, which holds the seam at x=38.5
     "issue962_fillet_r0.8": _plane_at("z", -9.75, None, {"x": 38.5}),
+    # the corner's plate at edge 36's top
+    "issue962_e36_r0.3": (lambda f: f.Surface.__class__.__name__ == "BSplineSurface"
+                          and f.BoundBox.isInside(App.Vector(38.5, 27.2, -3.76))),
 }
 NAMES = {
     "boxcyl": "10 box with a 3/4 cylinder r2 at a corner (#523, Part Connect)",
@@ -115,6 +144,8 @@ NAMES = {
     "fin": "10x10x5 block with a 10x3x9 fin padded flush with its side x=10",
     "finwall": "the fin flush with the block, its wall two faces split 0.7 from the outer face",
     "armfoot": "an arm fused to an 11.5x17x6 block, their bottoms two faces split along x=38.5",
+    "armtall": "the arm fused to an 11.5x17x23.75 block, the block's side y=27.2 two faces "
+               "split at the arm's top",
 }
 # shape -> the whole shape's view: (center, height)
 VIEW = {
@@ -124,6 +155,7 @@ VIEW = {
     "fin": ((5, 5, 7), 20.0),
     "finwall": ((5, 5, 7), 20.0),
     "armfoot": ((30, 9, -6.75), 42.0),
+    "armtall": ((30, 9, 2), 46.0),
 }
 # shape -> (what the third row's face is, whether to draw u gridlines at pi/2)
 UVLABEL = {
@@ -133,6 +165,7 @@ UVLABEL = {
     "fin": ("the fin's outer face", False),
     "finwall": ("the block's top", False),
     "armfoot": ("the arm's bottom", False),
+    "armtall": ("the corner's plate", False),
 }
 _FOOT = [((38.5, 27.2, -3.75), (38.5, 27.2, -9.75)), ((38.5, 10.2, -3.75), (38.5, 10.2, -9.75))]
 _FILLET962 = [((50, 10.2, -3.75), (50, 10.2, 22)), ((50, 13.7, 22), (50, 13.7, 14)),
@@ -166,6 +199,15 @@ CASES = {
                              (38.5, 10.2, -9.75), (-0.3, -1, -0.8)),
     "fin_on_block_wall_r0.8": ("s962c", "finwall", ((10, 3, 5), (10, 3, 14)), 0.8, 768.7639,
                                (10, 3, 5), (1, 0.9, 0.8)),
+    "issue962_e36_r0.3": ("s962d", "p962", ((38.5, 27.2, -3.75), (38.5, 27.2, -9.75)), 0.3,
+                          None, (38.5, 27.2, -3.75), (-0.4, 1, 0.5)),
+    "arm_on_tall_block_r0.3": ("s962d", "armtall", ((38.5, 27.2, -3.75), (38.5, 27.2, -9.75)),
+                               0.3, None, (38.5, 27.2, -3.75), (-0.4, 1, 0.5)),
+}
+# case -> the zoomed row's height, when 4 r + 3 shows too little (a shallow edge)
+ZOOM = {
+    "issue962_e36_r0.3": 0.5,
+    "arm_on_tall_block_r0.3": 0.5,
 }
 # multi-edge case -> what its edges are, for the picture's heading
 EDGES = {
