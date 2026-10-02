@@ -958,6 +958,37 @@ void BRepOffset_Analyse::TreatTangentCaps(
         {
           aFV[i] = TopoDS::Face(NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator(aMF).Value());
         }
+        else if (aMF.Extent() > 1)
+        {
+          // More than one: the face at the end is split too -- a box fused of
+          // two, not refined, every face across the joint in two pieces. The
+          // closure runs into the cap, so it meets the piece beside the cap:
+          // the one sharing the cap's other edge at this vertex.
+          for (TopExp_Explorer anExpC(aCF, TopAbs_EDGE); anExpC.More() && !isOk; anExpC.Next())
+          {
+            const TopoDS_Edge& aEO = TopoDS::Edge(anExpC.Current());
+            if (aEO.IsSame(aEC) || !myAncestors.Contains(aEO))
+            {
+              continue;
+            }
+            TopoDS_Vertex aO1, aO2;
+            TopExp::Vertices(aEO, aO1, aO2);
+            if (!aV[i].IsSame(aO1) && !aV[i].IsSame(aO2))
+            {
+              continue;
+            }
+            for (NCollection_List<TopoDS_Shape>::Iterator itF(Ancestors(aEO)); itF.More();
+                 itF.Next())
+            {
+              if (aMF.Contains(itF.Value()))
+              {
+                aFV[i] = TopoDS::Face(itF.Value());
+                isOk   = true;
+                break;
+              }
+            }
+          }
+        }
       }
       if (!isOk)
       {

@@ -1974,6 +1974,59 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     {
       myOffset = 0;
     }
+    // The shape itself is no thick solid. Where the offset never met a
+    // removed face, the face was rebuilt whole and the result was the input,
+    // unhollowed and "valid": a cone with its apex, a face tangent to a
+    // coplanar neighbour. Inward the skin is less than the shape; either way,
+    // a result of the shape's own faces and volume is the shape. A solid
+    // only: an open shell (a piece, MakeThickSolidByPieces) has no volume to
+    // compare with.
+    if (TopExp_Explorer(myInitialShape, TopAbs_SOLID).More())
+    {
+      GProp_GProps aGRes, aGInit;
+      BRepGProp::VolumeProperties(myOffsetShape, aGRes);
+      BRepGProp::VolumeProperties(myInitialShape, aGInit);
+      const double aVRes = std::abs(aGRes.Mass()), aVInit = std::abs(aGInit.Mass());
+      const double aVTol = 1.e-7 * std::max(aVInit, 1.);
+      // Outward the skin can weigh what the shape does (a box 10 x 8 x 6 by
+      // 1, no face removed, has a skin of 480 too), so there the removed
+      // faces must be back as well, each whole.
+      bool isUnhollowed = myOffset < 0. && aVRes > aVInit - aVTol;
+      if (!isUnhollowed && std::abs(aVRes - aVInit) < aVTol)
+      {
+        isUnhollowed = NbOF == NbF;
+        if (!isUnhollowed)
+        {
+          isUnhollowed = true;
+          for (int iF = 1; iF <= myFaces.Extent() && isUnhollowed; ++iF)
+          {
+            const TopoDS_Shape& aRF = myFaces(iF);
+            GProp_GProps        aGF, aGIm;
+            BRepGProp::SurfaceProperties(aRF, aGF);
+            double anImArea = 0.;
+            if (myImageOffset.HasImage(aRF))
+            {
+              for (NCollection_List<TopoDS_Shape>::Iterator itIm(myImageOffset.Image(aRF));
+                   itIm.More();
+                   itIm.Next())
+              {
+                BRepGProp::SurfaceProperties(itIm.Value(), aGIm);
+                anImArea += aGIm.Mass();
+                aGIm = GProp_GProps();
+              }
+            }
+            isUnhollowed = std::abs(anImArea - aGF.Mass()) < 1.e-7 * std::max(aGF.Mass(), 1.);
+          }
+        }
+      }
+      if (aVInit > aVTol && isUnhollowed)
+      {
+        myDone  = false;
+        myError = BRepOffset_UnknownError;
+        myOffsetShape.Nullify();
+        return;
+      }
+    }
   }
 
   if (myOffset > 0 && !isOriented)
