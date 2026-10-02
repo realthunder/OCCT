@@ -3630,7 +3630,7 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF, TopoDS_Face* theTwin = nu
   occ::handle<Geom_Surface> aS = BRep_Tool::Surface(theF, aLoc);
   // The twin of a face that is placed lies in the shape's own space, on the
   // sphere as placed.
-  if (aS.IsNull() || (!theTwin && !aLoc.IsIdentity())
+  if (aS.IsNull()
       || std::abs(aLoc.Transformation().ScaleFactor() - 1.) > Precision::Confusion())
   {
     return false;
@@ -3801,6 +3801,13 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF, TopoDS_Face* theTwin = nu
     aPos.YReverse();
   }
   occ::handle<Geom_SphericalSurface> aNewS = new Geom_SphericalSurface(aPos, aSph.Radius());
+  // The face's own, of a shape that is placed, stays under its location: the
+  // sphere is worked out as placed and kept as it lies before that.
+  occ::handle<Geom_Surface> aOwnS = aNewS;
+  if (!theTwin && !aLoc.IsIdentity())
+  {
+    aOwnS = occ::down_cast<Geom_Surface>(aNewS->Transformed(aLoc.Transformation().Inverted()));
+  }
   // A twin made before, for an earlier thickness of the same shape: its edges
   // hold their pcurves on that turned sphere already, and take no more. The
   // axis found is the same every time.
@@ -3922,7 +3929,7 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF, TopoDS_Face* theTwin = nu
       continue;
     }
     aBB.UpdateEdge(aE, aNullPCurve, theF, BRep_Tool::Tolerance(aE));
-    aBB.UpdateEdge(aE, aPCurves(aE), aNewS, aLoc, BRep_Tool::Tolerance(aE));
+    aBB.UpdateEdge(aE, aPCurves(aE), aOwnS, aLoc, BRep_Tool::Tolerance(aE));
     aBB.Range(aE, aF, aL);
   }
   if (theTwin)
@@ -3935,7 +3942,7 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF, TopoDS_Face* theTwin = nu
     theTwin->Orientation(theF.Orientation());
     return true;
   }
-  aBB.UpdateFace(theF, aNewS, aLoc, aTolF);
+  aBB.UpdateFace(theF, aOwnS, aLoc, aTolF);
   return true;
 }
 

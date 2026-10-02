@@ -4002,9 +4002,20 @@ void BRepOffset_MakeOffset::CorrectConicalFaces()
       BRep_Tool::Range(CurEdge, f, l);
       if (isFirstFace)
       {
-        gp_Vec aVec1(fPnt, mPnt);
-        gp_Vec aVec2(fPnt, lPnt);
-        gp_Vec aNorm   = aVec1.Crossed(aVec2);
+        // The circle's normal, from its start and the points a third and two
+        // thirds along: the end of a whole circle is its start, and the
+        // normal taken from start, middle and end was whatever the rounding
+        // left of their difference -- right for a cone as it is made, and no
+        // vector at all for one that had been moved.
+        double                          aFC, aLC;
+        const occ::handle<Geom2d_Curve> aDegPC =
+          BRep_Tool::CurveOnSurface(CurEdge, aFace, aFC, aLC);
+        const occ::handle<Geom_Surface> aDegS  = BRep_Tool::Surface(aFace);
+        const gp_Pnt2d                  aP2d1  = aDegPC->Value(aFC + (aLC - aFC) / 3.);
+        const gp_Pnt2d                  aP2d2  = aDegPC->Value(aFC + 2. * (aLC - aFC) / 3.);
+        gp_Vec                          aVec1(fPnt, aDegS->Value(aP2d1.X(), aP2d1.Y()));
+        gp_Vec                          aVec2(fPnt, aDegS->Value(aP2d2.X(), aP2d2.Y()));
+        gp_Vec                          aNorm = aVec1.Crossed(aVec2);
         gp_Pnt theApex = BRep_Tool::Pnt(anApex);
         gp_Vec ApexToFpnt(theApex, fPnt);
         gp_Vec Ydir = aNorm ^ ApexToFpnt;
@@ -6333,15 +6344,19 @@ bool BRepOffset_MakeOffset::CheckInputData(const Message_ProgressRange& theRange
       return false;
     }
 
-    // Get degenerated points, to avoid check them.
+    // Get degenerated points, to avoid check them. They are compared with
+    // points of the surface as it lies before the face's location, and are
+    // taken back there: left as placed, the pole of a shape that had been
+    // moved was not known for one, and the shape was refused for its normal.
     NCollection_DynamicArray<gp_Pnt> aBad3dPnts;
     TopExp_Explorer                  anExpFE(aF, TopAbs_EDGE);
+    const gp_Trsf                    aToSurf = L.Transformation().Inverted();
     for (; anExpFE.More(); anExpFE.Next())
     {
       const TopoDS_Edge& aE = TopoDS::Edge(anExpFE.Current());
       if (BRep_Tool::Degenerated(aE))
       {
-        aBad3dPnts.Append(BRep_Tool::Pnt((TopExp::FirstVertex(aE))));
+        aBad3dPnts.Append(BRep_Tool::Pnt((TopExp::FirstVertex(aE))).Transformed(aToSurf));
       }
     }
 

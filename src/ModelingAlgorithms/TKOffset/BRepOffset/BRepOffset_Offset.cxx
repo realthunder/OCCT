@@ -806,6 +806,16 @@ void BRepOffset_Offset::Init(
     } // end of if (!DegEdges.IsEmpty())
   } // end of processing offsets of faces with possible degenerated edges
 
+  // The apexes were taken on the surface as it lies before the face's
+  // location, and become vertices of the offset face: they go where the face
+  // is. Left behind, the offset of a cone that had been moved ran from its
+  // base to the apex of the cone before the move.
+  if (!L.IsIdentity() && !IsTransformed)
+  {
+    MinApex.Transform(L.Transformation());
+    MaxApex.Transform(L.Transformation());
+  }
+
   // find the PCurves of the edges of <Faces>
 
   BRep_Builder myBuilder;
