@@ -2496,17 +2496,62 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
           }
         }
 
+        // On a periodic curve the intersection gives the parameter in the
+        // curve's first period, which need not be the edge's: an arc that
+        // starts on the period's end, cut a little past its own end, was
+        // cut to the rest of the circle (a third of a dome, a side removed
+        // inward: its neighbour's offset, extended to the removed face).
+        auto toRange = [](const occ::handle<Geom2d_Curve>& theC,
+                          const TopoDS_Edge&               theE,
+                          const TopoDS_Face&               theF,
+                          double&                          theU) {
+          double aF, aL;
+          BRep_Tool::Range(theE, theF, aF, aL);
+          auto aGap = [&](const double theV) {
+            return theV < aF ? aF - theV : (theV > aL ? theV - aL : 0.);
+          };
+          if (theC.IsNull() || !theC->IsPeriodic())
+          {
+            return aGap(theU);
+          }
+          // In the edge's range, or the nearest to it of the turns beyond;
+          // how far beyond is returned.
+          const double aPeriod = theC->Period();
+          while (aGap(theU + aPeriod) < aGap(theU) - Precision::PConfusion())
+          {
+            theU += aPeriod;
+          }
+          while (aGap(theU - aPeriod) < aGap(theU) - Precision::PConfusion())
+          {
+            theU -= aPeriod;
+          }
+          return aGap(theU);
+        };
         if (!YaSol)
         {
           Geom2dInt_GInter Inter(AC1, AC2, TolConf, TolConf);
 
           if (!Inter.IsEmpty() && Inter.NbPoints() > 0)
           {
+            // Of several points, the one nearest the two edges as they are:
+            // a line crosses a circle twice, and the first point given can
+            // be the far one.
             YaSol        = true;
             aCurrentFind = true;
-            U1           = Inter.Point(1).ParamOnFirst();
-            U2           = Inter.Point(1).ParamOnSecond();
-            P2d          = Inter.Point(1).Value();
+            double aBest = Precision::Infinite();
+            for (int ip = 1; ip <= Inter.NbPoints(); ++ip)
+            {
+              double       aU1  = Inter.Point(ip).ParamOnFirst();
+              double       aU2  = Inter.Point(ip).ParamOnSecond();
+              const double aOut = toRange(C1, E1, F, aU1) + toRange(C2, E2, F, aU2);
+              if (aOut < aBest - Precision::PConfusion())
+              {
+                aBest = aOut;
+                U1    = aU1;
+                U2    = aU2;
+                P2d   = Inter.Point(ip).Value();
+              }
+            }
           }
           else if (!Inter.IsEmpty() && Inter.NbSegments() > 0)
           {
@@ -2536,6 +2581,8 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
         }
         if (aCurrentFind)
         {
+          toRange(C1, E1, F, U1);
+          toRange(C2, E2, F, U2);
           gp_Pnt        P = S->Value(P2d.X(), P2d.Y());
           TopoDS_Vertex V = BRepLib_MakeVertex(P);
           V.Orientation(TopAbs_INTERNAL);
