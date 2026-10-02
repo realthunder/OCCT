@@ -2870,7 +2870,10 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
   for (; nb <= nbface; nb++)
   {
     extend = false;
-    E2     = Edge[nb];
+    // the fillet meets the line of an edge between two faces beyond the
+    // edge's end at Vtx: the faces grow by the piece of that line from Vtx
+    bool pastVtx = false;
+    E2           = Edge[nb];
     if (!nb)
     {
       F = F1;
@@ -3176,6 +3179,29 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
             }
             cfacemoins1->D0(paredge2, pfac2);
             cface->D0(paredge2, pint);
+            // A point past the edge's end, given to the edge, would lengthen
+            // it -- and a second fillet cutting the same edge at its other end
+            // (a seam of coplanar faces under both) would then leave both
+            // versions of the edge. Across a seam of tangent faces, the piece
+            // beyond Vtx is a curve of its own.
+            if (nb != nbface && ChFi3d::IsTangentFaces(E2, F, Face[nb]))
+            {
+              double aF, aL;
+              BRep_Tool::Range(E2, aF, aL);
+              const gp_Pnt  aP    = C->Value(paredge2);
+              const double  aTolE = BRep_Tool::Tolerance(E2);
+              TopoDS_Vertex aVF, aVL;
+              TopExp::Vertices(E2, aVF, aVL);
+              if ((paredge2 < aF && aVF.IsSame(Vtx) && aP.Distance(BRep_Tool::Pnt(aVF)) > aTolE)
+                  || (paredge2 > aL && aVL.IsSame(Vtx)
+                      && aP.Distance(BRep_Tool::Pnt(aVL)) > aTolE))
+              {
+                pastVtx = true;
+                cint    = C;
+                C2dint1 = cfacemoins1;
+                C2dint2 = cface;
+              }
+            }
           }
           else if (C2dint1.IsNull() || C2dint2.IsNull())
           {
@@ -3560,7 +3586,7 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           ori = TopAbs_REVERSED;
         }
       }
-      if (!extend && !(oneintersection1 || oneintersection2))
+      if (!extend && !pastVtx && !(oneintersection1 || oneintersection2))
       {
         int Iarc2      = DStr.AddShape(Edge[nb]);
         Interfedge[nb] = ChFi3d_FilPointInDS(ori, Iarc2, indpoint2, paredge2);
@@ -3689,7 +3715,10 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         else
         {
           indice = DStr.AddShape(Face[nb - 1]);
-          DStr.SetNewSurface(Face[nb - 1], Sfacemoins1);
+          if (!pastVtx)
+          {
+            DStr.SetNewSurface(Face[nb - 1], Sfacemoins1);
+          }
         }
         //// for periodic 3d curves ////
         if (cad.IsPeriodic() && !C2dint1.IsNull())
@@ -3760,7 +3789,10 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         else
         {
           indice = DStr.AddShape(Face[nb]);
-          DStr.SetNewSurface(Face[nb], Sface);
+          if (!pastVtx)
+          {
+            DStr.SetNewSurface(Face[nb], Sface);
+          }
           if (Face[nb].Orientation() == Face[nb - 1].Orientation())
           {
             orient = TopAbs::Reverse(orient);
