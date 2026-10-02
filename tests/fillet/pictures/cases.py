@@ -17,6 +17,7 @@ STAGES = {
     "s962b": ("1482f7d4e2", "b38f0d910c"),
     "s962c": ("e3a3779048", "2ac4fee0c6"),
     "s962d": ("d4f71dfae3", "2b9df66c48"),
+    "s962e": ("6d61205cc1", "fb9200b0fd"),
 }
 # stage -> the toolkits its "before" library is built of, when not TKFillet alone
 STAGE_TOOLKITS = {
@@ -88,6 +89,7 @@ SHAPES = {
     "finwall": _fin_wall,
     "armfoot": _arm_on_block,
     "armtall": _arm_on_tall_block,
+    "p474": _brep("issue474_fillet003_base.brep"),
 }
 
 
@@ -104,6 +106,18 @@ def _plane_at(axis, value, lo=None, hi=None):
         c = b.Center
         return all(lo[a] <= getattr(c, a) for a in lo or {}) and all(
             getattr(c, a) <= hi[a] for a in hi or {})
+    return pick
+
+
+def _plate_near(x, y, z, reach=1.0):
+    """A corner's plate: a B-spline face whose vertices all lie within <reach>
+    of the corner (x, y, z). Not its bounding box: a plate that went wrong
+    has its poles far out, the box with them."""
+    def pick(f):
+        if f.Surface.__class__.__name__ != "BSplineSurface":
+            return False
+        p = App.Vector(x, y, z)
+        return all(v.Point.distanceToPoint(p) <= reach for v in f.Vertexes)
     return pick
 
 
@@ -125,6 +139,8 @@ UVFACE = {
     # the corner's plate at the edge's top
     "armtall": (lambda f: f.Surface.__class__.__name__ == "BSplineSurface"
                 and f.BoundBox.isInside(App.Vector(38.5, 27.2, -3.76))),
+    # the corner's plate at edge 6's top
+    "p474": _plate_near(-13, 0, 13),
 }
 # case -> a third-row face other than its shape's
 UVFACE_CASE = {
@@ -135,6 +151,8 @@ UVFACE_CASE = {
     # the corner's plate at edge 36's top
     "issue962_e36_r0.3": (lambda f: f.Surface.__class__.__name__ == "BSplineSurface"
                           and f.BoundBox.isInside(App.Vector(38.5, 27.2, -3.76))),
+    # the corner's plate at edge 56's foot
+    "issue962_e56_r0.8": _plate_near(38.5, 27.2, -3.75),
 }
 NAMES = {
     "boxcyl": "10 box with a 3/4 cylinder r2 at a corner (#523, Part Connect)",
@@ -146,6 +164,7 @@ NAMES = {
     "armfoot": "an arm fused to an 11.5x17x6 block, their bottoms two faces split along x=38.5",
     "armtall": "the arm fused to an 11.5x17x23.75 block, the block's side y=27.2 two faces "
                "split at the arm's top",
+    "p474": "#474's Fillet003 input (a PartDesign body)",
 }
 # shape -> the whole shape's view: (center, height)
 VIEW = {
@@ -156,6 +175,7 @@ VIEW = {
     "finwall": ((5, 5, 7), 20.0),
     "armfoot": ((30, 9, -6.75), 42.0),
     "armtall": ((30, 9, 2), 46.0),
+    "p474": ((-1.4, 0, 24.3), 34.0),
 }
 # shape -> (what the third row's face is, whether to draw u gridlines at pi/2)
 UVLABEL = {
@@ -166,6 +186,7 @@ UVLABEL = {
     "finwall": ("the block's top", False),
     "armfoot": ("the arm's bottom", False),
     "armtall": ("the corner's plate", False),
+    "p474": ("the corner's plate", False),
 }
 _FOOT = [((38.5, 27.2, -3.75), (38.5, 27.2, -9.75)), ((38.5, 10.2, -3.75), (38.5, 10.2, -9.75))]
 _FILLET962 = [((50, 10.2, -3.75), (50, 10.2, 22)), ((50, 13.7, 22), (50, 13.7, 14)),
@@ -190,12 +211,12 @@ CASES = {
     "issue962_e101_r0.8": ("s962", "p962", ((50, 13.7, 22), (50, 13.7, 14)), 0.8, 11580.7739,
                            (50, 13.7, 14), (1, 0.9, 0.8)),
     "issue962_e50_r0.8": ("s962", "p962", ((38.5, 10.2, -3.75), (38.5, 10.2, 14)), 0.8,
-                          11581.7861, (38.5, 10.2, 14), (-1, -1, 0.6)),
+                          11581.7204, (38.5, 10.2, 14), (-1, -1, 0.6)),
     "fin_on_block_r0.8": ("s962", "fin", ((10, 3, 5), (10, 3, 14)), 0.8, 768.7639,
                           (10, 3, 5), (1, 0.9, 0.8)),
     "arm_on_block_foot_r0.8": ("s962b", "armfoot", _FOOT, 0.8, 4603.6145,
                                (38.5, 10.2, -9.75), (-0.3, -1, -0.8)),
-    "issue962_fillet_r0.8": ("s962b", "p962", _FILLET962, 0.8, 11552.7830,
+    "issue962_fillet_r0.8": ("s962b", "p962", _FILLET962, 0.8, 11552.7859,
                              (38.5, 10.2, -9.75), (-0.3, -1, -0.8)),
     "fin_on_block_wall_r0.8": ("s962c", "finwall", ((10, 3, 5), (10, 3, 14)), 0.8, 768.7639,
                                (10, 3, 5), (1, 0.9, 0.8)),
@@ -203,6 +224,10 @@ CASES = {
                           None, (38.5, 27.2, -3.75), (-0.4, 1, 0.5)),
     "arm_on_tall_block_r0.3": ("s962d", "armtall", ((38.5, 27.2, -3.75), (38.5, 27.2, -9.75)),
                                0.3, None, (38.5, 27.2, -3.75), (-0.4, 1, 0.5)),
+    "issue962_e56_r0.8": ("s962e", "p962", ((38.5, 27.2, -3.75), (38.5, 27.2, 14)), 0.8,
+                          11581.7068, (38.5, 27.2, -3.75), (-1, 1, 0.5)),
+    "issue474_f003_e6_r0.8": ("s962e", "p474", ((-13, 0, 11), (-13, 0, 13)), 0.8, 1989.1088,
+                              (-13, 0, 13), (-1, 1, 0.6)),
 }
 # case -> the zoomed row's height, when 4 r + 3 shows too little (a shallow edge)
 ZOOM = {

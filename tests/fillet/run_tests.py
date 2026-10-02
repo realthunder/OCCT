@@ -107,11 +107,12 @@ def document_case(name, filename, volumes=None):
 # Shape cases: one fillet on a stored or built shape.
 # ---------------------------------------------------------------------------
 
-def fillet_case(name, shape, edge_index, radius, expect, ref_volume=None):
+def fillet_case(name, shape, edge_index, radius, expect, ref_volume=None, max_tol=None):
     """makeFillet(radius, [Edge<edge_index>]); edge_index may be a list.
 
     expect='pass':  a valid solid, one closed shell, the input left as it was,
-                    and ref_volume when given.
+                    ref_volume when given, and no edge or vertex tolerance
+                    above max_tol when given.
     expect='xfail': known broken (see README.md); an exception, an invalid
                     shape or an open shell counts as the expected failure.
     """
@@ -131,6 +132,10 @@ def fillet_case(name, shape, edge_index, radius, expect, ref_volume=None):
         if not problems and ref_volume is not None:
             if abs(r.Volume - ref_volume) > RELTOL * abs(ref_volume):
                 problems.append("volume %.4f != %.4f" % (r.Volume, ref_volume))
+        if not problems and max_tol is not None:
+            tol = max([e.Tolerance for e in r.Edges] + [v.Tolerance for v in r.Vertexes])
+            if tol > max_tol:
+                problems.append("tolerance %.3g > %.3g" % (tol, max_tol))
         ok = not problems
         detail = "; ".join(problems) if problems else "vol=%.4f" % r.Volume
     except Exception as e:
@@ -232,7 +237,15 @@ for name, a, b in (("e101", (50, 13.7, 22), (50, 13.7, 14)),
                 11580.7739)
 e50 = edge_between(p2, (38.5, 10.2, -3.75), (38.5, 10.2, 14))
 fillet_case("issue962_e50_r0.3", p2, e50, 0.3, "pass", 11583.8075)
-fillet_case("issue962_e50_r0.8", p2, e50, 0.8, "pass", 11581.7861)
+fillet_case("issue962_e50_r0.8", p2, e50, 0.8, "pass", 11581.7204, 0.05)
+# Edge 56, e50's mirror image across the block (y=27.2 for 10.2): its foot is
+# the five-face corner at (38.5,27.2,-3.75), filled by a plate held tangent to
+# the stripe, which missed its boundary by 0.09 and folded; the approximation
+# strayed 0.48, the corner kept tolerances up to 1.18 and a face whose volume
+# integrates to anything from 2.0 to 5.0 taken. Built again on positions
+# alone it takes what e50 takes.
+e56 = edge_between(p2, (38.5, 27.2, -3.75), (38.5, 27.2, 14))
+fillet_case("issue962_e56_r0.8", p2, e56, 0.8, "pass", 11581.7068, 0.05)
 # Edges 36 and 49, the foot of the block where the arm meets it (x=38.5,
 # z -9.75..-3.75): each fine alone, together they gave an invalid solid 7225
 # too large. The bottom is two coplanar faces, the arm's and the block's,
@@ -250,8 +263,14 @@ twelve = [edge_between(p2, a, b) for a, b in (
     ((38.5, 10.2, -3.75), (38.5, 10.2, 14)), ((38.5, 10.2, -3.75), (38.5, 10.2, -9.75)),
     ((10.898402, 16.470802, -3.75), (10.898402, 16.470802, -9.75)),
     ((17.356038, -9.42499, -3.75), (17.356038, -9.42499, -9.75)))]
-fillet_case("issue962_fillet_r0.8", p2, twelve, 0.8, "pass", 11552.7830)
+fillet_case("issue962_fillet_r0.8", p2, twelve, 0.8, "pass", 11552.7859)
 
+
+# #474's Fillet003 input, edge 6: its corner plate missed its boundary by 1.8
+# at radius 2 -- invalid, tolerances 15 to 36, 244 too much volume at r 2.
+p474 = Part.read(os.path.join(MODELS, "issue474_fillet003_base.brep"))
+for r, vol in ((0.3, 1988.9079), (0.8, 1989.1088), (2.0, 1990.2561)):
+    fillet_case("issue474_f003_e6_r%g" % r, p474, 6, r, "pass", vol, 0.05)
 
 # The same foot made small: an arm (a prism of a quadrilateral) fused to a
 # block, the seam between their bottoms running from y=27.2 to y=10.2 -- the

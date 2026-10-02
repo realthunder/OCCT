@@ -261,6 +261,54 @@ face, `arm_on_tall_block_whole_r0.5`, is invalid at every radius, with the
 fork before the fix as after -- the arm's top is extended past the block's
 wall by the fillet's reach (0.1875 r) and its wire crosses itself.
 
+## A corner plate folded to stay tangent (realthunder/FreeCAD#962, 2026-10-02)
+
+#962's edge 56 alone took 5.04 of volume where its mirror image, edge 50,
+took 2.35 -- and a mesh of the same result said 3.5, GProp's adaptive mode
+2.0. The shape was not right. Its foot is the five-face corner at
+(38.5,27.2,-3.75), which `PerformMoreThreeCorner` fills with a `GeomPlate`
+patch held G1 -- tangent -- to the stripe it closes. The plate missed its
+own boundary by 0.092 on a fillet of 0.8, and folded over 1/30 of its area
+to meet its constraints; the approximation, allowed ten times the plate's
+miss, strayed 0.48, so the corner's edges were stored with tolerances of
+0.48 to 1.18 (BRepCheck passes them for it), and a pcurve of the patch
+looped over itself. Edge 50's plate missed by 0.011 and strayed 0.19: no
+fold, but tolerances of 0.195 on a fillet of 0.8.
+
+It is no rare plate. Over the every-edge sweep, of the 495 corner plates
+built, 413 missed their boundaries by more than 1e-3 and 87 by more than
+0.1, a few by thousands; the code's own comment says G1 constraints "very
+often cause unpredictable undulations". A G0 plate -- positions alone --
+fitted edge 56's boundary within 3.6e-4.
+
+Fix (`PerformMoreThreeCorner`): a plate that misses its boundary by more
+than 1e-2 is built again from the same boundaries at G0, and taken if it
+fits better; its edges are then not marked tangent to the stripes. A
+crease along the stripe instead of a fold. Edge 56 takes 2.433 by every
+measure now (GProp's default and adaptive modes agree to 1e-4), edge 50
+2.420, tolerances 0.014 and 0.009.
+
+| Case | What it covers |
+|------|----------------|
+| `issue962_e56_r0.8` | edge 56: e50's volume, tolerances under 0.05 |
+| `issue962_e50_r0.8` | edge 50 now also held to tolerances under 0.05 (it had 0.195) |
+| `issue474_f003_e6_r{0.3,0.8,2}` | #474's Fillet003 input, edge 6: invalid at every radius (tolerances to 36, 244 too much volume at r 2), valid now |
+
+Checked against the fix: the every-edge sweep, 25 shapes, with each
+result's largest edge or vertex tolerance: 17 results go from invalid to
+valid, 107 valid ones end with less than half their tolerance (#474's edge
+17 at 0.8: 41.6 to 0.002; #273's edge 16 at 2: 9.6e5 to 0.18), none gets a
+larger one, and 2 go from valid to invalid: #962's edge 33 at 0.3, in the
+Fillet's input and the Chamfer's. That corner's G1 plate was no better --
+its outline crossed itself ten times and its surface folded, and the
+"valid" fillet of radius 0.3 removed 9.4 of volume where 0.6 is due --
+and the G0 one, which fits ten times better, has two of its boundary
+curves meeting head to head, which BRepCheck now rejects. With the rebuild
+at 1e-3 instead of 1e-2, 20 results became valid and 156 tighter, at the
+price of rebuilding most corners; 1e-2 leaves the merely mediocre G1
+plates (edge 36's, 3.3e-3) as they were. FreeCAD's `TestPartApp` (139),
+`TestPartDesignApp` (77) and `TestSurfaceApp` pass.
+
 ## Known broken (XFAIL)
 
 | Case | Symptom |

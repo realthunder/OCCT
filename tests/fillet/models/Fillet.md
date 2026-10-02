@@ -195,6 +195,43 @@ fail further on, as an invalid shape instead of an exception (see
 (`arm_on_tall_block_whole_r0.5`, XFAIL), invalid at every radius, before
 the fix as after.
 
+### A corner plate folded to stay tangent (`fb9200b0fd`, realthunder/FreeCAD#962)
+
+#962's edge 56 alone gave a valid solid whose volume nobody could agree
+on: 5.04 taken by GProp's default integration, 2.0 by its adaptive one,
+3.5 by a mesh, where its mirror image, edge 50, takes 2.4 by all three.
+Its foot is the five-face corner of the previous fix, filled by a
+`GeomPlate` patch held tangent to the stripe. To stay tangent where the
+stripe meets the faces at a sharp angle, the plate folded -- the lump at
+the fillet's foot in the first two zooms -- missing its own boundary by
+0.09 on a fillet of 0.8; its approximation then strayed 0.48, and the
+corner kept edges of tolerance up to 1.18. Its control points reach so far
+out that the face's bounding box is 158 across, on a corner of 0.8. Such
+plates are common: of the 495 the every-edge sweep builds, 87 miss their
+boundary by more than 0.1. A plate missing it by more than 1e-2 is now
+built again on positions alone and taken if it fits better: the foot
+flares into the corner cleanly. The third row looks much the same in all
+three columns -- the old outline's loop, where one pcurve crosses itself
+near its end, is a few thousandths across, too small to see here; the zoom's lump is
+what shows the fold. The volume is edge 50's.
+
+![issue962_e56_r0.8](pictures/issue962_e56_r0.8.png)
+
+#474's Fillet003 input is one of the 17 results the change turns valid:
+edge 6's corner plate missed by 1.8 at radius 2, its fillet was invalid at
+every radius, with a face of no area and edge tolerances up to 36. In the
+third row the old plate's outline is a sliver -- its boundary curves lie
+almost on one line of a surface whose bounding box is 28 across, for a
+corner of 0.8.
+
+![issue474_f003_e6_r0.8](pictures/issue474_f003_e6_r0.8.png)
+
+Edge 50's and #962's whole-Fillet pictures above changed with it: their
+"fork after" corners are the rebuilt plates now (tolerances 0.009 where they
+were 0.195). One result goes the other way -- #962's edge 33 at radius 0.3,
+whose corner was folded either way and is now rejected by `BRepCheck`
+(see `../README.md`).
+
 ## Making the pictures
 
 `tests/fillet/pictures/make_pictures.sh` does it all, on Linux or macOS;
