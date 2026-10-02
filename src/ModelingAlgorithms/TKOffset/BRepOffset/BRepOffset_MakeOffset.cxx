@@ -96,6 +96,7 @@
 #include <Standard_ConstructionError.hxx>
 #include <Standard_NotImplemented.hxx>
 #include <ShapeFix_Shape.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <TopExp.hxx>
 #include <ChFi3d.hxx>
 #include <TopExp_Explorer.hxx>
@@ -2173,6 +2174,13 @@ static bool TurnHalfSphereOntoMiddle(const TopoDS_Face&                        t
 //            under the faces and edges of the solid given, a face's from all
 //            its parts.
 //=======================================================================
+// Set while the thick solid of a solid that was cut here is being made: its
+// parts are not to be joined again.
+static thread_local bool theIsMakingOfCut = false;
+// Set while a solid is tried again as it came, its joined form having given
+// no valid answer.
+static thread_local bool theIsTakenAsGiven = false;
+
 bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& theRange)
 {
   if (myThickening || myInitialShape.IsNull())
@@ -2197,7 +2205,111 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     anEdgeFaces;
   TopExp::MapShapesAndAncestors(aGiven, TopAbs_EDGE, TopAbs_FACE, anEdgeFaces);
-  for (int i = 1; i <= aFaces.Extent(); ++i)
+
+  // Faces of one sphere that meet along an edge and have one thing done with
+  // them -- both removed, or both staying with the same offset -- are one
+  // face first: the half ball that comes with its sphere in two lunes or two
+  // domes is the half ball, and is cut, or turned, the way that suits what
+  // is done with it, not the way it happened to come. The thick solid is made
+  // of the solid with those faces joined.
+  occ::handle<BRepTools_History> aUnified;
+  TopoDS_Shape                   aUnion;
+  {
+    auto aSphereOf = [](const TopoDS_Shape& theF, gp_Sphere& theSph) {
+      TopLoc_Location           aL;
+      occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(TopoDS::Face(theF), aL);
+      if (!aSurf.IsNull() && aSurf->IsKind(STANDARD_TYPE(Geom_RectangularTrimmedSurface)))
+      {
+        aSurf = occ::down_cast<Geom_RectangularTrimmedSurface>(aSurf)->BasisSurface();
+      }
+      const occ::handle<Geom_SphericalSurface> aSS = occ::down_cast<Geom_SphericalSurface>(aSurf);
+      if (aSS.IsNull())
+      {
+        return false;
+      }
+      theSph = aSS->Sphere().Transformed(aL.Transformation());
+      return true;
+    };
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aJoined, aJoints, aKeep;
+    for (int i = 1; i <= anEdgeFaces.Extent(); ++i)
+    {
+      const NCollection_List<TopoDS_Shape>& aLF = anEdgeFaces(i);
+      if (aLF.Extent() != 2 || aLF.First().IsSame(aLF.Last()))
+      {
+        continue;
+      }
+      gp_Sphere aS1, aS2;
+      if (!aSphereOf(aLF.First(), aS1) || !aSphereOf(aLF.Last(), aS2)
+          || aS1.Location().Distance(aS2.Location()) > Precision::Confusion()
+          || std::abs(aS1.Radius() - aS2.Radius()) > Precision::Confusion()
+          || myOriginalFaces.Contains(aLF.First()) != myOriginalFaces.Contains(aLF.Last()))
+      {
+        continue;
+      }
+      const double* anO1 = myFaceOffset.Seek(aLF.First());
+      const double* anO2 = myFaceOffset.Seek(aLF.Last());
+      if ((anO1 ? *anO1 : myOffset) != (anO2 ? *anO2 : myOffset))
+      {
+        continue;
+      }
+      aJoined.Add(aLF.First());
+      aJoined.Add(aLF.Last());
+      aJoints.Add(anEdgeFaces.FindKey(i));
+    }
+    if (!aJoints.IsEmpty() && !theIsMakingOfCut && !theIsTakenAsGiven)
+    {
+      // Nothing else is joined: an edge stays unless it lies between two of
+      // those faces, or beside one of them and a face of another surface --
+      // where the pieces of an outline cut by the joint become one edge again.
+      for (int i = 1; i <= anEdgeFaces.Extent(); ++i)
+      {
+        const TopoDS_Shape& anE = anEdgeFaces.FindKey(i);
+        if (aJoints.Contains(anE) || BRep_Tool::Degenerated(TopoDS::Edge(anE)))
+        {
+          continue;
+        }
+        bool isBeside = false, areSpheres = true;
+        for (NCollection_List<TopoDS_Shape>::Iterator anIt(anEdgeFaces(i)); anIt.More(); anIt.Next())
+        {
+          gp_Sphere aSp;
+          isBeside   = isBeside || aJoined.Contains(anIt.Value());
+          areSpheres = areSpheres && aSphereOf(anIt.Value(), aSp);
+        }
+        if (!isBeside || areSpheres)
+        {
+          aKeep.Add(anE);
+        }
+      }
+      try
+      {
+        ShapeUpgrade_UnifySameDomain aUSD(aGiven, true, true, false);
+        aUSD.KeepShapes(aKeep);
+        aUSD.Build();
+        TopoDS_Shape aU = aUSD.Shape();
+        while (!aU.IsNull() && aU.ShapeType() == TopAbs_COMPOUND && aU.NbChildren() == 1)
+        {
+          aU = TopoDS_Iterator(aU).Value();
+        }
+        NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aUF;
+        if (!aU.IsNull())
+        {
+          TopExp::MapShapes(aU, TopAbs_FACE, aUF);
+        }
+        if (!aU.IsNull() && aU.ShapeType() == TopAbs_SOLID && aUF.Extent() < aFaces.Extent()
+            && !aUSD.History().IsNull() && BRepCheck_Analyzer(aU).IsValid())
+        {
+          aUnion   = aU;
+          aUnified = aUSD.History();
+        }
+      }
+      catch (Standard_Failure const&)
+      {
+        aUnified.Nullify();
+      }
+    }
+  }
+
+  for (int i = 1; aUnified.IsNull() && i <= aFaces.Extent(); ++i)
   {
     const TopoDS_Face&        aF = TopoDS::Face(aFaces(i));
     const bool                isRemoved = myOriginalFaces.Contains(aF);
@@ -2295,13 +2407,13 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
       aCuts.Append(aME.Edge().Moved(aLoc));
     }
   }
-  if (aCuts.IsEmpty() && aTurned.IsEmpty())
+  if (aCuts.IsEmpty() && aTurned.IsEmpty() && aUnified.IsNull())
   {
     return false;
   }
 
   // The solid with its turned faces in place of the ones they stand for.
-  TopoDS_Shape aBase = aGiven;
+  TopoDS_Shape aBase = aUnified.IsNull() ? aGiven : aUnion;
   if (!aTurned.IsEmpty())
   {
     int aNbShells = 0;
@@ -2360,6 +2472,22 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> anOrigin;
   auto aParts = [&](const TopoDS_Shape& theS, NCollection_List<TopoDS_Shape>& theParts) {
     theParts.Clear();
+    if (!aUnified.IsNull())
+    {
+      for (NCollection_List<TopoDS_Shape>::Iterator anIt(aUnified->Modified(theS)); anIt.More();
+           anIt.Next())
+      {
+        if (aCutShapes.Contains(anIt.Value()))
+        {
+          theParts.Append(anIt.Value());
+        }
+      }
+      if (theParts.IsEmpty() && aCutShapes.Contains(theS))
+      {
+        theParts.Append(theS);
+      }
+      return;
+    }
     const TopoDS_Shape* aNewF = aTurned.Seek(theS);
     const TopoDS_Shape& aS    = aNewF ? *aNewF : theS;
     if (isCut)
@@ -2434,14 +2562,38 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
   }
 
   myDone = false;
+  const bool wasMakingOfCut = theIsMakingOfCut;
+  theIsMakingOfCut          = aUnified.IsNull();
   try
   {
     aMO.MakeThickSolid(theRange);
   }
   catch (Standard_Failure const&)
   {
-    myError = BRepOffset_UnknownError;
-    return true;
+    theIsMakingOfCut = wasMakingOfCut;
+    if (aUnified.IsNull())
+    {
+      myError = BRepOffset_UnknownError;
+      return true;
+    }
+  }
+  theIsMakingOfCut = wasMakingOfCut;
+  // Joined, and no valid answer: the solid as it came may have one.
+  if (!aUnified.IsNull() && (!aMO.IsDone() || !BRepCheck_Analyzer(aMO.Shape()).IsValid()))
+  {
+    theIsTakenAsGiven = true;
+    bool isTaken      = false;
+    try
+    {
+      isTaken = MakeThickSolidOfSplit(theRange);
+    }
+    catch (Standard_Failure const&)
+    {
+      theIsTakenAsGiven = false;
+      throw;
+    }
+    theIsTakenAsGiven = false;
+    return isTaken;
   }
   if (!aMO.IsDone())
   {
