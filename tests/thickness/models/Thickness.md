@@ -8,14 +8,20 @@ it so that a *concave* face can be removed, which upstream does not support
 (realthunder/OCCT#1-#4). From 2026-09-30 to 2026-10-01 that chain was
 measured against upstream for the first time and the thickness failures were
 chased down, one cause at a time. This page shows what each fix did, in
-pictures. The build log -- every cause, what was tried, the hand-worked
-volumes, the gates -- is FreeCAD's docs/TransactionLog.md sec 27.88 to
-27.96 and sec 27.100 to 27.102; "sec" below means a section there.
+pictures, and each section below is one fix: what was wrong, why, and the
+volume that is right. "Sec N" means a section of this page; the numbers are
+this page's own, oldest first.
+
+Sections 1 to 18 were first written in FreeCAD's docs/TransactionLog.md, as
+its sections 27.88 to 27.96 and 27.100 to 27.108 in that order (sec 7 is its
+27.94), where the longer build log -- what was tried, the gates -- still is.
+Commit messages of that time give those numbers. From sec 19 on this page is
+the only write-up.
 
 Where things are:
 
 - The fork's suite: `tests/thickness/run_tests.py` (`FreeCADCmd
-  tests/thickness/run_tests.py`; PASS 239) and its `README.md`, the
+  tests/thickness/run_tests.py`; PASS 277, XFAIL 8) and its `README.md`, the
   case-by-case reference.
 - The pictures: `pictures/<case>.png` beside this page, one per case of the
   suite that a fix turned from failing to passing.
@@ -30,7 +36,7 @@ Each picture is one case: a solid, the face removed (`FaceN`, 1-based as in
 `shape.Faces`), the direction (`+1` outward, `-1` inward, thickness 1), the
 join (Arc or Intersection) and whether intersection mode is on; the expected
 volume, or "a valid solid" where no reference exists; and the section of
-FreeCAD's TransactionLog.md that fixed it.
+this page that fixed it.
 
 Four columns:
 
@@ -58,86 +64,86 @@ red faces fail `isValid()`; faces of no area are left out, and the picture
 says how many.
 
 Upstream's column is one run of many: upstream visits offsets in hash order
-and its wrong results vary from run to run (sec 27.88). Of the first 46, two came
+and its wrong results vary from run to run (sec 1). Of the first 46, two came
 out different on a second run (`tshape_bar_top_out`, `filletbox_end_out`),
 wrong both times. The fork's columns are the same every run.
 
 A result can be right only when it is a valid solid with one closed shell and
 the expected volume -- or, where no cavity can reach the removed face (sec
-27.100), two closed shells, the skin and a void; the volumes are upstream's
-where upstream is right, and otherwise worked out by hand (FreeCAD's
-TransactionLog.md has each derivation).
+10), two closed shells, the skin and a void; the volumes are upstream's
+where upstream is right, and otherwise worked out by hand (each section
+has its derivation, or names the hand-value script).
 
 ## How it stood, and how it stands
 
-The sweep behind all of this (sec 27.89): 712 thickness runs
+The sweep behind all of this (sec 2): 712 thickness runs
 -- 16 solids, every face, +/-1, intersection off and on, the Arc and the
 Intersection join -- against both builds. A run counts as right only as
 above, with the volume plausible for a skin where no reference exists.
 
 | After | Fork worse than upstream | Fork better | Fork right, Arc join (int. off / on) | Fork right, Intersection join (off / on) | Upstream right (four modes) |
 |---|---|---|---|---|---|
-| start (sec 27.89) | 144 | 51 | | | |
-| sec 27.89 | 26 | 53 | | | |
-| sec 27.90 | 9 | 59 | 123 / - | | 101 (Arc, off) |
-| sec 27.91 | 0 | 78 | 135 / 135 | 129 / 113 | 106 / 107 / 110 / 111 |
-| sec 27.92 | 0 | 110 | 135 / 135 | 137 / 137 | 106 / 107 / 110 / 111 |
-| sec 27.93 | 0 | 122 | 141 / 141 | 137 / 137 | 106 / 107 / 110 / 111 |
-| sec 27.95 | 0 | 138 | 149 / 149 | 137 / 137 | 106 / 107 / 110 / 111 |
-| sec 27.96 | 0 | 162 | 149 / 149 | 149 / 149 | 106 / 107 / 110 / 111 |
-| sec 27.100 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.101 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.102 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.103 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.104 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.105 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.106 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.107 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.108 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
-| sec 27.109, 22 solids | 0 | 264 | 192 / 192 | 192 / 192 | 123 / 125 / 127 / 129 |
-| sec 27.110, 24 solids | 0 | 306 | 204 / 204 | 204 / 204 | 123 / 125 / 130 / 132 |
+| start (sec 2) | 144 | 51 | | | |
+| sec 2 | 26 | 53 | | | |
+| sec 3 | 9 | 59 | 123 / - | | 101 (Arc, off) |
+| sec 4 | 0 | 78 | 135 / 135 | 129 / 113 | 106 / 107 / 110 / 111 |
+| sec 5 | 0 | 110 | 135 / 135 | 137 / 137 | 106 / 107 / 110 / 111 |
+| sec 6 | 0 | 122 | 141 / 141 | 137 / 137 | 106 / 107 / 110 / 111 |
+| sec 8 | 0 | 138 | 149 / 149 | 137 / 137 | 106 / 107 / 110 / 111 |
+| sec 9 | 0 | 162 | 149 / 149 | 149 / 149 | 106 / 107 / 110 / 111 |
+| sec 10 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 11 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 12 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 13 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 14 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 15 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 16 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 17 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 18 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 19, 22 solids | 0 | 264 | 192 / 192 | 192 / 192 | 123 / 125 / 127 / 129 |
+| sec 20, 24 solids | 0 | 306 | 204 / 204 | 204 / 204 | 123 / 125 / 130 / 132 |
 
-The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
+The "right" counts are of the 150 runs a mode that are in scope; sec 3
 set the scope (a face whose removal leaves the shell in pieces is out) and
-sec 27.91 rebuilt the pocketed box (walls 2.5, not twice the thickness), so
-counts before sec 27.91 do not compare with those after it. The last row
-counts the holed cone's sealed void right (sec 27.100), which upstream's
+sec 4 rebuilt the pocketed box (walls 2.5, not twice the thickness), so
+counts before sec 4 do not compare with those after it. The last row
+counts the holed cone's sealed void right (sec 10), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
-those two runs before it. Sec 27.109 added six solids with a sphere at a
+those two runs before it. Sec 19 added six solids with a sphere at a
 pole to the sweep, 42 runs a mode, all in scope: its row counts 192 a mode.
-Sec 27.110 added half a ball and a third of one, from pole to pole, 12 runs
+Sec 20 added half a ball and a third of one, from pole to pole, 12 runs
 a mode: 204. From that section on the sweep is also run with every solid
 under a location and with its geometry turned in space (`SWEEP_PLACE`): the
 same 928 volumes, all right.
 
 Of the 134 pictured cases, 36 are ones upstream gets right and the fork had
-broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
-cone's top with intersection on, sec 27.100, a short box's and a box's bottom
-alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, the
-input left inside out, sec 27.104, the faces closed at a pole, sec
-27.106, half of a cap turned in space, its sphere removed, sec 27.110, and
-a dome with its rim in two arcs, sec 27.111).
+broken -- the chain's casualties (sec 2, 3, part of 4, the holed
+cone's top with intersection on, sec 10, a short box's and a box's bottom
+alone, sec 11 and 12, a pocket's open shell, sec 13, the
+input left inside out, sec 14, the faces closed at a pole, sec
+16, half of a cap turned in space, its sphere removed, sec 20, and
+a dome with its rim in two arcs, sec 21).
 The other 98 fail upstream too: the fork
 now does better than upstream there.
 
 Nothing in the suite fails. Half a ball cut through both its poles, which
-sec 27.109 left open, is answered in sec 27.110, and as a refine or a cut
-leaves it, or with its sphere in two faces, in sec 27.111, which marks
+sec 19 left open, is answered in sec 20, and as a refine or a cut
+leaves it, or with its sphere in two faces, in sec 21, which marks
 eight cases known broken: ball wedges on more than half a turn with the
-sphere removed, and a dome's half flat with the Intersection join. Every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
-piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
+sphere removed, and a dome's half flat with the Intersection join. Every run of the sweep in scope is right. Out of scope, sec 11 answers the faces left in pieces where each
+piece is a plain plate or disc, with either join (sec 12), and sec 13
 the pieces that are pockets and bosses: every one checks by hand. The one
 refusal left in the sweep is the torus's face, and it is right: with its one
-face removed no face stays (sec 27.105, which refuses the sphere's too).
+face removed no face stays (sec 15, which refuses the sphere's too).
 
 The sweep's first 16 solids have no face closed at a pole -- no dome, no
-cone with its apex -- which is how sec 27.106's fault, there since the chain
+cone with its apex -- which is how sec 16's fault, there since the chain
 was ported, went unseen: the sweep's lines are the same before and after it.
-Sec 27.109 added the pole solids.
+Sec 19 added the pole solids.
 
 ## The fixes
 
-### Sec 27.88: the same result every run
+### Sec 1: the same result every run
 
 Not pictured: no single picture shows it. With intersection on and the Arc
 join, `BuildOffsetByArc` visited its offsets in hash order -- a shape's hash
@@ -146,7 +152,7 @@ different results in eight runs of one input. The offsets are now taken in
 the shape's topological order. The suite's `arc_inter_*_same_every_run` cases
 guard it.
 
-### Sec 27.89: the chain's own regressions
+### Sec 2: the chain's own regressions
 
 Upstream passes every case here; the fork, before, broke all of them.
 
@@ -196,7 +202,7 @@ Not pictured: a crash in `BuildSplitsOfTrimmedFaces` (upstream code, reached
 only with the fork's edges), now guarded; the suite's
 `pocket_inter_join_no_crash`.
 
-### Sec 27.90: past concave corners, and a concave face removed
+### Sec 3: past concave corners, and a concave face removed
 
 *The corner piece of an arc face* (`BRepAlgo_Loop`). Outward with the Arc
 join past a concave corner, the arc face along one edge is cut by the arc of
@@ -220,7 +226,7 @@ out, with two shells; the fork threw.
 
 ![tshape_bar_top_out](pictures/tshape_bar_top_out.png)
 
-### Sec 27.91: inward past a concave top, and intersection mode
+### Sec 4: inward past a concave top, and intersection mode
 
 *Where the stretched removed face crosses an edge* (`BRepAlgo_Loop::Perform`).
 The T's bar top removed, inward: the stretched removed face crossed the far
@@ -247,7 +253,7 @@ drawn above the hole in the cut). Upstream is right.
 
 ![conehole_bottom_inter_in](pictures/conehole_bottom_inter_in.png)
 
-### Sec 27.92: the Intersection join -- inside out, a blind floor, concave faces
+### Sec 5: the Intersection join -- inside out, a blind floor, concave faces
 
 Upstream fails every case here.
 
@@ -276,7 +282,7 @@ as with intersection off, which gets all of these right.
 ![tshape_post_wall_inter_join_in](pictures/tshape_post_wall_inter_join_in.png)
 ![pocket_wall_inter_join_in](pictures/pocket_wall_inter_join_in.png)
 
-### Sec 27.93: a removed face tangent to its neighbours
+### Sec 6: a removed face tangent to its neighbours
 
 A box with its vertical edges filleted, an end or a side face removed. The
 fillets' offsets run parallel to the removed face: inward they never meet it
@@ -291,14 +297,14 @@ fails all four.
 ![filletbox_end_out](pictures/filletbox_end_out.png)
 ![filletbox_side_out](pictures/filletbox_side_out.png)
 
-### Sec 27.94: the loop's minimal wires by angle
+### Sec 7: the loop's minimal wires by angle
 
 Not pictured: FreeCAD's WireJoiner angle walk ported into `BRepAlgo_Loop`.
 It changed no result (the walk and the old search were checked against each
-other on every face of the suite and the sweep); it is what sec 27.95 uses on
+other on every face of the suite and the sweep); it is what sec 8 uses on
 a curved face.
 
-### Sec 27.95: a fillet removed
+### Sec 8: a fillet removed
 
 The same box with a fillet removed -- a curved face tangent to the planes
 beside it. Outward it threw; inward it came back valid at 647.56, more than
@@ -311,7 +317,7 @@ dropped. Upstream fails both. The cut is in plan, to show the opening.
 ![filletbox_fillet_in](pictures/filletbox_fillet_in.png)
 ![filletbox_fillet_out](pictures/filletbox_fillet_out.png)
 
-### Sec 27.96: the Intersection join at a tangent edge
+### Sec 9: the Intersection join at a tangent edge
 
 The Intersection join builds no tubes: the neighbour's offset ran round its
 cylinder into a lip (outward) or never met the removed face (inward,
@@ -330,7 +336,7 @@ Upstream fails all eight.
 ![filletbox25_fillet_join_in](pictures/filletbox25_fillet_join_in.png)
 ![filletbox25_fillet_join_out](pictures/filletbox25_fillet_join_out.png)
 
-### Sec 27.100: a cavity sealed below the removed face
+### Sec 10: a cavity sealed below the removed face
 
 A cone with a through hole, its top removed, inward: the wall is 1.4 thick
 at the top, thinner than twice the thickness, and the cone's and the hole's
@@ -360,7 +366,7 @@ mode is invalid.
 ![conehole_top_inter_in](pictures/conehole_top_inter_in.png)
 ![conehole_bottom_in](pictures/conehole_bottom_in.png)
 
-### Sec 27.101: faces left in pieces, and down to one face of a short shape
+### Sec 11: faces left in pieces, and down to one face of a short shape
 
 A cylinder with its side removed keeps its two caps, and nothing joins them:
 the faces that stay fall apart into pieces sharing no edge. OCCT refuses
@@ -381,7 +387,7 @@ bottom's offset crosses it, and the loop kept the piece of the side's edge
 nearer one of its ends -- above the offset, since the band below it is the
 longer one. It now keeps the piece that runs from the end on an edge of a
 face that stays. The fork had given the box with the plate's complement as
-a void (sec 27.100's sealed cavity took that shell for one), and before that
+a void (sec 10's sealed cavity took that shell for one), and before that
 an empty shell; upstream is right.
 
 ![cyl_side_out](pictures/cyl_side_out.png)
@@ -389,7 +395,7 @@ an empty shell; upstream is right.
 ![short_cyl_side_in](pictures/short_cyl_side_in.png)
 ![short_box_bottom_in](pictures/short_box_bottom_in.png)
 
-### Sec 27.102: the Intersection join with one face left
+### Sec 12: the Intersection join with one face left
 
 A cylinder down to its top, a box down to its bottom, with the Intersection
 join: the fork threw (`BRepAlgo_Image::Bind`) where upstream answers. Its
@@ -401,17 +407,17 @@ side's seam reached the side's loop once, not once each way -- the
 intersection took the side's edges from a map, which holds a seam once --
 and the loop, with no band to build, kept the whole side: the cap outward
 came out as the cylinder. The seam is recorded both ways now. Upstream's cap
-outward is inside out. The cylinder's side, in pieces (sec 27.101), is
+outward is inside out. The cylinder's side, in pieces (sec 11), is
 answered with this join too.
 
 ![cyl_cap_alone_join_out](pictures/cyl_cap_alone_join_out.png)
 ![box_bottom_alone_join_in](pictures/box_bottom_alone_join_in.png)
 ![cyl_side_join_out](pictures/cyl_side_join_out.png)
 
-### Sec 27.103: pockets left in pieces
+### Sec 13: pockets left in pieces
 
 A box with a blind hole, its top removed: the hole's wall and floor are a
-piece of their own beside the outside's (sec 27.101), and the fork built it
+piece of their own beside the outside's (sec 11), and the fork built it
 wrong, so the whole was refused. Upstream refuses it as well.
 
 Two causes. A piece was the shape with the other pieces removed as well, and
@@ -445,7 +451,7 @@ without its ring outward and the hole itself inward.
 ![blind_pot_shell_out](pictures/blind_pot_shell_out.png)
 ![blind_pot_shell_in](pictures/blind_pot_shell_in.png)
 
-### Sec 27.104: the input left as it was
+### Sec 14: the input left as it was
 
 The result was right; the input was not. A PartDesign Pad of an arc whose
 parameters run past 2 pi, under a Thickness removing the arc's face and the
@@ -462,7 +468,7 @@ every input.
 
 ![sector_outer_arc_input](pictures/sector_outer_arc_input.png)
 
-### Sec 27.105: every face removed
+### Sec 15: every face removed
 
 A sphere has one face. Remove it and no face stays to be thickened: there is
 no answer, and the fork -- like upstream -- gave one, the sphere itself,
@@ -474,7 +480,7 @@ where it is.
 ![sphere_face_refused_in](pictures/sphere_face_refused_in.png)
 ![box_all_faces_refused_in](pictures/box_all_faces_refused_in.png)
 
-### Sec 27.106: a face closed at a pole
+### Sec 16: a face closed at a pole
 
 A dome -- half a sphere -- with its flat face removed leaves one face, the
 sphere, bounded by its seam, the pole and the equator. On a periodic face
@@ -513,10 +519,10 @@ their wires come from the vertex walk, and the pole is put back.
 ![cap_flat_in](pictures/cap_flat_in.png)
 ![cone_base_out](pictures/cone_base_out.png)
 
-Found beside it, wrong upstream too, and taken up in sec 27.107: a cone with
+Found beside it, wrong upstream too, and taken up in sec 17: a cone with
 its apex inward, and half a dome.
 
-### Sec 27.107: a cone with its apex, half a dome, and the input never back
+### Sec 17: a cone with its apex, half a dome, and the input never back
 
 **The cone.** The offset of a cone with its apex is a cone with its apex
 somewhere else, and `BRepOffset_Offset` trims the offset face again there:
@@ -558,7 +564,7 @@ sharp), and inward 130.8997 less the half cap of radius 4.5 above y = 0.5,
 ![halfdome_bottom_out](pictures/halfdome_bottom_out.png)
 
 *A side removed.* The other side is its tangent neighbour, and the Arc join
-closes the gap with a tube round the axis (sec 27.93) whose edge on the
+closes the gap with a tube round the axis (sec 6) whose edge on the
 removed face, the line x = 0.5, runs through the face's own outline: it
 crosses the meridian at z = 4.975. Four things. The loop on the removed face
 finds where edges meet by projecting each edge's vertices on the others, and
@@ -602,7 +608,7 @@ half dome's side. With the Arc join the fork was right already (upstream
 throws or returns the box): 417.3038 outward, the rounded skin 455.5869
 less the slab over the removed piece, three quarter tubes and two ball
 eighths, plus the tangent tube and its two eighths; 274.7124 inward, 480 -
-192 - 6 (3 - pi / 4). With the Intersection join the closure of sec 27.96
+192 - 6 (3 - pi / 4). With the Intersection join the closure of sec 9
 did not apply, because the faces at the joint's ends are split too, and the
 box came back, 480. The closure now takes the piece beside the removed
 face; the wall it needs is not built yet, and the call is refused.
@@ -613,9 +619,9 @@ the half dome with the Intersection join, bottom outward (67.0206) and a
 side either way; the split box with the Intersection join (440 and 276).
 All refused or invalid; none the input.
 
-### Sec 27.108: coplanar pieces, a wall on a sphere, a sphere round its pole
+### Sec 18: coplanar pieces, a wall on a sphere, a sphere round its pole
 
-The five cases sec 27.107 left, in four groups. Upstream fails every one --
+The five cases sec 17 left, in four groups. Upstream fails every one --
 the input back, an invalid solid, or a refusal.
 
 **The mirror image** (`ed836d0120`, `BRepAlgo_Loop::Perform`). Half a dome,
@@ -624,13 +630,13 @@ wire round what the neighbour's offset had cut away. The removed side's
 meridian is stretched over the pole and down the far side of the sphere,
 and of the three closed wires the search finds on the sphere -- the face,
 what was cut away, and the two together -- two run through the piece past
-the pole. Sec 27.107 told them apart by area, and a wire whose pcurve runs
+the pole. Sec 17 told them apart by area, and a wire whose pcurve runs
 past the pole, out of the sphere's parameters, has no area to speak of:
 negative for one side (right, by luck), positive for its mirror image. A
 stretched edge carries its own ends as INTERNAL vertices; on a face that is
 not a plane they are its span, and a piece beyond them is outside -- a wire
 through it loses to one sharing an open edge with it that stays inside (the
-rule of sec 27.90). 58.8944, as the first side.
+rule of sec 3). 58.8944, as the first side.
 
 ![halfdome_other_side_in](pictures/halfdome_other_side_in.png)
 
@@ -671,7 +677,7 @@ the others came for them. Pieces of an edge more than two faces share stay.
 
 With intersection on, a planar shape whose removed face is tangent to a
 neighbour is built as with intersection off, as one with a concave removed
-face is (sec 27.92): the splits know nothing of the closure.
+face is (sec 5): the splits know nothing of the closure.
 
 The sharp skin weighs 480 either way (12 x 10 x 8 less the box, or the box
 less 8 x 6 x 4). Outward, less the slab over the removed piece short of the
@@ -749,18 +755,18 @@ of three quarters of a turn (`makeSphere(5, .., 0, 90, 270)`): a side
 removed inward is invalid or refused with the Arc join, a side is refused
 either way with the Intersection join, and the bottom removed outward with
 the Intersection join comes back as the input, 196.3495, which sec
-27.107's refusal does not catch. With the Arc join, the eighth of a ball
+17's refusal does not catch. With the Arc join, the eighth of a ball
 and the third of a dome are refused bottom removed outward, and the third
 of a dome a side removed inward. Of 232 runs on fifteen shapes with a face
 at a pole -- every flat face, both ways, both joins, intersection off and
 on -- 28 are refused or invalid, 81 before this section (and one more, the
 half ball inward with intersection on, was a valid solid of the wrong
 volume); none is a wrong answer now but the three-quarter dome's. Sec
-27.109 takes them up.
+19 takes them up.
 
-### Sec 27.109: more than half a turn, three tubes at a pole, the sphere itself removed
+### Sec 19: more than half a turn, three tubes at a pole, the sphere itself removed
 
-What sec 27.108 found beside its own cases and left: a ball of 5 cut by its
+What sec 18 found beside its own cases and left: a ball of 5 cut by its
 equator and by two planes through its axis -- three quarters of a dome, a
 third, an eighth of a ball -- and each of them with the sphere itself
 removed. Every volume here is worked by `sweep/polehand.py`, numerically,
@@ -769,12 +775,12 @@ from the rules the earlier sections settled; at this thickness it gives the
 the seventeen pictured: the input back, an invalid solid, or a refusal.
 
 **More than half a turn** (`9a23596f40`, `BRepOffset_Tool::EnLargeFace`).
-Sec 27.108 turned a sphere's axis off a face that reaches a pole, so that
+Sec 18 turned a sphere's axis off a face that reaches a pole, so that
 the face can grow past the pole as a plain patch; it stopped at half a turn,
 and looked for the new axis only among the directions square to the middle
 of the face. Three quarters of a dome kept its own axis, its offset sphere
 could not grow, and the bottom removed outward with the Intersection join
-came back as the input, 196.3495 -- which sec 27.107's refusal does not
+came back as the input, 196.3495 -- which sec 17's refusal does not
 catch, the removed face being whole in it. The axis is now any direction
 that keeps both poles off the face and a twelfth of a turn from its outline,
 the farthest of them; the seam is the middle of the widest stretch of the
@@ -906,12 +912,12 @@ edges know only those. Tried, it turned the refusal into an invalid solid,
 and was taken out. The suite marks the four cases known broken, with their
 volumes: 113.0909 and 89.0272 for a flat half removed, 39.1390 for the
 sphere removed outward, either join. They are refused, not wrong. Sec
-27.110 takes it up: the face is cut in two first, and both parts are faces
+20 takes it up: the face is cut in two first, and both parts are faces
 the loops know.
 
-### Sec 27.110: half a ball, and a shape that is placed or turned
+### Sec 20: half a ball, and a shape that is placed or turned
 
-Sec 27.109 left half a ball cut through both its poles. On the way to it a
+Sec 19 left half a ball cut through both its poles. On the way to it a
 second fault showed, wider than the first: the same solid gave another
 result -- or none, or a wrong one -- when it carried a location, and
 sometimes when its geometry was turned in space. Every volume here is one
@@ -959,7 +965,7 @@ threw. The points a third and two thirds along are taken.
 
 ![placed_coneup_base_out](pictures/placed_coneup_base_out.png)
 
-And the turned sphere of sec 27.108 was made only for a face without a
+And the turned sphere of sec 18 was made only for a face without a
 location; it is worked out as placed and kept as it lies before that.
 
 ![placed_halfdome_bottom_join_out](pictures/placed_halfdome_bottom_join_out.png)
@@ -969,7 +975,7 @@ the placed runs right, six of the sweep's still differed -- and differed as
 much with the geometry itself turned, no location on it: a filleted box, a
 fillet removed outward with the Arc join. At a corner of a removed face
 tangent to its neighbour the sphere round the vertex meets the removed
-face's surface in an arc (sec 27.93), which was taken from the section of
+face's surface in an arc (sec 6), which was taken from the section of
 the two: the line both its ends lie on. The section comes in as many lines
 as the intersection cuts it in, and where they join depends on how the
 shape lies. Turned by 40 degrees about (1, 2, 3) the arc's ends lay on two
@@ -1005,7 +1011,7 @@ whole turn itself.
 ![turned_halfcap_sphere_in](pictures/turned_halfcap_sphere_in.png)
 
 Two more of the same kind, where the answer hung on what the intersection
-gave first. *Which way a section runs* (`1d4dba3c77`): sec 27.92 turns a
+gave first. *Which way a section runs* (`1d4dba3c77`): sec 5 turns a
 section that runs against the offset of the removed face's edge, and
 compared the section's tangent at its middle with the edge's at the nearest
 extremum of distance -- for a section that is most of a circle, the
@@ -1035,7 +1041,7 @@ none gives another result placed or turned than as made.
 `MakeThickSolidOfSplit`). Its sphere's outline is a whole great circle. No
 axis keeps both poles off the face, so it cannot be put on a sphere with
 its axis turned; grown past the outline it holds its poles inside, and
-needs a seam no edge of the shape stands for (sec 27.109 tried one, and
+needs a seam no edge of the shape stands for (sec 19 tried one, and
 took it out). Any two parts of it are faces the loops know, and their
 common edge is an edge. The face is cut before anything else, by a general
 fuse of the solid with the cutting edge, which leaves the solid given as it
@@ -1044,9 +1050,9 @@ under the faces and edges given -- a face's are those of both its parts.
 Which way it is cut depends on what is done with it:
 
 - a face that stays, the Intersection join: along its equator, into two
-  domes, each reaching one pole and turned off it (sec 27.108);
+  domes, each reaching one pole and turned off it (sec 18);
 - a removed face, outward: along a meridian, into lunes of a quarter turn
-  at the most, each with a twin (sec 27.109).
+  at the most, each with a twin (sec 19).
 
 The other way round fails for each (below). With the Arc join a face that
 stays is not grown, and inward a removed face's wall lies within its
@@ -1130,9 +1136,9 @@ is right on 6 of the 48; of the other 42, 22 are refused, 4 invalid, and
   as the domes -- the crossing of the stretched equator with those edges
   is never looked for. That is as far as it was taken.
 
-### Sec 27.111: a rim in two arcs, and the half ball with one disc
+### Sec 21: a rim in two arcs, and the half ball with one disc
 
-Sec 27.110 cut the half ball's sphere in two because no seam could be given
+Sec 20 cut the half ball's sphere in two because no seam could be given
 it. Looking for a way to give it one, a plainer shape turned out broken, and
 the fork alone to blame: upstream gets it right.
 
@@ -1156,7 +1162,7 @@ Three things it has to put right on the way. A piece of a section that ran
 on past the seam has its pcurve a period over, and is moved back. A piece
 cut from a seam that was stretched has its two pcurves the other way round
 from a primitive's seam -- the forward one at u = 0 -- and they change
-places. And a wire with a piece mirrored past a pole (sec 27.109) steps
+places. And a wire with a piece mirrored past a pole (sec 19) steps
 half a turn there: it is no wire round the period, and a face without a
 seam is none of this walk's business. Without those two limits a cone with
 a through hole and three quarters of a dome, right before, came back wrong.
@@ -1197,7 +1203,7 @@ the edge were kept, which on a closed curve are one point.
 ![dome2f_sphere_out](pictures/dome2f_sphere_out.png)
 
 **Two new edges on one curve** (`faabdf98f7`,
-`BRepOffset_Tool::ExtentFace`). What sec 27.110 left diagnosed: the vertex
+`BRepOffset_Tool::ExtentFace`). What sec 20 left diagnosed: the vertex
 between two new edges that lie on one circle or one line is not where they
 cross, for they do not. It is put where the old vertex lies nearest the
 curve. The refined half ball's sphere removed with the Arc join, refused
@@ -1212,7 +1218,7 @@ before, gives 39.1390 both ways.
 a cut leaves it -- `makeSphere(5, .., -90, 90, 180).removeSplitter()`, or a
 ball cut by a box through its poles -- has one disc for its flat and its
 sphere from pole to pole on half a turn. Cut along the equator as sec
-27.110 has it, the two domes meet the disc's plane in a rim of four arcs:
+20 has it, the two domes meet the disc's plane in a rim of four arcs:
 with the disc removed and the Intersection join the loops found no end
 (above), the sphere removed outward with that join was refused, and inward,
 left whole, it gave 39.1401 for 39.1390.
@@ -1223,11 +1229,11 @@ middle (`TurnHalfSphereOntoMiddle`): a whole turn with a seam and one pole
 inside, its rim the two arcs it had, which is the dome above. The arcs are
 the shape's own edges and take a line on the turned sphere's equator as a
 second pcurve, a cache; the seam and the pole's edge are new, and stand for
-no edge of the shape, as the equator of sec 27.110 does not. The seam runs
+no edge of the shape, as the equator of sec 20 does not. The seam runs
 from 2 pi, as a primitive's does: from 0, the piece of it stretched below
 the rim has a negative parameter, and its crossing with the wall's far edge
 was not found. The thick solid is made of a solid with that face in place
-of the one given, by an object of its own, as in sec 27.110; the face is
+of the one given, by an object of its own, as in sec 20; the face is
 turned whatever is done with it. 86.6556, 70.9476 and 39.1390, with either
 join, plain, under a location and turned in space.
 
@@ -1245,7 +1251,7 @@ at; it is taken for its solid.
 ![cutball_sphere_out](pictures/cutball_sphere_out.png)
 
 **The sphere in two faces is joined first** (`7c4a0e5eda`,
-`MakeThickSolidOfSplit`). Sec 27.110 found that each of its two cuts fails
+`MakeThickSolidOfSplit`). Sec 20 found that each of its two cuts fails
 the other way round, and that a half ball which comes with its sphere in
 two faces has the cut it came with: in two lunes, a flat half removed with
 the Intersection join, refused outward and a valid solid of 182.21 for
@@ -1279,7 +1285,7 @@ do. Not chased.
   on 240 degrees inward with the Arc join, a valid solid of 40.4447 for
   39.9613; on 150 degrees outward with the Arc join, refused. Inward with
   the Intersection join the 270 and 240 wedges are right now (41.6307 and
-  40.5784), where sec 27.110 found 298.45.
+  40.5784), where sec 20 found 298.45.
 - The dome with its rim in two arcs and its flat in two halves, one half
   removed with the Intersection join (113.0909, 89.0272): the dome has to
   grow below its rim beside the wall that closes the tangent edge between
@@ -1331,7 +1337,7 @@ the panels show the input after the thickness, judged against its own volume.
 A case in `REFUSED` is right when the call throws; its panels show the input.
 The cases run unfrozen, as the suite does. The "after" column is the fork
 as installed, and the other two run with the installed `TKTopAlgo`: a fault
-that lies there (sec 27.110's seam tolerance) shows in no column.
+that lies there (sec 20's seam tolerance) shows in no column.
 The renderer turns the transaction log off; the pictures need no history.
 (While drawing, the log's worker once crashed writing a shape the viewer
 was meshing: FreeCAD's docs/TransactionLog.md sec 27.97, fixed in sec 27.98.)

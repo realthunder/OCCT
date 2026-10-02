@@ -77,10 +77,9 @@ Status on `LinkVibe-801` (2026-10-01):
 | Case | Status | Symptom |
 |------|--------|---------|
 | `cyl_*_out/in` (top, bottom), `hole_*` (all eight) | PASS | |
-| `cyl_side_out/in` (remove lateral face) | PASS since sec 27.101 | was `StdFail_NotDone`, upstream too: not the seam but the caps left in two pieces (`BRepOffset_NotConnectedShell`). Now a compound of two discs, see "Faces left in pieces" below |
+| `cyl_side_out/in` (remove lateral face) | PASS since sec 11 | was `StdFail_NotDone`, upstream too: not the seam but the caps left in two pieces (`BRepOffset_NotConnectedShell`). Now a compound of two discs, see "Faces left in pieces" below |
 
-Six of these were XFAIL from 2026-08-01 to 2026-09-30 and are fixed (FreeCAD
-docs/TransactionLog.md sec 27.89). All six were casualties of the fix chain,
+Six of these were XFAIL from 2026-08-01 to 2026-09-30 and are fixed (models/Thickness.md sec 2). All six were casualties of the fix chain,
 not limits of OCCT: upstream's `BRepAlgo_Loop`/`BRepOffset` (at 91be8c4c71,
 built into scratch libraries and preloaded) passes them with the volumes above.
 Three causes, all in the fork's `BRepAlgo_Loop`:
@@ -111,7 +110,7 @@ on/off, Arc/Intersection join -- against upstream's libraries found the fork
 worse than upstream in 144 runs and better in 51, counting as right only a
 valid closed solid whose volume is plausible for a skin (upstream returns the
 input unhollowed in places, a valid solid that is wrong). After the fixes of
-sec 27.89: worse in 26, better in 53, and in 36 more the fork throws where
+sec 2: worse in 26, better in 53, and in 36 more the fork throws where
 upstream returns a wrong solid without a word. Cases added for each cause:
 
 | Case | Model | What it covers |
@@ -121,7 +120,7 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 | `boxhole_hole_*` | box with a through hole, the hole removed | two seam wires on one face |
 | `pocket_inter_join_no_crash` | box with a pocket, inward, intersection on, Intersection join | `BuildSplitsOfTrimmedFaces` never sets the trimmed-to-infinite edge map and `UpdateIntersectedEdges` dereferenced it (upstream code, reached only with the fork's edges); still invalid, as upstream's result is |
 
-## Concave corners and removed faces, Arc join (2026-09-30, sec 27.90)
+## Concave corners and removed faces, Arc join (2026-09-30, sec 3)
 
 | Case | Model | What it covers |
 |------|-------|----------------|
@@ -129,7 +128,7 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 | `pocketbox_wall_out` | box with a pocket, a pocket wall, outward | the same; no reference volume (upstream's result is invalid) |
 | `tshape_bar_top_out` | T: the bar top beside the post (a concave removed face), outward | the removed face's stretched edge ran on along the back of the T and a piece of it lay on an arc face's tangent line (dropped now), and a corner sphere met before the face that renewed its edge kept the old one (faces are gone over again). Upstream fails it; the reference is the fork's own |
 
-## Inward, intersection mode, the Intersection join (2026-09-30, sec 27.91-27.92)
+## Inward, intersection mode, the Intersection join (2026-09-30, sec 4-5)
 
 | Case | Model | What it covers |
 |------|-------|----------------|
@@ -139,11 +138,11 @@ upstream returns a wrong solid without a word. Cases added for each cause:
 | `tshape_bar_top_right_join_in`, `pocket_floor_join_*` | Intersection join, intersection off | the thick solid came back inside out (the quilt's shells met in an order that turned them); now oriented by classification |
 | `blindhole_floor_join_*` | box with a blind hole, the floor removed, Intersection join | the floor meets the wall at a concave edge; the section on the wall's offset was the wrong way round. Worked out by hand |
 | `lbox_notch_wall_inter_join_out`, `tshape_post_wall_inter_join_in`, `pocket_wall_inter_join_in` | concave removed faces, intersection on, Intersection join | the splits of the offset faces left the rim uncut; such shapes are built as with intersection off |
-| `filletbox_end_*`, `filletbox_side_*` | box with its vertical edges filleted, an end or side face removed (Arc join) | the removed face is tangent to the fillets, whose offsets never meet it (inward) or meet it far round the cylinder (outward, a lip). A tube round the tangent edge closes the gap, turning into the removed face, and outward an eighth of a sphere closes each corner with the top and bottom edges' tubes (sec 27.93). Worked out by hand (Steiner for outward) |
-| `filletbox_fillet_*` | the same box, a fillet removed (Arc join) | the removed face is curved: the tubes and corners are built on its cylinder; the loop on that periodic surface kept a dozen wires and now walks the angles, its edges lying within one period; inward a piece of the floor's offset cut off by the cylinder's circle hung on the shell and is dropped (sec 27.95). Worked out by hand |
-| `filletbox_*_join_*`, `filletbox25_fillet_join_*` | the same box, an end, side or fillet face removed, Intersection join (a fillet of 2.5 too) | that join builds no tubes: the neighbour's offset ran round its cylinder into a lip (outward) or never met the removed face (inward, unhollowed). The gap is closed with the tube's sharp counterpart -- a strip of the neighbour's tangent plane a thickness into the removed face, offset with it, and a wall square to the removed face at its far edge; cubes at the corners (sec 27.96). Worked out by hand |
+| `filletbox_end_*`, `filletbox_side_*` | box with its vertical edges filleted, an end or side face removed (Arc join) | the removed face is tangent to the fillets, whose offsets never meet it (inward) or meet it far round the cylinder (outward, a lip). A tube round the tangent edge closes the gap, turning into the removed face, and outward an eighth of a sphere closes each corner with the top and bottom edges' tubes (sec 6). Worked out by hand (Steiner for outward) |
+| `filletbox_fillet_*` | the same box, a fillet removed (Arc join) | the removed face is curved: the tubes and corners are built on its cylinder; the loop on that periodic surface kept a dozen wires and now walks the angles, its edges lying within one period; inward a piece of the floor's offset cut off by the cylinder's circle hung on the shell and is dropped (sec 8). Worked out by hand |
+| `filletbox_*_join_*`, `filletbox25_fillet_join_*` | the same box, an end, side or fillet face removed, Intersection join (a fillet of 2.5 too) | that join builds no tubes: the neighbour's offset ran round its cylinder into a lip (outward) or never met the removed face (inward, unhollowed). The gap is closed with the tube's sharp counterpart -- a strip of the neighbour's tangent plane a thickness into the removed face, offset with it, and a wall square to the removed face at its far edge; cubes at the corners (sec 9). Worked out by hand |
 
-## A cavity sealed below the removed face (2026-10-01, sec 27.100)
+## A cavity sealed below the removed face (2026-10-01, sec 10)
 
 | Case | Model | What it covers |
 |------|-------|----------------|
@@ -154,7 +153,7 @@ The 712-run sweep against upstream after these: the fork right in all 150
 runs of every mode (upstream 106-112, counting the sealed void right),
 worse than upstream in no run.
 
-## Faces left in pieces, and a short wall (2026-10-01, sec 27.101)
+## Faces left in pieces, and a short wall (2026-10-01, sec 11)
 
 `BRepOffset_MakeOffset::CheckInputData` refuses a shape whose faces that stay
 fall apart into pieces sharing no edge once the removed faces are gone
@@ -166,7 +165,7 @@ merged, so `Generated`/`Modified` answer as for one shape (FreeCAD's element
 names carry `THK`). A piece that is not one valid closed shell of positive
 volume refuses the whole, as before: a pocket's walls and floor, with the
 outside of the shape removed around them (a blind hole's top removed), did
-not come out right, and their union would pass for an answer (sec 27.103
+not come out right, and their union would pass for an answer (sec 13
 below).
 
 Making the short cases right needed a fix of its own, in `BRepAlgo_Loop`:
@@ -175,7 +174,7 @@ the loop split each removed side at the bottom's offset and kept the piece
 nearer an end of the side's edge -- above the offset there. Now the piece
 from the end on a const edge (the face that stays) is kept when only one end
 is; otherwise the nearer end's, as before. The thick solid had come out as
-the box with the plate's complement as a void (sec 27.100's sealed cavity)
+the box with the plate's complement as a void (sec 10's sealed cavity)
 and, before that, with an empty shell; upstream is right.
 
 | Case | Model | What it covers |
@@ -193,7 +192,7 @@ frustum slabs 84.58 + 10.36 = 94.94 outward and 72.80 + 15.07 = 87.87 inward;
 2 x 50 pi. The pocket shapes (`boxhole2` Face3 and Face7, `pocket` Face3,
 `cylpocket` Face2, `cylboss` Face2) stay refused.
 
-## The Intersection join with one face left (2026-10-01, sec 27.102)
+## The Intersection join with one face left (2026-10-01, sec 12)
 
 Where one face stays beside the removed ones -- a cylinder down to its top, a
 box down to its bottom -- the Intersection join threw `BRepAlgo_Image::Bind`
@@ -211,7 +210,7 @@ both ways now. Upstream answers these (the cap outward inside out).
 |------|-------|----------------|
 | `cyl_cap_alone_join_*` | cylinder, side and bottom removed, Intersection join | the throw, and the seam once: a disc of 16 pi |
 | `box_bottom_alone_join_in` | box, all but the bottom removed, Intersection join, inward | the throw: a plate of 100 |
-| `cyl_side_join_*` | cylinder, side removed, Intersection join | the pieces of sec 27.101 with this join, refused until now |
+| `cyl_side_join_*` | cylinder, side removed, Intersection join | the pieces of sec 11 with this join, refused until now |
 
 The sweep: in scope unchanged; the cylinder's, cone's and elliptic pad's
 side are answered with the Intersection join too, at the Arc join's volumes
@@ -219,7 +218,7 @@ side are answered with the Intersection join too, at the Arc join's volumes
 differ on). The pocket shapes and the torus's face stay refused, NotDone
 now instead of `Bind` or `NoSuchObject` thrown.
 
-## Pockets left in pieces (2026-10-01, sec 27.103)
+## Pockets left in pieces (2026-10-01, sec 13)
 
 Remove the face round a pocket's rim and the pocket's walls and floor are a
 piece of their own. Two faults kept such pieces refused. A piece was the
@@ -249,7 +248,7 @@ in every mode -- `boxhole2` Face3 and Face7, `pocket` Face3, `cylpocket`
 Faces 1, 2 and 4, `cylboss` Faces 1, 2 and 4 -- and all 68 runs check by
 hand. The torus's face is the one refusal left.
 
-## The input left as it was (2026-10-01, sec 27.104)
+## The input left as it was (2026-10-01, sec 14)
 
 A PartDesign Pad of an arc whose parameters run past 2 pi, under a Thickness
 removing the arc's face and the caps, came back inside out on the Windows
@@ -259,7 +258,7 @@ of each wire on the face's own surface from the loop's own edges, some of
 them the input's, and ran `ShapeFix_Shape` on it when it was invalid;
 ShapeFix shifted the pcurve of a shared edge by a period, on that surface --
 the input face's own pcurve. Reached since a periodic face whose edges lie
-within one period takes the plane path (sec 27.95). ShapeFix now works on a
+within one period takes the plane path (sec 8). ShapeFix now works on a
 copy. It showed only unfrozen: FreeCAD freezes the values it finds this fork
 for, and this suite ran frozen -- it runs unfrozen now, and every case
 checks its input.
@@ -273,7 +272,7 @@ The sweep, with an input check added: no run alters its input, before the
 fix or after, and every line is unchanged -- its 16 solids never cut a
 periodic face across its seam.
 
-## Every face removed (2026-10-02, sec 27.105)
+## Every face removed (2026-10-02, sec 15)
 
 The sweep's last refusal was the torus, its one face removed -- rightly: no
 face stays to be thickened. The sphere, a one-face shape too, came back as
@@ -287,7 +286,7 @@ when no face stays (the user's choice).
 | `torus_face_refused_*` | torus, its face removed | refused, as before |
 | `box_all_faces_refused_in`, `box_all_faces_inter_refused_out` | box, all six faces removed | refused; was the box back, 600 |
 
-## A face closed at a pole (2026-10-02, sec 27.106)
+## A face closed at a pole (2026-10-02, sec 16)
 
 On a periodic face the loop builds a seam wire from a closed edge, a piece
 of the seam and the closed edge at its far end. Where the seam ends at a
@@ -298,7 +297,7 @@ invalid result, since the chain was ported (upstream is right). The band is
 now closed by the pole's edge (`BRepAlgo_Loop::FindLoop`). The rim is closed
 in the removed face's plane, so the volumes are differences of sphere caps,
 pi h^2 (3R - h) / 3; the cone's is worked out in `models/Thickness.md`,
-"Sec 27.106".
+"Sec 16".
 
 | Case | Model | What it covers |
 |------|-------|----------------|
@@ -310,9 +309,9 @@ pi h^2 (3R - h) / 3; the cone's is worked out in `models/Thickness.md`,
 
 The cone inward and half a dome, found beside these: the next section.
 
-## A cone with its apex, half a dome, a split box (2026-10-02, sec 27.107)
+## A cone with its apex, half a dome, a split box (2026-10-02, sec 17)
 
-`models/Thickness.md`, "Sec 27.107", has the causes and the hand values.
+`models/Thickness.md`, "Sec 17", has the causes and the hand values.
 
 | Case | Model | What it covers |
 |------|-------|----------------|
@@ -325,9 +324,9 @@ The cone inward and half a dome, found beside these: the next section.
 
 The five cases this section left known broken are answered in the next.
 
-## Coplanar pieces, a wall on a sphere, a sphere round its pole (2026-10-02, sec 27.108)
+## Coplanar pieces, a wall on a sphere, a sphere round its pole (2026-10-02, sec 18)
 
-`models/Thickness.md`, "Sec 27.108", has the causes and the hand values.
+`models/Thickness.md`, "Sec 18", has the causes and the hand values.
 No case of these is marked `XFAIL` any more.
 
 | Case | Model | What it covers |
@@ -339,11 +338,11 @@ No case of these is marked `XFAIL` any more.
 | `halfdome_side_join_in`, `halfdome_other_side_join_in`, `halfdome_side_inter_join_in` | the quarter ball, a side removed, Intersection join, inward | 59.1071; were refused: the wall's end edge on the sphere was never intersected, and the removed side's section was the half circle beyond the pole |
 | `halfdome_bottom_join_out`, `_inter_join_out`, `halfdome_side_join_out`, `halfdome_other_side_join_out` | the same, outward | 67.0206, 81.7345; were refused: the offset sphere has to run round its pole, and is put on the same sphere with its axis turned |
 | `lune_side_join_*`, `eighth_ball_*_join_out`, `dome120_*_join_*` | a quarter ball on its side (both poles), an eighth of a ball, a third of a dome | the turned axis on other faces at a pole: 67.0206 / 51.3127, 46.7279, 53.3701 / 57.4660 / 41.2951 |
-| (`halfball_side_join_refused_*`, until sec 27.110) | half a ball cut through both poles, a flat half removed, Intersection join | was refused: no axis is clear of its outline, and the wall built outside its band was a valid solid that is not the skin (111.2647 for 113.0909). Answered since sec 27.110 (`halfball_flat_join_*`); a wall outside its band is still refused |
+| (`halfball_side_join_refused_*`, until sec 20) | half a ball cut through both poles, a flat half removed, Intersection join | was refused: no axis is clear of its outline, and the wall built outside its band was a valid solid that is not the skin (111.2647 for 113.0909). Answered since sec 20 (`halfball_flat_join_*`); a wall outside its band is still refused |
 
-## More than half a turn, three tubes at a pole, the sphere removed (2026-10-02, sec 27.109)
+## More than half a turn, three tubes at a pole, the sphere removed (2026-10-02, sec 19)
 
-`models/Thickness.md`, "Sec 27.109", has the causes; the volumes are worked
+`models/Thickness.md`, "Sec 19", has the causes; the volumes are worked
 by `sweep/polehand.py`.
 
 | Case | Model | What it covers |
@@ -357,12 +356,12 @@ by `sweep/polehand.py`.
 | `eighth_ball_sphere_*`, `dome120_sphere_*`, `halfdome_sphere_*`, `lune_sphere_*`, `dome270_sphere_*` | the sphere itself removed | the wall on the ball of 5 past the pole, on a turned twin of the removed face: 32.3576 / 33.2167 / 25.7418, 35.2709 / 35.8993, 41.0976 / 41.6307 / 36.6474, 49.5532 / 50.0446 / 47.3132 / 47.5529; outward refused or threw, each one |
 | `dome270_sphere_out_thick`, `dome270_sphere_join_out_thick` | the same at a thickness of 1 | 99.0413, 100.7985; threw |
 | `halfball_flat_out/in`, `halfball_sphere_in` | half a ball cut through both poles | 111.6001, 88.5482, 39.1390: right before, pinned here |
-| `halfball_flat_join_out/in`, `halfball_sphere_out`, `halfball_sphere_join_out` | the same, the modes that need its sphere past both poles | 113.0909, 89.0272, 39.1390; `XFAIL` until sec 27.110 |
+| `halfball_flat_join_out/in`, `halfball_sphere_out`, `halfball_sphere_join_out` | the same, the modes that need its sphere past both poles | 113.0909, 89.0272, 39.1390; `XFAIL` until sec 20 |
 
-## Half a ball, and a shape that is placed or turned (2026-10-02, sec 27.110)
+## Half a ball, and a shape that is placed or turned (2026-10-02, sec 20)
 
-`models/Thickness.md`, "Sec 27.110", has the causes. No case was marked
-`XFAIL` after it; sec 27.111 marks eight.
+`models/Thickness.md`, "Sec 20", has the causes. No case was marked
+`XFAIL` after it; sec 21 marks eight.
 
 | Case | Model | What it covers |
 |------|-------|----------------|
@@ -376,9 +375,9 @@ by `sweep/polehand.py`.
 | `halfcap_*`, `turned_halfcap_*`, `placed_halfcap_*` | half of a sphere's cap above latitude 30: the sphere, the bottom, a side removed inward | 19.2316, 22.0431, 28.8642; turned or placed, the sphere removed was refused (Arc) or a valid solid of 8.126 (Intersection join): a whole circle of section lost the piece its own vertex lies in, and a section was turned by its far side |
 | `bullet_side_join_out`, `turned_`, `placed_` | a dome on a cylinder, the cylinder removed outward, Intersection join | a disc of 39.2699 and the dome's skin, 61.4616; turned, 151.12: of two section circles as near as each other the first found was taken |
 
-## A rim in two arcs, and the half ball with one disc (2026-10-02, sec 27.111)
+## A rim in two arcs, and the half ball with one disc (2026-10-02, sec 21)
 
-`models/Thickness.md`, "Sec 27.111", has the causes. Eight cases are
+`models/Thickness.md`, "Sec 21", has the causes. Eight cases are
 marked `XFAIL`, each with the volume it should give.
 
 | Case | Model | What it covers |
@@ -404,20 +403,20 @@ join=Arc, +1) eight times on freshly built shapes and require one result.
 and a shape's hash is its TShape's address, so the order -- and with it the
 result -- changed from run to run: up to four results in eight runs of the
 same input. The offsets are now taken in the shape's topological order
-(FreeCAD docs/TransactionLog.md sec 27.88). The cases check that the result is
+(models/Thickness.md sec 1). The cases check that the result is
 the same every run, not that it is right. The boss and the box with a blind
-hole settled on an invalid solid until sec 27.89's loop fixes; all three are
+hole settled on an invalid solid until sec 2's loop fixes; all three are
 valid now, the boss and the box with the hole at upstream's volumes.
 
-## The sweep (2026-10-02, sec 27.106, 27.109 and 27.110)
+## The sweep (2026-10-02, sec 16, 19 and 20)
 
 The suite pins chosen cases; the sweep covers the ground between them: 24
 solids, every face removed in turn, +1 and -1, intersection off and on, the
 Arc and the Intersection join -- 928 runs. It is what found most of the
-faults above, and it lived in a scratch directory until sec 27.106. Six
-solids are sec 27.109's: a ball cut by its equator and by planes through
+faults above, and it lived in a scratch directory until sec 16. Six
+solids are sec 19's: a ball cut by its equator and by planes through
 its axis, a face of a sphere at a pole with flat neighbours. The last two
-are sec 27.110's: a third and half of a ball from pole to pole.
+are sec 20's: a third and half of a ball from pole to pole.
 
 ```
 sweep/sweep.sh out.txt            # the fork as built; about three minutes
@@ -429,7 +428,7 @@ SWEEP_PLACE=baked SWEEP_PLACEMENT="-7 2 11 -2 1 0.5 137" sweep/sweep.sh baked2.t
 ```
 
 A solid weighs the same wherever it lies, so `reference.txt` judges the
-placed and the turned sweep as it does the plain one. Sec 27.110 added the
+placed and the turned sweep as it does the plain one. Sec 20 added the
 two: placed, 144 of 228 probe runs on pole solids differed from plain
 before it, and turned, six of the sweep's did. (`baked` is FreeCAD's
 `transformShape` with a copy: the geometry is turned, and the shape is left
@@ -458,8 +457,8 @@ or a suite case before it can become the reference.
 
 The sweep has no cone with its apex, no shape cut across a seam, and no
 ball wedge from pole to pole on more than half a turn, whose sphere removed
-is still wrong (`models/Thickness.md`, sec 27.111, "Known broken");
-what it does not cover it does not vouch for (sec 27.104, sec 27.106).
+is still wrong (`models/Thickness.md`, sec 21, "Known broken");
+what it does not cover it does not vouch for (sec 14, sec 16).
 
 ## Pictures
 

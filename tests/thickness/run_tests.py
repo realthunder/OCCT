@@ -232,7 +232,7 @@ pieces_case("short_box_bottom_in_inter", Part.makeBox(10, 10, 1.5), [1, 2, 3, 4,
             [100.0], True)
 pieces_case("short_cyl_bottom_in", Part.makeCylinder(4, 1.5), [1, 2], -1.0, [16 * math.pi])
 
-# The Intersection join with one face left (sec 27.102). The removed faces'
+# The Intersection join with one face left (sec 12). The removed faces'
 # enlarged faces were split, and binding the splits as offsets threw
 # (BRepAlgo_Image::Bind); and the removed side's stretched seam was recorded
 # once, so its loop built no band: the cap outward came out as the whole
@@ -245,7 +245,7 @@ pieces_case("cyl_side_join_out",      cyl, [1], +1.0, [16 * math.pi] * 2, False,
 pieces_case("cyl_side_join_in_inter", cyl, [1], -1.0, [16 * math.pi] * 2, True, 2)
 
 # A pocket's walls and floor are a piece of their own when the face round its
-# rim is removed (sec 27.103). A piece is now an open shell, its faces and the
+# rim is removed (sec 13). A piece is now an open shell, its faces and the
 # removed faces beside it: the shape with the other pieces removed brought the
 # rest of the removed faces back as a shell of their own (upstream too). And
 # the top's loop closed its free rim, stretched, into a wire round the rest,
@@ -350,7 +350,7 @@ thickness_case("tshape_bar_top_in", tshape, 2, -1.0, "pass", 215.5708)
 # A box with a pocket, thickened inward with intersection on and the
 # Intersection join, crashed: splitting the trimmed faces had no map from
 # trimmed to infinite edges and dereferenced it. The result is still invalid
-# (as upstream's is); the case is here to run to the end. Since sec 27.92
+# (as upstream's is); the case is here to run to the end. Since sec 5
 # a removed face at a concave edge is built as with intersection off, so
 # this input no longer reaches the guarded code; it throws (its walls are
 # twice the thickness, the offsets coincide).
@@ -370,7 +370,7 @@ def nocrash_case(name, shape, face_index, value, inter, join):
 # that shares it: the guard meant to trim it once, an indexed map's Add(),
 # returns the key's index and is never 0. The second pass took the edge's
 # own end for a crossing and cut the section short -- the rim face had an
-# edge its wall did not (FreeCAD docs/TransactionLog.md sec 27.91).
+# edge its wall did not (models/Thickness.md sec 4).
 # Upstream's volumes.
 thickness_case("lbox_top_inter_join_out", lbox, 3, +1.0, "pass", 339.0, True, 2)
 thickness_case("lbox_top_inter_join_in",  lbox, 3, -1.0, "pass", 219.0, True, 2)
@@ -381,7 +381,7 @@ thickness_case("tshape_back_inter_join_in",  tshape, 8, -1.0, "pass", 192.0, Tru
 # on. The cone's and the hole's offsets meet at z=6.485, below the top face's
 # offset at z=7, which vanishes; each cut the other at z=7 too, and that
 # circle, beyond the seam's span, came out as a face of its own with no area
-# (FreeCAD docs/TransactionLog.md sec 27.91). The reference is worked out by
+# (models/Thickness.md sec 4). The reference is worked out by
 # hand -- the cavity is the band between r=2.5 and the cone's offset up to
 # where they meet -- and is upstream's.
 conehole = Part.makeCone(6, 3, 8).cut(Part.makeCylinder(1.5, 8))
@@ -420,7 +420,7 @@ def sealed_case(name, shape, face_index, value, skin_volume, void_volume, inter,
 # reaches the removed face. The material is every point within the thickness
 # of a face that stays, so the cavity -- r > 2.5, inside the cone's offset,
 # z > 1 -- is closed, and the top stays as skin over it (the user's choice,
-# FreeCAD docs/TransactionLog.md sec 27.100). The fork gave a "valid" 577.918
+# models/Thickness.md sec 10). The fork gave a "valid" 577.918
 # with intersection off, a shell crossing itself, and invalid shapes with it
 # on: the loop let the band above the crossing take the crossing circle from
 # the cavity's band, and intersection off never meets the two offsets.
@@ -436,7 +436,7 @@ for inter in (False, True):
 # intersected and the cavity ran on to z=7, a sliver of it inside out --
 # "valid", 0.761 too much (upstream: invalid). The walls beside the removed
 # face are too thin for intersection off, which builds it with intersection
-# on now (sec 27.100).
+# on now (sec 10).
 thickness_case("conehole_bottom_in", conehole, 3, -1.0, "pass", 307.1946, False, 0)
 thickness_case("conehole_bottom_join_in", conehole, 3, -1.0, "pass", 307.1946, False, 2)
 
@@ -445,7 +445,7 @@ thickness_case("conehole_bottom_join_in", conehole, 3, -1.0, "pass", 307.1946, F
 # solids of negative volume -- inside out, the quilt's shells met in an order
 # that flipped them (the T's left bar top, its mirror image, was right). The
 # thick solid is now oriented by classification (FreeCAD
-# docs/TransactionLog.md sec 27.92). Worked out by hand: 288 - 72, and the
+# models/Thickness.md sec 5). Worked out by hand: 288 - 72, and the
 # box less its pocket grown by the floor's removal.
 pocket5 = Part.makeBox(10, 10, 6).cut(Part.makeBox(5, 5, 3, App.Vector(2.5, 2.5, 3)))
 thickness_case("tshape_bar_top_right_join_in", tshape, 7, -1.0, "pass", 216.0, False, 2)
@@ -456,7 +456,7 @@ thickness_case("pocket_floor_join_in",  pocket5, 11, -1.0, "pass", 367.0, False,
 # hole's wall at a concave edge, and the section of the floor with the wall's
 # offset was oriented as for a convex one: the band on the offset cylinder
 # closed on two circles running the same way -- a face of negative area
-# (FreeCAD docs/TransactionLog.md sec 27.92). Worked out by hand: inward, 462.3
+# (models/Thickness.md sec 5). Worked out by hand: inward, 462.3
 # less the box shrunk by 1 around the hole's offset; outward, the box grown by
 # 1 less the hole's offset below its top, less the input.
 blindhole = Part.makeBox(10, 10, 5).cut(Part.makeCylinder(2, 3, App.Vector(5, 5, 2)))
@@ -467,7 +467,7 @@ thickness_case("blindhole_floor_join_in",  blindhole, 8, -1.0, "pass", 326.8496,
 # neighbour at a concave edge -- the L-box's notch wall, the T's post wall, a
 # pocket's wall. The splits of the offset faces did not cut the neighbour's
 # section where the rim needs it; such a shape is now built as with
-# intersection off (FreeCAD docs/TransactionLog.md sec 27.92). The volumes are
+# intersection off (models/Thickness.md sec 5). The volumes are
 # intersection-off's, which the sweep checked.
 thickness_case("lbox_notch_wall_inter_join_out", lbox, 7, +1.0, "pass", 423.0, True, 2)
 thickness_case("tshape_post_wall_inter_join_in", tshape, 3, -1.0, "pass", 212.0, True, 2)
@@ -478,7 +478,7 @@ thickness_case("pocket_wall_inter_join_in", pocket5, 7, -1.0, "pass", 395.0, Tru
 # parallel to it and never meet it; the rim had no edge but the removed
 # face's own and the result came back unhollowed. A tube round the tangent
 # edge closes the gap, as the Arc join closes a convex edge (FreeCAD
-# docs/TransactionLog.md sec 27.93). Worked out by hand: the input less the
+# models/Thickness.md sec 6). Worked out by hand: the input less the
 # shrunk rounded box, less the channel to the opening minus two quarter
 # discs of the thickness's radius.
 filletbox = Part.makeBox(10, 8, 6)
@@ -502,8 +502,7 @@ thickness_case("filletbox_side_out", filletbox, 6, +1.0, "pass", 388.8188)
 # it now walks the angles as on a plane. Inward, the floor's and the
 # ceiling's offsets cut the cylinder in a circle that crosses the walls'
 # offsets before it reaches the tubes, and the piece of floor cut off there
-# hangs on the shell; it is dropped (FreeCAD docs/TransactionLog.md sec
-# 27.95). Before: outward an exception, inward a valid 647.5624 -- more than
+# hangs on the shell; it is dropped (models/Thickness.md sec 8). Before: outward an exception, inward a valid 647.5624 -- more than
 # the input. Worked out by hand: inward the input less the cavity (its
 # section by Green's theorem), outward (Steiner) the whole skin less the
 # fillet's slab and two quarter tori, plus two tubes and four sphere pieces.
@@ -516,7 +515,7 @@ thickness_case("filletbox_fillet_out", filletbox, 3, +1.0, "pass", 405.9034)
 # counterpart: a strip of the neighbour's tangent plane a thickness into the
 # removed face, offset with it, and a wall square to the removed face at the
 # strip's far edge; cubes where the Arc join has sphere eighths (FreeCAD
-# docs/TransactionLog.md sec 27.96). Worked out by hand: the sharp-grown skin
+# models/Thickness.md sec 9). Worked out by hand: the sharp-grown skin
 # less the slab in front of the removed face, plus the squares; inward the
 # channel narrowed by a square at each side; for a fillet the squares reach
 # its cylinder (Green's theorem for the cavity's corner). At r=2 the wall of
@@ -547,7 +546,7 @@ nocrash_case("pocket_inter_join_no_crash",
 # pole's edge. The rim is closed in the removed face's plane, so each volume
 # is a difference of sphere caps, pi h^2 (3R - h) / 3; the cone's skin has
 # the apex rounded by a ball of the thickness (models/Thickness.md, "Sec
-# 27.106").
+# 16").
 dome = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 360)
 thickness_case("dome_flat_out",       dome, 2, +0.5, "pass", 86.6556)
 thickness_case("dome_flat_in",        dome, 2, -0.5, "pass", 70.9476)
@@ -588,7 +587,7 @@ for name, cone in (("cone", Part.makeCone(0, 4, 6)), ("cone_up", Part.makeCone(4
 # no vertex; the tube kept the edge whole where the rim took its pieces; and
 # the pole's edge was dropped where the wire reached the pole on a vertex of
 # its own. Inward, the offset sphere came with two more wires than it has.
-# Hand values, models/Thickness.md "Sec 27.107".
+# Hand values, models/Thickness.md "Sec 17".
 halfdome = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 180)
 thickness_case("halfdome_bottom_out",      halfdome, 2, +0.5, "pass", 66.1779)
 thickness_case("halfdome_bottom_in",       halfdome, 2, -0.5, "pass", 51.3127)
@@ -638,7 +637,7 @@ thickness_case("dome120_bottom_join_out", dome120, 2, +0.5, "pass", 53.3701, Fal
 thickness_case("dome120_side_join_out",   dome120, 3, +0.5, "pass", 57.4660, False, 2)
 thickness_case("dome120_side_join_in",    dome120, 3, -0.5, "pass", 41.2951, False, 2)
 
-# Sec 27.109. Three quarters of a dome: more than half a turn, and the edge
+# Sec 19. Three quarters of a dome: more than half a turn, and the edge
 # at its axis concave. The bottom removed outward came back the input,
 # 196.3495; a side removed was refused, or invalid with the Arc join inward
 # (the wall runs on past the pole to the other side's offset). Sharp: the
@@ -743,7 +742,7 @@ thickness_case("splitbox_top_piece_in",  splitbox, split_top, -1.0, "pass", 274.
 # removed piece: the sharp skin, 480 either way, less the slab over the
 # removed piece short of the wall, 4 x 10 x 1 (440), or less the cavity 192
 # and the shaft up to the wall, 2 x 6 x 1 (276). Three faults, models/
-# Thickness.md "Sec 27.108": the wall and the face at the joint's end were
+# Thickness.md "Sec 18": the wall and the face at the joint's end were
 # intersected twice (their section two edges, the wall never built); coplanar
 # pieces meeting at a vertex were intersected with each other's neighbours
 # (two edges on one line, no piece of a split face built -- an end face
@@ -805,7 +804,7 @@ never_the_input_case("halfdome_side_join_out_not_the_input", halfdome, 3, +0.5, 
 # Every face removed: no face stays to be thickened, and the call is refused.
 # A sphere with its one face removed came back as the sphere itself, "valid"
 # and unhollowed; the torus was refused already (FreeCAD
-# docs/TransactionLog.md sec 27.105).
+# models/Thickness.md sec 15).
 def refused_case(name, shape, face_indices, value, inter=False, join=0):
     before = signature(shape)
     try:
@@ -833,7 +832,7 @@ refused_case("box_all_faces_inter_refused_out", Part.makeBox(10, 10, 6), [1, 2, 
 # of an edge the test face shares with the input by a period, on the
 # cylinder's own surface -- the input came back inside out (FreeCAD's
 # PartDesign Pad under a Thickness, issue3 above, with shape values not
-# frozen; occ-issues local03, FreeCAD docs/TransactionLog.md sec 27.104).
+# frozen; occ-issues local03, models/Thickness.md sec 14).
 # Only the input and the result's validity are checked here.
 def input_case(name, shape, face_indices, value, inter=False, join=0):
     try:
@@ -871,7 +870,7 @@ input_case("sector_outer_arc_past_period_input", ring_sector(2 * math.pi), [3, 5
 # offsets in hash order (a shape's hash is its TShape's address), and the
 # result depended on that order -- up to four different results in eight runs
 # of one input. Each case must give one result over repeated runs on fresh
-# shapes (FreeCAD docs/TransactionLog.md sec 27.88).
+# shapes (models/Thickness.md sec 1).
 def determinism_case(name, make, face_index, value, runs=8):
     outcomes = set()
     for _ in range(runs):
@@ -905,7 +904,7 @@ determinism_case("arc_inter_boxhole_same_every_run",
 # shape with a pole refused; the apex of an offset cone left where the cone
 # was made (BRepOffset_Offset); the normal of a whole circle taken from its
 # start, middle and end (CorrectConicalFaces), which is rounding, or nothing.
-# And the turned sphere of sec 27.108 was not made for a face that is placed.
+# And the turned sphere of sec 18 was not made for a face that is placed.
 # A shape turned in space is the same shape too. The corner arc of a removed
 # face tangent to its neighbour was taken from a section whose lines join
 # where the intersection cares to cut them, and for a filleted box turned by
@@ -925,7 +924,7 @@ thickness_case("turned_filletbox_fillet_in", turned(filletbox), 3, -1.0, "pass",
 thickness_case("placed_filletbox_fillet_out", placed(filletbox), 4, +1.0, "pass", 405.9034)
 
 # Known broken, each with the volume it should give (models/Thickness.md,
-# sec 27.110, "Found beside these").
+# sec 20, "Found beside these").
 # - (answered) The half ball as a cut or a refine leaves it: one disc for its
 #   flat. The disc removed with the Intersection join was refused (and
 #   searched its loops without end until the search was given a number of

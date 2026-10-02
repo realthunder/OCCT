@@ -2,7 +2,7 @@
 # confirms (README.md, "The sweep"). Thickness 1 throughout.
 #
 # The rules they are worked from, each settled by an earlier fix or ruling
-# (FreeCAD docs/TransactionLog.md sec 27.89 to 27.105):
+# (models/Thickness.md sec 2 to 15):
 #  - the skin is closed in the removed face's own surface, extended;
 #  - the Intersection join (j2) meets offsets in sharp corners, the Arc join
 #    (j0) rounds them where the offsets part -- outward at a convex edge of
@@ -113,7 +113,7 @@ HAND.update({
     ("cylboss", 2, -1): {0: 93 * pi, 2: 93 * pi},
     # The boss's wall removed, outward: 150 pi sharp, two rims rounded.
     ("cylboss", 4, +1): {0: 150 * pi - 2 * ring(6, +1)},
-    # The blind hole's top removed (sec 27.103).
+    # The blind hole's top removed (sec 13).
     ("boxhole2", 3, +1): {0: 300 + 15 * pi + 2 * pi / 3 + 10 * pi, 2: 364 + 10 * pi},
     ("boxhole2", 3, -1): {0: 244 + 19 * pi + (pi * pi / 2) * (2 + 4 / (3 * pi)), 2: 244 + 24 * pi},
     # The L box, a notch wall removed, outward: 423 sharp; 90 of edge, 8 corners.

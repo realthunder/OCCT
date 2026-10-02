@@ -9,7 +9,7 @@
 # hand.py reads the table, so that check.py needs no numpy; this script is how
 # it is made:  python polehand.py > polehand.txt  (FreeCAD's Python has numpy).
 # At a thickness of 0.5 it gives the 76 volumes the suite and the probes of
-# FreeCAD docs/TransactionLog.md sec 27.106 to 27.109 had settled one by one.
+# models/Thickness.md sec 16 to 19 had settled one by one.
 #
 # The rules (tests/thickness/models/Thickness.md):
 #  - the skin is closed in the removed face's own surface, extended;
