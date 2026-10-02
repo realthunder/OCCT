@@ -296,8 +296,8 @@ left as a wire of its own, bounding nothing -- a face of no area and an
 invalid result, since the chain was ported (upstream is right). The band is
 now closed by the pole's edge (`BRepAlgo_Loop::FindLoop`). The rim is closed
 in the removed face's plane, so the volumes are differences of sphere caps,
-pi h^2 (3R - h) / 3; the cone's is worked out in FreeCAD's
-docs/TransactionLog.md sec 27.106.
+pi h^2 (3R - h) / 3; the cone's is worked out in `models/Thickness.md`,
+"Sec 27.106".
 
 | Case | Model | What it covers |
 |------|-------|----------------|

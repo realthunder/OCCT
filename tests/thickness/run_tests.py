@@ -533,8 +533,8 @@ nocrash_case("pocket_inter_join_no_crash",
 # 231.5055 inward by 0.5; upstream is right). The band is now closed by the
 # pole's edge. The rim is closed in the removed face's plane, so each volume
 # is a difference of sphere caps, pi h^2 (3R - h) / 3; the cone's skin has
-# the apex rounded by a ball of the thickness (FreeCAD
-# docs/TransactionLog.md sec 27.106).
+# the apex rounded by a ball of the thickness (models/Thickness.md, "Sec
+# 27.106").
 dome = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 360)
 thickness_case("dome_flat_out",       dome, 2, +0.5, "pass", 86.6556)
 thickness_case("dome_flat_in",        dome, 2, -0.5, "pass", 70.9476)

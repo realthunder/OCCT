@@ -474,8 +474,22 @@ its apex went the same way and come right with it. The rim is closed in the
 removed face's plane, so each volume is a difference of sphere caps, pi h^2
 (3R - h) / 3: the dome (2/3) pi (5.5^3 - 5^3) = 86.6556 outward and (2/3) pi
 (5^3 - 4.5^3) = 70.9476 inward; the cap above latitude 30, inward, 81.8123 -
-48.1711 = 33.6412. The cone's skin is the cone a thickness out, its apex
-rounded by a ball of the thickness, less the cone: 52.4095.
+48.1711 = 33.6412; the sphere below it, outward, 569.6755 - 441.7865 =
+127.8890.
+
+The cone (radius 4, height 6, sin a = 4 / sqrt(52)), outward with the Arc
+join: the cone a thickness out is the same cone with its apex 0.5 / sin a
+lower, cut where the ball of 0.5 round the apex is tangent to it, 0.5 sin a
+below the apex -- the ball's slice 0.0663 and the cone above it 152.8742,
+less the cone's 100.5310: 52.4095. Sharp, with the Intersection join,
+52.4563.
+
+The fix is in `BRepAlgo_Loop::FindLoop` (`e626b499d9`): the edges tried at
+the seam's far end are the vertex's own and the degenerated edges on it
+(`MakeSeamBand` fits a degenerated edge by its pcurve like any closed edge),
+and the put-back of degenerated edges skips one already in a wire. issue4's
+sphere caps, a quarter turn, have no closed edge to start a seam wire from:
+their wires come from the vertex walk, and the pole is put back.
 
 ![dome_flat_out](pictures/dome_flat_out.png)
 ![dome_flat_in](pictures/dome_flat_in.png)
