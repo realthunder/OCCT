@@ -51,6 +51,8 @@
 //
 #include <BOPTools_AlgoTools.hxx>
 
+#include <vector>
+
 //=================================================================================================
 
 BRepOffset_Inter3d::BRepOffset_Inter3d(const occ::handle<BRepAlgo_AsDes>& AsDes,
@@ -1288,34 +1290,48 @@ void BRepOffset_Inter3d::ConnexIntByInt(
 
 //=================================================================================================
 
-// Whether two edges run the same way, each as its orientation has it: the
-// tangent of <theE> at its middle against the tangent of <theRef> at the
-// point nearest to it.
+// Whether two edges run the same way, each as its orientation has it: their
+// tangents where they come nearest each other.
+// Not the tangent of <theE> at its middle against that of <theRef> at the
+// extremum nearest to it: a section can be most of a circle of which the
+// reference follows a part, its middle then lies across the circle from the
+// reference, and the extremum found there is the farthest point, where the
+// two run opposite ways. How the circle is cut, and so where its middle
+// falls, depends on how the shape lies in space: half of a sphere's cap,
+// its bottom removed inward with the Intersection join, was 22.043 as made
+// and a valid solid of 11.598 turned by 40 degrees.
 static bool RunTheSameWay(const TopoDS_Edge& theE, const TopoDS_Edge& theRef)
 {
   BRepAdaptor_Curve aC(theE), aRef(theRef);
-  const double      aT = (aC.FirstParameter() + aC.LastParameter()) / 2.;
-  gp_Pnt            aP;
-  gp_Vec            aD;
-  aC.D1(aT, aP, aD);
-  Extrema_ExtPC anExt(aP, aRef);
-  if (!anExt.IsDone() || anExt.NbExt() == 0)
+  const int         aNb   = 32;
+  double            aBest = RealLast();
+  double            aTE   = (aC.FirstParameter() + aC.LastParameter()) / 2.;
+  double            aTR   = (aRef.FirstParameter() + aRef.LastParameter()) / 2.;
+  std::vector<gp_Pnt> aRefPnts;
+  for (int j = 0; j <= aNb; ++j)
   {
-    return true;
+    aRefPnts.push_back(aRef.Value(aRef.FirstParameter()
+                                  + (aRef.LastParameter() - aRef.FirstParameter()) * j / aNb));
   }
-  int    iMin   = 1;
-  double aDMin = anExt.SquareDistance(1);
-  for (int i = 2; i <= anExt.NbExt(); ++i)
+  for (int i = 0; i <= aNb; ++i)
   {
-    if (anExt.SquareDistance(i) < aDMin)
+    const double aT = aC.FirstParameter() + (aC.LastParameter() - aC.FirstParameter()) * i / aNb;
+    const gp_Pnt aP = aC.Value(aT);
+    for (int j = 0; j <= aNb; ++j)
     {
-      aDMin = anExt.SquareDistance(i);
-      iMin  = i;
+      const double aD2 = aP.SquareDistance(aRefPnts[j]);
+      if (aD2 < aBest)
+      {
+        aBest = aD2;
+        aTE   = aT;
+        aTR   = aRef.FirstParameter() + (aRef.LastParameter() - aRef.FirstParameter()) * j / aNb;
+      }
     }
   }
-  gp_Pnt aPR;
-  gp_Vec aDR;
-  aRef.D1(anExt.Point(iMin).Parameter(), aPR, aDR);
+  gp_Pnt aP, aPR;
+  gp_Vec aD, aDR;
+  aC.D1(aTE, aP, aD);
+  aRef.D1(aTR, aPR, aDR);
   if (theE.Orientation() == TopAbs_REVERSED)
   {
     aD.Reverse();
