@@ -155,6 +155,13 @@ private:
   //! Returns false, doing nothing, when the faces that stay are one piece.
   Standard_EXPORT bool MakeThickSolidByPieces(const Message_ProgressRange& theRange);
 
+  //! A thick solid of a solid with a face of a sphere that runs from pole
+  //! to pole on more than a third of a turn: the face is first cut in two
+  //! or more, the thick solid is made of that shape, and its history is
+  //! given back under the faces and edges of the shape given. Returns
+  //! false, doing nothing, where there is no such face or it can stay whole.
+  Standard_EXPORT bool MakeThickSolidOfSplit(const Message_ProgressRange& theRange);
+
   //! Set the faces that are to be removed
   Standard_EXPORT void SetFaces();
 
