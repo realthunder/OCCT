@@ -898,6 +898,29 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
       {
         aSpans.Bind(anEdge, std::make_pair(aSpanF, aSpanL));
       }
+      else if (Extended && !isPlanarFace && !C.IsNull())
+      {
+        // A stretched edge keeps its own ends as INTERNAL vertices, and they
+        // are its span: a removed face's meridian stretched over the pole and
+        // down the far side of the sphere, where the piece past the pole
+        // closes a wire round what the neighbour's offset cut away.
+        double aIntF = Precision::Infinite(), aIntL = -Precision::Infinite();
+        int    aNbInt = 0;
+        for (TopoDS_Iterator It(anEdge); It.More(); It.Next())
+        {
+          if (It.Value().Orientation() == TopAbs_INTERNAL)
+          {
+            const double aP = BRep_Tool::Parameter(TopoDS::Vertex(It.Value()), anEdge);
+            aIntF           = std::min(aIntF, aP);
+            aIntL           = std::max(aIntL, aP);
+            ++aNbInt;
+          }
+        }
+        if (aNbInt >= 2 && aIntL > aIntF + Precision::PConfusion())
+        {
+          aSpans.Bind(anEdge, std::make_pair(aIntF, aIntL));
+        }
+      }
 
       for (itl1.Initialize(theEdges); itl1.More(); itl1.Next())
       {

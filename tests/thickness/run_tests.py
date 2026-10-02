@@ -583,11 +583,15 @@ thickness_case("halfdome_bottom_join_in",  halfdome, 2, -0.5, "pass", 51.3127, F
 thickness_case("halfdome_side_out",        halfdome, 3, +0.5, "pass", 79.7628)
 thickness_case("halfdome_side_in",         halfdome, 3, -0.5, "pass", 58.8944)
 thickness_case("halfdome_other_side_out",  halfdome, 4, +0.5, "pass", 79.7628)
-# Still wrong: the mirror image inward (the offset sphere takes a wire round
-# what was cut away), and the Intersection join -- the bottom outward needs
-# the sphere grown round its pole, the sides a wall the loop does not close.
-# Refused or invalid, never the input back.
-thickness_case("halfdome_other_side_in",   halfdome, 4, -0.5, "xfail", 58.8944)
+# The mirror image inward: the removed side's meridian is stretched over the
+# pole and down the far side, and the piece past the pole closed a wire round
+# what the neighbour's offset cut away. Its area told nothing (its pcurve
+# runs past the pole, out of the sphere's parameters): right for one side,
+# kept for the other. A piece beyond a stretched edge's own ends is outside.
+thickness_case("halfdome_other_side_in",   halfdome, 4, -0.5, "pass", 58.8944)
+# Still wrong: the Intersection join -- the bottom outward needs the sphere
+# grown round its pole, the sides a wall the loop does not close. Refused,
+# never the input back.
 thickness_case("halfdome_bottom_join_out", halfdome, 2, +0.5, "xfail", 67.0206, False, 2)
 thickness_case("halfdome_side_join_in",    halfdome, 3, -0.5, "xfail", None, False, 2)
 
