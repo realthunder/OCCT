@@ -1379,6 +1379,15 @@ struct WireInfoHasher
 typedef NCollection_IndexedMap<WireInfo, WireInfoHasher>           MapOfWire;
 typedef NCollection_IndexedMap<WireInfo, WireInfoHasher>::Iterator MapIteratorOfMapOfWire;
 
+// The search below tries every path through the edges at every vertex: its
+// cost grows with the power of their number, and a face with enough pieces
+// on it -- an offset sphere cut by its neighbours' sections on both sides of
+// a pole -- kept it going for minutes with no end in sight. It is given a
+// number of steps to spend; a search that spends them all has no answer, and
+// the face is not built.
+static const long   THE_LOOP_SEARCH_STEPS = 1000000;
+static thread_local long theLoopSearchSteps = 0;
+
 void FindAllLoops(const TopoDS_Vertex&                                                  CV,
                   const TopoDS_Edge&                                                    CE,
                   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& CurrentVEMap,
@@ -1394,6 +1403,10 @@ void FindAllLoops(const TopoDS_Vertex&                                          
   NCollection_List<TopoDS_Shape>::Iterator itl;
   TopoDS_Vertex                            V1, V2, NV;
 
+  if (--theLoopSearchSteps < 0)
+  {
+    return;
+  }
   SHOW_TOPO_SHAPE(CV, "CV");
   SHOW_TOPO_SHAPE(CE, "CE");
 
@@ -2272,7 +2285,9 @@ void BRepAlgo_Loop::FindLoop()
     NewWires = aWalked;
   }
 
-  for (int ii = 1; ii <= MVE.Extent() && !(isWalked && aWalkMode == 1); ++ii)
+  theLoopSearchSteps = THE_LOOP_SEARCH_STEPS;
+  bool isGivenUp     = false;
+  for (int ii = 1; ii <= MVE.Extent() && !(isWalked && aWalkMode == 1) && !isGivenUp; ++ii)
   {
     const TopoDS_Vertex& VF = TopoDS::Vertex(MVE.FindKey(ii));
 
@@ -2295,6 +2310,14 @@ void BRepAlgo_Loop::FindLoop()
                    myFace,
                    myTolConf,
                    myOutsideEdges);
+      if (theLoopSearchSteps < 0)
+      {
+        // Out of steps: what it found so far is no answer.
+        SHOW_TOPO_SHAPE(myFace, "LoopSearchGivenUp");
+        NewWires.Clear();
+        isGivenUp = true;
+        break;
+      }
 
       // Perioidc surface needs a wire with seam edge. Look for wires consists
       // of a wire with two closed edge joined by a seam edge.
