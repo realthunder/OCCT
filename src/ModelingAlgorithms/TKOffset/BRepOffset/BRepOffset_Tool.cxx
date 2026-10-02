@@ -82,6 +82,9 @@
 #include <GeomInt_IntSS.hxx>
 #include <GeomLib.hxx>
 #include <GeomProjLib.hxx>
+
+#include <vector>
+#include <Geom_SphericalSurface.hxx>
 #include <gp.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
@@ -3492,6 +3495,185 @@ void BRepOffset_Tool::CheckBounds(const TopoDS_Face&        F,
 
 //=================================================================================================
 
+// A face of a sphere that reaches a pole, on less than a half turn, is put on
+// the same sphere with its axis turned: the middle of the face on the new
+// equator, opposite the new seam, the new poles a quarter turn away along
+// its middle meridian. Grown past the meridians that bound it, such a face
+// has to run round its pole -- half a dome hollowed outward, its flat
+// neighbours' offsets cutting the offset sphere behind the pole -- and in its
+// own parameters that is a whole turn of U with a seam up to the pole, where
+// U is only grown by a tenth of what is left of the turn. On the turned
+// sphere the same region is a plain patch, clear of both poles and the seam.
+// The pole is an ordinary point there, and its degenerated edge takes a
+// pcurve that stays on that point: an edge of no extent in (u, v) as in
+// space, which the loops leave out of their wires (BRepAlgo_Loop::FindLoop).
+// False, and nothing changed, where the face is no such face.
+static bool TurnSphereOffPole(const TopoDS_Face& theF)
+{
+  TopLoc_Location           aLoc;
+  occ::handle<Geom_Surface> aS = BRep_Tool::Surface(theF, aLoc);
+  if (aS.IsNull() || !aLoc.IsIdentity())
+  {
+    return false;
+  }
+  if (aS->DynamicType() == STANDARD_TYPE(Geom_RectangularTrimmedSurface))
+  {
+    aS = occ::down_cast<Geom_RectangularTrimmedSurface>(aS)->BasisSurface();
+  }
+  occ::handle<Geom_SphericalSurface> aSphS = occ::down_cast<Geom_SphericalSurface>(aS);
+  if (aSphS.IsNull())
+  {
+    return false;
+  }
+  bool hasPole = false;
+  for (TopExp_Explorer anExp(theF, TopAbs_EDGE); anExp.More() && !hasPole; anExp.Next())
+  {
+    hasPole = BRep_Tool::Degenerated(TopoDS::Edge(anExp.Current()));
+  }
+  if (!hasPole)
+  {
+    return false;
+  }
+  double aUF1, aUF2, aVF1, aVF2;
+  CompactUVBounds(theF, aUF1, aUF2, aVF1, aVF2);
+  if (aUF2 - aUF1 > M_PI + Precision::PConfusion() || aUF2 - aUF1 < Precision::PConfusion())
+  {
+    return false;
+  }
+  const gp_Sphere aSph = aSphS->Sphere();
+  const double    aUm = (aUF1 + aUF2) / 2., aVm = (aVF1 + aVF2) / 2.;
+  const gp_Pnt    aC = aSph.Location();
+  const gp_Dir    aMid(gp_Vec(aC, ElSLib::Value(aUm, aVm, aSph)));
+
+  BRepLib::BuildCurves3d(theF);
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEMap;
+  TopExp::MapShapes(theF, TopAbs_EDGE, anEMap);
+
+  // The new axis: square to the middle of the face, and of those directions
+  // the one that keeps its two poles farthest from the face's outline. A
+  // face with no such direction -- half a ball cut through its poles, its
+  // outline a whole great circle -- stays as it is.
+  std::vector<gp_Vec> anOutline;
+  for (int i = 1; i <= anEMap.Extent(); ++i)
+  {
+    const TopoDS_Edge aE = TopoDS::Edge(anEMap(i));
+    if (BRep_Tool::Degenerated(aE))
+    {
+      const TopoDS_Vertex aV = TopExp::FirstVertex(TopoDS::Edge(aE.Oriented(TopAbs_FORWARD)));
+      if (!aV.IsNull())
+      {
+        anOutline.push_back(gp_Vec(aC, BRep_Tool::Pnt(aV)).Normalized());
+      }
+      continue;
+    }
+    BRepAdaptor_Curve aBAC(aE);
+    const int         aNbS = 16;
+    for (int k = 0; k <= aNbS; ++k)
+    {
+      const gp_Pnt aP = aBAC.Value(aBAC.FirstParameter()
+                                   + (aBAC.LastParameter() - aBAC.FirstParameter()) * k / aNbS);
+      if (aP.Distance(aC) > gp::Resolution())
+      {
+        anOutline.push_back(gp_Vec(aC, aP).Normalized());
+      }
+    }
+  }
+  const gp_Dir anE1(gp_Vec(aC, ElSLib::Value(aUm, aVm - M_PI / 2., aSph)));
+  const gp_Dir anE2 = aMid.Crossed(anE1);
+  double       aBest = 2.;
+  gp_Dir       anAxis = anE1;
+  for (int k = 0; k < 180; ++k)
+  {
+    const double aT = k * M_PI / 180.;
+    const gp_Vec aA = gp_Vec(anE1) * std::cos(aT) + gp_Vec(anE2) * std::sin(aT);
+    double       aMax = 0.;
+    for (const gp_Vec& aD : anOutline)
+    {
+      aMax = std::max(aMax, std::abs(aA.Dot(aD)));
+    }
+    if (aMax < aBest - 1.e-9)
+    {
+      aBest  = aMax;
+      anAxis = gp_Dir(aA);
+    }
+  }
+  // The poles a twelfth of a turn from the outline, at the least.
+  if (aBest > std::cos(M_PI / 6.))
+  {
+    return false;
+  }
+  gp_Ax3 aPos(aC, anAxis, aMid.Reversed());
+  if (!aSph.Position().Direct())
+  {
+    aPos.YReverse();
+  }
+  occ::handle<Geom_SphericalSurface> aNewS = new Geom_SphericalSurface(aPos, aSph.Radius());
+  NCollection_DataMap<TopoDS_Shape, occ::handle<Geom2d_Curve>, TopTools_ShapeMapHasher> aPCurves;
+  for (int i = 1; i <= anEMap.Extent(); ++i)
+  {
+    const TopoDS_Edge aE = TopoDS::Edge(anEMap(i).Oriented(TopAbs_FORWARD));
+    if (BRep_Tool::Degenerated(aE))
+    {
+      const TopoDS_Vertex aV = TopExp::FirstVertex(aE);
+      if (aV.IsNull())
+      {
+        return false;
+      }
+      double aU, aVv;
+      ElSLib::Parameters(aNewS->Sphere(), BRep_Tool::Pnt(aV), aU, aVv);
+      NCollection_Array1<gp_Pnt2d> aPoles(1, 2);
+      aPoles.SetValue(1, gp_Pnt2d(aU, aVv));
+      aPoles.SetValue(2, gp_Pnt2d(aU, aVv));
+      aPCurves.Bind(aE, new Geom2d_BezierCurve(aPoles));
+      continue;
+    }
+    if (BRep_Tool::IsClosed(aE, theF))
+    {
+      return false;
+    }
+    double                        aF, aL;
+    const occ::handle<Geom_Curve> aC3d = BRep_Tool::Curve(aE, aF, aL);
+    if (aC3d.IsNull())
+    {
+      return false;
+    }
+    double                    aTol = BRep_Tool::Tolerance(aE);
+    occ::handle<Geom2d_Curve> aC2d = GeomProjLib::Curve2d(aC3d, aF, aL, aNewS, aTol);
+    if (aC2d.IsNull())
+    {
+      return false;
+    }
+    // Clear of the new seam, the pcurve lies in one period as it comes.
+    const gp_Pnt2d aP2d = aC2d->Value((aF + aL) / 2.);
+    if (aP2d.X() < Precision::PConfusion() || aP2d.X() > 2. * M_PI - Precision::PConfusion())
+    {
+      return false;
+    }
+    aPCurves.Bind(aE, aC2d);
+  }
+
+  BRep_Builder              aBB;
+  occ::handle<Geom2d_Curve> aNullPCurve;
+  const double              aTolF = BRep_Tool::Tolerance(theF);
+  for (int i = 1; i <= anEMap.Extent(); ++i)
+  {
+    const TopoDS_Edge aE = TopoDS::Edge(anEMap(i).Oriented(TopAbs_FORWARD));
+    if (!aPCurves.IsBound(aE))
+    {
+      continue;
+    }
+    double aF, aL;
+    BRep_Tool::Range(aE, aF, aL);
+    aBB.UpdateEdge(aE, aNullPCurve, theF, BRep_Tool::Tolerance(aE));
+    aBB.UpdateEdge(aE, aPCurves(aE), aNewS, aLoc, BRep_Tool::Tolerance(aE));
+    aBB.Range(aE, aF, aL);
+  }
+  aBB.UpdateFace(theF, aNewS, aLoc, aTolF);
+  return true;
+}
+
+//=================================================================================================
+
 bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
                                   TopoDS_Face&       BF,
                                   const bool         CanExtentSurface,
@@ -3508,6 +3690,10 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
   //---------------------------
   // extension de la geometrie.
   //---------------------------
+  if (CanExtentSurface && UpdatePCurve && theEnlargeU && theExtensionMode == 1)
+  {
+    TurnSphereOffPole(F);
+  }
   TopLoc_Location           L;
   occ::handle<Geom_Surface> S = BRep_Tool::Surface(F, L);
   double                    UU1, VV1, UU2, VV2;

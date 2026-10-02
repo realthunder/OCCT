@@ -1153,6 +1153,17 @@ static bool ExtendPCurve(const occ::handle<Geom2d_Curve>& aPCurve,
   double FirstPar = NewPCurve->FirstParameter();
   double LastPar  = NewPCurve->LastParameter();
 
+  // A pcurve that stays on one point -- the edge of a sphere's pole on the
+  // sphere with its axis turned (BRepOffset_Tool::EnLargeFace) -- has no
+  // direction to be prolonged in.
+  if (NewPCurve->Value(FirstPar).Distance(NewPCurve->Value(LastPar)) <= Precision::PConfusion()
+      && NewPCurve->Value((FirstPar + LastPar) / 2.).Distance(NewPCurve->Value(FirstPar))
+           <= Precision::PConfusion())
+  {
+    NewPCurve = aPCurve;
+    return false;
+  }
+
   if (NewPCurve->IsKind(STANDARD_TYPE(Geom2d_BoundedCurve))
       && (FirstPar > anEf - a2Offset || LastPar < anEl + a2Offset))
   {

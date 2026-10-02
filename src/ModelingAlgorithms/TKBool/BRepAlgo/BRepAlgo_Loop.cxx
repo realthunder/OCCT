@@ -2097,6 +2097,16 @@ void BRepAlgo_Loop::FindLoop()
     }
   }
 
+  // A degenerated edge whose pcurve stays on one point is the pole of a
+  // sphere the face is no longer parametrized by (BRepOffset_Tool::EnLargeFace
+  // turns a sphere's axis off a face that has to grow round its pole): the
+  // point is an ordinary one there, and the edge has no place in a wire.
+  auto hasPCurve = [this](const TopoDS_Edge& theE) {
+    double                          aF, aL;
+    const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, myFace, aF, aL);
+    return !aC2d.IsNull() && aC2d->Value(aF).Distance(aC2d->Value(aL)) > Precision::PConfusion();
+  };
+
   // add cut edges (in the order the edges were cut - hash order here would
   // make vertex canonicalization and loop discovery nondeterministic).
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> Emap;
@@ -2112,7 +2122,10 @@ void BRepAlgo_Loop::FindLoop()
       {
         if (BRep_Tool::Degenerated(E))
         {
-          DegenEdges.Append(E);
+          if (hasPCurve(E))
+          {
+            DegenEdges.Append(E);
+          }
           continue;
         }
         StoreInMVE(myFace, E, MVE, YaCouture, myVerticesForSubstitute, myTolConf);
@@ -2131,7 +2144,10 @@ void BRepAlgo_Loop::FindLoop()
     {
       if (BRep_Tool::Degenerated(E))
       {
-        DegenEdges.Append(E);
+        if (hasPCurve(E))
+        {
+          DegenEdges.Append(E);
+        }
         continue;
       }
       StoreInMVE(myFace, E, MVE, YaCouture, myVerticesForSubstitute, myTolConf);

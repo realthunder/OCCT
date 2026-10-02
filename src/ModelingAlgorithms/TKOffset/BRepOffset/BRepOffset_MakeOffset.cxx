@@ -1259,6 +1259,109 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
     }
   }
 
+  // A wall closing a removed face's tangent edge (TreatTangentCaps) stands
+  // in a band one thickness deep, between the removed face and the kept
+  // face's offset. Where the faces it must be cut by do not reach it -- the
+  // sphere of half a ball cut through both its poles, which cannot be grown
+  // round them -- its loop closes on whatever is there, the wall comes out
+  // as half a disc and the result is a valid solid that is not the skin.
+  // A wall built outside its band is no answer. (On the removed face's side
+  // the band ends at that face, which a curved one -- a fillet -- has below
+  // the wall's own edge: there only the far side is held to.)
+  bool areCapsPlanar = true;
+  for (int iC = 1; iC <= myFaces.Extent() && areCapsPlanar; ++iC)
+  {
+    areCapsPlanar =
+      BRepAdaptor_Surface(TopoDS::Face(myFaces(iC)), false).GetType() == GeomAbs_Plane;
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator itNF(myAnalyse.NewFaces()); itNF.More();
+       itNF.Next())
+  {
+    const TopoDS_Shape& aWall = itNF.Value();
+    if (myAnalyse.NewFaceOffset(aWall) != 0. || !myInitOffsetFace.HasImage(aWall))
+    {
+      continue;
+    }
+    // The wall's edge on the removed face is the one with no face but the
+    // wall; the edge across from it, sharing no vertex with it, lies on the
+    // kept face's side.
+    TopoDS_Edge aCapE, aFarE;
+    int         aNbCap = 0;
+    for (TopExp_Explorer anExpW(aWall, TopAbs_EDGE); anExpW.More(); anExpW.Next())
+    {
+      const TopoDS_Edge& aWE = TopoDS::Edge(anExpW.Current());
+      if (myAnalyse.HasAncestor(aWE) && myAnalyse.Ancestors(aWE).Extent() == 1
+          && myAnalyse.Ancestors(aWE).First().IsSame(aWall))
+      {
+        aCapE = aWE;
+        ++aNbCap;
+      }
+    }
+    if (aNbCap != 1)
+    {
+      continue;
+    }
+    TopoDS_Vertex aCV1, aCV2;
+    TopExp::Vertices(aCapE, aCV1, aCV2);
+    for (TopExp_Explorer anExpW(aWall, TopAbs_EDGE); anExpW.More() && aFarE.IsNull(); anExpW.Next())
+    {
+      const TopoDS_Edge& aWE = TopoDS::Edge(anExpW.Current());
+      TopoDS_Vertex      aWV1, aWV2;
+      TopExp::Vertices(aWE, aWV1, aWV2);
+      if (!aWE.IsSame(aCapE) && !aWV1.IsSame(aCV1) && !aWV1.IsSame(aCV2) && !aWV2.IsSame(aCV1)
+          && !aWV2.IsSame(aCV2))
+      {
+        aFarE = aWE;
+      }
+    }
+    if (aFarE.IsNull() || aCV1.IsNull() || aCV2.IsNull() || aCV1.IsSame(aCV2))
+    {
+      continue;
+    }
+    const gp_Pnt anOrigin = BRep_Tool::Pnt(aCV1);
+    const gp_Vec aAlong   = gp_Vec(anOrigin, BRep_Tool::Pnt(aCV2)).Normalized();
+    gp_Vec       aDepth(anOrigin, BRep_Tool::Pnt(TopExp::FirstVertex(aFarE)));
+    aDepth -= aAlong * aDepth.Dot(aAlong);
+    const double aT = aDepth.Magnitude();
+    if (aT < gp::Resolution())
+    {
+      continue;
+    }
+    const gp_Vec                   aDir = aDepth / aT;
+    const double                   aTolBand = std::max(1.e-3 * aT, 10. * myTol);
+    NCollection_List<TopoDS_Shape> aLIm;
+    myImageOffset.LastImage(myInitOffsetFace.Image(itNF.Value()).First(), aLIm);
+    for (NCollection_List<TopoDS_Shape>::Iterator itIm(aLIm); itIm.More(); itIm.Next())
+    {
+      for (TopExp_Explorer anExpE(itIm.Value(), TopAbs_EDGE); anExpE.More(); anExpE.Next())
+      {
+        const TopoDS_Edge& aE = TopoDS::Edge(anExpE.Current());
+        if (BRep_Tool::Degenerated(aE))
+        {
+          continue;
+        }
+        BRepAdaptor_Curve aBAC(aE);
+        if (Precision::IsInfinite(aBAC.FirstParameter())
+            || Precision::IsInfinite(aBAC.LastParameter()))
+        {
+          continue;
+        }
+        for (int k = 0; k <= 4; ++k)
+        {
+          const gp_Pnt aP = aBAC.Value(
+            aBAC.FirstParameter() + (aBAC.LastParameter() - aBAC.FirstParameter()) * k / 4.);
+          const double aD = gp_Vec(anOrigin, aP).Dot(aDir);
+          if ((areCapsPlanar && aD < -aTolBand) || aD > aT + aTolBand)
+          {
+            SHOW_TOPO_SHAPE(itIm.Value(), "WallOutOfBand");
+            myError = BRepOffset_UnknownError;
+            return;
+          }
+        }
+      }
+    }
+  }
+
   //-------------------------
   // Construction of shells.
   //-------------------------

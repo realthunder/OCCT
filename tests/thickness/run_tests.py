@@ -598,9 +598,32 @@ thickness_case("halfdome_other_side_in",   halfdome, 4, -0.5, "pass", 58.8944)
 thickness_case("halfdome_side_join_in",       halfdome, 3, -0.5, "pass", 59.1071, False, 2)
 thickness_case("halfdome_other_side_join_in", halfdome, 4, -0.5, "pass", 59.1071, False, 2)
 thickness_case("halfdome_side_inter_join_in", halfdome, 3, -0.5, "pass", 59.1071, True, 2)
-# Still wrong: the Intersection join outward -- the sphere has to grow round
-# its pole, for the bottom and for a side. Refused, never the input back.
-thickness_case("halfdome_bottom_join_out", halfdome, 2, +0.5, "xfail", 67.0206, False, 2)
+# The Intersection join outward: the flat neighbours' offsets cut the offset
+# sphere behind its pole, and the sphere face, grown past the meridians that
+# bound it, has to run round the pole -- a whole turn of U with a seam, where
+# U grows by a tenth of what is left of the turn. The face is put on the same
+# sphere with its axis turned, where the region is a plain patch
+# (BRepOffset_Tool::EnLargeFace). The sharp skin: the ball of 5.5 above the
+# bottom's plane and beside the side's plane a thickness out, less the
+# quarter ball, 67.0206; a side removed, the bottom's plane a thickness down
+# and the neighbour's a thickness out as far as the wall, 81.7345.
+thickness_case("halfdome_bottom_join_out",       halfdome, 2, +0.5, "pass", 67.0206, False, 2)
+thickness_case("halfdome_bottom_inter_join_out", halfdome, 2, +0.5, "pass", 67.0206, True, 2)
+thickness_case("halfdome_side_join_out",         halfdome, 3, +0.5, "pass", 81.7345, False, 2)
+thickness_case("halfdome_other_side_join_out",   halfdome, 4, +0.5, "pass", 81.7345, False, 2)
+# The face reaching both poles, a quarter turn of it: the same quarter ball
+# lying on its side, each flat side one face.
+lune = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 90)
+thickness_case("lune_side_join_out", lune, 2, +0.5, "pass", 67.0206, False, 2)
+thickness_case("lune_side_join_in",  lune, 3, -0.5, "pass", 51.3127, False, 2)
+# An eighth of a ball, and a third of a dome (its sides not coplanar).
+eighth = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 90)
+thickness_case("eighth_ball_bottom_join_out", eighth, 2, +0.5, "pass", 46.7279, False, 2)
+thickness_case("eighth_ball_side_join_out",   eighth, 3, +0.5, "pass", 46.7279, False, 2)
+dome120 = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 120)
+thickness_case("dome120_bottom_join_out", dome120, 2, +0.5, "pass", 53.3701, False, 2)
+thickness_case("dome120_side_join_out",   dome120, 3, +0.5, "pass", 57.4660, False, 2)
+thickness_case("dome120_side_join_in",    dome120, 3, -0.5, "pass", 41.2951, False, 2)
 
 # A box fused of two and not refined: every face across the joint is in two
 # coplanar pieces. One piece of the top removed: its neighbour is tangent to
@@ -695,6 +718,14 @@ def refused_case(name, shape, face_indices, value, inter=False, join=0):
 for value, tag in ((+1.0, "out"), (-1.0, "in")):
     refused_case("sphere_face_refused_" + tag, Part.makeSphere(5), [1], value)
     refused_case("torus_face_refused_" + tag, Part.makeTorus(8, 2), [1], value)
+# Half a ball cut through both its poles: its sphere cannot be grown round
+# them (no axis clear of an outline that is a whole great circle), the wall
+# closing the tangent edge between its two flat halves is not cut where it
+# should be, and came out as half a disc -- a valid solid of 111.2647 where
+# the skin is 113.0909. A wall outside its band is refused.
+halfball = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 90, 180)
+refused_case("halfball_side_join_refused_out", halfball, [2], +0.5, False, 2)
+refused_case("halfball_side_join_refused_in",  halfball, [2], -0.5, False, 2)
 refused_case("sphere_face_join_refused_in", Part.makeSphere(5), [1], -1.0, False, 2)
 refused_case("box_all_faces_refused_in", Part.makeBox(10, 10, 6), [1, 2, 3, 4, 5, 6], -1.0)
 refused_case("box_all_faces_inter_refused_out", Part.makeBox(10, 10, 6), [1, 2, 3, 4, 5, 6], +1.0,
