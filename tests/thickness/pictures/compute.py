@@ -6,7 +6,7 @@
 import os, sys, json
 sys.path.insert(0, os.environ["THICK_TOOLS"])
 import FreeCAD as App, Part
-from cases import SHAPES, CASES, DOCS, SHELLS, SOLIDS, INPUT
+from cases import SHAPES, CASES, DOCS, SHELLS, SOLIDS, INPUT, REFUSED
 OUT = os.environ["OUT"]; os.makedirs(OUT, exist_ok=True)
 # Unfrozen, as the suite runs: a frozen input would hide an edit of it.
 App.ParamGet("User parameter:BaseApp/Preferences/Mod/Part").SetBool("ImmutableShapeValues", False)
@@ -55,6 +55,17 @@ for name, (st, sk, fi, val, inter, join, ref) in CASES.items():
         d.update(ok=not p, problems=p, volume=vol, shells=len(s.Shells), solids=len(s.Solids), note=note)
         res[name] = d
         emit("%-32s %s %s" % (name, "OK " if d["ok"] else "BAD", "; ".join(d["problems"]) or "input vol=%.4f" % d["volume"]))
+        continue
+    if name in REFUSED:
+        # The right outcome is a refusal; an answer is the fault.
+        try:
+            r = s.makeThickness(faces, val, 1e-7, inter, False, 0, join)
+            r.exportBrep(os.path.join(OUT, name + ".brep"))
+            d.update(ok=False, problems=["answered where no face stays"], volume=r.Volume)
+        except Exception:
+            d.update(ok=True, problems=[], volume=None, refused=True)
+        res[name] = d
+        emit("%-32s %s %s" % (name, "OK " if d["ok"] else "BAD", "; ".join(d["problems"]) or "refused"))
         continue
     try:
         r = s.makeThickness(faces, val, 1e-7, inter, False, 0, join)

@@ -272,6 +272,20 @@ The sweep, with an input check added: no run alters its input, before the
 fix or after, and every line is unchanged -- its 16 solids never cut a
 periodic face across its seam.
 
+## Every face removed (2026-10-02, sec 27.105)
+
+The sweep's last refusal was the torus, its one face removed -- rightly: no
+face stays to be thickened. The sphere, a one-face shape too, came back as
+the sphere itself, "valid" and unhollowed, and so did a box with all six
+faces removed: an answer that is the input. `MakeThickSolid` now refuses
+when no face stays (the user's choice).
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `sphere_face_refused_*`, `sphere_face_join_refused_in` | sphere, its face removed | refused; was the sphere back, 523.60 |
+| `torus_face_refused_*` | torus, its face removed | refused, as before |
+| `box_all_faces_refused_in`, `box_all_faces_inter_refused_out` | box, all six faces removed | refused; was the box back, 600 |
+
 ## Determinism cases (intersection mode, Arc join)
 
 `arc_inter_boss_same_every_run`, `arc_inter_lbox_same_every_run`,
