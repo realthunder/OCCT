@@ -30,7 +30,11 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "turned_halfcap": "half of a sphere's cap above latitude 30, turned in space",
          "turned_bullet": "a dome on a cylinder, turned in space",
          "turned_filletbox": "the filleted box (r2) turned in space", "halfball": "half a ball cut through both poles",
-         "luneball": "half a ball, its sphere in two lunes", "eqball": "half a ball, its sphere in two domes"}
+         "luneball": "half a ball, its sphere in two lunes", "eqball": "half a ball, its sphere in two domes",
+         "dome2": "half a sphere, its rim in two arcs",
+         "dome2f": "half a sphere, its rim in two arcs and its flat in two halves",
+         "halfball1": "half a ball cut through both poles, refined: one disc",
+         "cutball": "a ball cut in half by a box: a compound of one solid"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"] and d.get("refused"):

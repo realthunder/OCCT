@@ -361,8 +361,8 @@ by `sweep/polehand.py`.
 
 ## Half a ball, and a shape that is placed or turned (2026-10-02, sec 27.110)
 
-`models/Thickness.md`, "Sec 27.110", has the causes. No case is marked
-`XFAIL`.
+`models/Thickness.md`, "Sec 27.110", has the causes. No case was marked
+`XFAIL` after it; sec 27.111 marks eight.
 
 | Case | Model | What it covers |
 |------|-------|----------------|
@@ -375,6 +375,25 @@ by `sweep/polehand.py`.
 | `turned_filletbox_fillet*_out`, `turned_filletbox_fillet_in`, `placed_filletbox_fillet_out` | the filleted box turned in space, a fillet removed | 405.9034, 267.0193; outward a valid solid of 459.398 or refused: the corner arc on the cap was taken from a section whose lines join elsewhere once the shape is turned |
 | `halfcap_*`, `turned_halfcap_*`, `placed_halfcap_*` | half of a sphere's cap above latitude 30: the sphere, the bottom, a side removed inward | 19.2316, 22.0431, 28.8642; turned or placed, the sphere removed was refused (Arc) or a valid solid of 8.126 (Intersection join): a whole circle of section lost the piece its own vertex lies in, and a section was turned by its far side |
 | `bullet_side_join_out`, `turned_`, `placed_` | a dome on a cylinder, the cylinder removed outward, Intersection join | a disc of 39.2699 and the dome's skin, 61.4616; turned, 151.12: of two section circles as near as each other the first found was taken |
+
+## A rim in two arcs, and the half ball with one disc (2026-10-02, sec 27.111)
+
+`models/Thickness.md`, "Sec 27.111", has the causes. Eight cases are
+marked `XFAIL`, each with the volume it should give.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `dome2_flat_*` | half a sphere with a seam, its rim in two arcs, the flat removed | 86.6556, 70.9476; with the Arc join an invalid solid of 240.68 / 247.66, upstream right: the band between seam and rim was only built on a rim of one closed edge. The face is walked in (u, v) with its seam |
+| `dome2_sphere_*` | the same, the sphere removed | 39.1390; invalid, or threw with the Arc join: both arcs of the flat's rim were replaced by one half of the section circle, and a stretched seam's piece had its pcurves the other way round |
+| `dome2f_sphere_*` | the same with its flat in two halves | 39.1390; threw with the Arc join: the section circle was cut by the line between the halves at the one point it starts on |
+| `halfball1_disc_*`, `halfball1_sphere_*` | half a ball cut through both poles, refined: one disc for its flat | 86.6556, 70.9476, 39.1390; the Intersection join with the disc removed hung, then was refused; the sphere removed was refused outward and with the Arc join. Its sphere is put on one turned onto its middle (`TurnHalfSphereOntoMiddle`) |
+| `cutball_*` | the same from a cut by a box: a compound of one solid | the same volumes; refused, the compound not being looked at |
+| `placed_halfball1_*`, `turned_halfball1_*` | the same under a location, and turned in space | the same volumes |
+| `ball270_sphere_in`, `ball270_sphere_join_in`, `ball240_sphere_join_in` | a ball wedge from pole to pole on three quarters and two thirds of a turn, the sphere removed inward | 41.0978, 41.6307, 40.5784 |
+| `ball270_sphere_out`, `ball270_sphere_join_out`, `ball240_sphere_out`, `ball240_sphere_join_out`, `ball240_sphere_in`, `ball150_sphere_out` | ball wedges, the sphere removed | `XFAIL`: 36.6474, 37.6996, 39.9613, 39.7919; refused, and `ball240_sphere_in` a valid solid of 40.4447 |
+| `luneball_flat_join_out/in` | the half ball with its sphere in two lunes, a flat half removed, Intersection join | 113.0909, 89.0272; refused, and inward a valid solid of 182.21: faces of one sphere with one thing done to them are joined first |
+| `eqball_spheres_*` | the half ball with its sphere in two domes, both removed | 39.1390; refused or invalid but for inward with the Intersection join: the same |
+| `dome2f_flat_join_out/in` | the dome with its rim in two arcs and its flat in two halves, one half removed, Intersection join | `XFAIL`: 113.0909, 89.0272; refused, the wall between the halves outside its band |
 
 ## Determinism cases (intersection mode, Arc join)
 
@@ -439,7 +458,7 @@ or a suite case before it can become the reference.
 
 The sweep has no cone with its apex, no shape cut across a seam, and no
 ball wedge from pole to pole on more than half a turn, whose sphere removed
-is still wrong (`models/Thickness.md`, sec 27.110, "Found beside these");
+is still wrong (`models/Thickness.md`, sec 27.111, "Known broken");
 what it does not cover it does not vouch for (sec 27.104, sec 27.106).
 
 ## Pictures

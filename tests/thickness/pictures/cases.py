@@ -33,6 +33,9 @@ STAGES = {
     "s108": ("705644654e", "27.108"),
     "s109": ("e63b3f86cc", "27.109"),
     "s110": ("ffc01775a7", "27.110"),
+    "s111": ("76691d6f87", "27.111"),
+    "s112": ("b45cff22c5", "27.111"),
+    "s113": ("20372de2b3", "27.111"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -90,6 +93,17 @@ def _halfball(cut=None):
     return b.generalFuse([e])[0].Solids[0]
 
 
+def _dome2(line=False):
+    # A dome on the y axis, its rim in two arcs: fused with the vertex across
+    # from its seam's end, or -- line -- with the line between them, which
+    # cuts its flat in two halves as well.
+    d = Part.makeSphere(5, V(), V(0, 1, 0), 0, 90, 360)
+    rim = [e for e in d.Edges if not e.Degenerated and abs(e.Length - 10 * math.pi) < 1e-6][0]
+    p = rim.Vertexes[0].Point
+    tool = Part.makeLine(p, p * -1) if line else Part.Vertex(p * -1)
+    return d.generalFuse([tool])[0].Solids[0]
+
+
 SHAPES = {
     "cyl": lambda: Part.makeCylinder(4, 20),
     "ann": lambda: Part.makeCylinder(5, 10).cut(Part.makeCylinder(2, 10)),
@@ -131,6 +145,10 @@ SHAPES = {
     "halfball": lambda: _halfball(),
     "luneball": lambda: _halfball("meridian"),
     "eqball": lambda: _halfball("equator"),
+    "dome2": lambda: _dome2(),
+    "dome2f": lambda: _dome2(True),
+    "halfball1": lambda: _halfball().removeSplitter(),
+    "cutball": lambda: Part.makeSphere(5).cut(Part.makeBox(20, 20, 20, V(-10, -20, -10))),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -252,6 +270,22 @@ CASES = {
     "luneball_spheres_out": ("s110", "luneball", [1, 2], +0.5, False, 0, 39.1390),
     "eqball_flat_join_out": ("s110", "eqball", 3, +0.5, False, 2, 113.0909),
     "eqball_flat_join_in": ("s110", "eqball", 3, -0.5, False, 2, 89.0272),
+    "dome2_flat_out": ("s111", "dome2", 2, +0.5, False, 0, 86.6556),
+    "dome2_flat_in": ("s111", "dome2", 2, -0.5, False, 0, 70.9476),
+    "dome2_sphere_out": ("s111", "dome2", 1, +0.5, False, 0, 39.1390),
+    "dome2_sphere_join_in": ("s111", "dome2", 1, -0.5, False, 2, 39.1390),
+    "dome2f_sphere_out": ("s111", "dome2f", 1, +0.5, False, 0, 39.1390),
+    "halfball1_sphere_out": ("s111", "halfball1", 1, +0.5, False, 0, 39.1390),
+    "halfball1_sphere_in": ("s111", "halfball1", 1, -0.5, False, 0, 39.1390),
+    "halfball1_disc_join_out": ("s112", "halfball1", 2, +0.5, False, 2, 86.6556),
+    "halfball1_disc_join_in": ("s112", "halfball1", 2, -0.5, False, 2, 70.9476),
+    "halfball1_sphere_join_out": ("s112", "halfball1", 1, +0.5, False, 2, 39.1390),
+    "cutball_disc_join_out": ("s112", "cutball", 2, +0.5, False, 2, 86.6556),
+    "cutball_sphere_out": ("s112", "cutball", 1, +0.5, False, 0, 39.1390),
+    "luneball_flat_join_out": ("s113", "luneball", 3, +0.5, False, 2, 113.0909),
+    "luneball_flat_join_in": ("s113", "luneball", 3, -0.5, False, 2, 89.0272),
+    "eqball_spheres_out": ("s113", "eqball", [1, 2], +0.5, False, 0, 39.1390),
+    "eqball_spheres_join_out": ("s113", "eqball", [1, 2], +0.5, False, 2, 39.1390),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).

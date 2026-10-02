@@ -110,18 +110,21 @@ a mode: 204. From that section on the sweep is also run with every solid
 under a location and with its geometry turned in space (`SWEEP_PLACE`): the
 same 928 volumes, all right.
 
-Of the 118 pictured cases, 33 are ones upstream gets right and the fork had
+Of the 134 pictured cases, 36 are ones upstream gets right and the fork had
 broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
 cone's top with intersection on, sec 27.100, a short box's and a box's bottom
 alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, the
 input left inside out, sec 27.104, the faces closed at a pole, sec
-27.106, and half of a cap turned in space, its sphere removed, sec 27.110).
-The other 85 fail upstream too: the fork
+27.106, half of a cap turned in space, its sphere removed, sec 27.110, and
+a dome with its rim in two arcs, sec 27.111).
+The other 98 fail upstream too: the fork
 now does better than upstream there.
 
-Nothing in the suite fails, and no case is marked known broken: half a
-ball cut through both its poles, which sec 27.109 left open, is answered in
-sec 27.110. Every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
+Nothing in the suite fails. Half a ball cut through both its poles, which
+sec 27.109 left open, is answered in sec 27.110, and as a refine or a cut
+leaves it, or with its sphere in two faces, in sec 27.111, which marks
+eight cases known broken: ball wedges on more than half a turn with the
+sphere removed, and a dome's half flat with the Intersection join. Every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
 piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
 the pieces that are pockets and bosses: every one checks by hand. The one
 refusal left in the sweep is the torus's face, and it is right: with its one
@@ -1126,6 +1129,176 @@ is right on 6 of the 48; of the other 42, 22 are refused, 4 invalid, and
   circle instead, the flats come out right and the walls still come back
   as the domes -- the crossing of the stretched equator with those edges
   is never looked for. That is as far as it was taken.
+
+### Sec 27.111: a rim in two arcs, and the half ball with one disc
+
+Sec 27.110 cut the half ball's sphere in two because no seam could be given
+it. Looking for a way to give it one, a plainer shape turned out broken, and
+the fork alone to blame: upstream gets it right.
+
+**A dome whose rim is in two arcs** (`2425156571`, `BRepAlgo_Loop`).
+`Part.makeSphere(5, V(), V(0,1,0), 0, 90, 360)` fused with a vertex on its
+rim across from the seam: half a sphere with a seam and a pole, as a
+primitive has them, but its rim two edges. The loops build the band between
+a seam and a rim on a rim that is one closed edge
+(`if (!IsPeriodic || !V1.IsSame(V2)) continue;`); on two arcs no band was
+built, the wire of the two arcs was kept, and the dome's offset came out as
+a face between its rim and nothing, of no area. The flat removed with the
+Arc join: an invalid solid of 240.68 for 86.6556, of 247.66 for 70.9476.
+Since the chain was ported -- the first stage's library gives the same.
+
+A wire that runs once round the face's period with no seam in it bounds
+nothing. Where the search leaves one, of more than one edge and on a face
+that has a seam, the face is walked again in (u, v) (`FindLoopsInUV`): a
+vertex on the seam is two nodes a period apart, the seam two edges, one for
+each of its pcurves, and the pole's degenerated edge walks with the rest.
+Three things it has to put right on the way. A piece of a section that ran
+on past the seam has its pcurve a period over, and is moved back. A piece
+cut from a seam that was stretched has its two pcurves the other way round
+from a primitive's seam -- the forward one at u = 0 -- and they change
+places. And a wire with a piece mirrored past a pole (sec 27.109) steps
+half a turn there: it is no wire round the period, and a face without a
+seam is none of this walk's business. Without those two limits a cone with
+a through hole and three quarters of a dome, right before, came back wrong.
+
+![dome2_flat_out](pictures/dome2_flat_out.png)
+
+![dome2_flat_in](pictures/dome2_flat_in.png)
+
+**The search had no end** (`378f5f83cd`, `BRepAlgo_Loop`). `FindAllLoops`
+tries every path through the edges at every vertex. On the half ball's two
+domes with the disc removed inward, Intersection join, it ran for minutes
+with nothing to show. It has a million steps to spend; a search that spends
+them all has no answer, and the thickness is refused where it hung.
+
+**Two arcs replaced by one** (`56cc10d861`, `BRepOffset_Tool::ExtentFace`).
+With the dome's sphere removed and the Arc join, the flat's offset has its
+rim replaced by the section of its plane with the sphere: a whole circle,
+trimmed between the two new vertices from the lesser parameter to the
+greater. Two vertices on a whole turn bound two arcs, and both arcs of the
+rim took the same one: a flat of no area, and an invalid solid for 39.1390.
+The arc taken is the one whose middle is nearest the middle of the edge it
+replaces.
+
+![dome2_sphere_out](pictures/dome2_sphere_out.png)
+
+![dome2_sphere_join_in](pictures/dome2_sphere_join_in.png)
+
+**A circle cut at the point it starts on** (`9f202c09e8`,
+`BRepOffset_Tool::Inter2d`). The same dome with its flat in two halves:
+each half's rim, replaced by the section circle, has to be cut by the line
+between the halves. `Inter2d` looks first for an end of one curve on the
+other and stops at the first it finds; a closed curve has its end wherever
+it was started, the circle started on the line, and that one point was
+given for both ends of the arc. Closed curves go straight to the
+intersection, and every crossing comes back -- the first and the last along
+the edge were kept, which on a closed curve are one point.
+
+![dome2f_sphere_out](pictures/dome2f_sphere_out.png)
+
+**Two new edges on one curve** (`faabdf98f7`,
+`BRepOffset_Tool::ExtentFace`). What sec 27.110 left diagnosed: the vertex
+between two new edges that lie on one circle or one line is not where they
+cross, for they do not. It is put where the old vertex lies nearest the
+curve. The refined half ball's sphere removed with the Arc join, refused
+before, gives 39.1390 both ways.
+
+![halfball1_sphere_out](pictures/halfball1_sphere_out.png)
+
+![halfball1_sphere_in](pictures/halfball1_sphere_in.png)
+
+**The half ball with one disc is that dome** (`424614ea24`,
+`BRepOffset_MakeOffset::MakeThickSolidOfSplit`). Half a ball as a refine or
+a cut leaves it -- `makeSphere(5, .., -90, 90, 180).removeSplitter()`, or a
+ball cut by a box through its poles -- has one disc for its flat and its
+sphere from pole to pole on half a turn. Cut along the equator as sec
+27.110 has it, the two domes meet the disc's plane in a rim of four arcs:
+with the disc removed and the Intersection join the loops found no end
+(above), the sphere removed outward with that join was refused, and inward,
+left whole, it gave 39.1401 for 39.1390.
+
+Such a face -- exactly half a turn, one face across its whole outline -- is
+no longer cut. It is put on the same sphere with its axis through its own
+middle (`TurnHalfSphereOntoMiddle`): a whole turn with a seam and one pole
+inside, its rim the two arcs it had, which is the dome above. The arcs are
+the shape's own edges and take a line on the turned sphere's equator as a
+second pcurve, a cache; the seam and the pole's edge are new, and stand for
+no edge of the shape, as the equator of sec 27.110 does not. The seam runs
+from 2 pi, as a primitive's does: from 0, the piece of it stretched below
+the rim has a negative parameter, and its crossing with the wall's far edge
+was not found. The thick solid is made of a solid with that face in place
+of the one given, by an object of its own, as in sec 27.110; the face is
+turned whatever is done with it. 86.6556, 70.9476 and 39.1390, with either
+join, plain, under a location and turned in space.
+
+A cut hands over a compound of one solid, which this function did not look
+at; it is taken for its solid.
+
+![halfball1_disc_join_out](pictures/halfball1_disc_join_out.png)
+
+![halfball1_disc_join_in](pictures/halfball1_disc_join_in.png)
+
+![halfball1_sphere_join_out](pictures/halfball1_sphere_join_out.png)
+
+![cutball_disc_join_out](pictures/cutball_disc_join_out.png)
+
+![cutball_sphere_out](pictures/cutball_sphere_out.png)
+
+**The sphere in two faces is joined first** (`7c4a0e5eda`,
+`MakeThickSolidOfSplit`). Sec 27.110 found that each of its two cuts fails
+the other way round, and that a half ball which comes with its sphere in
+two faces has the cut it came with: in two lunes, a flat half removed with
+the Intersection join, refused outward and a valid solid of 182.21 for
+89.03 inward; in two domes, both removed, refused or invalid. Faces of one
+sphere that meet along an edge and have one thing done with them -- both
+removed, or both staying with one offset -- are joined into one face
+before anything else (`ShapeUpgrade_UnifySameDomain`, with every edge kept
+but the joint and the pieces of the outline the joint had cut). The thick
+solid is made of the joined solid by an object of its own, which cuts it,
+or turns it, the way that suits what is done with it.
+
+Where the joined solid gives no valid answer, the solid is taken as it
+came: two lunes removed outward with the Intersection join, right as
+given, came out unorientable once joined -- the flats of the joined solid,
+which the unifying rebuilt, do not take the meridian cut as the primitive's
+do. Not chased.
+
+![luneball_flat_join_out](pictures/luneball_flat_join_out.png)
+
+![luneball_flat_join_in](pictures/luneball_flat_join_in.png)
+
+![eqball_spheres_out](pictures/eqball_spheres_out.png)
+
+![eqball_spheres_join_out](pictures/eqball_spheres_join_out.png)
+
+**Known broken**, each marked in the suite with the volume it should give
+(8 cases):
+
+- A ball wedge from pole to pole on more than half a turn, its sphere
+  removed outward (270 and 240 degrees, both joins: three lunes, refused);
+  on 240 degrees inward with the Arc join, a valid solid of 40.4447 for
+  39.9613; on 150 degrees outward with the Arc join, refused. Inward with
+  the Intersection join the 270 and 240 wedges are right now (41.6307 and
+  40.5784), where sec 27.110 found 298.45.
+- The dome with its rim in two arcs and its flat in two halves, one half
+  removed with the Intersection join (113.0909, 89.0272): the dome has to
+  grow below its rim beside the wall that closes the tangent edge between
+  the halves, and the wall comes out outside its band -- refused.
+
+**Found beside these, not fixed, and not in the suite.** The half ball with
+its sphere in two domes, one dome alone removed outward with the Arc join, comes
+back as a valid solid of a volume of -1.3e100; the other three ways it is
+refused, as is one lune of two removed, every way. No hand value was worked
+for them.
+
+A ball wedge whose sphere is given on an axis through the middle of the
+face -- a ball made on that axis, cut by the wedge that is missing, 270 or
+240 degrees left -- has a seam and a pole inside its face and a rim that is
+no circle of latitude. Its sphere removed is wrong all eight ways tried on
+each: invalid or refused, and inward with the Intersection join a valid
+solid of 264.29 for 41.6307 (263.24 for 40.5784 on 240 degrees). It is what
+turning the wedges of the list above onto their middle would make of them,
+so that is no way to answer those as it stands.
 
 ## The captured models
 
