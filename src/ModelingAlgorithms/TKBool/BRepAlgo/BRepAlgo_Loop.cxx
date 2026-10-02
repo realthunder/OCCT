@@ -34,7 +34,13 @@
 #include <BRepLib_MakeWire.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <IntTools_FClass2d.hxx>
+#include <BRepTools.hxx>
 #include <Geom2d_Curve.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_SphericalSurface.hxx>
+#include <gp_Ax2d.hxx>
 #include <Geom_Curve.hxx>
 #include <Geom_Surface.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
@@ -625,6 +631,68 @@ static void StoreInMVE(
   SHOW_TOPO_SHAPE(E, "MVE");
 }
 
+// A piece of an edge stretched over a sphere's pole -- a removed face's
+// meridian, carried on past the pole to where a neighbour's offset cuts it --
+// keeps the pcurve of the edge it was cut from, the meridian's line run on
+// beyond the pole's line, off the sphere's own range. The same points are on
+// the meridian opposite, coming down from the pole: the piece takes that
+// line. Its neighbour in the wire is the pole's degenerated edge, from the
+// one meridian to the other.
+static void PutPieceBeyondPole(const TopoDS_Face& theF, const TopoDS_Edge& theE)
+{
+  TopLoc_Location           aLoc;
+  occ::handle<Geom_Surface> aS = BRep_Tool::Surface(theF, aLoc);
+  if (aS.IsNull())
+  {
+    return;
+  }
+  if (aS->DynamicType() == STANDARD_TYPE(Geom_RectangularTrimmedSurface))
+  {
+    aS = occ::down_cast<Geom_RectangularTrimmedSurface>(aS)->BasisSurface();
+  }
+  if (aS->DynamicType() != STANDARD_TYPE(Geom_SphericalSurface) || BRep_Tool::Degenerated(theE)
+      || BRep_Tool::IsClosed(theE, theF))
+  {
+    return;
+  }
+  double                          aF, aL;
+  const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, theF, aF, aL);
+  if (aC2d.IsNull())
+  {
+    return;
+  }
+  const double aVm  = aC2d->Value((aF + aL) / 2.).Y();
+  const double aTol = Precision::PConfusion();
+  const double aPole =
+    aVm > M_PI / 2. + aTol ? M_PI / 2. : (aVm < -M_PI / 2. - aTol ? -M_PI / 2. : 0.);
+  if (aPole == 0. || (aC2d->Value(aF).Y() - aPole) * aPole < -aTol
+      || (aC2d->Value(aL).Y() - aPole) * aPole < -aTol)
+  {
+    return;
+  }
+  occ::handle<Geom2d_Curve> aNew = occ::down_cast<Geom2d_Curve>(aC2d->Copy());
+  aNew->Mirror(gp_Ax2d(gp_Pnt2d(0., aPole), gp::DX2d()));
+  double aUMin, aUMax, aVMin, aVMax;
+  BRepTools::UVBounds(theF, aUMin, aUMax, aVMin, aVMax);
+  double       aShift = M_PI;
+  const double aUm    = aNew->Value((aF + aL) / 2.).X();
+  while (aUm + aShift > aUMax + aTol && aUm + aShift - 2. * M_PI >= aUMin - aTol)
+  {
+    aShift -= 2. * M_PI;
+  }
+  while (aUm + aShift < aUMin - aTol && aUm + aShift + 2. * M_PI <= aUMax + aTol)
+  {
+    aShift += 2. * M_PI;
+  }
+  aNew->Translate(gp_Vec2d(aShift, 0.));
+  BRep_Builder aBB;
+  aBB.UpdateEdge(theE, aNew, theF, BRep_Tool::Tolerance(theE));
+  aBB.Range(theE, theF, aF, aL);
+  SHOW_TOPO_SHAPE(theE, "PieceBeyondPole");
+}
+
+//=================================================================================================
+
 //=================================================================================================
 
 void BRepAlgo_Loop::Perform()
@@ -1151,6 +1219,10 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
         }
       }
       CutEdge(anEdge, *pVertices, LCE, KeepAll);
+      for (itl1.Initialize(LCE); itl1.More(); itl1.Next())
+      {
+        PutPieceBeyondPole(myFace, TopoDS::Edge(itl1.Value()));
+      }
       if (const std::pair<double, double>* pSpan = aSpans.Seek(anEdge))
       {
         for (itl1.Initialize(LCE); itl1.More(); itl1.Next())
@@ -2500,6 +2572,63 @@ void BRepAlgo_Loop::FindLoop()
         }
       }
     }
+    // Of two wires that share an open edge, the one through more pieces
+    // beyond their edges' spans loses: a removed face's meridian stretched
+    // over the pole is cut by a neighbour's offset on the far side, and the
+    // search finds the wire that turns there and the one that runs on down
+    // the meridian, through the middle of the face.
+    if (!myOutsideEdges.IsEmpty())
+    {
+      auto isBeyond = [&](const WireInfo& theInfo, const WireInfo& theOther) {
+        // every outside piece of theOther is in theInfo, and theInfo has more
+        int aNbInfo = 0, aNbOther = 0;
+        for (const auto& v : theInfo.Edges)
+        {
+          aNbInfo += myOutsideEdges.Contains(v.first) ? 1 : 0;
+        }
+        for (const auto& v : theOther.Edges)
+        {
+          if (myOutsideEdges.Contains(v.first))
+          {
+            ++aNbOther;
+            if (!theInfo.Contains(TopoDS::Edge(v.first)))
+            {
+              return false;
+            }
+          }
+        }
+        return aNbInfo > aNbOther;
+      };
+      for (int iw = 1; iw <= NewWires.Extent(); ++iw)
+      {
+        const WireInfo& anInfo = NewWires(iw);
+        if (anInfo.HasSeam || !anInfo.Outside || aLosers.Contains(iw))
+        {
+          continue;
+        }
+        for (int jw = 1; jw <= NewWires.Extent() && !aLosers.Contains(iw); ++jw)
+        {
+          const WireInfo& anOther = NewWires(jw);
+          if (jw == iw || anOther.HasSeam || aLosers.Contains(jw) || !isBeyond(anInfo, anOther))
+          {
+            continue;
+          }
+          for (const auto& v : anInfo.Edges)
+          {
+            TopoDS_Vertex aV1, aV2;
+            TopExp::Vertices(TopoDS::Edge(v.first), aV1, aV2);
+            if (!aV1.IsNull() && !aV1.IsSame(aV2)
+                && !BRep_Tool::IsClosed(TopoDS::Edge(v.first), myFace)
+                && anOther.Contains(TopoDS::Edge(v.first)))
+            {
+              aLosers.Add(iw);
+              SHOW_TOPO_SHAPE(anInfo.aWire, "WireBeyondSpan");
+              break;
+            }
+          }
+        }
+      }
+    }
     int aWireIndex = 0;
     for (itW = MapIteratorOfMapOfWire(NewWires); itW.More(); itW.Next())
     {
@@ -2567,7 +2696,73 @@ void BRepAlgo_Loop::FindLoop()
           {
             // A wire the minimal-wire search tried in a face is free no longer.
             W.Free(true);
-            aBB.Add(W, DE);
+            // Where the wire's two edges reach the pole short of the ends of
+            // its edge -- one of them a piece come over the pole, on the
+            // meridian opposite its own -- the pole's edge runs from the one
+            // to the other and no farther.
+            TopoDS_Edge                     aDE = DE;
+            double                          aDF, aDL;
+            const occ::handle<Geom2d_Curve> aDC = BRep_Tool::CurveOnSurface(DE, myFace, aDF, aDL);
+            const occ::handle<Geom2d_Line>  aDLine = occ::down_cast<Geom2d_Line>(
+              !aDC.IsNull() && aDC->DynamicType() == STANDARD_TYPE(Geom2d_TrimmedCurve)
+                ? occ::down_cast<Geom2d_TrimmedCurve>(aDC)->BasisCurve()
+                : aDC);
+            if (!aDLine.IsNull() && std::abs(aDLine->Direction().X()) > 1. - Precision::Angular())
+            {
+              double aTMin = Precision::Infinite(), aTMax = -Precision::Infinite();
+              int    aNbEnds = 0;
+              for (TopoDS_Iterator aEIt(W); aEIt.More(); aEIt.Next())
+              {
+                const TopoDS_Edge& aWE = TopoDS::Edge(aEIt.Value());
+                if (BRep_Tool::Degenerated(aWE) || BRep_Tool::IsClosed(aWE, myFace))
+                {
+                  continue;
+                }
+                double                          aEF, aEL;
+                const occ::handle<Geom2d_Curve> aEC =
+                  BRep_Tool::CurveOnSurface(aWE, myFace, aEF, aEL);
+                if (aEC.IsNull())
+                {
+                  continue;
+                }
+                TopoDS_Vertex aV1, aV2;
+                TopExp::Vertices(TopoDS::Edge(aWE.Oriented(TopAbs_FORWARD)), aV1, aV2);
+                for (int k = 0; k < 2; ++k)
+                {
+                  if (!(k == 0 ? aV1 : aV2).IsSame(aDV))
+                  {
+                    continue;
+                  }
+                  double aT = (aEC->Value(k == 0 ? aEF : aEL).X() - aDLine->Location().X())
+                              / aDLine->Direction().X();
+                  while (aT < aDF - Precision::PConfusion())
+                  {
+                    aT += 2. * M_PI;
+                  }
+                  while (aT > aDL + Precision::PConfusion())
+                  {
+                    aT -= 2. * M_PI;
+                  }
+                  aTMin = std::min(aTMin, aT);
+                  aTMax = std::max(aTMax, aT);
+                  ++aNbEnds;
+                }
+              }
+              if (aNbEnds == 2 && aTMin >= aDF - Precision::PConfusion()
+                  && aTMax - aTMin > Precision::PConfusion()
+                  && (aTMin > aDF + Precision::PConfusion()
+                      || aTMax < aDL - Precision::PConfusion()))
+              {
+                TopoDS_Shape aCopy = DE.Oriented(TopAbs_FORWARD).EmptyCopied();
+                aDE                = TopoDS::Edge(aCopy);
+                aBB.Range(aDE, aTMin, aTMax);
+                aBB.Add(aDE, aDV.Oriented(TopAbs_FORWARD));
+                aBB.Add(aDE, aDV.Oriented(TopAbs_REVERSED));
+                aDE.Orientation(DE.Orientation());
+                SHOW_TOPO_SHAPE(aDE, "DegenEdgeTrimmed");
+              }
+            }
+            aBB.Add(W, aDE);
             SHOW_TOPO_SHAPE(DE, "DegenEdgeKept");
             added = true;
             break;
