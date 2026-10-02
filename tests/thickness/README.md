@@ -327,7 +327,7 @@ The five cases this section left known broken are answered in the next.
 ## Coplanar pieces, a wall on a sphere, a sphere round its pole (2026-10-02, sec 27.108)
 
 `models/Thickness.md`, "Sec 27.108", has the causes and the hand values.
-No case is marked `XFAIL` any more.
+No case of these is marked `XFAIL` any more.
 
 | Case | Model | What it covers |
 |------|-------|----------------|
@@ -339,6 +339,29 @@ No case is marked `XFAIL` any more.
 | `halfdome_bottom_join_out`, `_inter_join_out`, `halfdome_side_join_out`, `halfdome_other_side_join_out` | the same, outward | 67.0206, 81.7345; were refused: the offset sphere has to run round its pole, and is put on the same sphere with its axis turned |
 | `lune_side_join_*`, `eighth_ball_*_join_out`, `dome120_*_join_*` | a quarter ball on its side (both poles), an eighth of a ball, a third of a dome | the turned axis on other faces at a pole: 67.0206 / 51.3127, 46.7279, 53.3701 / 57.4660 / 41.2951 |
 | `halfball_side_join_refused_*` | half a ball cut through both poles, a flat half removed, Intersection join | refused: no axis is clear of its outline, and the wall built outside its band was a valid solid that is not the skin (111.2647 for 113.0909) |
+
+## More than half a turn, three tubes at a pole, the sphere removed (2026-10-02, sec 27.109)
+
+`models/Thickness.md`, "Sec 27.109", has the causes; the volumes are worked
+by `sweep/polehand.py`.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `dome270_bottom_join_out`, `dome270_bottom_inter_join_out` | three quarters of a dome, bottom removed, Intersection join | 87.3133; came back the input, 196.3495: the sphere's axis was turned off a face of half a turn at most |
+| `dome270_side_join_out/in`, `dome270_other_side_join_*` | a side removed, Intersection join | 113.7486, 83.7681; refused: on the turned sphere the old pole's edge kept the two meridians apart |
+| `dome270_side_in`, `dome270_other_side_in` | a side removed inward, Arc join | 83.7681; invalid, or refused: the piece of the stretched meridian past the pole kept a pcurve off the sphere's range |
+| `dome270_side_join_out_thick` | a side removed outward at a thickness of 1 | 260.9367; a valid solid on the wrong side of the kept face, 89.196: the turned sphere grown too little |
+| `eighth_ball_bottom_out`, `dome120_bottom_out` | an eighth of a ball, a third of a dome, bottom removed outward, Arc join | 45.5612, 52.4334; refused: no piece of sphere where three tubes meet at the pole |
+| `dome120_side_in`, `dome120_other_side_in` | a third of a dome, a side removed inward, Arc join | 41.2951; refused: the other side's offset extended to the far crossing |
+| `eighth_ball_sphere_*`, `dome120_sphere_*`, `halfdome_sphere_*`, `lune_sphere_*`, `dome270_sphere_*` | the sphere itself removed | the wall on the ball of 5 past the pole, on a turned twin of the removed face: 32.3576 / 33.2167 / 25.7418, 35.2709 / 35.8993, 41.0976 / 41.6307 / 36.6474, 49.5532 / 50.0446 / 47.3132 / 47.5529; outward refused or threw, each one |
+| `dome270_sphere_out_thick`, `dome270_sphere_join_out_thick` | the same at a thickness of 1 | 99.0413, 100.7985; threw |
+| `halfball_flat_out/in`, `halfball_sphere_in` | half a ball cut through both poles | 111.6001, 88.5482, 39.1390: right before, pinned here |
+| `halfball_flat_join_out/in`, `halfball_sphere_out`, `halfball_sphere_join_out` | the same, the modes that need its sphere past both poles | `XFAIL`: 113.0909, 89.0272, 39.1390. Refused (`halfball_side_join_refused_out` holds that a refusal it is, not a solid of some other volume) |
+
+The four `XFAIL` cases are the only ones: half a ball's outline is a whole
+great circle, no axis clears it, and its offset sphere holds its poles
+inside, which takes a seam the turned face does not have
+(`models/Thickness.md`, "Left open").
 
 ## Determinism cases (intersection mode, Arc join)
 
@@ -354,15 +377,17 @@ the same every run, not that it is right. The boss and the box with a blind
 hole settled on an invalid solid until sec 27.89's loop fixes; all three are
 valid now, the boss and the box with the hole at upstream's volumes.
 
-## The sweep (2026-10-02, sec 27.106)
+## The sweep (2026-10-02, sec 27.106 and 27.109)
 
-The suite pins chosen cases; the sweep covers the ground between them: 16
+The suite pins chosen cases; the sweep covers the ground between them: 22
 solids, every face removed in turn, +1 and -1, intersection off and on, the
-Arc and the Intersection join -- 712 runs. It is what found most of the
-faults above, and it lived in a scratch directory until now.
+Arc and the Intersection join -- 880 runs. It is what found most of the
+faults above, and it lived in a scratch directory until sec 27.106. The
+last six solids are sec 27.109's: a ball cut by its equator and by planes
+through its axis, a face of a sphere at a pole with flat neighbours.
 
 ```
-sweep/sweep.sh out.txt            # the fork as built; about two minutes
+sweep/sweep.sh out.txt            # the fork as built; about three minutes
 sweep/sweep.sh up.txt <libdir>    # another build's TKBool/TKOffset preloaded
 python3 sweep/check.py out.txt    # exit 1 unless every run is right
 ```
@@ -376,19 +401,20 @@ line says where its value comes from:
 
 | | Runs | The value is |
 |---|---|---|
-| `U` | 422 | what upstream's chain gives too: two implementations agree |
-| `H` | 150 | worked by hand in `sweep/hand.py`, from the closing and join rules the fixes settled; the formulas are there |
+| `U` | 490 | what upstream's chain gives too: two implementations agree |
+| `H` | 250 | worked by hand in `sweep/hand.py`, from the closing and join rules the fixes settled; the formulas are there. The pole solids' 100 are worked numerically by `sweep/polehand.py` (its table is `polehand.txt`), which at a thickness of 0.5 gives the 76 volumes the suite had for them |
 | `S` | 120 | the reference volume of a case of `run_tests.py`, worked by hand there (matched by value, not by case) |
 | `R` | 20 | a ruling: a sphere's or a torus's one face removed is refused (16); the holed cone's top inward is a skin and a sealed void (4) |
 
-The fork is right on 712 of 712; upstream's chain on 424 (the 422, and the
+The fork is right on 880 of 880; upstream's chain on 492 (the 490, and the
 sealed void with intersection on). `check.py out.txt --write-ref up.txt`
 rebuilds the reference from a sweep of the fork and one of upstream, and
 refuses a run none of the four confirms: a changed value needs a hand value
 or a suite case before it can become the reference.
 
-The sweep has no face closed at a pole and no shape cut across a seam; what
-it does not cover it does not vouch for (sec 27.104, sec 27.106).
+The sweep has no cone with its apex, no shape cut across a seam, and not
+the half ball cut through both its poles, whose open cases the suite marks;
+what it does not cover it does not vouch for (sec 27.104, sec 27.106).
 
 ## Pictures
 

@@ -23,7 +23,8 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "cylboss": "cylinder with a boss", "sector": "ring sector pad across angle 0", "sphere": "sphere",
          "dome": "half a sphere", "cap": "sphere above latitude 30", "cone": "cone with its apex",
          "halfdome": "half a dome (a quarter ball)", "splitbox": "box fused of two, not refined",
-         "eighth": "an eighth of a ball"}
+         "eighth": "an eighth of a ball", "dome120": "a third of a dome",
+         "dome270": "three quarters of a dome", "lune": "a quarter ball on its side (both poles)"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
     if d["ok"] and d.get("refused"):

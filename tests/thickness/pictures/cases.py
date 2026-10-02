@@ -31,6 +31,7 @@ STAGES = {
     "s106": ("dc3a7b85d1", "27.106"),
     "s107": ("b6404e079a", "27.107"),
     "s108": ("705644654e", "27.108"),
+    "s109": ("e63b3f86cc", "27.109"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -86,6 +87,9 @@ SHAPES = {
     "halfdome": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 180),
     "splitbox": lambda: Part.makeBox(4, 8, 6).fuse(Part.makeBox(6, 8, 6, V(4, 0, 0))),
     "eighth": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 90),
+    "dome120": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 120),
+    "dome270": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 270),
+    "lune": lambda: Part.makeSphere(5, V(), V(0, 0, 1), -90, 90, 90),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -175,6 +179,23 @@ CASES = {
     "halfdome_bottom_join_out": ("s108", "halfdome", 2, +0.5, False, 2, 67.0206),
     "halfdome_side_join_out": ("s108", "halfdome", 3, +0.5, False, 2, 81.7345),
     "eighth_ball_bottom_join_out": ("s108", "eighth", 2, +0.5, False, 2, 46.7279),
+    "dome270_bottom_join_out": ("s109", "dome270", 2, +0.5, False, 2, 87.3133),
+    "dome270_side_join_out": ("s109", "dome270", 3, +0.5, False, 2, 113.7486),
+    "dome270_side_join_in": ("s109", "dome270", 3, -0.5, False, 2, 83.7681),
+    "dome270_side_in": ("s109", "dome270", 3, -0.5, False, 0, 83.7681),
+    "dome270_side_join_out_thick": ("s109", "dome270", 3, +1.0, False, 2, 260.9367),
+    "eighth_ball_bottom_out": ("s109", "eighth", 2, +0.5, False, 0, 45.5612),
+    "dome120_bottom_out": ("s109", "dome120", 2, +0.5, False, 0, 52.4334),
+    "dome120_side_in": ("s109", "dome120", 3, -0.5, False, 0, 41.2951),
+    "eighth_ball_sphere_out": ("s109", "eighth", 1, +0.5, False, 0, 32.3576),
+    "eighth_ball_sphere_join_out": ("s109", "eighth", 1, +0.5, False, 2, 33.2167),
+    "dome120_sphere_join_out": ("s109", "dome120", 1, +0.5, False, 2, 35.8993),
+    "halfdome_sphere_out": ("s109", "halfdome", 1, +0.5, False, 0, 41.0976),
+    "halfdome_sphere_join_out": ("s109", "halfdome", 1, +0.5, False, 2, 41.6307),
+    "lune_sphere_out": ("s109", "lune", 1, +0.5, False, 0, 41.0976),
+    "lune_sphere_in": ("s109", "lune", 1, -0.5, False, 0, 36.6474),
+    "dome270_sphere_join_out": ("s109", "dome270", 1, +0.5, False, 2, 50.0446),
+    "dome270_sphere_out_thick": ("s109", "dome270", 1, +1.0, False, 0, 99.0413),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).

@@ -15,7 +15,7 @@ volumes, the gates -- is FreeCAD's docs/TransactionLog.md sec 27.88 to
 Where things are:
 
 - The fork's suite: `tests/thickness/run_tests.py` (`FreeCADCmd
-  tests/thickness/run_tests.py`; PASS 127, XFAIL 5) and its `README.md`, the
+  tests/thickness/run_tests.py`; PASS 189, XFAIL 4) and its `README.md`, the
   case-by-case reference.
 - The pictures: `pictures/<case>.png` beside this page, one per case of the
   suite that a fix turned from failing to passing.
@@ -92,6 +92,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.106 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.107 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.108 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.109, 22 solids | 0 | 264 | 192 / 192 | 192 / 192 | 123 / 125 / 127 / 129 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -99,26 +100,29 @@ sec 27.91 rebuilt the pocketed box (walls 2.5, not twice the thickness), so
 counts before sec 27.91 do not compare with those after it. The last row
 counts the holed cone's sealed void right (sec 27.100), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
-those two runs before it.
+those two runs before it. Sec 27.109 added six solids with a sphere at a
+pole to the sweep, 42 runs a mode, all in scope: its row counts 192 a mode.
 
-Of the 86 pictured cases, 31 are ones upstream gets right and the fork had
+Of the 103 pictured cases, 31 are ones upstream gets right and the fork had
 broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
 cone's top with intersection on, sec 27.100, a short box's and a box's bottom
 alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, the
 input left inside out, sec 27.104, and the faces closed at a pole, sec
-27.106). The other 55 fail upstream too: the fork
+27.106). The other 72 fail upstream too: the fork
 now does better than upstream there.
 
-Nothing in the suite fails, and no case is marked known broken (the five of
-sec 27.107 are answered, sec 27.108); every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
+Nothing in the suite fails. Four cases are marked known broken, half a ball
+cut through both its poles (sec 27.109, "Left open"): refused, where an
+answer exists. Every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
 piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
 the pieces that are pockets and bosses: every one checks by hand. The one
 refusal left in the sweep is the torus's face, and it is right: with its one
 face removed no face stays (sec 27.105, which refuses the sphere's too).
 
-The sweep's 16 solids have no face closed at a pole -- no dome, no cone with
-its apex -- which is how sec 27.106's fault, there since the chain was
-ported, went unseen: the sweep's lines are the same before and after it.
+The sweep's first 16 solids have no face closed at a pole -- no dome, no
+cone with its apex -- which is how sec 27.106's fault, there since the chain
+was ported, went unseen: the sweep's lines are the same before and after it.
+Sec 27.109 added the pole solids.
 
 ## The fixes
 
@@ -740,7 +744,157 @@ of a dome a side removed inward. Of 232 runs on fifteen shapes with a face
 at a pole -- every flat face, both ways, both joins, intersection off and
 on -- 28 are refused or invalid, 81 before this section (and one more, the
 half ball inward with intersection on, was a valid solid of the wrong
-volume); none is a wrong answer now but the three-quarter dome's.
+volume); none is a wrong answer now but the three-quarter dome's. Sec
+27.109 takes them up.
+
+### Sec 27.109: more than half a turn, three tubes at a pole, the sphere itself removed
+
+What sec 27.108 found beside its own cases and left: a ball of 5 cut by its
+equator and by two planes through its axis -- three quarters of a dome, a
+third, an eighth of a ball -- and each of them with the sphere itself
+removed. Every volume here is worked by `sweep/polehand.py`, numerically,
+from the rules the earlier sections settled; at this thickness it gives the
+76 volumes those sections had worked one by one. Upstream answers none of
+the seventeen pictured: the input back, an invalid solid, or a refusal.
+
+**More than half a turn** (`9a23596f40`, `BRepOffset_Tool::EnLargeFace`).
+Sec 27.108 turned a sphere's axis off a face that reaches a pole, so that
+the face can grow past the pole as a plain patch; it stopped at half a turn,
+and looked for the new axis only among the directions square to the middle
+of the face. Three quarters of a dome kept its own axis, its offset sphere
+could not grow, and the bottom removed outward with the Intersection join
+came back as the input, 196.3495 -- which sec 27.107's refusal does not
+catch, the removed face being whole in it. The axis is now any direction
+that keeps both poles off the face and a twelfth of a turn from its outline,
+the farthest of them; the seam is the middle of the widest stretch of the
+turn the outline leaves free. 87.3133: the ball of 5.5 above the bottom's
+plane, beside the two sides' planes a thickness out, less the dome.
+
+![dome270_bottom_join_out](pictures/dome270_bottom_join_out.png)
+
+**The old pole is no edge of a turned face** (`08df835f2a`,
+`BRepOffset_Inter2d::ConnexIntByInt`). On the turned sphere the pole is an
+ordinary point, but its degenerated edge still stood in the outline between
+the two meridians, and each of them was paired with it instead of with the
+other. A removed side's border was then cut at the pole and never by the
+other side's section, which lies past the pole where the edge at the axis
+is concave: three quarters of a dome, a side removed inward, was refused.
+The pole's edge is stepped over, unless the two meridians run on into each
+other -- half a turn, where one circle is the section of both. 83.7681
+inward, the wall running on a thickness past the axis; 113.7486 outward.
+
+![dome270_side_join_in](pictures/dome270_side_join_in.png)
+![dome270_side_join_out](pictures/dome270_side_join_out.png)
+
+**A piece past the pole, the Arc join** (`2ecab1f566`, `BRepAlgo_Loop`).
+With the Arc join the sphere is not turned, and the removed side's meridian
+is stretched over the pole to where the other side's offset cuts it. The
+piece beyond the pole kept the pcurve of the edge it was cut from -- the
+meridian's line run on above the pole's line, off the sphere's range -- and
+the pole's edge went into the wire whole, a three-quarter turn of it. The
+same side inward came back invalid, or was refused for its mirror image.
+The piece takes the line of the meridian opposite, coming down from the
+pole, and the pole's edge is cut to run from the one meridian to the other.
+With the pcurves right the search then finds two wires where it found one:
+the face, and the half of it the stretched meridian cuts off by running on
+down the far side. Both run through pieces beyond their edge's span; the
+one through more of them loses. 83.7681, as the Intersection join.
+
+![dome270_side_in](pictures/dome270_side_in.png)
+
+**Three tubes at a pole** (`ae43532a91`, `BuildOffsetByArc`). A vertex gets
+its piece of sphere when every edge at it carries a tube. The pole's
+degenerated edge was counted among the edges and carries none: an eighth of
+a ball or a third of a dome, the bottom removed outward, had the tubes of
+its two meridians and of its axis end on nothing, and was refused. 45.5612
+and 52.4334.
+
+![eighth_ball_bottom_out](pictures/eighth_ball_bottom_out.png)
+![dome120_bottom_out](pictures/dome120_bottom_out.png)
+
+**The far crossing** (`246f2d4966`, `BRepOffset_Tool::Inter2d`). The Arc
+join extends each kept face to the removed one and cuts its new edges by
+their neighbours' in 2d. A line crosses a circle twice, and on a periodic
+curve the parameter comes in the curve's first period, not the edge's: a
+third of a dome, a side removed inward, had the other side's offset --
+whose arc ends on the period's start and is cut a little past its own end
+-- extended into three quarters of a disc, and was refused. 41.2951.
+
+![dome120_side_in](pictures/dome120_side_in.png)
+
+**The sphere itself removed** (`9de63f298b`, `73f8dcdaa7`). The wall of a
+removed face lies on its own surface, past its outline -- on a sphere, past
+the pole the outline runs to, where the face cannot grow. Outward every one
+of these shapes was refused or threw, with either join. The removed face
+gets what the kept faces got, a sphere with its axis turned off it, but it
+is the caller's face and not the algorithm's to change: it is replaced, the
+way a face made planar is (`myFacePlanfaceMap`), by a twin
+(`BRepOffset_Tool::TurnedOffPole`) -- a new face with the same wires, whose
+edges take a pcurve on the turned sphere beside their own. Those edges keep
+their tolerance, and the pcurve has to lie within it, which the projection
+does not promise (1.3e-7 for 1e-7, and the wall was invalid): it is
+interpolated, through as many points as that takes. A later thickness of
+the same shape finds the twin's sphere on the edges and uses it again; the
+edges take those pcurves once.
+
+Three more faults on the way, none of them the sphere's. A new edge
+replaces the edge it is the image of among the descendants the loops are
+built from; a vertex has edges for images too, the ends of the tubes that
+meet at it, and the pole's degenerated edge, which only the removed face
+holds, was given a tube's arc for a vertex. An edge with the same neighbour
+at both its ends -- the meridian of a quarter ball lying on its side,
+between its two poles -- takes both crossings of its neighbour's line, each
+end its own: `Inter2d` gives every crossing, and a vertex moves to the one
+nearest where it is. And the twin is grown, like any turned sphere,
+into most of what the outline leaves free of the turn (below).
+
+An eighth of a ball: 32.3576 with the Arc join, 33.2167 sharp, 25.7418
+inward. Half a dome 41.0976 and 41.6307; the quarter ball on its side the
+same, and 36.6474 inward.
+
+![eighth_ball_sphere_out](pictures/eighth_ball_sphere_out.png)
+![eighth_ball_sphere_join_out](pictures/eighth_ball_sphere_join_out.png)
+![dome120_sphere_join_out](pictures/dome120_sphere_join_out.png)
+![halfdome_sphere_out](pictures/halfdome_sphere_out.png)
+![halfdome_sphere_join_out](pictures/halfdome_sphere_join_out.png)
+![lune_sphere_out](pictures/lune_sphere_out.png)
+![lune_sphere_in](pictures/lune_sphere_in.png)
+![dome270_sphere_join_out](pictures/dome270_sphere_join_out.png)
+
+**A wrong answer at twice the thickness** (`d98bd7a7ce`). The sweep runs
+at a thickness of 1, a fifth of the radius, and there three quarters of a
+dome, a side removed outward with the Intersection join, was a valid solid
+of 89.196 for 260.937: the skin built on the wrong side of the kept face.
+A periodic face is grown by a tenth of what is left of its turn. On the
+turned sphere that fell short of where the bottom's and the side's sections
+meet; the side's section was cut off at the end of the grown face, and met
+the bottom's at its far crossing, on the other side of the removed face.
+The seam of a turned sphere lies in the middle of the free stretch, and the
+face takes nine tenths of it. The same shortfall threw with the sphere
+removed.
+
+![dome270_side_join_out_thick](pictures/dome270_side_join_out_thick.png)
+![dome270_sphere_out_thick](pictures/dome270_sphere_out_thick.png)
+
+**The sweep** gained six solids with a face at a pole -- a dome, half, a
+third, a quarter and three quarters of one, and the quarter ball on its
+side -- 168 runs, each judged by `sweep/polehand.py`'s value: 880 runs, the
+fork right on every one. Upstream is right on 68 of the 168; of the other
+100, 38 are invalid, 30 refused, and 32 are valid solids of the wrong
+volume.
+
+**Left open: half a ball cut through both its poles.** Its outline is a
+whole great circle, and no axis keeps both poles off the face. With a flat
+half removed and the Intersection join, the offset sphere has to reach a
+thickness past that circle beside the kept half, on both sides of each
+pole: it holds its poles inside, and the face needs a seam. Turning the
+axis onto the middle of the face makes it a dome, which the loops can
+build -- but its seam and its new pole's edge are not images of any edge of
+the face given, and the outline walk and the bookkeeping of a face's own
+edges know only those. Tried, it turned the refusal into an invalid solid,
+and was taken out. The suite marks the four cases known broken, with their
+volumes: 113.0909 and 89.0272 for a flat half removed, 39.1390 for the
+sphere removed outward, either join. They are refused, not wrong.
 
 ## The captured models
 
