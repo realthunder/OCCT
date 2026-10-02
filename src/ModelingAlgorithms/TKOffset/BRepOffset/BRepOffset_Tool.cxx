@@ -4070,6 +4070,186 @@ static bool TurnSphereOffPole(const TopoDS_Face& theF, TopoDS_Face* theTwin = nu
 
 //=================================================================================================
 
+// A section that is a whole turn of a circle, closed on its own vertex, is
+// started again at the point of it farthest from <theRef>, the shape the
+// section is wanted beside.
+// The vertices that cut such an edge leave as many pieces as there are of
+// them, and the trimming (TrimEdge, from the least parameter to the
+// greatest) loses the piece the edge's own vertex lies in. Where the
+// intersection starts a circle depends on how the shape lies in space: half
+// of a sphere's cap, its bottom removed inward with the Intersection join,
+// had the start across the circle from the face as it is made, and in the
+// arc it needs once turned by 40 degrees -- a valid solid of 11.598 for
+// 22.043. An edge whose start is already in the far half is left as it is.
+void BRepOffset_Tool::StartSectionsFarFrom(const TopoDS_Shape&             theRef,
+                                           const TopoDS_Face&              theF1,
+                                           const TopoDS_Face&              theF2,
+                                           NCollection_List<TopoDS_Shape>& theL1,
+                                           NCollection_List<TopoDS_Shape>& theL2,
+                                           const bool                      theMayRunRoundF1,
+                                           const bool                      theMayRunRoundF2)
+{
+  if (theRef.IsNull())
+  {
+    return;
+  }
+  std::vector<gp_Pnt> aRefPnts;
+  if (theRef.ShapeType() == TopAbs_EDGE && !BRep_Tool::Degenerated(TopoDS::Edge(theRef)))
+  {
+    BRepAdaptor_Curve aRef(TopoDS::Edge(theRef));
+    if (Precision::IsInfinite(aRef.FirstParameter()) || Precision::IsInfinite(aRef.LastParameter()))
+    {
+      return;
+    }
+    for (int j = 0; j <= 16; ++j)
+    {
+      aRefPnts.push_back(aRef.Value(aRef.FirstParameter()
+                                    + (aRef.LastParameter() - aRef.FirstParameter()) * j / 16.));
+    }
+  }
+  else
+  {
+    for (TopExp_Explorer anExp(theRef, TopAbs_VERTEX); anExp.More(); anExp.Next())
+    {
+      aRefPnts.push_back(BRep_Tool::Pnt(TopoDS::Vertex(anExp.Current())));
+    }
+    for (TopExp_Explorer anExp(theRef, TopAbs_EDGE); anExp.More(); anExp.Next())
+    {
+      const TopoDS_Edge& aRE = TopoDS::Edge(anExp.Current());
+      if (BRep_Tool::Degenerated(aRE))
+      {
+        continue;
+      }
+      BRepAdaptor_Curve aRef(aRE);
+      if (Precision::IsInfinite(aRef.FirstParameter()) || Precision::IsInfinite(aRef.LastParameter()))
+      {
+        continue;
+      }
+      for (int j = 1; j < 16; ++j)
+      {
+        aRefPnts.push_back(aRef.Value(aRef.FirstParameter()
+                                      + (aRef.LastParameter() - aRef.FirstParameter()) * j / 16.));
+      }
+    }
+  }
+  if (aRefPnts.empty())
+  {
+    return;
+  }
+  NCollection_List<TopoDS_Shape>::Iterator anIt1(theL1), anIt2(theL2);
+  for (; anIt1.More() && anIt2.More(); anIt1.Next(), anIt2.Next())
+  {
+    const TopoDS_Edge anE = TopoDS::Edge(anIt1.Value());
+    if (!anE.IsSame(anIt2.Value()))
+    {
+      continue;
+    }
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(anE, aV1, aV2);
+    double                        aF, aL;
+    const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anE, aF, aL);
+    if (aV1.IsNull() || !aV1.IsSame(aV2) || aC.IsNull() || !aC->IsPeriodic()
+        || std::abs((aL - aF) - aC->Period()) > Precision::PConfusion())
+    {
+      continue;
+    }
+    // Only a section that closes on each face as it does in space: one that
+    // runs round a face's period starts on the face's seam, and stays there.
+    // Round a removed face's (theMayRunRoundF1, F2) it may start anywhere,
+    // as long as the face itself is no whole turn: the wall is built of its
+    // pieces as they come. On a whole turn -- a cone's side, a dome -- the
+    // wall has the face's seam, and the section starts there.
+    bool isClosedOnFaces = true;
+    for (const TopoDS_Face& aFace : {theF1, theF2})
+    {
+      double                          aPF, aPL;
+      const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(anE, aFace, aPF, aPL);
+      if (aC2d.IsNull())
+      {
+        isClosedOnFaces = false;
+        break;
+      }
+      if (aC2d->Value(aPF).Distance(aC2d->Value(aPL)) <= 1.e-6)
+      {
+        continue;
+      }
+      bool mayRunRound = aFace.IsSame(theF1) ? theMayRunRoundF1 : theMayRunRoundF2;
+      if (mayRunRound)
+      {
+        const occ::handle<Geom_Surface> aS = BRep_Tool::Surface(aFace);
+        double                          aU1, aU2, aV1, aV2;
+        BRepTools::UVBounds(aFace, aU1, aU2, aV1, aV2);
+        mayRunRound = !(aS->IsUPeriodic() && aU2 - aU1 >= aS->UPeriod() - 1.e-6)
+                      && !(aS->IsVPeriodic() && aV2 - aV1 >= aS->VPeriod() - 1.e-6);
+      }
+      if (!mayRunRound)
+      {
+        isClosedOnFaces = false;
+        break;
+      }
+    }
+    if (!isClosedOnFaces)
+    {
+      continue;
+    }
+    const int aNb   = 64;
+    double    aFar  = -1., aT0 = aF, aAtStart = 0.;
+    for (int k = 0; k < aNb; ++k)
+    {
+      const double aT = aF + (aL - aF) * k / aNb;
+      const gp_Pnt aP = aC->Value(aT);
+      double       aD = RealLast();
+      for (const gp_Pnt& aR : aRefPnts)
+      {
+        aD = std::min(aD, aP.SquareDistance(aR));
+      }
+      if (k == 0)
+      {
+        aAtStart = aD;
+      }
+      if (aD > aFar)
+      {
+        aFar = aD;
+        aT0  = aT;
+      }
+    }
+    // Squared distances: the start is in the far half already.
+    if (aAtStart >= 0.25 * aFar)
+    {
+      continue;
+    }
+    BRepLib_MakeEdge aME(aC, aT0, aT0 + (aL - aF));
+    if (!aME.IsDone())
+    {
+      continue;
+    }
+    TopoDS_Edge  aNE = aME.Edge();
+    BRep_Builder aB;
+    aB.UpdateEdge(aNE, BRep_Tool::Tolerance(anE));
+    try
+    {
+      BOPTools_AlgoTools2D::BuildPCurveForEdgeOnFace(aNE, theF1);
+      BOPTools_AlgoTools2D::BuildPCurveForEdgeOnFace(aNE, theF2);
+    }
+    catch (Standard_Failure const&)
+    {
+      continue;
+    }
+    double aPF, aPL;
+    if (BRep_Tool::CurveOnSurface(aNE, theF1, aPF, aPL).IsNull()
+        || BRep_Tool::CurveOnSurface(aNE, theF2, aPF, aPL).IsNull())
+    {
+      continue;
+    }
+    BRepLib::SameParameter(aNE, Precision::Confusion(), true);
+    SHOW_TOPO_SHAPE(aNE, "SectionStartedFar", anE);
+    anIt1.ChangeValue() = aNE.Oriented(anIt1.Value().Orientation());
+    anIt2.ChangeValue() = aNE.Oriented(anIt2.Value().Orientation());
+  }
+}
+
+//=================================================================================================
+
 bool BRepOffset_Tool::TurnedOffPole(const TopoDS_Face& theF, TopoDS_Face& theTwin)
 {
   return TurnSphereOffPole(theF, &theTwin);
@@ -4599,6 +4779,7 @@ void BRepOffset_Tool::ExtentFace(
         EnLargeFace(TopoDS::Face(FTB), StopFace, false);
         TopoDS_Face NullFace;
         BRepOffset_Tool::Inter3D(EF, StopFace, LInt1, LInt2, Side, E, NullFace, NullFace);
+        StartSectionsFarFrom(E, EF, StopFace, LInt1, LInt2, false, true);
         // No intersection, it may happen for example for a chosen (non-offsetted) planar face and
         // its neighbour offsetted cylindrical face, if the offset is directed so that
         // the radius of the cylinder becomes smaller.

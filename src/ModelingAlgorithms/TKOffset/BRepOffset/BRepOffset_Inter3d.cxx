@@ -1004,6 +1004,7 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         NCollection_List<TopoDS_Shape> LInt1, LInt2;
         BRepOffset_Tool::Inter3D(NF1, NF2, LInt1, LInt2, CurSide, E, F1, F2);
         SetDone(NF1, NF2);
+        BRepOffset_Tool::StartSectionsFarFrom(bEdge ? TopoDS_Shape(E) : aS, NF1, NF2, LInt1, LInt2);
         if (!LInt1.IsEmpty())
         {
           Store(NF1, NF2, LInt1, LInt2);
@@ -1680,6 +1681,7 @@ void BRepOffset_Inter3d::ContextIntByInt(
           LOE.Append(OE);
           BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, E, CF, F);
           SetDone(NF, CF);
+          BRepOffset_Tool::StartSectionsFarFrom(bEdge ? TopoDS_Shape(E) : aS, WCF, NF, LInt1, LInt2);
           // The section is oriented as if the removed face met the offset
           // one at a convex edge. At a concave one -- the floor of a blind
           // hole -- it comes out the wrong way round, and a band on the hole's
@@ -2076,6 +2078,7 @@ void BRepOffset_Inter3d::ContextIntByArc(
                 || LInt1.IsEmpty())
             {
               BRepOffset_Tool::Inter3D(CF, OF1, LInt1, LInt2, mySide, NullEdge, NullFace, NullFace);
+              BRepOffset_Tool::StartSectionsFarFrom(OF1, CF, OF1, LInt1, LInt2, true);
             }
             SHOW_TOPO_SHAPE(OF1, "CFV_E_Inter_", LInt2);
             Store(CF, OF1, LInt1, LInt2);

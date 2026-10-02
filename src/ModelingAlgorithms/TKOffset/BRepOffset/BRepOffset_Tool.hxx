@@ -135,6 +135,20 @@ public:
   //! no such face, or no axis keeps both poles clear of it.
   Standard_EXPORT static bool TurnedOffPole(const TopoDS_Face& theF, TopoDS_Face& theTwin);
 
+  //! A section that is a whole turn of a circle, closed on its own vertex,
+  //! is started again at the point of it farthest from <theRef>, the shape
+  //! the section is wanted beside: the trimming loses the piece the edge's
+  //! own vertex lies in. <theL1> and <theL2> are the section as Inter3D gave
+  //! it for <theF1> and <theF2>. An edge that runs round a face's period is
+  //! left as it is, unless that face is a removed one (<theMayRunRound>).
+  Standard_EXPORT static void StartSectionsFarFrom(const TopoDS_Shape&             theRef,
+                                                   const TopoDS_Face&              theF1,
+                                                   const TopoDS_Face&              theF2,
+                                                   NCollection_List<TopoDS_Shape>& theL1,
+                                                   NCollection_List<TopoDS_Shape>& theL2,
+                                                   const bool theMayRunRoundF1 = false,
+                                                   const bool theMayRunRoundF2 = false);
+
   //! The pcurve of the circle <theC> on <theSph>, with the circle's own
   //! parameters, no farther from it than <theTol>. <theF> and <theL> are
   //! moved out as far as the circle can be followed there: ten degrees off
