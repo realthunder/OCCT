@@ -2470,8 +2470,19 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
           P2[0] = C2->Value(fl2[0]);
           P2[1] = C2->Value(fl2[1]);
 
+          // A curve closed on itself has its end wherever it was started,
+          // and an end found on the other curve says nothing of the other
+          // places they cross: a section circle that starts on the line it
+          // is cut by gave that one point for both ends of its arc. Those
+          // are intersected whole, below.
+          const bool isClosed1 = std::abs(fl1[0]) < Precision::Infinite()
+                                 && std::abs(fl1[1]) < Precision::Infinite()
+                                 && P1[0].IsEqual(P1[1], TolConf);
+          const bool isClosed2 = std::abs(fl2[0]) < Precision::Infinite()
+                                 && std::abs(fl2[1]) < Precision::Infinite()
+                                 && P2[0].IsEqual(P2[1], TolConf);
           int i1;
-          for (i1 = 0; i1 < 2; i1++)
+          for (i1 = 0; i1 < 2 && !isClosed1 && !isClosed2; i1++)
           {
             for (int i2 = 0; i2 < 2; i2++)
             {
@@ -2489,7 +2500,7 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
               }
             }
           }
-          if (!YaSol)
+          if (!YaSol && !isClosed1 && !isClosed2)
           {
             for (i1 = 0; i1 < 2; i1++)
             {
@@ -2519,7 +2530,7 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
               }
             }
           }
-          if (!YaSol)
+          if (!YaSol && !isClosed1 && !isClosed2)
           {
             for (int i2 = 0; i2 < 2; i2++)
             {
@@ -2652,39 +2663,8 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
     itry++;
   }
 
-  if (LV.Extent() > 1)
-  {
-    //------------------------------------------------
-    // garde seulement les vertex les plus proches du
-    // debut et de la fin.
-    //------------------------------------------------
-    NCollection_List<TopoDS_Shape>::Iterator it(LV);
-    TopoDS_Vertex                            VF, VL;
-    double                                   UMin = Precision::Infinite();
-    double                                   UMax = -Precision::Infinite();
-    double                                   U;
-
-    for (; it.More(); it.Next())
-    {
-      TopoDS_Vertex CV         = TopoDS::Vertex(it.Value());
-      TopoDS_Shape  aLocalEdge = E1.Oriented(TopAbs_FORWARD);
-      U                        = BRep_Tool::Parameter(CV, TopoDS::Edge(aLocalEdge));
-      //      U = BRep_Tool::Parameter(CV,TopoDS::Edge(E1.Oriented(TopAbs_FORWARD)));
-      if (U < UMin)
-      {
-        VF   = CV;
-        UMin = U;
-      }
-      if (U > UMax)
-      {
-        VL   = CV;
-        UMax = U;
-      }
-    }
-    LV.Clear();
-    LV.Append(VF);
-    LV.Append(VL);
-  }
+  // Every crossing is returned: the first and the last along E1 were kept
+  // here once, and on a closed curve those are one point.
 
 #ifdef OCCT_DEBUG
   if (!YaSol)
@@ -4908,16 +4888,24 @@ void BRepOffset_Tool::ExtentFace(
     double                         f, l;
     TopoDS_Edge                    ERef;
     TopoDS_Vertex                  V1, V2;
-    // Of the crossings Inter2d found (the first and the last along the new
-    // edge), the one a vertex moves to: the nearest to where the vertex is.
+    // Of the crossings Inter2d found, the one a vertex moves to: the nearest
+    // to where the vertex is.
     // Both edges that meet at the vertex give the same answer, whichever is
     // asked first.
     auto aNearestTo = [](const NCollection_List<TopoDS_Shape>& theLV, const TopoDS_Vertex& theV) {
-      const gp_Pnt aP = BRep_Tool::Pnt(theV);
-      return TopoDS::Vertex(aP.Distance(BRep_Tool::Pnt(TopoDS::Vertex(theLV.First())))
-                                <= aP.Distance(BRep_Tool::Pnt(TopoDS::Vertex(theLV.Last())))
-                              ? theLV.First()
-                              : theLV.Last());
+      const gp_Pnt  aP = BRep_Tool::Pnt(theV);
+      TopoDS_Vertex aBest;
+      double        aBestD = RealLast();
+      for (NCollection_List<TopoDS_Shape>::Iterator anIt(theLV); anIt.More(); anIt.Next())
+      {
+        const double aD = aP.Distance(BRep_Tool::Pnt(TopoDS::Vertex(anIt.Value())));
+        if (aD < aBestD)
+        {
+          aBestD = aD;
+          aBest  = TopoDS::Vertex(anIt.Value());
+        }
+      }
+      return aBest;
     };
 
     for (exp2.Init(W.Oriented(TopAbs_FORWARD), TopAbs_EDGE); exp2.More(); exp2.Next())
