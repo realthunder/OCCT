@@ -262,6 +262,13 @@ occ::handle<Geom2d_Curve> GeomPlate_BuildPlateSurface::ProjectCurve(
   occ::handle<ProjLib_HCompProjectedCurve> HProjector =
     new ProjLib_HCompProjectedCurve(hsur, Curv, myTol3d / 10, myTol3d / 10);
 
+  if (HProjector->NbCurves() == 0)
+  {
+    // no projection at all: no continuous solution either (Perform tries
+    // another initial surface)
+    return Curve2d;
+  }
+
   double UdebCheck, UfinCheck, ProjUdeb, ProjUfin;
   UdebCheck = Curv->FirstParameter();
   UfinCheck = Curv->LastParameter();
