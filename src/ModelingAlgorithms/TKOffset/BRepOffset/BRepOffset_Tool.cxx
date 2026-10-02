@@ -1314,6 +1314,11 @@ static void CheckIntersFF(const BOPDS_PDS&                                      
       {
         const occ::handle<BOPDS_PaveBlock>& aPB    = aPBIt.Value();
         int                                 nSect  = aPB->Edge();
+        if (nSect < 0)
+        {
+          // A block the filler made no edge for (below, in Inter3D).
+          continue;
+        }
         const TopoDS_Edge&                  anEdge = *(TopoDS_Edge*)&pDS->Shape(nSect);
         BB.Add(Edges, anEdge);
         nbe++;
@@ -1543,6 +1548,14 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
       {
         const occ::handle<BOPDS_PaveBlock>& aPB    = aPBIt.Value();
         int                                 nSect  = aPB->Edge();
+        if (nSect < 0)
+        {
+          // A block of a section curve the filler made no edge for: two
+          // faces of one sphere, the lunes of half a ball, meet along the
+          // edge they share and nowhere else. Asked for as a shape, it was
+          // read past the end of the filler's shapes.
+          continue;
+        }
         const TopoDS_Edge&                  anEdge = *(TopoDS_Edge*)&pDS->Shape(nSect);
         if (!TrueEdges.IsEmpty() && !TrueEdges.Contains(anEdge))
         {
