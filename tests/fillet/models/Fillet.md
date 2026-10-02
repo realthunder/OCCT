@@ -101,7 +101,12 @@ a few minutes, most of it building one library per column:
    `.FCMacro`), and `compose.py` lays them out with the (u, v) row (Pillow,
    from the FreeCAD conda env).
 
-The renderer draws with Coin, not the bgfx renderer: on macOS `saveImage`
-cannot capture a Metal frame and falls back to a black one. Edges are marked
+The renderer draws with Coin, not the bgfx renderer, so the pictures look
+alike on every box. (At first that was forced: on macOS every capture after
+the first came back black. A closed document's maximized MDI shell stayed
+up as a full-screen window over FreeCAD's main window, macOS reported the
+main window occluded, and Qt stopped painting it -- so the renderer, whose
+capture needs a frame drawn, never got one. Fixed in FreeCAD; the renderer
+captures these panels on Metal now.) Edges are marked
 red by counting their uses through the faces' wires; `isSeam()` would count
 an edge like #523's leftover seam twice in a face that holds it once.

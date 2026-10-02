@@ -22,9 +22,10 @@ def emit(s):
 
 # The transaction log is off: the pictures need no history.
 App.ParamGet("User parameter:BaseApp/Preferences/Document").SetInt("TransactionLog", 0)
-# Coin draws, not the bgfx renderer: saveImage cannot capture a backend frame
-# on every platform (macOS Metal falls back to a black GL capture), and the
-# pictures are about the geometry. No navigation cube in them either.
+# Coin draws, not the bgfx renderer, so the pictures look alike on every box
+# (Linux renders them under Xvfb). The renderer captures them too, on macOS
+# Metal as well, since FreeCAD stopped leaving a closed document's MDI shell
+# over the main window. No navigation cube in them either.
 App.ParamGet("User parameter:BaseApp/Preferences/View").SetInt("RenderCache", 0)
 App.ParamGet("User parameter:BaseApp/Preferences/View").SetBool("ShowNaviCube", False)
 jobs = json.load(open(os.environ["JOBS"]))
