@@ -30,6 +30,7 @@ STAGES = {
     "s105": ("f723999a15", "27.105"),
     "s106": ("dc3a7b85d1", "27.106"),
     "s107": ("b6404e079a", "27.107"),
+    "s108": ("705644654e", "27.108"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -84,6 +85,7 @@ SHAPES = {
     "cone": lambda: Part.makeCone(0, 4, 6),
     "halfdome": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 180),
     "splitbox": lambda: Part.makeBox(4, 8, 6).fuse(Part.makeBox(6, 8, 6, V(4, 0, 0))),
+    "eighth": lambda: Part.makeSphere(5, V(), V(0, 0, 1), 0, 90, 90),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -165,6 +167,14 @@ CASES = {
     "halfdome_bottom_out": ("s107", "halfdome", 2, +0.5, False, 0, 66.1779),
     "halfdome_side_out": ("s107", "halfdome", 3, +0.5, False, 0, 79.7628),
     "halfdome_side_in": ("s107", "halfdome", 3, -0.5, False, 0, 58.8944),
+    "halfdome_other_side_in": ("s108", "halfdome", 4, -0.5, False, 0, 58.8944),
+    "splitbox_top_piece_join_out": ("s108", "splitbox", 3, +1, False, 2, 440.0),
+    "splitbox_top_piece_join_in": ("s108", "splitbox", 3, -1, False, 2, 276.0),
+    "splitbox_end_join_in": ("s108", "splitbox", 1, -1, False, 2, 264.0),
+    "halfdome_side_join_in": ("s108", "halfdome", 3, -0.5, False, 2, 59.1071),
+    "halfdome_bottom_join_out": ("s108", "halfdome", 2, +0.5, False, 2, 67.0206),
+    "halfdome_side_join_out": ("s108", "halfdome", 3, +0.5, False, 2, 81.7345),
+    "eighth_ball_bottom_join_out": ("s108", "eighth", 2, +0.5, False, 2, 46.7279),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).

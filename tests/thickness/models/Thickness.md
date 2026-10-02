@@ -91,6 +91,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.105 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.106 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.107 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.108 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -100,16 +101,16 @@ counts the holed cone's sealed void right (sec 27.100), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
 those two runs before it.
 
-Of the 78 pictured cases, 31 are ones upstream gets right and the fork had
+Of the 86 pictured cases, 31 are ones upstream gets right and the fork had
 broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
 cone's top with intersection on, sec 27.100, a short box's and a box's bottom
 alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, the
 input left inside out, sec 27.104, and the faces closed at a pole, sec
-27.106). The other 47 fail upstream too: the fork
+27.106). The other 55 fail upstream too: the fork
 now does better than upstream there.
 
-Nothing in the suite fails that is expected to pass (five cases are marked
-known broken, sec 27.107), and every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
+Nothing in the suite fails, and no case is marked known broken (the five of
+sec 27.107 are answered, sec 27.108); every run of the sweep in scope is right. Out of scope, sec 27.101 answers the faces left in pieces where each
 piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
 the pieces that are pockets and bosses: every one checks by hand. The one
 refusal left in the sweep is the torus's face, and it is right: with its one
@@ -591,12 +592,155 @@ did not apply, because the faces at the joint's ends are split too, and the
 box came back, 480. The closure now takes the piece beside the removed
 face; the wall it needs is not built yet, and the call is refused.
 
-**Still wrong**, and marked so in the suite (XFAIL): the half dome's other
-side inward (the mirror image: the wire round what was cut away runs the
-same way as the right one, and is kept -- an invalid result); the half dome
-with the Intersection join, bottom outward (the sphere would have to grow
-round its pole, 67.0206) and a side either way; the split box with the
-Intersection join (440 and 276). All refused or invalid; none the input.
+**Still wrong** after this section, and marked so in the suite (XFAIL)
+until the next one: the half dome's other side inward (an invalid result);
+the half dome with the Intersection join, bottom outward (67.0206) and a
+side either way; the split box with the Intersection join (440 and 276).
+All refused or invalid; none the input.
+
+### Sec 27.108: coplanar pieces, a wall on a sphere, a sphere round its pole
+
+The five cases sec 27.107 left, in four groups. Upstream fails every one --
+the input back, an invalid solid, or a refusal.
+
+**The mirror image** (`ed836d0120`, `BRepAlgo_Loop::Perform`). Half a dome,
+its second side face removed, inward: the offset sphere came back with the
+wire round what the neighbour's offset had cut away. The removed side's
+meridian is stretched over the pole and down the far side of the sphere,
+and of the three closed wires the search finds on the sphere -- the face,
+what was cut away, and the two together -- two run through the piece past
+the pole. Sec 27.107 told them apart by area, and a wire whose pcurve runs
+past the pole, out of the sphere's parameters, has no area to speak of:
+negative for one side (right, by luck), positive for its mirror image. A
+stretched edge carries its own ends as INTERNAL vertices; on a face that is
+not a plane they are its span, and a piece beyond them is outside -- a wire
+through it loses to one sharing an open edge with it that stays inside (the
+rule of sec 27.90). 58.8944, as the first side.
+
+![halfdome_other_side_in](pictures/halfdome_other_side_in.png)
+
+**Faces in coplanar pieces, the Intersection join** (`c13b1e5540`). The box
+fused of two, every face across the joint in two coplanar pieces. Four
+faults, three of them in `BRepOffset_Inter3d::ConnexIntByInt`, where faces
+that meet at a vertex alone are intersected there:
+
+*The wall intersected twice.* The end of the removed piece's tangent edge
+also lists the edges of its closure on the face at that end (for
+`BRepOffset_Inter2d`), which do not reach it. Taken for edges that do, the
+wall and that face were intersected at the vertex as well as through their
+own edge: one section, two edges, and every wire of the wall came twice --
+the wall was never built and stayed an unbounded plane. An edge that does
+not hold the vertex brings no face to it. This alone answers a box whose
+top only is split.
+
+*Each piece intersected with the far piece of its neighbour.* At a vertex
+of the joint two coplanar pieces meet the two pieces of their neighbour,
+and each piece was intersected with the far piece too: two edges on one
+line, one running on past the joint, and no piece of a split face was
+built. Nothing to do with removed faces -- an end face removed failed the
+same way, and upstream gives the box back. A face that only carries on, in
+its own plane, one the other meets along an edge at the vertex is not
+intersected again.
+
+*The side beside the removed piece.* The closure runs a thickness into the
+removed piece, so the side beside it meets the other piece of the top
+between the wall and the joint -- on the line where the side beyond the
+joint meets that piece. Intersected anew at the wall's far vertex, the line
+had two edges, one never trimmed. The side takes the edge that is there:
+one edge, three faces.
+
+*Its pieces purged* (`BRepOffset_MakeLoops::Build`,
+`BRepAlgo_Loop::KeepPieces`). Such an edge is cut in the first face built,
+for all three, and the pieces that face had no use for were purged before
+the others came for them. Pieces of an edge more than two faces share stay.
+
+With intersection on, a planar shape whose removed face is tangent to a
+neighbour is built as with intersection off, as one with a concave removed
+face is (sec 27.92): the splits know nothing of the closure.
+
+The sharp skin weighs 480 either way (12 x 10 x 8 less the box, or the box
+less 8 x 6 x 4). Outward, less the slab over the removed piece short of the
+wall: a top piece 4 x 10 x 1 (440) or 6 x 10 x 1 (420), a side piece
+4 x 8 x 1 (448), an end 8 x 10 x 1 (400). Inward, less the cavity 192 and
+the shaft up to the wall: 2 x 6 x 1 (276), 4 x 6 x 1 (264), 2 x 4 x 1
+(280), and for an end the cavity run out to the face, 216 (264). All ten
+faces, both ways, both joins, intersection off and on -- 80 runs -- check.
+
+![splitbox_top_piece_join_out](pictures/splitbox_top_piece_join_out.png)
+![splitbox_top_piece_join_in](pictures/splitbox_top_piece_join_in.png)
+![splitbox_end_join_in](pictures/splitbox_end_join_in.png)
+
+**The wall on a sphere** (`73947cfab4`). Half a dome's side, the
+Intersection join, inward. The wall closing the tangent edge -- the axis --
+ends on the face at the edge's end, here the sphere, at its pole. Its end
+edge is a line square to the kept face and lies on the end face only where
+that is a plane; on the sphere it has no pcurve, was neither convex nor
+concave, and the wall was never intersected with the sphere
+(`BRepOffset_Analyse::TreatTangentCaps`: on a curved end face the edge is
+convex or concave as the wall runs behind the face or in front of it). And
+the removed side's plane cuts the enlarged offset sphere in two half
+circles, of which `BRepOffset_Tool::Inter3D` kept the one beyond the pole,
+on the neighbour's side: it chooses by the angle to an extremum of the
+distance from the reference edge's middle, which on an edge that point has
+no foot on is the farthest point. The edge clearly nearest the reference
+point is taken; the angle decides between edges as near as each other. The
+Arc join's 58.8944 with a square column beside the axis, 0.9954 (the
+integral of sqrt(4.5^2 - x^2 - y^2) - 0.5 over a square of 0.5), where
+that has the quarter tube, 0.7827: 59.1071.
+
+![halfdome_side_join_in](pictures/halfdome_side_join_in.png)
+
+**A sphere grown round its pole** (`3860ed4511`). Outward with the
+Intersection join the flat neighbours' offsets cut the offset sphere behind
+its pole, and the sphere face, grown past the meridians that bound it, has
+to run round the pole: in its own parameters a whole turn of U with a seam
+up to the pole, where `EnLargeFace` grows U by a tenth of what is left of
+the turn. Rather than teach the loops a seam that other edges cross, the
+face is put on the same sphere with its axis turned
+(`BRepOffset_Tool::EnLargeFace`): the middle of the face on the new
+equator, opposite the new seam, and of the axes square to that middle the
+one whose poles stay farthest from the face's outline -- a twelfth of a
+turn at the least. There the region is a plain patch. The edges take new
+pcurves; the old pole is an ordinary point, and its degenerated edge takes
+a pcurve that stays on it, which `ExtendPCurve` does not try to prolong and
+`FindLoop` leaves out of its wires. It applies to a face of a sphere that
+reaches a pole on no more than half a turn.
+
+The bottom removed: the ball of 5.5 above the bottom's plane and beside the
+side's plane a thickness out, less the quarter ball, 67.0206. A side: the
+bottom's plane a thickness down, the neighbour's a thickness out as far as
+the wall, 81.7345. A quarter ball lying on its side (the face reaching both
+poles), an eighth of a ball and a third of a dome are answered with them,
+each checked against the same integrals.
+
+![halfdome_bottom_join_out](pictures/halfdome_bottom_join_out.png)
+![halfdome_side_join_out](pictures/halfdome_side_join_out.png)
+![eighth_ball_bottom_join_out](pictures/eighth_ball_bottom_join_out.png)
+
+**A wall out of its band.** Half a ball cut through both its poles has no
+such axis -- its outline is a whole great circle -- and its sphere cannot be
+grown round the poles. Once the wall's end edge on a curved face was
+intersected (above), a flat half of it removed came back as a valid solid
+that was not the skin, 111.2647 for 113.0909: the sphere does not reach
+where the wall must be cut, and the wall's loop closed on half a disc. A
+wall stands in a band one thickness deep, between the removed face and the
+kept face's offset; `MakeOffsetShape` refuses one built outside it (beyond
+the kept face's offset, or, where the removed faces are planes, beyond the
+removed face). Not pictured: the right outcome is a refusal.
+
+**Found beside these, not fixed** -- shapes outside the suite and the
+sweep, wrong before this section too, all with a sphere at a pole. A dome
+of three quarters of a turn (`makeSphere(5, .., 0, 90, 270)`): a side
+removed inward is invalid or refused with the Arc join, a side is refused
+either way with the Intersection join, and the bottom removed outward with
+the Intersection join comes back as the input, 196.3495, which sec
+27.107's refusal does not catch. With the Arc join, the eighth of a ball
+and the third of a dome are refused bottom removed outward, and the third
+of a dome a side removed inward. Of 232 runs on fifteen shapes with a face
+at a pole -- every flat face, both ways, both joins, intersection off and
+on -- 28 are refused or invalid, 81 before this section (and one more, the
+half ball inward with intersection on, was a valid solid of the wrong
+volume); none is a wrong answer now but the three-quarter dome's.
 
 ## The captured models
 

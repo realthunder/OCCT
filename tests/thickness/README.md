@@ -322,10 +322,23 @@ The cone inward and half a dome, found beside these: the next section.
 | `splitbox_top_piece_out/in` | a box fused of two, one piece of its top removed, Arc join | 417.3038, 274.7124: right before, pinned here |
 | `*_not_the_input`, `*_not_the_box` | the Intersection-join cases below | refused; the split box came back whole, 480 |
 
-Known broken (`XFAIL`): `halfdome_other_side_in` (invalid),
-`halfdome_bottom_join_out` (67.0206), `halfdome_side_join_in`,
-`splitbox_top_piece_join_out/in` (440, 276) -- refused or invalid, never the
-input: `MakeThickSolid` refuses a result that is the shape itself.
+The five cases this section left known broken are answered in the next.
+
+## Coplanar pieces, a wall on a sphere, a sphere round its pole (2026-10-02, sec 27.108)
+
+`models/Thickness.md`, "Sec 27.108", has the causes and the hand values.
+No case is marked `XFAIL` any more.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `halfdome_other_side_in` | a quarter ball, the second of its two coplanar sides removed, inward, Arc join | 58.8944; was invalid: the wire round what was cut away, through the removed side's meridian stretched past the pole |
+| `splitbox_top_piece_join_*`, `_inter_join_*`, `splitbox_top_other_piece_join_*`, `splitbox_side_piece_join_*` | a box fused of two, a piece of a face removed, Intersection join | 440 / 276, 420 / 264, 448 / 280; were refused (upstream: the box back): the wall intersected twice, coplanar pieces intersected with each other's neighbours, one section edge shared by three faces |
+| `splitbox_end_join_*` | the same, an end face removed | 400 / 264: no removed face beside a coplanar one, the joint alone |
+| `topsplit_top_piece_join_*` | a box with its top only in two pieces | 440 / 276: the face at the joint's end is one face |
+| `halfdome_side_join_in`, `halfdome_other_side_join_in`, `halfdome_side_inter_join_in` | the quarter ball, a side removed, Intersection join, inward | 59.1071; were refused: the wall's end edge on the sphere was never intersected, and the removed side's section was the half circle beyond the pole |
+| `halfdome_bottom_join_out`, `_inter_join_out`, `halfdome_side_join_out`, `halfdome_other_side_join_out` | the same, outward | 67.0206, 81.7345; were refused: the offset sphere has to run round its pole, and is put on the same sphere with its axis turned |
+| `lune_side_join_*`, `eighth_ball_*_join_out`, `dome120_*_join_*` | a quarter ball on its side (both poles), an eighth of a ball, a third of a dome | the turned axis on other faces at a pole: 67.0206 / 51.3127, 46.7279, 53.3701 / 57.4660 / 41.2951 |
+| `halfball_side_join_refused_*` | half a ball cut through both poles, a flat half removed, Intersection join | refused: no axis is clear of its outline, and the wall built outside its band was a valid solid that is not the skin (111.2647 for 113.0909) |
 
 ## Determinism cases (intersection mode, Arc join)
 
