@@ -286,6 +286,33 @@ when no face stays (the user's choice).
 | `torus_face_refused_*` | torus, its face removed | refused, as before |
 | `box_all_faces_refused_in`, `box_all_faces_inter_refused_out` | box, all six faces removed | refused; was the box back, 600 |
 
+## A face closed at a pole (2026-10-02, sec 27.106)
+
+On a periodic face the loop builds a seam wire from a closed edge, a piece
+of the seam and the closed edge at its far end. Where the seam ends at a
+pole the closed edge there is the pole's degenerated edge, which the loop
+keeps out of its vertex map: no seam wire was built, and the one circle was
+left as a wire of its own, bounding nothing -- a face of no area and an
+invalid result, since the chain was ported (upstream is right). The band is
+now closed by the pole's edge (`BRepAlgo_Loop::FindLoop`). The rim is closed
+in the removed face's plane, so the volumes are differences of sphere caps,
+pi h^2 (3R - h) / 3; the cone's is worked out in FreeCAD's
+docs/TransactionLog.md sec 27.106.
+
+| Case | Model | What it covers |
+|------|-------|----------------|
+| `dome_flat_out/in`, `dome_flat_join_out`, `dome_flat_inter_in` | half a sphere of radius 5, flat face removed, 0.5 | 86.6556 out, 70.9476 in; was invalid, 216.5455 and 231.5055 |
+| `bowl_flat_out` | the lower half | the pole below: 86.6556 |
+| `cap_flat_in` | the sphere above latitude 30 | 33.6412; was invalid, 71.3403 |
+| `segment_flat_out` | the sphere below latitude 30 | 127.8890; was invalid, 387.9306 |
+| `cone_base_out`, `cone_up_base_out` | cone with its apex, radius 4, height 6, base removed | 52.4095, the apex rounded; was invalid, 62.5293 |
+
+Still wrong, upstream too: the cone inward with the Arc join throws (apex
+down `BRep_Builder::Infinite parameter` from `BRepOffset_Inter2d`, apex up
+`NCollection_DataMap::Find` from `BRepOffset_Tool::ExtentFace`); apex down
+with the Intersection join the cone comes back unhollowed (100.5310); half a
+dome (180 degrees) fails in most modes. The sweep has no such solid.
+
 ## Determinism cases (intersection mode, Arc join)
 
 `arc_inter_boss_same_every_run`, `arc_inter_lbox_same_every_run`,

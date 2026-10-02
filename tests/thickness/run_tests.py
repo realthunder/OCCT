@@ -524,6 +524,34 @@ nocrash_case("pocket_inter_join_no_crash",
              Part.makeBox(10, 10, 6).cut(Part.makeBox(6, 6, 3, App.Vector(2, 2, 3))),
              7, -1.0, True, 2)
 
+# A face closed at a pole. A dome -- half a sphere, its flat face removed --
+# leaves one spherical face, bounded by the seam, the pole's degenerated edge
+# and the equator. The loop keeps degenerated edges out of its vertex map, so
+# the seam wire (closed edge, seam, closed edge) found no closed edge at the
+# pole and was never built: the offset sphere came back with the equator as
+# its only wire, a face of no area, the result invalid (216.5455 outward and
+# 231.5055 inward by 0.5; upstream is right). The band is now closed by the
+# pole's edge. The rim is closed in the removed face's plane, so each volume
+# is a difference of sphere caps, pi h^2 (3R - h) / 3; the cone's skin has
+# the apex rounded by a ball of the thickness (FreeCAD
+# docs/TransactionLog.md sec 27.106).
+dome = Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 0, 90, 360)
+thickness_case("dome_flat_out",       dome, 2, +0.5, "pass", 86.6556)
+thickness_case("dome_flat_in",        dome, 2, -0.5, "pass", 70.9476)
+thickness_case("dome_flat_join_out",  dome, 2, +0.5, "pass", 86.6556, False, 2)
+thickness_case("dome_flat_inter_in",  dome, 2, -0.5, "pass", 70.9476, True)
+thickness_case("bowl_flat_out",
+               Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 0, 360),
+               2, +0.5, "pass", 86.6556)
+thickness_case("cap_flat_in",
+               Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), 30, 90, 360),
+               2, -0.5, "pass", 33.6412)
+thickness_case("segment_flat_out",
+               Part.makeSphere(5, App.Vector(), App.Vector(0, 0, 1), -90, 30, 360),
+               2, +0.5, "pass", 127.8890)
+thickness_case("cone_base_out", Part.makeCone(0, 4, 6), 2, +0.5, "pass", 52.4095)
+thickness_case("cone_up_base_out", Part.makeCone(4, 0, 6), 2, +0.5, "pass", 52.4095)
+
 # Every face removed: no face stays to be thickened, and the call is refused.
 # A sphere with its one face removed came back as the sphere itself, "valid"
 # and unhollowed; the torus was refused already (FreeCAD
