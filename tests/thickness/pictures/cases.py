@@ -27,6 +27,7 @@ STAGES = {
     "s102": ("d4d2fe0719", "27.102"),
     "s103": ("d8d480ef65", "27.103"),
     "s104": ("839a3e4606", "27.104"),
+    "s105": ("f723999a15", "27.105"),
 }
 # Upstream: the eleven files the fix chain touches, at the fork's base.
 UPSTREAM = ("91be8c4c71", [
@@ -75,6 +76,7 @@ SHAPES = {
     "blindpot": lambda: _blindpot(),
     "cylboss": lambda: Part.makeCylinder(6, 4).fuse(Part.makeCylinder(3, 4, V(0, 0, 4))),
     "sector": lambda: _sector(2 * math.pi),
+    "sphere": lambda: Part.makeSphere(5),
 }
 # name: (stage, shape, face or list of faces removed, value, inter, join, reference volume)
 CASES = {
@@ -145,6 +147,8 @@ CASES = {
     "pocket_top_out_inter_join": ("s103", "pocket5", 3, +1, True, 2, 465.0),
     "cylboss_shoulder_in": ("s103", "cylboss", 2, -1, False, 0, 292.1681),
     "sector_outer_arc_input": ("s104", "sector", [3, 5, 6], +1, False, 0, 9405.6558),
+    "sphere_face_refused_in": ("s105", "sphere", 1, -1, False, 0, None),
+    "box_all_faces_refused_in": ("s105", "box6", [1, 2, 3, 4, 5, 6], -1, False, 0, None),
 }
 # Cases whose right result is more than one shell: the holed cone's top, its
 # cavity sealed below the removed face (a skin and a void).
@@ -170,6 +174,12 @@ SOLIDS = {
 # (sec 27.104: the thickness was right and left its input inside out).
 INPUT = {
     "sector_outer_arc_input",
+}
+# Cases whose right outcome is a refusal: every face is removed, no face
+# stays to be thickened (sec 27.105). The panels show the input.
+REFUSED = {
+    "sphere_face_refused_in",
+    "box_all_faces_refused_in",
 }
 # The captured user models; upstream 8.0.1 passes them all, so not pictured.
 DOCS = {

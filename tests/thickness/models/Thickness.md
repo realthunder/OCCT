@@ -88,6 +88,7 @@ above, with the volume plausible for a skin where no reference exists.
 | sec 27.102 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.103 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 | sec 27.104 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
+| sec 27.105 | 0 | 164 | 150 / 150 | 150 / 150 | 106 / 108 / 110 / 112 |
 
 The "right" counts are of the 150 runs a mode that are in scope; sec 27.90
 set the scope (a face whose removal leaves the shell in pieces is out) and
@@ -97,18 +98,19 @@ counts the holed cone's sealed void right (sec 27.100), which upstream's
 intersection mode gives -- by that rule the fork was worse than upstream in
 those two runs before it.
 
-Of the 67 pictured cases, 27 are ones upstream gets right and the fork had
+Of the 69 pictured cases, 27 are ones upstream gets right and the fork had
 broken -- the chain's casualties (sec 27.89, 27.90, part of 27.91, the holed
 cone's top with intersection on, sec 27.100, a short box's and a box's bottom
 alone, sec 27.101 and 27.102, a pocket's open shell, sec 27.103, and the
-input left inside out, sec 27.104). The other 40 fail upstream too: the fork
+input left inside out, sec 27.104). The other 42 fail upstream too: the fork
 now does better than upstream there.
 
 Nothing in the suite fails now, and every run of the sweep in scope is
 right. Out of scope, sec 27.101 answers the faces left in pieces where each
 piece is a plain plate or disc, with either join (sec 27.102), and sec 27.103
 the pieces that are pockets and bosses: every one checks by hand. The one
-refusal left in the sweep is the torus's face.
+refusal left in the sweep is the torus's face, and it is right: with its one
+face removed no face stays (sec 27.105, which refuses the sphere's too).
 
 ## The fixes
 
@@ -437,6 +439,18 @@ every input.
 
 ![sector_outer_arc_input](pictures/sector_outer_arc_input.png)
 
+### Sec 27.105: every face removed
+
+A sphere has one face. Remove it and no face stays to be thickened: there is
+no answer, and the fork -- like upstream -- gave one, the sphere itself,
+"valid" and unhollowed. A box with all six faces removed came back the same
+way. The torus, one face too, was refused already. A thickness with every
+face removed is refused now (the user's choice); the panels show the input
+where it is.
+
+![sphere_face_refused_in](pictures/sphere_face_refused_in.png)
+![box_all_faces_refused_in](pictures/box_all_faces_refused_in.png)
+
 ## The captured models
 
 The suite's four document cases (realthunder/OCCT#1-#4: an elliptic pad, a
@@ -464,6 +478,7 @@ ten minutes on the dev box, most of it building libraries:
 A case added to `cases.py` with its stage gets its picture on the next run.
 A case listed in `INPUT` is pictured for what the call leaves of its input:
 the panels show the input after the thickness, judged against its own volume.
+A case in `REFUSED` is right when the call throws; its panels show the input.
 The cases run unfrozen, as the suite does.
 The renderer turns the transaction log off; the pictures need no history.
 (While drawing, the log's worker once crashed writing a shape the viewer

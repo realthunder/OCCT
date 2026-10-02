@@ -4,7 +4,7 @@
 import json, os, re, sys
 from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cases import CASES, INPUT, STAGES as STAGE
+from cases import CASES, INPUT, REFUSED, STAGES as STAGE
 P = os.environ["THICK_WORK"]
 OUT = sys.argv[1]; os.makedirs(OUT, exist_ok=True)
 R = {k: json.load(open(P + "/r/%s/results.json" % k)) for k in os.listdir(P + "/r")
@@ -20,9 +20,11 @@ NAMES = {"cyl": "cylinder", "ann": "cylinder with a through hole", "ell": "ellip
          "filletbox": "box with filleted vertical edges, r2", "filletbox25": "box with filleted vertical edges, r2.5",
          "shortcyl": "cylinder 1.5 high", "shortbox": "box 10 x 10 x 1.5", "box6": "box 10 x 10 x 6",
          "blindpot": "a blind hole's wall and floor and the top, an open shell",
-         "cylboss": "cylinder with a boss", "sector": "ring sector pad across angle 0"}
+         "cylboss": "cylinder with a boss", "sector": "ring sector pad across angle 0", "sphere": "sphere"}
 JOIN = {0: "Arc join", 2: "Intersection join"}
 def status(d):
+    if d["ok"] and d.get("refused"):
+        return "refused", (20, 120, 40)
     if d["ok"]:
         if d.get("solids", 1) > 1:
             sealed = " (%d solids)" % d["solids"]
@@ -61,7 +63,9 @@ for name in names:
         faces = "all but Face%d" % [i for i in range(1, nf + 1) if i not in fi][0]
     else:
         faces = "Faces " + ", ".join(str(i) for i in fi)
-    if name in INPUT:
+    if name in REFUSED:
+        expect = "a refusal, no face stays"
+    elif name in INPUT:
         expect = "the input unchanged, %.2f" % ref
     else:
         expect = "%.2f" % ref if ref else "a valid solid"
@@ -89,6 +93,8 @@ for name in names:
             img.paste(im, (x, top + lab + cut * H))
             if R[k][name]["problems"] and R[k][name]["problems"][0].startswith("threw") and cut == 0:
                 d.text((x + 10, top + lab + 8), "threw: the input is shown", font=F, fill=(190, 30, 30))
+            if R[k][name].get("refused") and cut == 0:
+                d.text((x + 10, top + lab + 8), "refused: the input is shown", font=F, fill=(110, 110, 110))
             meta = json.load(open(pf + ".json")) if os.path.exists(pf + ".json") else {}
             if meta.get("huge") and cut == 0:
                 d.text((x + 10, top + lab + 8), "own scale: it spans %.0e mm" % meta["huge"], font=F, fill=(190, 30, 30))
