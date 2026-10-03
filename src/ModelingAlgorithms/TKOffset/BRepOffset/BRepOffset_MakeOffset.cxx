@@ -3436,9 +3436,54 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
   return true;
 }
 
+//=======================================================================
+// function : IsRunaway
+// purpose  : A thick solid that reaches far past the shape it is made of: a
+//            face left unbounded, a plane 1e100 across. It is never right,
+//            and it can be "valid" -- the half ball with its sphere in two
+//            domes, one removed outward with the Arc join, was a valid solid
+//            of a volume of -1.3e100. The skin lies within the thickness of
+//            the shape, but for a sharp corner of the Intersection join, which
+//            reaches t / sin(a / 2) past an edge of angle a -- 115 thicknesses
+//            at a degree. The shape's box grown by a thousand times its own
+//            diagonal and the thickness is room enough for any of them.
+//=======================================================================
+static bool IsRunaway(const TopoDS_Shape& theShape, const TopoDS_Shape& theResult, double theOffset)
+{
+  if (theShape.IsNull() || theResult.IsNull())
+  {
+    return false;
+  }
+  Bnd_Box aShapeBox, aResultBox;
+  BRepBndLib::Add(theShape, aShapeBox);
+  BRepBndLib::Add(theResult, aResultBox);
+  if (aShapeBox.IsVoid() || aResultBox.IsVoid())
+  {
+    return false;
+  }
+  aShapeBox.Enlarge(1000. * (std::sqrt(aShapeBox.SquareExtent()) + std::abs(theOffset)));
+  double aX1, aY1, aZ1, aX2, aY2, aZ2, aU1, aV1, aW1, aU2, aV2, aW2;
+  aShapeBox.Get(aX1, aY1, aZ1, aX2, aY2, aZ2);
+  aResultBox.Get(aU1, aV1, aW1, aU2, aV2, aW2);
+  return aU1 < aX1 || aV1 < aY1 || aW1 < aZ1 || aU2 > aX2 || aV2 > aY2 || aW2 > aZ2;
+}
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange)
+{
+  MakeThickSolidOrRunaway(theRange);
+  if (myDone && IsRunaway(myInitialShape, myOffsetShape, myOffset))
+  {
+    myDone  = false;
+    myError = BRepOffset_UnknownError;
+    myOffsetShape.Nullify();
+  }
+}
+
+//=================================================================================================
+
+void BRepOffset_MakeOffset::MakeThickSolidOrRunaway(const Message_ProgressRange& theRange)
 {
   // Every face removed: no face stays to be thickened, and there is no
   // answer. A sphere with its face removed came back as the sphere itself,
