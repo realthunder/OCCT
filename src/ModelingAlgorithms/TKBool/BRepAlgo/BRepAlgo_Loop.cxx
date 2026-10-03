@@ -786,10 +786,15 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
     // tangent neighbour's tube ends on it, the tube's edge on the face
     // running through the face's own outline (half a dome, one of its two
     // coplanar side faces removed). On a plane, such a crossing gets a
-    // vertex of its own, offered to both edges with the others'.
+    // vertex of its own, offered to both edges with the others'. So it does
+    // on a sphere: the wall closing the tangent edge between two of its faces
+    // meets the removed face along a circle that runs out through the rim
+    // (the half ball in two lunes, one removed outward) -- with no vertex
+    // there, the removed face's piece came out as the whole face with a
+    // hole running out of it.
     NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
       aCrossings;
-    if (isPlanarFace)
+    if (isPlanarFace || BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Sphere)
     {
       std::vector<TopoDS_Edge>                               aPlain;
       NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
