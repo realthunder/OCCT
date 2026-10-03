@@ -1636,6 +1636,52 @@ void Draft_Modification::Perform()
     }
   }
 
+  // Every face of the shape at a vertex must pass through the vertex's new
+  // point. A face the draft does not reach -- one that touches a drafted
+  // face at a vertex only -- keeps its surface, and the point its edges
+  // give the vertex can lie off it: the draft cannot be made by moving the
+  // geometry alone (a new edge would be needed there).
+  {
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      aVFMap;
+    TopExp::MapShapesAndAncestors(myShape, TopAbs_VERTEX, TopAbs_FACE, aVFMap);
+    for (int i = 1; i <= myVMap.Extent(); i++)
+    {
+      const TopoDS_Vertex& aV = myVMap.FindKey(i);
+      if (!aVFMap.Contains(aV))
+      {
+        continue;
+      }
+      const gp_Pnt aP   = myVMap(i).Geometry();
+      const double aTol = std::max(BRep_Tool::Tolerance(aV), 0.1 * Precision::Confusion());
+      for (NCollection_List<TopoDS_Shape>::Iterator anIt(aVFMap.FindFromKey(aV)); anIt.More();
+           anIt.Next())
+      {
+        const TopoDS_Face&        aF = TopoDS::Face(anIt.Value());
+        occ::handle<Geom_Surface> aS;
+        if (myFMap.Contains(aF))
+        {
+          aS = myFMap.FindFromKey(aF).Geometry();
+        }
+        if (aS.IsNull())
+        {
+          aS = BRep_Tool::Surface(aF);
+        }
+        GeomAPI_ProjectPointOnSurf aProj(aP, aS);
+        if (!aProj.IsDone() || aProj.NbPoints() == 0)
+        {
+          continue;
+        }
+        if (aProj.LowerDistance() > 100. * aTol)
+        {
+          errStat  = Draft_VertexRecomputation;
+          badShape = aV;
+          return;
+        }
+      }
+    }
+  }
+
   // small loop of validation/protection
 
   for (int i = 1; i <= myEMap.Extent(); i++)
