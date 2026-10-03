@@ -73,6 +73,7 @@
 #include <Geom_Circle.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <Geom_OffsetSurface.hxx>
+#include <Geom_ElementarySurface.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_SphericalSurface.hxx>
@@ -2675,6 +2676,200 @@ static bool HasSplitEdge(const TopoDS_Shape& theS)
 }
 
 //=======================================================================
+// function : PutJoinedEdgesOnIsos
+// purpose  : A seam joined of pieces (ShapeUpgrade_UnifySameDomain) comes
+//            back on a curve of its own, parameterised from 0 along it. A
+//            primitive's seam is the iso line of its surface, its parameter
+//            the surface's own, and the thick solid counts on it: the seam
+//            of a cap joined of two pieces, its sphere removed outward with
+//            the Arc join, gave the input back beside a skin, an invalid
+//            solid of 105.98 for 31.285; a dome on a cylinder with the
+//            cylinder's seam in two, an invalid 808.26 for 152.63. Such a
+//            seam is put back on the iso line, where it runs the way the
+//            line does (turning an edge round would turn its wires), and on
+//            no face but such ones and planes, whose pcurves are dropped to
+//            be worked out again.
+//=======================================================================
+static void PutJoinedEdgesOnIsos(const TopoDS_Shape&                   theShape,
+                                 const TopoDS_Shape&                   theGiven,
+                                 const occ::handle<BRepTools_History>& theHistory)
+{
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    anEF;
+  TopExp::MapShapesAndUniqueAncestors(theShape, TopAbs_EDGE, TopAbs_FACE, anEF);
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+  BRep_Builder                                           aBB;
+  // The iso line a pcurve runs along, the way its parameter runs: u = theC
+  // (theIsU) or v = theC, from theP1 to theP2.
+  auto anIsoOf = [](const occ::handle<Geom2d_Curve>& theC2d,
+                    const double                     theA,
+                    const double                     theB,
+                    bool&                            theIsU,
+                    double&                          theC,
+                    double&                          theP1,
+                    double&                          theP2) {
+    if (theC2d.IsNull())
+    {
+      return false;
+    }
+    const gp_Pnt2d aA = theC2d->Value(theA), aB = theC2d->Value(theB);
+    const gp_Pnt2d aM = theC2d->Value(0.5 * (theA + theB));
+    if (aM.Distance(gp_Pnt2d(0.5 * (aA.XY() + aB.XY()))) > Precision::PConfusion())
+    {
+      return false;
+    }
+    if (std::abs(aA.X() - aB.X()) < Precision::PConfusion() && aB.Y() > aA.Y())
+    {
+      theIsU = true;
+      theC   = aA.X();
+      theP1  = aA.Y();
+      theP2  = aB.Y();
+      return true;
+    }
+    if (std::abs(aA.Y() - aB.Y()) < Precision::PConfusion() && aB.X() > aA.X())
+    {
+      theIsU = false;
+      theC   = aA.Y();
+      theP1  = aA.X();
+      theP2  = aB.X();
+      return true;
+    }
+    return false;
+  };
+  for (TopExp_Explorer anExp(theGiven, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(theHistory->Modified(anExp.Current()));
+         anIt.More();
+         anIt.Next())
+    {
+      if (anIt.Value().ShapeType() != TopAbs_EDGE || !aDone.Add(anIt.Value()))
+      {
+        continue;
+      }
+      const TopoDS_Edge anE = TopoDS::Edge(anIt.Value().Oriented(TopAbs_FORWARD));
+      const NCollection_List<TopoDS_Shape>* aLF = anEF.Seek(anE);
+      if (BRep_Tool::Degenerated(anE) || !aLF)
+      {
+        continue;
+      }
+      // The faces it is an iso line of, all on one surface, and planes.
+      occ::handle<Geom_Surface>      aSurf;
+      TopLoc_Location                aSurfLoc;
+      bool                           isU = false, isOk = true;
+      double                         aC = 0., aP1 = 0., aP2 = 0.;
+      NCollection_List<TopoDS_Shape> aPlanes, anIsoFaces;
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(*aLF); itF.More() && isOk; itF.Next())
+      {
+        const TopoDS_Face&        aF = TopoDS::Face(itF.Value());
+        TopLoc_Location           aL;
+        occ::handle<Geom_Surface> aS = BRep_Tool::Surface(aF, aL);
+        if (aS.IsNull())
+        {
+          isOk = false;
+          break;
+        }
+        if (aS->IsKind(STANDARD_TYPE(Geom_RectangularTrimmedSurface)))
+        {
+          aS = occ::down_cast<Geom_RectangularTrimmedSurface>(aS)->BasisSurface();
+        }
+        if (aS->IsKind(STANDARD_TYPE(Geom_Plane)))
+        {
+          aPlanes.Append(aF);
+          continue;
+        }
+        if (!aS->IsKind(STANDARD_TYPE(Geom_ElementarySurface))
+            || (!aSurf.IsNull() && (aS != aSurf || !(aL == aSurfLoc))))
+        {
+          isOk = false;
+          break;
+        }
+        double                          aA, aB;
+        const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(anE, aF, aA, aB);
+        bool                            isU1 = false;
+        double                          aC1 = 0., aQ1 = 0., aQ2 = 0.;
+        if (!anIsoOf(aC2d, aA, aB, isU1, aC1, aQ1, aQ2)
+            || (!aSurf.IsNull() && (isU1 != isU || std::abs(aQ1 - aP1) > Precision::PConfusion()
+                                    || std::abs(aQ2 - aP2) > Precision::PConfusion())))
+        {
+          isOk = false;
+          break;
+        }
+        if (aSurf.IsNull())
+        {
+          aSurf    = aS;
+          aSurfLoc = aL;
+          isU      = isU1;
+          aC       = aC1;
+          aP1      = aQ1;
+          aP2      = aQ2;
+        }
+        anIsoFaces.Append(aF);
+      }
+      // Seams only: a meridian between two faces -- the lunes of a half ball
+      // -- is right as joined, and was broken by this.
+      bool isSeam = false;
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(anIsoFaces); itF.More() && !isSeam;
+           itF.Next())
+      {
+        isSeam = BRep_Tool::IsClosed(anE, TopoDS::Face(itF.Value()));
+      }
+      if (!isOk || aSurf.IsNull() || !isSeam)
+      {
+        continue;
+      }
+      double aF3, aL3;
+      if (BRep_Tool::Curve(anE, aF3, aL3).IsNull())
+      {
+        continue;
+      }
+      const double aTol = BRep_Tool::Tolerance(anE);
+      aBB.UpdateEdge(anE, isU ? aSurf->UIso(aC) : aSurf->VIso(aC), aSurfLoc, aTol);
+      // Each face's pcurves as lines on the same parameter: a seam's two.
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(anIsoFaces); itF.More(); itF.Next())
+      {
+        const TopoDS_Face& aF = TopoDS::Face(itF.Value());
+        auto aLine = [&](const TopoDS_Edge& theE) -> occ::handle<Geom2d_Curve> {
+          double                          aA, aB;
+          const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, aF, aA, aB);
+          bool                            isU1 = false;
+          double                          aC1 = 0., aQ1 = 0., aQ2 = 0.;
+          if (!anIsoOf(aC2d, aA, aB, isU1, aC1, aQ1, aQ2))
+          {
+            return occ::handle<Geom2d_Curve>();
+          }
+          return isU1 ? occ::handle<Geom2d_Curve>(new Geom2d_Line(gp_Pnt2d(aC1, 0.), gp_Dir2d(0., 1.)))
+                      : occ::handle<Geom2d_Curve>(new Geom2d_Line(gp_Pnt2d(0., aC1), gp_Dir2d(1., 0.)));
+        };
+        if (BRep_Tool::IsClosed(anE, aF))
+        {
+          const occ::handle<Geom2d_Curve> aC1 = aLine(anE);
+          const occ::handle<Geom2d_Curve> aC2 = aLine(TopoDS::Edge(anE.Reversed()));
+          if (!aC1.IsNull() && !aC2.IsNull())
+          {
+            aBB.UpdateEdge(anE, aC1, aC2, aF, aTol);
+          }
+        }
+        else
+        {
+          const occ::handle<Geom2d_Curve> aC1 = aLine(anE);
+          if (!aC1.IsNull())
+          {
+            aBB.UpdateEdge(anE, aC1, aF, aTol);
+          }
+        }
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(aPlanes); itF.More(); itF.Next())
+      {
+        aBB.UpdateEdge(anE, occ::handle<Geom2d_Curve>(), TopoDS::Face(itF.Value()), aTol);
+      }
+      aBB.Range(anE, aP1, aP2);
+      aBB.SameRange(anE, true);
+      aBB.SameParameter(anE, true);
+    }
+  }
+}
+
+//=======================================================================
 // function : MakeThickSolidOfSplit
 // purpose  : A face of a sphere that runs from pole to pole on half a turn
 //            or more has a whole great circle, or more, for its outline: no
@@ -3220,6 +3415,11 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
       if (!aU.IsNull())
       {
         TopExp::MapShapes(aU, TopAbs_EDGE, anEdgesAfter);
+      }
+      if (!aU.IsNull() && aU.ShapeType() == TopAbs_SOLID
+          && anEdgesAfter.Extent() < anEdgesBefore.Extent() && !aUSD.History().IsNull())
+      {
+        PutJoinedEdgesOnIsos(aU, aBase, aUSD.History());
       }
       if (!aU.IsNull() && aU.ShapeType() == TopAbs_SOLID
           && anEdgesAfter.Extent() < anEdgesBefore.Extent() && !aUSD.History().IsNull()
