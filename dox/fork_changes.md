@@ -259,18 +259,24 @@ snap jobs. These feed the distribution images built from `~/works/sw/*-feedstock
 
 ## 7. Tests and issue corpus
 
+Since 2026-10-03 the fork's own tests -- `thickness/`, `fillet/`, `occ-issues/` and any
+added after them -- live in one repository, realthunder/OCCT-tests, mounted as a submodule
+at `tests/fork` (`git submodule update --init tests/fork` once per clone). They moved with
+their history; the pictures they make after every fix grow that repository, not this one.
+A fix lands here and its cases there, and the commit here moves the submodule along.
+
 Neither is wired into `ctest` — both are driven by FreeCAD, since the failures they capture
 are FreeCAD recomputes.
 
-- **`tests/thickness/`** (`578cec5f17`) — regression suite for the thickness fix chain: the
+- **`tests/fork/thickness/`** (`578cec5f17`) -- regression suite for the thickness fix chain: the
   four reported issue models as document recomputes with reference volumes, plus
   programmatic plain-solid cases (cylinder, cylinder with hole, hollowed one face at a time
   in both directions) because this chain has a history of breaking *ordinary* thickness.
-  Run with `FreeCADCmd tests/thickness/run_tests.py`; exit 0 means no expected-pass case
+  Run with `FreeCADCmd tests/fork/thickness/run_tests.py`; exit 0 means no expected-pass case
   regressed. Eight configurations are currently `XFAIL` and documented with audit leads;
   one that starts passing is reported as `UNEXPECTED-PASS` for promotion. The suite has
   stood at PASS=10 XFAIL=8 across the whole STEP workstream.
-- **`tests/occ-issues/`** (`ccaa86c63f`) — all 26 issues labelled `occ` on the FreeCAD
+- **`tests/fork/occ-issues/`** (`ccaa86c63f`) -- all 26 issues labelled `occ` on the FreeCAD
   tracker with every recoverable attachment (30 models), each summarized with its analysis
   and a crash-isolated recompute scan: 17 reproduce on plain recompute, 3 of those crashing
   outright, 8 need a scripted step, 1 has no repro. Raw material for growing the suite.
