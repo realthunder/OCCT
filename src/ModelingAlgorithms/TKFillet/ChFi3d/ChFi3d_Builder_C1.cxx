@@ -225,6 +225,34 @@ static bool Update(const occ::handle<Adaptor3d_Surface>& fb,
         dist = std::abs(w - wop);
       }
     }
+    // None on the curve: a point at an end of it, found a rounding error
+    // past the end, is the end when the curve is tangent to the surface
+    // there (the point is ill-conditioned along it). A crossing found past
+    // the end is past the end.
+    if (isol == 0 && !isperiodic)
+    {
+      const double tolw = Precision::PConfusion();
+      for (i = 1; i <= nbp; i++)
+      {
+        const IntCurveSurface_IntersectionPoint& ip = Intersection.Point(i);
+        w                                           = ip.W();
+        if (uf - tolw > w || ul + tolw < w || std::abs(w - wop) >= dist)
+        {
+          continue;
+        }
+        gp_Pnt P;
+        gp_Vec T, DU, DV;
+        ct->D1(w, P, T);
+        fb->D1(ip.U(), ip.V(), P, DU, DV);
+        const gp_Vec N = DU.Crossed(DV);
+        if (T.Magnitude() > gp::Resolution() && N.Magnitude() > gp::Resolution()
+            && std::abs(T.Dot(N)) <= 1.e-6 * T.Magnitude() * N.Magnitude())
+        {
+          isol = i;
+          dist = std::abs(w - wop);
+        }
+      }
+    }
     if (isperiodic)
     {
       for (i = 1; i <= nbp; i++)
@@ -252,6 +280,10 @@ static bool Update(const occ::handle<Adaptor3d_Surface>& fb,
       if (isperiodic)
       {
         w = ElCLib::InPeriod(w, uf, ul);
+      }
+      else
+      {
+        w = std::min(std::max(w, uf), ul);
       }
     }
     else
