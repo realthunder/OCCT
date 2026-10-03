@@ -3314,6 +3314,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
       TopAbs_Orientation orvt;
       TopAbs_Orientation oredge = TopAbs_FORWARD;
       int                indpoint1, indpoint2;
+      // the points made between the pieces, to give a point already made
+      // to the next piece that starts or ends there
+      NCollection_Sequence<int> madepoints;
       Indices(nedge, ic, icplus, icmoins);
       occ::handle<Geom2d_Curve> proj, proj2d;
       occ::handle<Geom_Curve>   projc, cproj;
@@ -3356,13 +3359,66 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           parfin = cproj->LastParameter();
           P1     = cproj->Value(pardeb);
           P2     = cproj->Value(parfin);
+
+          // The pieces are stored as running from the end of <ic> to that of
+          // <icplus>, like the curves of a single face above; a projection
+          // keeps the direction it was projected in, so one found running
+          // the other way is reversed, 2D and 3D together.
+          {
+            const bool P1Start = P1.Distance(tpt1.Point()) < 1.e-3
+                                 || (ind != 0 && P1.Distance(DStr.Point(ind).Point()) < 1.e-3);
+            const bool P2Start = P2.Distance(tpt1.Point()) < 1.e-3
+                                 || (ind != 0 && P2.Distance(DStr.Point(ind).Point()) < 1.e-3);
+            const bool P1End   = P1.Distance(tpt2.Point()) < 1.e-3;
+            const bool P2End   = P2.Distance(tpt2.Point()) < 1.e-3;
+            if ((P2Start && !P1Start) || (P1End && !P2End))
+            {
+              occ::handle<Geom2d_Curve> aRevPC = proj2d->Reversed();
+              occ::handle<Geom_Curve>   aRevC  = cproj->Reversed();
+              // both reversed onto one parameter range, or neither
+              if (std::abs(aRevPC->FirstParameter() - aRevC->FirstParameter())
+                    < Precision::PConfusion()
+                  && std::abs(aRevPC->LastParameter() - aRevC->LastParameter())
+                       < Precision::PConfusion())
+              {
+                proj2d = aRevPC;
+                cproj  = aRevC;
+                pardeb = cproj->FirstParameter();
+                parfin = cproj->LastParameter();
+                P1     = cproj->Value(pardeb);
+                P2     = cproj->Value(parfin);
+              }
+            }
+          }
+          // A point between two pieces is made once, by whichever piece
+          // reaches it first: the pieces come in the order of <Fproj>, which
+          // need not be the order along the curve, and a first piece that
+          // does not start at <ic>'s end has no point before it (<ind> 0,
+          // which is no point of the DS).
+          auto aMadePoint = [&](const gp_Pnt& thePnt) {
+            for (int k = 1; k <= madepoints.Length(); k++)
+            {
+              if (thePnt.Distance(DStr.Point(madepoints.Value(k)).Point()) < 1.e-3)
+              {
+                return madepoints.Value(k);
+              }
+            }
+            TopOpeBRepDS_Point aPoint(thePnt, error);
+            madepoints.Append(DStr.AddPoint(aPoint));
+            return madepoints.Last();
+          };
           if (P1.Distance(tpt1.Point()) < 1.e-3)
           {
             indpoint1 = indpoint(ic, 1);
           }
-          else
+          else if (ind != 0)
           {
             indpoint1 = ind;
+          }
+          else
+          {
+            indpoint1 = aMadePoint(P1);
+            ind       = indpoint1;
           }
           if (P2.Distance(tpt2.Point()) < 1.e-3)
           {
@@ -3370,8 +3426,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           }
           else
           {
-            TopOpeBRepDS_Point tpoint2(P2, error);
-            indpoint2 = DStr.AddPoint(tpoint2);
+            indpoint2 = aMadePoint(P2);
             ind       = indpoint2;
           }
           occ::handle<GeomAdaptor_Surface> Asurf;
