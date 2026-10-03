@@ -42,6 +42,7 @@
 #include <Geom_SphericalSurface.hxx>
 #include <gp_Ax2d.hxx>
 #include <Geom_Curve.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Geom_Surface.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomLib.hxx>
@@ -1106,16 +1107,26 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
             // in the curve's first period, and an edge whose range starts
             // below it -- a meridian stretched back past its start, from
             // -pi/2 -- lost the crossing just before the start, at 2 pi less
-            // a little.
-            if (C->IsPeriodic())
+            // a little. A stretched edge's curve is a trimmed circle, which
+            // says it is not periodic: its basis is. A seam stretched below
+            // its start at 0 lost its crossing with the section of the
+            // removed face that way (the half ball with one disc, its seam
+            // put from 0; the seam of a cap joined of two pieces).
+            occ::handle<Geom_Curve> aPeriodic = C;
+            while (aPeriodic->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
             {
+              aPeriodic = occ::down_cast<Geom_TrimmedCurve>(aPeriodic)->BasisCurve();
+            }
+            if (aPeriodic->IsPeriodic())
+            {
+              const double aPeriod = aPeriodic->Period();
               while (P < aF)
               {
-                P += C->Period();
+                P += aPeriod;
               }
-              while (P > aL && P - C->Period() >= aF)
+              while (P > aL && P - aPeriod >= aF)
               {
-                P -= C->Period();
+                P -= aPeriod;
               }
             }
             if (D < Tol && P > aF && P < aL)
