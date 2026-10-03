@@ -81,6 +81,7 @@
 #include <GeomAPI.hxx>
 #include <GeomAPI_ExtremaCurveCurve.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomConvert_ApproxCurve.hxx>
 #include <GeomConvert_CompCurveToBSplineCurve.hxx>
 #include <GeomInt_IntSS.hxx>
@@ -4704,7 +4705,9 @@ void BRepOffset_Tool::ExtentFace(
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ToBuild,
   const TopAbs_State                                                        Side,
   const double                                                              TolConf,
-  TopoDS_Face&                                                              NF)
+  TopoDS_Face&                                                              NF,
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theSteps,
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theStepSides)
 {
 
   TopExp_Explorer                                                          exp, exp2;
@@ -4908,6 +4911,69 @@ void BRepOffset_Tool::ExtentFace(
       return aBest;
     };
 
+    // A section and the edge beside it that never cross: the flat of half a
+    // ball beside a removed dome has its section with the dome's sphere and
+    // the offset of its own rim as two circles about one centre, a hair
+    // apart (t^2 / 2R), and the face was left without a wire. They are joined
+    // by a step. The vertex stays the neighbour's end; the section takes the
+    // point of it nearest the vertex.
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aStepV, aStepSec,
+      aStepOth;
+    auto aStepAt = [&](const TopoDS_Edge&   theE,
+                       const TopoDS_Edge&   theN,
+                       const TopoDS_Vertex& theVk,
+                       TopoDS_Vertex&       theV) -> bool {
+      const bool isESec = ToBuild.IsBound(theE), isNSec = ToBuild.IsBound(theN);
+      if (isESec == isNSec || aStepV.IsBound(theVk))
+      {
+        return false;
+      }
+      const TopoDS_Edge& aSecOld = isESec ? theE : theN;
+      const TopoDS_Edge& anOthOld = isESec ? theN : theE;
+      const TopoDS_Edge  aSec    = TopoDS::Edge(Build(aSecOld));
+      const TopoDS_Edge  anOth   = TopoDS::Edge(Build(anOthOld));
+      double             aF, aL;
+      TopLoc_Location    aLoc;
+      occ::handle<Geom_Curve> aC = BRep_Tool::Curve(aSec, aLoc, aF, aL);
+      if (aC.IsNull())
+      {
+        return false;
+      }
+      const gp_Pnt aPV = BRep_Tool::Pnt(theVk);
+      GeomAPI_ProjectPointOnCurve aProj(aPV.Transformed(aLoc.Transformation().Inverted()),
+                                        aC,
+                                        aF,
+                                        aL);
+      if (aProj.NbPoints() == 0 || aProj.LowerDistance() < Precision::Confusion())
+      {
+        return false;
+      }
+      const double aU = aProj.LowerDistanceParameter();
+      TopoDS_Vertex aVP =
+        BRepLib_MakeVertex(aProj.NearestPoint().Transformed(aLoc.Transformation()));
+      aVP.Orientation(TopAbs_INTERNAL);
+      B.UpdateVertex(aVP, aU, TopoDS::Edge(aSec.Oriented(TopAbs_FORWARD)), TolConf);
+      TopoDS_Vertex aV1o, aV2o;
+      TopExp::Vertices(anOthOld, aV1o, aV2o);
+      TopoDS_Vertex aVK = theVk;
+      if (ConstShapes.IsBound(theVk))
+      {
+        aVK = TopoDS::Vertex(ConstShapes(theVk));
+      }
+      const bool isFirst = theVk.IsSame(aV1o);
+      aVK.Orientation((isFirst != (anOth.Orientation() == TopAbs_REVERSED)) ? TopAbs_FORWARD
+                                                                              : TopAbs_REVERSED);
+      if (!TryParameter(anOthOld, aVK, anOth, TolConf))
+      {
+        ProjectVertexOnEdge(aVK, anOth, TolConf);
+      }
+      aStepV.Bind(theVk, aVP);
+      aStepSec.Bind(theVk, aSecOld);
+      aStepOth.Bind(theVk, anOthOld);
+      theV = aVK;
+      return true;
+    };
+
     for (exp2.Init(W.Oriented(TopAbs_FORWARD), TopAbs_EDGE); exp2.More(); exp2.Next())
     {
       const TopoDS_Edge& E = TopoDS::Edge(exp2.Current());
@@ -4950,7 +5016,7 @@ void BRepOffset_Tool::ExtentFace(
                 {
                   V = aNearestTo(LV, V1);
                 }
-                else
+                else if (!aStepAt(E, NEOnV1, V1, V))
                 {
                   return;
                 }
@@ -5030,7 +5096,7 @@ void BRepOffset_Tool::ExtentFace(
                 {
                   V = aNearestTo(LV, V2);
                 }
-                else
+                else if (!aStepAt(E, NEOnV2, V2, V))
                 {
                   return;
                 }
@@ -5105,6 +5171,28 @@ void BRepOffset_Tool::ExtentFace(
         //-----------------------------------------------------
         NV1 = TopoDS::Vertex(ConstShapes(V1));
         NV2 = TopoDS::Vertex(ConstShapes(V2));
+        // The section's end at a step is its own.
+        if (aStepSec.IsBound(V1) && aStepSec(V1).IsSame(E))
+        {
+          NV1 = TopoDS::Vertex(aStepV(V1));
+        }
+        if (aStepSec.IsBound(V2) && aStepSec(V2).IsSame(E))
+        {
+          NV2 = TopoDS::Vertex(aStepV(V2));
+        }
+        // The edge that keeps its vertex at a step, and its other one too,
+        // is the edge it was: a copy of it is an edge the faces beside this
+        // one do not have -- the tube round the flat's rim, which is not
+        // stretched -- and the shell came out open along it.
+        if (((aStepOth.IsBound(V1) && aStepOth(V1).IsSame(E))
+             || (aStepOth.IsBound(V2) && aStepOth(V2).IsSame(E)))
+            && NV1.IsSame(V1) && NV2.IsSame(V2))
+        {
+          Build.UnBind(E);
+          ConstShapes.Bind(E, E.Oriented(TopAbs_FORWARD));
+          B.Add(NW, E);
+          continue;
+        }
 
         TopoDS_Shape aLocalVertexOrientedNV1 = NV1.Oriented(TopAbs_INTERNAL);
         TopoDS_Shape aLocalEdge              = NE.Oriented(TopAbs_INTERNAL);
@@ -5311,6 +5399,68 @@ void BRepOffset_Tool::ExtentFace(
         ConstShapes.Bind(E, NE.Oriented(TopAbs_FORWARD));
       }
       B.Add(NW, NE);
+    }
+    // The steps: straight in the face's parameters, from the vertex that
+    // stays to the section's end.
+    for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator
+           aStepIt(aStepV);
+         aStepIt.More();
+         aStepIt.Next())
+    {
+      const TopoDS_Vertex& aVk = TopoDS::Vertex(aStepIt.Key());
+      const TopoDS_Vertex  aVP = TopoDS::Vertex(aStepIt.Value());
+      const TopoDS_Vertex  aVK = TopoDS::Vertex(ConstShapes(aVk));
+      TopLoc_Location      aSLoc;
+      const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(NF, aSLoc);
+      GeomAPI_ProjectPointOnSurf      aPrK(
+        BRep_Tool::Pnt(aVK).Transformed(aSLoc.Transformation().Inverted()),
+        aSurf);
+      GeomAPI_ProjectPointOnSurf aPrP(
+        BRep_Tool::Pnt(aVP).Transformed(aSLoc.Transformation().Inverted()),
+        aSurf);
+      if (aPrK.NbPoints() == 0 || aPrP.NbPoints() == 0)
+      {
+        continue;
+      }
+      double aUK, aVKp, aUP, aVPp;
+      aPrK.LowerDistanceParameters(aUK, aVKp);
+      aPrP.LowerDistanceParameters(aUP, aVPp);
+      const gp_Pnt2d aPK2(aUK, aVKp), aPP2(aUP, aVPp);
+      const double   aLen = aPK2.Distance(aPP2);
+      if (aLen < gp::Resolution())
+      {
+        continue;
+      }
+      occ::handle<Geom2d_Line> aLine = new Geom2d_Line(aPK2, gp_Dir2d(gp_Vec2d(aPK2, aPP2)));
+      TopoDS_Edge              aStep;
+      B.MakeEdge(aStep);
+      B.UpdateEdge(aStep, aLine, NF, TolConf);
+      B.Add(aStep, aVK.Oriented(TopAbs_FORWARD));
+      B.Add(aStep, aVP.Oriented(TopAbs_REVERSED));
+      B.Range(aStep, 0., aLen);
+      BRepLib::BuildCurve3d(aStep, TolConf);
+      // The way round the wire: the section leaves the vertex, or comes to it.
+      TopoDS_Edge aSecInW;
+      for (exp2.Init(W.Oriented(TopAbs_FORWARD), TopAbs_EDGE); exp2.More(); exp2.Next())
+      {
+        if (exp2.Current().IsSame(aStepSec(aVk)))
+        {
+          aSecInW = TopoDS::Edge(exp2.Current());
+          break;
+        }
+      }
+      TopoDS_Vertex aSV1, aSV2;
+      TopExp::Vertices(aSecInW, aSV1, aSV2);
+      const bool isLeaving = aVk.IsSame(aSV1) == (aSecInW.Orientation() == TopAbs_FORWARD);
+      B.Add(NW, aStep.Oriented(isLeaving ? TopAbs_FORWARD : TopAbs_REVERSED));
+      if (theSteps != nullptr)
+      {
+        theSteps->Bind(aVk, aStep.Oriented(isLeaving ? TopAbs_FORWARD : TopAbs_REVERSED));
+      }
+      if (theStepSides != nullptr)
+      {
+        theStepSides->Bind(aVk, aStepOth(aVk));
+      }
     }
     B.Add(NF, NW.Oriented(W.Orientation()));
   }

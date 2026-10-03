@@ -4888,9 +4888,11 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
   // Extension of parallel faces to the context.
   // Extended faces are ordered in DS and removed from MapSF.
   //------------------------------------------------------------
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    aCutEdges;
   if (!myFaces.IsEmpty())
   {
-    ToContext(MapSF);
+    ToContext(MapSF, aCutEdges);
   }
 
   //------------------------------------------------------
@@ -4952,6 +4954,20 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
           TopoDS_Shape       aLocalShape = SF.Generated(E);
           TopoDS_Edge        OE          = TopoDS::Edge(aLocalShape);
           //          TopoDS_Edge        OE  = TopoDS::Edge(It.Value().Generated(E));
+          if (aCutEdges.IsBound(OE))
+          {
+            // In the pieces ToContext cut it in, which the faces beside
+            // this one have.
+            for (NCollection_List<TopoDS_Shape>::Iterator aCutIt(aCutEdges(OE)); aCutIt.More();
+                 aCutIt.Next())
+            {
+              myAsDes->Add(OF,
+                           aCutIt.Value().Oriented(aCutIt.Value().Orientation() == TopAbs_REVERSED
+                                                     ? TopAbs::Reverse(OO)
+                                                     : OO));
+            }
+            continue;
+          }
           myAsDes->Add(OF, OE.Oriented(OO));
         }
       }
@@ -5235,7 +5251,9 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
 //=================================================================================================
 
 void BRepOffset_MakeOffset::ToContext(
-  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF)
+  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+    theCut)
 {
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> Created;
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> MEF;
@@ -5357,6 +5375,9 @@ void BRepOffset_MakeOffset::ToContext(
   }
   TopoDS_Shape       OE, NE;
   TopAbs_Orientation Or;
+  // The steps ExtentFace joined a section to its neighbour with, where the
+  // neighbour is an edge that stays: under the vertex of the offset face.
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aStepOfV;
 
   for (j = 1; j <= FacesToBuild.Extent(); j++)
   {
@@ -5364,7 +5385,24 @@ void BRepOffset_MakeOffset::ToContext(
     BRepOffset_Offset   BOF;
     BOF = MapSF(S);
     F   = TopoDS::Face(BOF.Face());
-    BRepOffset_Tool::ExtentFace(F, Created, MEF, Side, myTol, NF);
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aSteps, aStepSides;
+    BRepOffset_Tool::ExtentFace(F, Created, MEF, Side, myTol, NF, &aSteps, &aStepSides);
+    // A section's end at a step is marked as such -- the step is the
+    // vertex's image -- which is how ContextIntByArc knows not to stretch the
+    // section past it. Whether the step itself bounds the face is settled
+    // below: with the edge it starts from.
+    for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator
+           aStepIt(aSteps);
+         aStepIt.More();
+         aStepIt.Next())
+    {
+      TopoDS_Vertex aS1, aS2;
+      TopExp::Vertices(TopoDS::Edge(aStepIt.Value().Oriented(TopAbs_FORWARD)), aS1, aS2);
+      if (!myInitOffsetEdge.HasImage(aS2))
+      {
+        myInitOffsetEdge.Bind(aS2, aStepIt.Value());
+      }
+    }
     MapSF.UnBind(S);
     //--------------
     // MAJ SD.
@@ -5412,6 +5450,18 @@ void BRepOffset_MakeOffset::ToContext(
           else
           {
             myAsDes->Add(NF, OE);
+          }
+          // A step from an end of this edge to the section beside it stays
+          // with it.
+          for (TopoDS_Iterator anItV(OE); anItV.More(); anItV.Next())
+          {
+            const TopoDS_Shape& aVk = anItV.Value();
+            if (aSteps.IsBound(aVk) && aStepSides(aVk).IsSame(OE) && !aStepOfV.IsBound(aVk))
+            {
+              myAsDes->Add(NF, aSteps(aVk));
+              aStepOfV.Bind(aVk, aSteps(aVk));
+              SHOW_TOPO_SHAPE(aSteps(aVk), "ContextStep");
+            }
           }
         }
       }
@@ -5462,6 +5512,22 @@ void BRepOffset_MakeOffset::ToContext(
       {
         myInitOffsetEdge.Bind(E, NE);
       }
+    }
+  }
+
+  // An edge a stretched face has had cut is the same edge, cut, in the face
+  // on the other side of it -- which, where it touches the removed face in a
+  // vertex only, is not stretched and still has the edge whole: the line
+  // between the two halves of a flat, one beside the removed lune and one
+  // not. Each face then cut its own copy and the shell was open along it.
+  for (itc.Initialize(Created); itc.More(); itc.Next())
+  {
+    if (itc.Key().ShapeType() == TopAbs_EDGE && itc.Value().ShapeType() == TopAbs_EDGE
+        && !itc.Key().IsSame(itc.Value()) && !theCut.IsBound(itc.Key()))
+    {
+      NCollection_List<TopoDS_Shape> aPieces;
+      aPieces.Append(itc.Value());
+      theCut.Bind(itc.Key(), aPieces);
     }
   }
 
@@ -5584,10 +5650,88 @@ void BRepOffset_MakeOffset::ToContext(
         SHOW_TOPO_SHAPE(V, "TangentCornerNoCommonVertex");
         continue;
       }
+      // The convex arc ends on the offset of the face beside the removed
+      // one, and where that offset is flat and the cap is not, the cap has
+      // bent away from it there: the section of the two passes the arc's end
+      // at a distance (t^2 / 2R on a sphere). ExtentFace joined them with a
+      // step, the corner's fourth edge, and the arc on the cap runs to the
+      // section.
+      TopoDS_Edge   aStep;
+      TopoDS_Vertex aBOnCap = aB;
+      if (aStepOfV.IsBound(aB))
+      {
+        aStep = TopoDS::Edge(aStepOfV(aB));
+        TopoDS_Vertex aS1, aS2;
+        TopExp::Vertices(TopoDS::Edge(aStep.Oriented(TopAbs_FORWARD)), aS1, aS2);
+        aBOnCap = aS2;
+      }
+      else if (Created.IsBound(aB)
+               && BRep_Tool::Pnt(TopoDS::Vertex(Created(aB))).Distance(BRep_Tool::Pnt(aB))
+                    > Precision::Confusion())
+      {
+        // Or the section met an edge through the arc's end and cut it
+        // short: the line between the two halves of a flat, where the
+        // tangent edge ends on the flat's rim (half a ball in two lunes).
+        // The face beside the removed one has the edge as cut; the face on
+        // the other side of it is not stretched and has it whole. The piece
+        // between the section's end and the arc's is the step, and the whole
+        // edge is replaced by its pieces.
+        const TopoDS_Vertex aP  = TopoDS::Vertex(Created(aB));
+        const gp_Pnt        aPP = BRep_Tool::Pnt(aP);
+        for (itc.Initialize(Created); itc.More() && aStep.IsNull(); itc.Next())
+        {
+          if (itc.Key().ShapeType() != TopAbs_EDGE || itc.Value().ShapeType() != TopAbs_EDGE)
+          {
+            continue;
+          }
+          const TopoDS_Edge aWhole = TopoDS::Edge(itc.Key().Oriented(TopAbs_FORWARD));
+          const TopoDS_Edge aShort = TopoDS::Edge(itc.Value());
+          TopoDS_Vertex     aW1, aW2, aC1, aC2;
+          TopExp::Vertices(aWhole, aW1, aW2);
+          TopExp::Vertices(aShort, aC1, aC2);
+          if ((!aW1.IsSame(aB) && !aW2.IsSame(aB)) || (!aC1.IsSame(aP) && !aC2.IsSame(aP))
+              || BRep_Tool::Degenerated(aWhole))
+          {
+            continue;
+          }
+          double                  aWF, aWL;
+          TopLoc_Location         aWLoc;
+          occ::handle<Geom_Curve> aWC = BRep_Tool::Curve(aWhole, aWLoc, aWF, aWL);
+          if (aWC.IsNull())
+          {
+            continue;
+          }
+          GeomAPI_ProjectPointOnCurve aPrP(aPP.Transformed(aWLoc.Transformation().Inverted()),
+                                           aWC,
+                                           aWF,
+                                           aWL);
+          if (aPrP.NbPoints() == 0 || aPrP.LowerDistance() > Precision::Confusion())
+          {
+            continue;
+          }
+          const double aUP      = aPrP.LowerDistanceParameter();
+          const bool   isAtLast = aW2.IsSame(aB);
+          BRep_Builder aBB;
+          TopoDS_Shape aPiece = aWhole.EmptyCopied();
+          aStep               = TopoDS::Edge(aPiece.Oriented(TopAbs_FORWARD));
+          aBB.Add(aStep, (isAtLast ? aP : aB).Oriented(TopAbs_FORWARD));
+          aBB.Add(aStep, (isAtLast ? aB : aP).Oriented(TopAbs_REVERSED));
+          aBB.Range(aStep, isAtLast ? aUP : aWF, isAtLast ? aWL : aUP);
+          if (!theCut.IsBound(aWhole))
+          {
+            NCollection_List<TopoDS_Shape> aPieces;
+            aPieces.Append(aShort);
+            theCut.Bind(aWhole, aPieces);
+          }
+          theCut.ChangeFind(aWhole).Append(aStep);
+          aBOnCap = aP;
+          SHOW_TOPO_SHAPE(aStep, "ContextStepOfCut");
+        }
+      }
       try
       {
         const TopoDS_Edge aCapArc =
-          TangentCornerArcOnCap(V, aA, aB, CF, aCS, std::abs(myOffset));
+          TangentCornerArcOnCap(V, aA, aBOnCap, CF, aCS, std::abs(myOffset));
         if (aCapArc.IsNull())
         {
           SHOW_TOPO_SHAPE(V, "TangentCornerNoArc");
@@ -5596,6 +5740,10 @@ void BRepOffset_MakeOffset::ToContext(
         NCollection_List<TopoDS_Shape> aLOE;
         aLOE.Append(aTubeArc);
         aLOE.Append(aConvexArc);
+        if (!aStep.IsNull())
+        {
+          aLOE.Append(aStep.Reversed());
+        }
         aLOE.Append(aCapArc);
         BRepOffset_Offset aSphere(V, aLOE, myOffset);
         const TopoDS_Face& aSF = aSphere.Face();

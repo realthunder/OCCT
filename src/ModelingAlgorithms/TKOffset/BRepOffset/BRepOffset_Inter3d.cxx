@@ -2000,6 +2000,33 @@ void BRepOffset_Inter3d::ContextIntByArc(
         ExtentEdge(CF, OE, NE);
         TopoDS_Vertex V1, V2;
         TopExp::Vertices(OE, V1, V2);
+        // An end at a step (BRepOffset_Tool::ExtentFace; the vertex has the
+        // step for its image) is where the section ends: it met no edge
+        // there to be cut by, and stretched past it the section runs on
+        // inside its own face and cuts it in two. The flat of half a ball
+        // came out as a disc and a ring 0.025 wide.
+        const bool isStep1 = !V1.IsNull() && InitOffsetEdge.HasImage(V1);
+        const bool isStep2 = !V2.IsNull() && InitOffsetEdge.HasImage(V2);
+        if ((isStep1 || isStep2) && !V1.IsSame(V2))
+        {
+          TopoDS_Shape aCopy = OE.EmptyCopied();
+          NE                 = TopoDS::Edge(aCopy);
+          NE.Orientation(TopAbs_FORWARD);
+          BRepAdaptor_Curve aCE(OE);
+          const double      aLen = l - f;
+          double            aExt = 100. * aLen;
+          if (aCE.IsPeriodic())
+          {
+            aExt = std::min(aExt, (aCE.Period() - aLen) / 2.);
+          }
+          const double  aNF  = isStep1 ? f : f - aExt;
+          const double  aNL  = isStep2 ? l : l + aExt;
+          TopoDS_Vertex aNV1 = BRepLib_MakeVertex(aCE.Value(aNF));
+          TopoDS_Vertex aNV2 = BRepLib_MakeVertex(aCE.Value(aNL));
+          B.Range(NE, aNF, aNL);
+          B.Add(NE, aNV1.Oriented(TopAbs_FORWARD));
+          B.Add(NE, aNV2.Oriented(TopAbs_REVERSED));
+        }
         NE.Orientation(TopAbs_FORWARD);
         myAsDes->Add(NE, V1.Oriented(TopAbs_REVERSED));
         myAsDes->Add(NE, V2.Oriented(TopAbs_FORWARD));

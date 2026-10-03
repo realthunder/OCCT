@@ -215,8 +215,13 @@ private:
 
   Standard_EXPORT void MakeSolid(const Message_ProgressRange& theRange);
 
+  //! theCut takes the offset edges ToContext has cut in pieces, each with
+  //! its pieces in place of it: an edge of a face that is not stretched.
   Standard_EXPORT void ToContext(
-    NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF);
+    NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
+    NCollection_DataMap<TopoDS_Shape,
+                        NCollection_List<TopoDS_Shape>,
+                        TopTools_ShapeMapHasher>& theCut);
 
   //! Private method use to update the map face<->offset
   Standard_EXPORT void UpdateFaceOffset();
