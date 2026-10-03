@@ -335,7 +335,8 @@ void BRepAlgo_NormalProjection::Build()
             Approx_CurveOnSurface appr(HPCur, hsur, Udeb, Ufin, myTol3d);
             appr.Perform(myMaxSeg, myMaxDegree, myContinuity, Only3d, Only2d);
 
-            if (appr.MaxError3d() > 1.e3 * myTol3d)
+            // an approximation that built nothing reports no error at all
+            if (!appr.HasResult() || appr.MaxError3d() > 1.e3 * myTol3d)
             {
               continue;
             }
