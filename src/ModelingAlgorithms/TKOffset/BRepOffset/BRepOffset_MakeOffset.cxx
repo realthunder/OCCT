@@ -87,6 +87,7 @@
 #include <gp_Circ.hxx>
 #include <GeomConvert.hxx>
 #include <GeomAdaptor_Surface.hxx>
+#include <Extrema_ExtPC.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomFill_Generator.hxx>
 #include <GeomLib.hxx>
@@ -3978,6 +3979,199 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
   }
 }
 
+//=======================================================================
+// function : DropCellsBeyondTangentEdges
+// purpose  : An offset face does not reach across the offset of an edge it
+//            shares with a face tangent to it: what lies beyond is the
+//            neighbour's. The loops make a face of every cell their edges
+//            close (BRepAlgo_Loop), whichever way an edge is run, and a
+//            section three faces share is cut for all of them, each keeping
+//            the pieces the others take (BRepOffset_MakeLoops::Build). The
+//            flat of a half ball in two halves, the lune beside one of them
+//            removed: the offset of the other lune cuts both halves along one
+//            circle, the half beside the removed lune holds the arc that
+//            bounds the other half too, and closed it with the line between
+//            them -- the other half's face a second time. Which of the two
+//            the shell kept was a matter of the order the solid's faces came
+//            in: with the flat halves before the lune, both, an invalid
+//            solid of 87.4583 for 91.1786, where a vertex on the meridian or
+//            on the rim was refused, its edges joined.
+//            A cell is told by the side it lies on: in a face the material is
+//            to the left of an edge run forward, and a face's cell lies on
+//            the side of the edge's image the face lies of the edge. The
+//            last cell of a face stays.
+//=======================================================================
+static void DropCellsBeyondTangentEdges(
+  const NCollection_List<TopoDS_Shape>&                                                theFaces,
+  const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& theMapSF,
+  const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&      theMES,
+  const BRepOffset_Analyse&                                                            theAnalyse,
+  BRepAlgo_Image&                                                                      theImage)
+{
+  // The side of an edge its face lies on, at the point of the edge nearest to
+  // thePnt: the surface's normal crossed with the edge's direction.
+  auto anInward = [](const TopoDS_Edge& theE,
+                     const TopoDS_Face& theF,
+                     const gp_Pnt&      thePnt,
+                     gp_Vec&            theIn) {
+    double                          aF, aL;
+    const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, theF, aF, aL);
+    if (aC2d.IsNull())
+    {
+      return false;
+    }
+    BRepAdaptor_Curve aBAC(theE);
+    double            aPar = 0.5 * (aF + aL);
+    Extrema_ExtPC     anExt(thePnt, aBAC);
+    if (anExt.IsDone() && anExt.NbExt() > 0)
+    {
+      int aBest = 1;
+      for (int i = 2; i <= anExt.NbExt(); ++i)
+      {
+        if (anExt.SquareDistance(i) < anExt.SquareDistance(aBest))
+        {
+          aBest = i;
+        }
+      }
+      aPar = anExt.Point(aBest).Parameter();
+    }
+    else
+    {
+      aPar =
+        aBAC.Value(aF).SquareDistance(thePnt) < aBAC.Value(aL).SquareDistance(thePnt) ? aF : aL;
+    }
+    gp_Pnt aP;
+    gp_Vec aT;
+    aBAC.D1(aPar, aP, aT);
+    const gp_Pnt2d      aUV = aC2d->Value(aPar);
+    BRepAdaptor_Surface aBAS(theF, false);
+    gp_Vec              aDU, aDV;
+    aBAS.D1(aUV.X(), aUV.Y(), aP, aDU, aDV);
+    gp_Vec aN = aDU.Crossed(aDV);
+    if (aT.Magnitude() < gp::Resolution() || aN.Magnitude() < gp::Resolution())
+    {
+      return false;
+    }
+    if (theE.Orientation() == TopAbs_REVERSED)
+    {
+      aT.Reverse();
+    }
+    theIn = aN.Normalized().Crossed(aT.Normalized());
+    return theIn.Magnitude() > 0.5;
+  };
+
+  for (NCollection_List<TopoDS_Shape>::Iterator itF(theFaces); itF.More(); itF.Next())
+  {
+    const TopoDS_Face        aFI     = TopoDS::Face(itF.Value().Oriented(TopAbs_FORWARD));
+    const BRepOffset_Offset* pOffset = theMapSF.Seek(itF.Value());
+    if (!pOffset)
+    {
+      continue;
+    }
+    TopoDS_Shape aNF = pOffset->Face();
+    if (const TopoDS_Shape* pNF = theMES.Seek(aNF))
+    {
+      aNF = *pNF;
+    }
+    if (!theImage.HasImage(aNF) || theImage.Image(aNF).Extent() < 2)
+    {
+      continue;
+    }
+    // The pieces of the images of the face's tangent edges, each under the
+    // edge as the face holds it; an edge the face runs along twice has it on
+    // both sides.
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aPieceOf;
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>                   aSeen, aTwice;
+    for (TopExp_Explorer anExp(aFI, TopAbs_EDGE); anExp.More(); anExp.Next())
+    {
+      if (!aSeen.Add(anExp.Current()))
+      {
+        aTwice.Add(anExp.Current());
+      }
+    }
+    for (TopExp_Explorer anExp(aFI, TopAbs_EDGE); anExp.More(); anExp.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(anExp.Current());
+      if (aTwice.Contains(anE) || BRep_Tool::Degenerated(anE)
+          || theAnalyse.Ancestors(anE).Extent() != 2)
+      {
+        continue;
+      }
+      const NCollection_List<BRepOffset_Interval>& aLI = theAnalyse.Type(anE);
+      if (aLI.Extent() != 1 || aLI.First().Type() != ChFiDS_Tangential)
+      {
+        continue;
+      }
+      TopoDS_Shape anOE = pOffset->Generated(anE);
+      if (anOE.IsNull() || anOE.ShapeType() != TopAbs_EDGE)
+      {
+        continue;
+      }
+      if (const TopoDS_Shape* pNE = theMES.Seek(anOE))
+      {
+        anOE = *pNE;
+      }
+      NCollection_List<TopoDS_Shape> aPieces;
+      if (theImage.HasImage(anOE))
+      {
+        theImage.LastImage(anOE, aPieces);
+      }
+      else
+      {
+        aPieces.Append(anOE);
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator itP(aPieces); itP.More(); itP.Next())
+      {
+        if (!aPieceOf.IsBound(itP.Value()))
+        {
+          aPieceOf.Bind(itP.Value(), anE);
+        }
+      }
+    }
+    if (aPieceOf.IsEmpty())
+    {
+      continue;
+    }
+    NCollection_List<TopoDS_Shape> aBeyond;
+    const NCollection_List<TopoDS_Shape>& aCells = theImage.Image(aNF);
+    for (NCollection_List<TopoDS_Shape>::Iterator itC(aCells); itC.More(); itC.Next())
+    {
+      const TopoDS_Face aCell    = TopoDS::Face(itC.Value().Oriented(TopAbs_FORWARD));
+      bool              isBeyond = false, isWithin = false;
+      for (TopExp_Explorer anExp(aCell, TopAbs_EDGE); anExp.More(); anExp.Next())
+      {
+        const TopoDS_Edge&  aP  = TopoDS::Edge(anExp.Current());
+        const TopoDS_Shape* anE = aPieceOf.Seek(aP);
+        if (!anE || BRep_Tool::Degenerated(aP))
+        {
+          continue;
+        }
+        BRepAdaptor_Curve aBAC(aP);
+        const gp_Pnt aMid = aBAC.Value(0.5 * (aBAC.FirstParameter() + aBAC.LastParameter()));
+        gp_Vec       anInP, anInE;
+        if (!anInward(aP, aCell, aMid, anInP) || !anInward(TopoDS::Edge(*anE), aFI, aMid, anInE))
+        {
+          continue;
+        }
+        (anInP.Dot(anInE) < 0. ? isBeyond : isWithin) = true;
+      }
+      if (isBeyond && !isWithin)
+      {
+        aBeyond.Append(itC.Value());
+      }
+    }
+    if (aBeyond.IsEmpty() || aBeyond.Extent() == aCells.Extent())
+    {
+      continue;
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator itB(aBeyond); itB.More(); itB.Next())
+    {
+      SHOW_TOPO_SHAPE(itB.Value(), "CellBeyondTangentEdge");
+      theImage.Remove(itB.Value());
+    }
+  }
+}
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theRange)
@@ -4254,6 +4448,7 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
       myError = BRepOffset_UserBreak;
       return;
     }
+    DropCellsBeyondTangentEdges(aLFaces, MapSF, MES, myAnalyse, IMOE);
   }
   //
 #ifdef OCCT_DEBUG
