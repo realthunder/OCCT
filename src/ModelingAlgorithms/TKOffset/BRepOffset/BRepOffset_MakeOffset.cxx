@@ -2177,7 +2177,7 @@ static bool TurnSphereOntoMeridians(const TopoDS_Face&                        th
     {
       ++aNbPoles;
     }
-    else if (BRep_Tool::IsClosed(anE, theF))
+    else if (BRepTools::IsReallyClosed(anE, theF))
     {
       ++aNbSeams;
     }
@@ -2625,7 +2625,13 @@ static bool MakeGapOfBall(
 // function : HasSplitEdge
 // purpose  : A vertex that only cuts an edge in two: its two edges, and no
 //            other, between the same two faces and neither a seam -- or both
-//            pieces of one face's seam.
+//            pieces of one face's seam. A seam is an edge its face runs
+//            along twice (BRepTools::IsReallyClosed), not one that merely has
+//            two pcurves on it: half a ball cut from a ball by a plane through
+//            the ball's seam keeps the seam for half its rim, both pcurves
+//            still on it, and with a vertex on that half it was not joined --
+//            and so not turned onto its middle either: refused three ways with
+//            the Intersection join, and with the Arc join.
 //=======================================================================
 static bool HasSplitEdge(const TopoDS_Shape& theS)
 {
@@ -2650,8 +2656,8 @@ static bool HasSplitEdge(const TopoDS_Shape& theS)
     const NCollection_List<TopoDS_Shape>* aLF2 = aEF.Seek(anE2);
     if (aLF1 && aLF2 && aLF1->Extent() == 1 && aLF2->Extent() == 1
         && aLF1->First().IsSame(aLF2->First())
-        && BRep_Tool::IsClosed(anE1, TopoDS::Face(aLF1->First()))
-        && BRep_Tool::IsClosed(anE2, TopoDS::Face(aLF1->First())))
+        && BRepTools::IsReallyClosed(anE1, TopoDS::Face(aLF1->First()))
+        && BRepTools::IsReallyClosed(anE2, TopoDS::Face(aLF1->First())))
     {
       // A seam in pieces.
       return true;
@@ -2665,7 +2671,7 @@ static bool HasSplitEdge(const TopoDS_Shape& theS)
     {
       const TopoDS_Face& aF = TopoDS::Face(anIt.Value());
       isSame = (aLF2->First().IsSame(aF) || aLF2->Last().IsSame(aF))
-               && !BRep_Tool::IsClosed(anE1, aF) && !BRep_Tool::IsClosed(anE2, aF);
+               && !BRepTools::IsReallyClosed(anE1, aF) && !BRepTools::IsReallyClosed(anE2, aF);
     }
     if (isSame)
     {
@@ -2811,7 +2817,7 @@ static void PutJoinedEdgesOnIsos(const TopoDS_Shape&                   theShape,
       for (NCollection_List<TopoDS_Shape>::Iterator itF(anIsoFaces); itF.More() && !isSeam;
            itF.Next())
       {
-        isSeam = BRep_Tool::IsClosed(anE, TopoDS::Face(itF.Value()));
+        isSeam = BRepTools::IsReallyClosed(anE, TopoDS::Face(itF.Value()));
       }
       if (!isOk || aSurf.IsNull() || !isSeam)
       {
@@ -2840,7 +2846,7 @@ static void PutJoinedEdgesOnIsos(const TopoDS_Shape&                   theShape,
           return isU1 ? occ::handle<Geom2d_Curve>(new Geom2d_Line(gp_Pnt2d(aC1, 0.), gp_Dir2d(0., 1.)))
                       : occ::handle<Geom2d_Curve>(new Geom2d_Line(gp_Pnt2d(0., aC1), gp_Dir2d(1., 0.)));
         };
-        if (BRep_Tool::IsClosed(anE, aF))
+        if (BRepTools::IsReallyClosed(anE, aF))
         {
           const occ::handle<Geom2d_Curve> aC1 = aLine(anE);
           const occ::handle<Geom2d_Curve> aC2 = aLine(TopoDS::Edge(anE.Reversed()));
