@@ -2213,6 +2213,91 @@ static bool IsShrink(const Geom2dAdaptor_Curve& PC,
   return false;
 }
 
+//=======================================================================
+// function : SectionCrossesEndFace
+// purpose  : One side of the fillet ends at <P1> on <Arcpiv>, an edge of
+//           <Vtx> between <Fad> and the face at end <Fv>; the other side
+//           runs on past <Vtx> on its face, and is at <P2> in the same
+//           section. IntersectMoreCorner extends <Fv> to the section's
+//           curve: the piece added is the corner of the extended surface
+//           between <Vtx>, <P1> and <P2>, and holds the section. True
+//           when <Fv>'s other edge at <Vtx> runs into that corner -- a
+//           wall stands on <Fv> there (the end of an arm fused to a taller
+//           block): the section crosses <Fv>'s own edge, and what lies
+//           beyond that edge faces away from <Fv>.
+//=======================================================================
+
+static bool SectionCrossesEndFace(const TopoDS_Vertex& Vtx,
+                                  const TopoDS_Edge&   Arcpiv,
+                                  const TopoDS_Face&   Fad,
+                                  const gp_Pnt&        P1,
+                                  const gp_Pnt&        P2,
+                                  const ChFiDS_Map&    VEMap,
+                                  const ChFiDS_Map&    EFMap)
+{
+  TopoDS_Face Fv;
+  for (NCollection_List<TopoDS_Shape>::Iterator It(EFMap(Arcpiv)); It.More(); It.Next())
+  {
+    if (!Fad.IsSame(It.Value()))
+    {
+      Fv = TopoDS::Face(It.Value());
+      break;
+    }
+  }
+  if (Fv.IsNull())
+  {
+    return false;
+  }
+  TopoDS_Edge Arcprol;
+  for (NCollection_List<TopoDS_Shape>::Iterator It(VEMap(Vtx)); It.More(); It.Next())
+  {
+    const TopoDS_Edge& E = TopoDS::Edge(It.Value());
+    if (!E.IsSame(Arcpiv) && !BRep_Tool::Degenerated(E) && containE(Fv, E))
+    {
+      Arcprol = E;
+      break;
+    }
+  }
+  if (Arcprol.IsNull())
+  {
+    return false;
+  }
+  // Fv's normal at Vtx, and Arcprol's tangent there, away from Vtx
+  const gp_Pnt2d      uv = BRep_Tool::Parameters(Vtx, Fv);
+  BRepAdaptor_Surface Sv(Fv, false);
+  gp_Pnt              PV;
+  gp_Vec              DU, DV;
+  Sv.D1(uv.X(), uv.Y(), PV, DU, DV);
+  gp_Vec N = DU.Crossed(DV);
+  if (N.Magnitude() <= gp::Resolution())
+  {
+    return false;
+  }
+  N.Normalize();
+  BRepAdaptor_Curve Cprol(Arcprol);
+  gp_Pnt            PE;
+  gp_Vec            D;
+  const double      t = BRep_Tool::Parameter(Vtx, Arcprol);
+  Cprol.D1(t, PE, D);
+  if (std::abs(t - Cprol.LastParameter()) < std::abs(t - Cprol.FirstParameter()))
+  {
+    D.Reverse();
+  }
+  // the three directions from Vtx, in Fv's tangent plane
+  const gp_Pnt P = BRep_Tool::Pnt(Vtx);
+  gp_Vec       A(P, P1), B(P, P2);
+  A -= N * A.Dot(N);
+  B -= N * B.Dot(N);
+  D -= N * D.Dot(N);
+  const double sAB = A.Crossed(B).Dot(N);
+  const double tol = Precision::Angular() * A.Magnitude() * B.Magnitude();
+  if (std::abs(sAB) <= tol || D.Magnitude() <= gp::Resolution())
+  {
+    return false;
+  }
+  return A.Crossed(D).Dot(N) * sAB > 0. && D.Crossed(B).Dot(N) * sAB > 0.;
+}
+
 //=================================================================================================
 
 void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
@@ -2895,6 +2980,36 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
       }
       else
       {
+        const int                ip  = possible1 ? 1 : 2, io = 3 - ip;
+        ChFiDS_FaceInterference& Fio = Fd->ChangeInterference(io);
+        const double             w   = Fd->Interference(ip).Parameter(isfirst);
+        if (!couture && !bordlibre && w >= Fio.FirstParameter() && w <= Fio.LastParameter())
+        {
+          // The point of the line past Vtx in the section through the
+          // other side's end
+          const gp_Pnt2d uv = Fio.PCurveOnSurf()->Value(w);
+          const gp_Pnt   Po = DStr.Surface(Fd->Surf()).Surface()->Value(uv.X(), uv.Y());
+          if (SectionCrossesEndFace(Vtx,
+                                    Fd->Vertex(isfirst, ip).Arc(),
+                                    ip == 1 ? F1 : F2,
+                                    Fd->Vertex(isfirst, ip).Point(),
+                                    Po,
+                                    myVEMap,
+                                    myEFMap))
+          {
+            // The line is cut there, as an edge splitting its face there
+            // would cut it, and the corner is filled as that of the split
+            // face.
+            Fio.SetParameter(w, isfirst);
+            ChFiDS_CommonPoint& CVo = Fd->ChangeVertex(isfirst, io);
+            CVo.Reset();
+            CVo.SetPoint(Po);
+            CVo.SetTolerance(tolapp3d);
+            stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CVo, DStr), isfirst, io);
+            PerformMoreThreeCorner(Index, 1);
+            return;
+          }
+        }
         IntersectMoreCorner(Index);
         return;
       }
