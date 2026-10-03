@@ -2621,6 +2621,60 @@ static bool MakeGapOfBall(
 }
 
 //=======================================================================
+// function : HasSplitEdge
+// purpose  : A vertex that only cuts an edge in two: its two edges, and no
+//            other, between the same two faces and neither a seam -- or both
+//            pieces of one face's seam.
+//=======================================================================
+static bool HasSplitEdge(const TopoDS_Shape& theS)
+{
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    aVE, aEF;
+  TopExp::MapShapesAndUniqueAncestors(theS, TopAbs_VERTEX, TopAbs_EDGE, aVE);
+  TopExp::MapShapesAndUniqueAncestors(theS, TopAbs_EDGE, TopAbs_FACE, aEF);
+  for (int i = 1; i <= aVE.Extent(); ++i)
+  {
+    const NCollection_List<TopoDS_Shape>& aLE = aVE(i);
+    if (aLE.Extent() != 2)
+    {
+      continue;
+    }
+    const TopoDS_Edge& anE1 = TopoDS::Edge(aLE.First());
+    const TopoDS_Edge& anE2 = TopoDS::Edge(aLE.Last());
+    if (anE1.IsSame(anE2) || BRep_Tool::Degenerated(anE1) || BRep_Tool::Degenerated(anE2))
+    {
+      continue;
+    }
+    const NCollection_List<TopoDS_Shape>* aLF1 = aEF.Seek(anE1);
+    const NCollection_List<TopoDS_Shape>* aLF2 = aEF.Seek(anE2);
+    if (aLF1 && aLF2 && aLF1->Extent() == 1 && aLF2->Extent() == 1
+        && aLF1->First().IsSame(aLF2->First())
+        && BRep_Tool::IsClosed(anE1, TopoDS::Face(aLF1->First()))
+        && BRep_Tool::IsClosed(anE2, TopoDS::Face(aLF1->First())))
+    {
+      // A seam in pieces.
+      return true;
+    }
+    if (!aLF1 || !aLF2 || aLF1->Extent() != 2 || aLF2->Extent() != 2)
+    {
+      continue;
+    }
+    bool isSame = true;
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(*aLF1); anIt.More() && isSame; anIt.Next())
+    {
+      const TopoDS_Face& aF = TopoDS::Face(anIt.Value());
+      isSame = (aLF2->First().IsSame(aF) || aLF2->Last().IsSame(aF))
+               && !BRep_Tool::IsClosed(anE1, aF) && !BRep_Tool::IsClosed(anE2, aF);
+    }
+    if (isSame)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+//=======================================================================
 // function : MakeThickSolidOfSplit
 // purpose  : A face of a sphere that runs from pole to pole on half a turn
 //            or more has a whole great circle, or more, for its outline: no
@@ -2667,6 +2721,9 @@ static thread_local bool theIsMakingOfCut = false;
 // Set while a solid is tried again as it came, its joined form having given
 // no valid answer.
 static thread_local bool theIsTakenAsGiven = false;
+// Set while a solid with an edge in pieces is tried again as it came, the
+// solid with the pieces joined having given no valid answer.
+static thread_local bool theIsNotJoiningEdges = false;
 
 bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& theRange)
 {
@@ -2935,9 +2992,14 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
   // The thick solid an object made of a solid standing for the one given:
   // its shape, and its images under the faces and edges of the solid given
   // (theOrigin, from each part to what it is a part of).
+  const NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+       aNoMoreOrigins;
   auto aTakeResult =
     [&](BRepOffset_MakeOffset&                                                          theMO,
-        const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theOrigin) {
+        const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theOrigin,
+        const NCollection_DataMap<TopoDS_Shape,
+                                  NCollection_List<TopoDS_Shape>,
+                                  TopTools_ShapeMapHasher>&                             theMore) {
       myOffsetShape = theMO.Shape();
 
     // History: each root of the object's images under the shape it is a part
@@ -2962,20 +3024,36 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
         {
           aRoot = *aFace;
         }
+        NCollection_List<TopoDS_Shape> aRoots;
         if (const TopoDS_Shape* anOrig = theOrigin.Seek(aRoot))
         {
-          aRoot = *anOrig;
+          aRoots.Append(*anOrig);
+          if (const NCollection_List<TopoDS_Shape>* aMore = theMore.Seek(aRoot))
+          {
+            for (NCollection_List<TopoDS_Shape>::Iterator anItM(*aMore); anItM.More(); anItM.Next())
+            {
+              aRoots.Append(anItM.Value());
+            }
+          }
+        }
+        else
+        {
+          aRoots.Append(aRoot);
         }
         NCollection_List<TopoDS_Shape> aLIm;
         theFrom.LastImage(anIt.Value(), aLIm);
-        NCollection_List<TopoDS_Shape>* aL = anIm.ChangeSeek(aRoot);
-        if (!aL)
+        for (NCollection_List<TopoDS_Shape>::Iterator anItR(aRoots); anItR.More(); anItR.Next())
         {
-          aL = &anIm(anIm.Add(aRoot, NCollection_List<TopoDS_Shape>()));
-        }
-        for (NCollection_List<TopoDS_Shape>::Iterator anItIm(aLIm); anItIm.More(); anItIm.Next())
-        {
-          aL->Append(anItIm.Value());
+          NCollection_List<TopoDS_Shape>* aL = anIm.ChangeSeek(anItR.Value());
+          if (!aL)
+          {
+            aL = &anIm(anIm.Add(anItR.Value(), NCollection_List<TopoDS_Shape>()));
+          }
+          for (NCollection_List<TopoDS_Shape>::Iterator anItIm(aLIm); anItIm.More();
+               anItIm.Next())
+          {
+            aL->Append(anItIm.Value());
+          }
         }
       }
       theTo.Clear();
@@ -3078,7 +3156,7 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
         theIsMakingOfCut = wasMakingOfCut;
         if (aMO.IsDone() && !aMO.Shape().IsNull() && BRepCheck_Analyzer(aMO.Shape()).IsValid())
         {
-          aTakeResult(aMO, aGapOrigin);
+          aTakeResult(aMO, aGapOrigin, aNoMoreOrigins);
           return true;
         }
       }
@@ -3116,7 +3194,47 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
     aBase = aSolid;
   }
 
-  if (aCuts.IsEmpty() && aTurned.IsEmpty() && aUnified.IsNull())
+  // An edge in pieces, cut by a vertex nothing else meets, is one edge: the
+  // offsets of the pieces lie on one curve, stretched each over the others,
+  // and the loops built faces of no area between them. A box with a vertex
+  // on an edge, a face beside it removed: refused or the box itself back,
+  // where upstream is right with the Arc join; a ball wedge with one on a
+  // meridian, wrong every way -- a ball wedge made on an axis through its
+  // face is that, once its face is turned, where its seam ended. The thick
+  // solid is made of the solid with the pieces joined; the images of the
+  // joined edge come back under each piece.
+  occ::handle<BRepTools_History> aJoinedEdges;
+  if (aUnified.IsNull() && !theIsNotJoiningEdges && HasSplitEdge(aBase))
+  {
+    try
+    {
+      ShapeUpgrade_UnifySameDomain aUSD(aBase, true, false, false);
+      aUSD.Build();
+      TopoDS_Shape aU = aUSD.Shape();
+      while (!aU.IsNull() && aU.ShapeType() == TopAbs_COMPOUND && aU.NbChildren() == 1)
+      {
+        aU = TopoDS_Iterator(aU).Value();
+      }
+      NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEdgesBefore, anEdgesAfter;
+      TopExp::MapShapes(aBase, TopAbs_EDGE, anEdgesBefore);
+      if (!aU.IsNull())
+      {
+        TopExp::MapShapes(aU, TopAbs_EDGE, anEdgesAfter);
+      }
+      if (!aU.IsNull() && aU.ShapeType() == TopAbs_SOLID
+          && anEdgesAfter.Extent() < anEdgesBefore.Extent() && !aUSD.History().IsNull()
+          && BRepCheck_Analyzer(aU).IsValid())
+      {
+        aBase        = aU;
+        aJoinedEdges = aUSD.History();
+      }
+    }
+    catch (Standard_Failure const&)
+    {
+      aJoinedEdges.Nullify();
+    }
+  }
+  if (aCuts.IsEmpty() && aTurned.IsEmpty() && aUnified.IsNull() && aJoinedEdges.IsNull())
   {
     return false;
   }
@@ -3170,21 +3288,34 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
       return;
     }
     const TopoDS_Shape* aNewF = aTurned.Seek(theS);
-    const TopoDS_Shape& aS    = aNewF ? *aNewF : theS;
-    if (isCut)
+    NCollection_List<TopoDS_Shape> aLS;
+    if (!aJoinedEdges.IsNull())
     {
-      for (NCollection_List<TopoDS_Shape>::Iterator anIt(aGF.Modified(aS)); anIt.More();
-           anIt.Next())
+      aLS = aJoinedEdges->Modified(aNewF ? *aNewF : theS);
+    }
+    if (aLS.IsEmpty())
+    {
+      aLS.Append(aNewF ? *aNewF : theS);
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator anItS(aLS); anItS.More(); anItS.Next())
+    {
+      const TopoDS_Shape& aS    = anItS.Value();
+      const int           aNbIn = theParts.Extent();
+      if (isCut)
       {
-        if (aCutShapes.Contains(anIt.Value()))
+        for (NCollection_List<TopoDS_Shape>::Iterator anIt(aGF.Modified(aS)); anIt.More();
+             anIt.Next())
         {
-          theParts.Append(anIt.Value());
+          if (aCutShapes.Contains(anIt.Value()))
+          {
+            theParts.Append(anIt.Value());
+          }
         }
       }
-    }
-    if (theParts.IsEmpty() && aCutShapes.Contains(aS))
-    {
-      theParts.Append(aS);
+      if (theParts.Extent() == aNbIn && aCutShapes.Contains(aS))
+      {
+        theParts.Append(aS);
+      }
     }
   };
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anOld;
@@ -3194,6 +3325,10 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
   {
     anOld.Add(aFaces(i));
   }
+  // A joined edge stands for each of its pieces: the first is its origin,
+  // the others more.
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    aMoreOrigins;
   for (int i = 1; i <= anOld.Extent(); ++i)
   {
     NCollection_List<TopoDS_Shape> aL;
@@ -3203,6 +3338,15 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
       if (!anOrigin.IsBound(anIt.Value()))
       {
         anOrigin.Bind(anIt.Value(), anOld(i));
+      }
+      else if (!aJoinedEdges.IsNull() && !anOrigin(anIt.Value()).IsSame(anOld(i)))
+      {
+        NCollection_List<TopoDS_Shape>* aMore = aMoreOrigins.ChangeSeek(anIt.Value());
+        if (!aMore)
+        {
+          aMore = aMoreOrigins.Bound(anIt.Value(), NCollection_List<TopoDS_Shape>());
+        }
+        aMore->Append(anOld(i));
       }
     }
   }
@@ -3245,6 +3389,7 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
   myDone = false;
   const bool wasMakingOfCut = theIsMakingOfCut;
   theIsMakingOfCut          = aUnified.IsNull();
+  bool isFailed             = false;
   try
   {
     aMO.MakeThickSolid(theRange);
@@ -3252,28 +3397,34 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
   catch (Standard_Failure const&)
   {
     theIsMakingOfCut = wasMakingOfCut;
-    if (aUnified.IsNull())
+    if (aUnified.IsNull() && aJoinedEdges.IsNull())
     {
       myError = BRepOffset_UnknownError;
       return true;
     }
+    isFailed = true;
   }
   theIsMakingOfCut = wasMakingOfCut;
-  // Joined, and no valid answer: the solid as it came may have one.
-  if (!aUnified.IsNull() && (!aMO.IsDone() || !BRepCheck_Analyzer(aMO.Shape()).IsValid()))
+  isFailed = isFailed || !aMO.IsDone() || !BRepCheck_Analyzer(aMO.Shape()).IsValid();
+  // Joined, and no valid answer: the solid as it came may have one. A seam
+  // in pieces joined is not a primitive's seam: a cylinder's side removed
+  // outward with the Arc join was refused once its seam was joined, and is
+  // right as given.
+  if (isFailed && (!aUnified.IsNull() || !aJoinedEdges.IsNull()))
   {
-    theIsTakenAsGiven = true;
-    bool isTaken      = false;
+    bool& aFlag = aUnified.IsNull() ? theIsNotJoiningEdges : theIsTakenAsGiven;
+    aFlag       = true;
+    bool isTaken = false;
     try
     {
       isTaken = MakeThickSolidOfSplit(theRange);
     }
     catch (Standard_Failure const&)
     {
-      theIsTakenAsGiven = false;
+      aFlag = false;
       throw;
     }
-    theIsTakenAsGiven = false;
+    aFlag = false;
     return isTaken;
   }
   if (!aMO.IsDone())
@@ -3281,7 +3432,7 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
     myError = aMO.Error() != BRepOffset_NoError ? aMO.Error() : BRepOffset_UnknownError;
     return true;
   }
-  aTakeResult(aMO, anOrigin);
+  aTakeResult(aMO, anOrigin, aMoreOrigins);
   return true;
 }
 
