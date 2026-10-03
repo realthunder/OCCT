@@ -4870,9 +4870,37 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
   {
     isTranslation = aSteps(i).IsEqual(aSteps(1), Precision::Confusion(), Precision::Angular());
   }
+  // A circle whose points all land at one height on its axis and one
+  // distance from it -- the equator of a sphere in two domes -- is met in a
+  // circle on the same axis. A B-spline through those points, extended with
+  // the cap, ran off to 1e16.
+  occ::handle<Geom_Circle> aCircle = occ::down_cast<Geom_Circle>(aC);
+  bool                     isCoaxial = !aCircle.IsNull();
+  double                   aH = 0., aRho = 0.;
+  for (int i = 1; i <= aNb && isCoaxial; ++i)
+  {
+    const gp_Ax2& anAx = aCircle->Position();
+    const gp_Vec  aW(anAx.Location(), aPnts(i));
+    const double  h   = aW.Dot(gp_Vec(anAx.Direction()));
+    const double  rho = (aW - gp_Vec(anAx.Direction()) * h).Magnitude();
+    if (i == 1)
+    {
+      aH   = h;
+      aRho = rho;
+    }
+    isCoaxial = std::abs(h - aH) < Precision::Confusion()
+                && std::abs(rho - aRho) < Precision::Confusion();
+  }
+  isCoaxial = isCoaxial && aRho > Precision::Confusion();
   if (isTranslation)
   {
     aNC = occ::down_cast<Geom_Curve>(aC->Translated(aSteps(1)));
+  }
+  else if (isCoaxial)
+  {
+    gp_Ax2 anAx = aCircle->Position();
+    anAx.Translate(gp_Vec(anAx.Direction()) * aH);
+    aNC = new Geom_Circle(anAx, aRho);
   }
   else
   {
