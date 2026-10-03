@@ -794,7 +794,8 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
     // hole running out of it.
     NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
       aCrossings;
-    if (isPlanarFace || BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Sphere)
+    const bool isSphereFace = BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Sphere;
+    if (isPlanarFace || isSphereFace)
     {
       std::vector<TopoDS_Edge>                               aPlain;
       NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
@@ -802,8 +803,18 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
       {
         const TopoDS_Edge aE = TopoDS::Edge(itl.Value().Oriented(TopAbs_FORWARD));
         double            aF, aL;
-        if (aSeen.Add(aE) && !BRep_Tool::Degenerated(aE) && !BRep_Tool::Curve(aE, aF, aL).IsNull()
-            && !Precision::IsInfinite(aF) && !Precision::IsInfinite(aL))
+        // On a sphere, not a stretched edge (its own ends INTERNAL): run on
+        // over a pole it comes down the far side and crosses edges there
+        // that bound nothing of it -- three quarters of a dome with a vertex
+        // on an edge, a flat side removed, came out invalid.
+        bool isStretched = false;
+        for (TopoDS_Iterator aVIt(aE); aVIt.More() && isSphereFace && !isStretched; aVIt.Next())
+        {
+          isStretched = aVIt.Value().Orientation() == TopAbs_INTERNAL;
+        }
+        if (aSeen.Add(aE) && !isStretched && !BRep_Tool::Degenerated(aE)
+            && !BRep_Tool::Curve(aE, aF, aL).IsNull() && !Precision::IsInfinite(aF)
+            && !Precision::IsInfinite(aL))
         {
           aPlain.push_back(aE);
         }
