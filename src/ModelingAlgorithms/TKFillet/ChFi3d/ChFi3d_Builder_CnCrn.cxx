@@ -471,6 +471,36 @@ static void CurveHermite(const TopOpeBRepDS_DataStructure&                DStr,
       }
     }
   }
+  // The pieces are taken in the order of the faces, the first from the
+  // start of the curve and the last to its end -- each may run either way,
+  // the corner turns a backward one round. A curve lying along the edge
+  // between two faces is on both at once, and each projection keeps the
+  // part its face happens to claim, which can be the other way round; a
+  // face can also keep a part that reaches neither end. The curves stored
+  // from such pieces join the wrong points.
+  {
+    auto aTouches = [](const occ::handle<Geom_Curve>& theC, const gp_Pnt& theP) {
+      return theC->Value(theC->FirstParameter()).Distance(theP) < 1.e-4
+             || theC->Value(theC->LastParameter()).Distance(theP) < 1.e-4;
+    };
+    occ::handle<Geom_Curve> aFirst, aLast;
+    for (int k = cproj.Length() - nbface + 1; k <= cproj.Length(); k++)
+    {
+      if (!cproj.Value(k).IsNull())
+      {
+        if (aFirst.IsNull())
+        {
+          aFirst = cproj.Value(k);
+        }
+        aLast = cproj.Value(k);
+      }
+    }
+    if (!aFirst.IsNull()
+        && (!aTouches(aFirst, Bezier->Value(0.)) || !aTouches(aLast, Bezier->Value(1.))))
+    {
+      throw Standard_ConstructionError("Projected curve pieces do not run end to end");
+    }
+  }
   for (nb = 1; nb <= nbface - 1; nb++)
   {
     BRepAdaptor_Curve C(TopoDS::Edge(Ecom.Value(nb)));
