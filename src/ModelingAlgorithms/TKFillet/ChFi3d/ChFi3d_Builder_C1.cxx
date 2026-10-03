@@ -59,6 +59,7 @@
 #include <Geom_Surface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <GeomAbs_Shape.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomAdaptor_Curve.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomInt_IntSS.hxx>
@@ -1219,13 +1220,17 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
 
     // The fillet's line on Fop ended on Etan, the edge between Fop and the
     // face Arcprol is extended in: its end is still there, and the
-    // extension runs along Etan.
-    if (inters && !Etan.IsNull() && !CPopArc.IsOnArc() && saveCPopArc.IsOnArc()
-        && saveCPopArc.Arc().IsSame(Etan))
+    // extension runs along Etan. Or the line ended inside Fop, and its
+    // update to Fv's surface put the end on Etan: Fv's surface holds Etan
+    // from there to Vtx (Fv and Fprol one smooth wall, Fop tangent to it
+    // along Etan), so the extension runs along Etan just the same.
+    if (inters && !Etan.IsNull() && !CPopArc.IsOnArc())
     {
+      const bool        wasOnEtan = saveCPopArc.IsOnArc() && saveCPopArc.Arc().IsSame(Etan);
       BRepAdaptor_Curve aCEtan(Etan);
       Extrema_ExtPC     anExt(CPopArc.Point(), aCEtan);
-      const double      aTol = std::max(saveCPopArc.Tolerance(), 10 * tolapp3d);
+      const double      aTol = std::max(wasOnEtan ? saveCPopArc.Tolerance() : CPopArc.Tolerance(),
+                                   10 * tolapp3d);
       int               iMin = 0;
       double            dMin = aTol * aTol;
       for (int i = 1; anExt.IsDone() && i <= anExt.NbExt(); i++)
@@ -1236,10 +1241,43 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
           iMin = i;
         }
       }
-      if (iMin > 0)
+      if (iMin > 0 && wasOnEtan)
       {
         CPopArc.SetArc(aTol, Etan, anExt.Point(iMin).Parameter(), saveCPopArc.TransitionOnArc());
         zobOnEtan = true;
+      }
+      else if (iMin > 0)
+      {
+        const double aPar  = anExt.Point(iMin).Parameter();
+        const double aParV = BRep_Tool::Parameter(Vtx, Etan);
+        // Etan between the end and Vtx lies on Fv's surface
+        bool onFv = std::abs(aParV - aPar) > Precision::PConfusion();
+        for (int k = 1; k <= 3 && onFv; k++)
+        {
+          const gp_Pnt               aP = aCEtan.Value(aPar + (aParV - aPar) * k / 4.);
+          GeomAPI_ProjectPointOnSurf aProj(aP, BRep_Tool::Surface(Fv));
+          onFv = aProj.NbPoints() > 0 && aProj.LowerDistance() <= aTol;
+        }
+        if (onFv)
+        {
+          // the transition the walk gives a line ending on an arc
+          TopAbs_Orientation anOr = Etan.Orientation();
+          for (ex.Init(Fop, TopAbs_EDGE); ex.More(); ex.Next())
+          {
+            if (Etan.IsSame(ex.Current()))
+            {
+              anOr = ex.Current().Orientation();
+              break;
+            }
+          }
+          TopAbs_Orientation aTr = TopAbs::Compose(FiopArc.Transition(), anOr);
+          if (isfirst)
+          {
+            aTr = TopAbs::Reverse(aTr);
+          }
+          CPopArc.SetArc(aTol, Etan, aPar, aTr);
+          zobOnEtan = true;
+        }
       }
     }
 
@@ -2011,6 +2049,30 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
           }
         }
         zob2dop = GeomProjLib::Curve2d(zob3d, Udeb, Ufin, BRep_Tool::Surface(aFprolF));
+        // On the period of Fprol's domain at Vtx: a projection on a periodic
+        // surface (a cylinder) lands on the surface's first period, which
+        // need not be the face's.
+        if (!zob2dop.IsNull())
+        {
+          const occ::handle<Geom_Surface> aSprol = BRep_Tool::Surface(aFprolF);
+          const gp_Pnt2d                  aUVv  = BRep_Tool::Parameters(Vtx, aFprolF);
+          const gp_Pnt2d                  aUVz  = zob2dop->Value(Udeb);
+          double                          aDu = 0., aDv = 0.;
+          if (aSprol->IsUPeriodic())
+          {
+            const double aPer = aSprol->UPeriod();
+            aDu               = aPer * std::floor((aUVv.X() - aUVz.X()) / aPer + 0.5);
+          }
+          if (aSprol->IsVPeriodic())
+          {
+            const double aPer = aSprol->VPeriod();
+            aDv               = aPer * std::floor((aUVv.Y() - aUVz.Y()) / aPer + 0.5);
+          }
+          if (aDu != 0. || aDv != 0.)
+          {
+            zob2dop->Translate(gp_Vec2d(aDu, aDv));
+          }
+        }
       }
       int Iop = DStr.AddShape(zobOnEtan ? Fprol : Fop);
       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> Interfop =
