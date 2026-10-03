@@ -1174,12 +1174,18 @@ static int SurfIndex(const NCollection_Array1<occ::handle<ChFiDS_Stripe>>& Strip
 // purpose  : Define Plate orientation compared to <theRefDir> previewing
 //           that Plate surface can have a sharp angle with adjacent
 //           filet (bug occ266: 2 chamfs, OnSame and OnDiff) and
-//           can be even twisted (grid tests cfi900 B1)
+//           can be even twisted (grid tests cfi900 B1).
+//           The pcurves go round the plate in the order given, but a
+//           boundary may run against that round: <theSense> is 1 where it
+//           does (GeomPlate_BuildPlateSurface::Sense()), and such a curve is
+//           walked from its last parameter, so each corner of the polygon
+//           is where one boundary hands over to the next.
 //=======================================================================
 
 static TopAbs_Orientation PlateOrientation(
   const occ::handle<Geom_Surface>&                                   thePlateSurf,
   const occ::handle<NCollection_HArray1<occ::handle<Geom2d_Curve>>>& thePCArr,
+  const occ::handle<NCollection_HArray1<int>>&                       theSense,
   const gp_Vec&                                                      theRefDir)
 {
   gp_Vec   du, dv;
@@ -1202,7 +1208,7 @@ static TopAbs_Orientation PlateOrientation(
     aPC  = thePCArr->Value(i);
     fpar = aPC->FirstParameter();
     lpar = aPC->LastParameter();
-    aPC->D0(fpar, uv);
+    aPC->D0(theSense->Value(i) == 1 ? lpar : fpar, uv);
     thePlateSurf->D1(uv.X(), uv.Y(), pp2, du, dv);
     gp_Vec n1 = du ^ dv;
     n1.Normalize();
@@ -3144,6 +3150,35 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
 #endif
           }
 
+          // A projection keeps the direction it was projected in, and the
+          // curve is stored below as running from the end of <ic> to that of
+          // <icplus>: one running the other way had its points put at the
+          // wrong ends -- an edge whose FORWARD vertex sits at its last
+          // parameter -- and a plate boundary walked against the others.
+          if (!curveint.IsNull())
+          {
+            const gp_Pnt   Pic     = Asurf->Value(p2d1.X(), p2d1.Y());
+            const gp_Pnt   Picplus = Asurf->Value(p2d2.X(), p2d2.Y());
+            const gp_Pnt2d Uf      = pcurve->Value(pcurve->FirstParameter());
+            const gp_Pnt2d Ul      = pcurve->Value(pcurve->LastParameter());
+            const gp_Pnt   Pf      = Asurf->Value(Uf.X(), Uf.Y());
+            const gp_Pnt   Pl      = Asurf->Value(Ul.X(), Ul.Y());
+            if (Pf.Distance(Picplus) + Pl.Distance(Pic) < Pf.Distance(Pic) + Pl.Distance(Picplus))
+            {
+              occ::handle<Geom2d_Curve> aRevPC = pcurve->Reversed();
+              occ::handle<Geom_Curve>   aRevC  = curveint->Reversed();
+              // both reversed onto one parameter range, or neither
+              if (std::abs(aRevPC->FirstParameter() - aRevC->FirstParameter())
+                    < Precision::PConfusion()
+                  && std::abs(aRevPC->LastParameter() - aRevC->LastParameter())
+                       < Precision::PConfusion())
+              {
+                pcurve   = aRevPC;
+                curveint = aRevC;
+              }
+            }
+          }
+
           // construction of borders for Plate
           occ::handle<Geom2dAdaptor_Curve>      Acurv = new Geom2dAdaptor_Curve(pcurve);
           Adaptor3d_CurveOnSurface              CurvOnS(Acurv, Asurf);
@@ -3666,7 +3701,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
     orsurfdata = Fd->Orientation();
     //     if (scal>0) orplate=orsurfdata;
     //     else  orplate=TopAbs::Reverse(orsurfdata);
-    orplate = PlateOrientation(Surf, PSurf.Curves2d(), SumFaceNormalAtV1);
+    orplate = PlateOrientation(Surf, PSurf.Curves2d(), PSurf.Sense(), SumFaceNormalAtV1);
 
     //  creation of solidinterderence for Plate
     occ::handle<TopOpeBRepDS_SolidSurfaceInterference> SSI =
