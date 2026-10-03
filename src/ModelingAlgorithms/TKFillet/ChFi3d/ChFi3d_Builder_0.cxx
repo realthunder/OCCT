@@ -27,6 +27,7 @@
 #include <BRepTopAdaptor_HVertex.hxx>
 #include <BRepTopAdaptor_TopolTool.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
 #include <ChFi3d.hxx>
 #include <ChFiDS_FilSpine.hxx>
 #include <ElCLib.hxx>
@@ -597,6 +598,63 @@ TopoDS_Edge ChFi3d_EdgeOnSplitToVertex(const TopoDS_Edge&   E,
     Fcur = Fnext;
   }
   return TopoDS_Edge();
+}
+
+//=======================================================================
+// function : SplitPieceOfSpine
+// purpose  : The face across <E> from <F>, when it is tangent to <F> and
+//           holds an edge of <Spine> that <E> does not touch, or a null
+//           face: <F> and that face are one wall kept in tangent pieces
+//           (a body without Refine), split along the spine, and the
+//           fillet starts on the other piece.
+//=======================================================================
+
+TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
+                                    const TopoDS_Face&               F,
+                                    const occ::handle<ChFiDS_Spine>& Spine,
+                                    const ChFiDS_Map&                EFMap)
+{
+  if (Spine.IsNull() || BRep_Tool::Degenerated(E) || !EFMap.Contains(E))
+  {
+    return TopoDS_Face();
+  }
+  TopoDS_Face Fo;
+  int         nbf = 0;
+  for (NCollection_List<TopoDS_Shape>::Iterator itf(EFMap(E)); itf.More(); itf.Next())
+  {
+    nbf++;
+    if (!itf.Value().IsSame(F))
+    {
+      Fo = TopoDS::Face(itf.Value());
+    }
+  }
+  if (nbf != 2 || Fo.IsNull())
+  {
+    return TopoDS_Face();
+  }
+  bool          hasSpine = false;
+  TopoDS_Vertex V1, V2;
+  TopExp::Vertices(E, V1, V2);
+  for (int ie = 1; ie <= Spine->NbEdges(); ie++)
+  {
+    const TopoDS_Edge& Es = Spine->Edges(ie);
+    for (TopExp_Explorer exv(Es, TopAbs_VERTEX); exv.More(); exv.Next())
+    {
+      if (exv.Current().IsSame(V1) || exv.Current().IsSame(V2))
+      {
+        return TopoDS_Face(); // across the spine, not along it
+      }
+    }
+    for (TopExp_Explorer exe(Fo, TopAbs_EDGE); exe.More() && !hasSpine; exe.Next())
+    {
+      hasSpine = exe.Current().IsSame(Es);
+    }
+  }
+  if (!hasSpine || !ChFi3d::IsTangentFaces(E, F, Fo))
+  {
+    return TopoDS_Face();
+  }
+  return Fo;
 }
 
 //=======================================================================
