@@ -300,8 +300,31 @@ bool Draft_Modification::NewPoint(const TopoDS_Vertex& V, gp_Pnt& P, double& Tol
     return false;
   }
 
-  Tol = BRep_Tool::Tolerance(V);
-  P   = myVMap.FindFromKey(V).Geometry();
+  Tol                     = BRep_Tool::Tolerance(V);
+  Draft_VertexInfo& aVinf = myVMap.ChangeFromKey(V);
+  P                       = aVinf.Geometry();
+  // The point is computed on one edge's curve and one face's surface; the
+  // other edges' curves pass it by a hair (an approximated intersection
+  // curve, or an edge the draft leaves alone). The tolerance covers that,
+  // up to the miss Perform() accepts; a wider one is left to show.
+  const double aMaxGap = 100. * std::max(Tol, 0.1 * Precision::Confusion());
+  for (aVinf.InitEdgeIterator(); aVinf.MoreEdge(); aVinf.NextEdge())
+  {
+    const TopoDS_Edge& anE = aVinf.Edge();
+    if (!myEMap.Contains(anE))
+    {
+      continue;
+    }
+    const occ::handle<Geom_Curve>& aC = myEMap.FindFromKey(anE).Geometry();
+    if (!aC.IsNull())
+    {
+      const double aGap = aC->Value(aVinf.Parameter(anE)).Distance(P);
+      if (aGap <= aMaxGap)
+      {
+        Tol = std::max(Tol, aGap * 1.001);
+      }
+    }
+  }
   return true;
 }
 
