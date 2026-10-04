@@ -42,6 +42,7 @@
 #include <Geom_SphericalSurface.hxx>
 #include <gp_Ax2d.hxx>
 #include <Geom_Curve.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Geom_Surface.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomLib.hxx>
@@ -786,10 +787,16 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
     // tangent neighbour's tube ends on it, the tube's edge on the face
     // running through the face's own outline (half a dome, one of its two
     // coplanar side faces removed). On a plane, such a crossing gets a
-    // vertex of its own, offered to both edges with the others'.
+    // vertex of its own, offered to both edges with the others'. So it does
+    // on a sphere: the wall closing the tangent edge between two of its faces
+    // meets the removed face along a circle that runs out through the rim
+    // (the half ball in two lunes, one removed outward) -- with no vertex
+    // there, the removed face's piece came out as the whole face with a
+    // hole running out of it.
     NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
       aCrossings;
-    if (isPlanarFace)
+    const bool isSphereFace = BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Sphere;
+    if (isPlanarFace || isSphereFace)
     {
       std::vector<TopoDS_Edge>                               aPlain;
       NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
@@ -797,8 +804,18 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
       {
         const TopoDS_Edge aE = TopoDS::Edge(itl.Value().Oriented(TopAbs_FORWARD));
         double            aF, aL;
-        if (aSeen.Add(aE) && !BRep_Tool::Degenerated(aE) && !BRep_Tool::Curve(aE, aF, aL).IsNull()
-            && !Precision::IsInfinite(aF) && !Precision::IsInfinite(aL))
+        // On a sphere, not a stretched edge (its own ends INTERNAL): run on
+        // over a pole it comes down the far side and crosses edges there
+        // that bound nothing of it -- three quarters of a dome with a vertex
+        // on an edge, a flat side removed, came out invalid.
+        bool isStretched = false;
+        for (TopoDS_Iterator aVIt(aE); aVIt.More() && isSphereFace && !isStretched; aVIt.Next())
+        {
+          isStretched = aVIt.Value().Orientation() == TopAbs_INTERNAL;
+        }
+        if (aSeen.Add(aE) && !isStretched && !BRep_Tool::Degenerated(aE)
+            && !BRep_Tool::Curve(aE, aF, aL).IsNull() && !Precision::IsInfinite(aF)
+            && !Precision::IsInfinite(aL))
         {
           aPlain.push_back(aE);
         }
@@ -1090,16 +1107,26 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
             // in the curve's first period, and an edge whose range starts
             // below it -- a meridian stretched back past its start, from
             // -pi/2 -- lost the crossing just before the start, at 2 pi less
-            // a little.
-            if (C->IsPeriodic())
+            // a little. A stretched edge's curve is a trimmed circle, which
+            // says it is not periodic: its basis is. A seam stretched below
+            // its start at 0 lost its crossing with the section of the
+            // removed face that way (the half ball with one disc, its seam
+            // put from 0; the seam of a cap joined of two pieces).
+            occ::handle<Geom_Curve> aPeriodic = C;
+            while (aPeriodic->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
             {
+              aPeriodic = occ::down_cast<Geom_TrimmedCurve>(aPeriodic)->BasisCurve();
+            }
+            if (aPeriodic->IsPeriodic())
+            {
+              const double aPeriod = aPeriodic->Period();
               while (P < aF)
               {
-                P += C->Period();
+                P += aPeriod;
               }
-              while (P > aL && P - C->Period() >= aF)
+              while (P > aL && P - aPeriod >= aF)
               {
-                P -= C->Period();
+                P -= aPeriod;
               }
             }
             if (D < Tol && P > aF && P < aL)

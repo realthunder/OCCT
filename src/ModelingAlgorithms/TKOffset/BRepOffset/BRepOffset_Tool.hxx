@@ -190,13 +190,23 @@ public:
                                           const double       theLenBeforeVfirst = -1.,
                                           const double       theLenAfterVlast   = -1.);
 
+  //! Stretches the face F to the context faces of ToBuild.
+  //! Where the section with a context face and the edge beside it never cross
+  //! -- two circles about one centre in a plane -- the two are joined by a
+  //! step: a straight edge in the face's parameters from the vertex, which
+  //! stays the neighbour's end, to the nearest point of the section. theSteps
+  //! then has the step under the vertex of F, its first vertex the one that
+  //! stays, and theStepSides the edge of F that keeps the vertex.
   Standard_EXPORT static void ExtentFace(
     const TopoDS_Face&                                                        F,
     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ConstShapes,
     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ToBuild,
     const TopAbs_State                                                        Side,
     const double                                                              TolConf,
-    TopoDS_Face&                                                              NF);
+    TopoDS_Face&                                                              NF,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theSteps = nullptr,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theStepSides =
+      nullptr);
 
   //! Via the wire explorer store in <NOnV1> for
   //! an Edge <E> of <W> his Edge neighbour on the first

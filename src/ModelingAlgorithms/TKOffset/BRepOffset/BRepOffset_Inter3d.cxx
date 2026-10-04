@@ -23,6 +23,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_Image.hxx>
+#include <BRepLib_MakeFace.hxx>
 #include <BRepLib_MakeVertex.hxx>
 #include <BRepOffset_Analyse.hxx>
 #include <BRepOffset_Inter3d.hxx>
@@ -30,6 +31,7 @@
 #include <NCollection_List.hxx>
 #include <BRepOffset_Offset.hxx>
 #include <BRepOffset_Tool.hxx>
+#include <BRepTools.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -117,6 +119,67 @@ static void ExtentEdge(const TopoDS_Face& /*F*/, const TopoDS_Edge& E, TopoDS_Ed
     B.Add(NE, V2.Oriented(TopAbs_REVERSED));
   }
   NE.Orientation(E.Orientation());
+}
+
+//=======================================================================
+// function : KeepWallInItsBand
+// purpose  : A wall closing a tangent edge between two faces of one sphere
+//            (BRepOffset_Analyse::TreatTangentCaps) is a cone, and grown it
+//            runs on to its apex. The face at the wall's end cut it there
+//            too: the flat side of a half ball in two lunes, one removed,
+//            along a hyperbola that leaves the wall's band at one end and
+//            comes back into it at the other, and the section ran the length
+//            of the shape -- the flat's offset took it for an edge, and the
+//            kept lune's offset was left hanging. The wall stands in its band
+//            one thickness deep: grown across it by a tenth of the band.
+//=======================================================================
+static bool IsSphereCapWall(const TopoDS_Shape& theF, const BRepOffset_Analyse& theAnalyse)
+{
+  if (theF.ShapeType() != TopAbs_FACE
+      || BRepAdaptor_Surface(TopoDS::Face(theF), false).GetType() != GeomAbs_Cone
+      || theAnalyse.NewFaceOffset(theF) != 0.)
+  {
+    return false;
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator itNF(theAnalyse.NewFaces()); itNF.More();
+       itNF.Next())
+  {
+    if (itNF.Value().IsSame(theF))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void KeepWallInItsBand(const TopoDS_Face&        theF,
+                              const BRepOffset_Analyse& theAnalyse,
+                              TopoDS_Face&              theNF)
+{
+  if (theNF.IsNull() || !IsSphereCapWall(theF, theAnalyse))
+  {
+    return;
+  }
+  double aU1, aU2, aV1, aV2, aNU1, aNU2, aNV1, aNV2;
+  BRepTools::UVBounds(theF, aU1, aU2, aV1, aV2);
+  BRepTools::UVBounds(theNF, aNU1, aNU2, aNV1, aNV2);
+  const double aD   = 0.1 * (aV2 - aV1);
+  const double aNVL = std::max(aNV1, aV1 - aD), aNVH = std::min(aNV2, aV2 + aD);
+  if (aNVL == aNV1 && aNVH == aNV2)
+  {
+    return;
+  }
+  TopLoc_Location                  aLoc;
+  const occ::handle<Geom_Surface>& aS = BRep_Tool::Surface(theNF, aLoc);
+  BRepLib_MakeFace aMF(aS, aNU1, aNU2, aNVL, aNVH, Precision::Confusion());
+  if (!aMF.IsDone())
+  {
+    return;
+  }
+  TopoDS_Face aNF = aMF.Face();
+  aNF.Location(aLoc);
+  aNF.Orientation(theNF.Orientation());
+  theNF = aNF;
 }
 
 //=================================================================================================
@@ -595,13 +658,49 @@ void BRepOffset_Inter3d::ConnexIntByInt(
       TopExp::MapShapes(itNF.Value(), TopAbs_VERTEX, VEmap);
     }
   }
+  // The ends of a tangent edge between two faces of one sphere closed by a
+  // wall (KeepWallInItsBand), on any shape: the face at an end may meet the
+  // kept face there alone -- the flat side of a half ball in two lunes, its
+  // half beside the removed lune touching the kept one at the poles only --
+  // and its offset is cut by the kept face's.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aWallEnds;
+  if (!bIsPlanar)
+  {
+    aNb = VEmap.Extent();
+    for (NCollection_List<TopoDS_Shape>::Iterator itNF(Analyse.NewFaces()); itNF.More();
+         itNF.Next())
+    {
+      if (!IsSphereCapWall(itNF.Value(), Analyse))
+      {
+        continue;
+      }
+      for (TopExp_Explorer anExpV(SI, TopAbs_VERTEX); anExpV.More(); anExpV.Next())
+      {
+        const TopoDS_Shape& aV = anExpV.Current();
+        if (aWallEnds.Contains(aV) || !Analyse.HasAncestor(aV))
+        {
+          continue;
+        }
+        for (it.Initialize(Analyse.Ancestors(aV)); it.More(); it.Next())
+        {
+          if (Analyse.HasAncestor(it.Value())
+              && Analyse.Ancestors(it.Value()).First().IsSame(itNF.Value()))
+          {
+            aWallEnds.Add(aV);
+            VEmap.Add(aV);
+            break;
+          }
+        }
+      }
+    }
+  }
   //
   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     aDMVLF1, aDMVLF2, aDMIntFF;
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     aDMIntE;
   //
-  if (bIsPlanar)
+  if (bIsPlanar || !aWallEnds.IsEmpty())
   {
     // Find internal edges in the faces to skip them while preparing faces
     // for intersection through vertices
@@ -809,7 +908,10 @@ void BRepOffset_Inter3d::ConnexIntByInt(
               }
               return false;
             };
-            if (carriesOn(aFV1, aFV2) || carriesOn(aFV2, aFV1))
+            // At the end of a wall on a sphere the face has no other way to
+            // the kept face's section: it takes it from the face it carries
+            // on (below, as a face on that plane).
+            if (!aWallEnds.Contains(aS) && (carriesOn(aFV1, aFV2) || carriesOn(aFV2, aFV1)))
             {
               continue;
             }
@@ -909,6 +1011,7 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         bool enlargeVfirst = true, enlargeVlast = true;
         BRepOffset_Tool::CheckBounds(F1, Analyse, enlargeU, enlargeVfirst, enlargeVlast);
         BRepOffset_Tool::EnLargeFace(OF1, NF1, true, true, enlargeU, enlargeVfirst, enlargeVlast);
+        KeepWallInItsBand(F1, Analyse, NF1);
         MES.Bind(OF1, NF1);
       }
       else
@@ -922,6 +1025,7 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         bool enlargeVfirst = true, enlargeVlast = true;
         BRepOffset_Tool::CheckBounds(F2, Analyse, enlargeU, enlargeVfirst, enlargeVlast);
         BRepOffset_Tool::EnLargeFace(OF2, NF2, true, true, enlargeU, enlargeVfirst, enlargeVlast);
+        KeepWallInItsBand(F2, Analyse, NF2);
         MES.Bind(OF2, NF2);
       }
       else
@@ -999,7 +1103,11 @@ void BRepOffset_Inter3d::ConnexIntByInt(
           continue;
         }
       }
-      if (!IsDone(NF1, NF2))
+      // Both ends of a wall on a sphere (KeepWallInItsBand) may meet one
+      // face, the flat side of a half ball in two lunes: the section there
+      // is a piece at each end, and each end takes its own.
+      if (!IsDone(NF1, NF2)
+          || (bEdge && (IsSphereCapWall(F1, Analyse) || IsSphereCapWall(F2, Analyse))))
       {
         NCollection_List<TopoDS_Shape> LInt1, LInt2;
         BRepOffset_Tool::Inter3D(NF1, NF2, LInt1, LInt2, CurSide, E, F1, F2);
@@ -1497,6 +1605,7 @@ void BRepOffset_Inter3d::ContextIntByInt(
           if (!MES.IsBound(OF))
           {
             BRepOffset_Tool::EnLargeFace(OF, NF, true, true);
+            KeepWallInItsBand(aWall, Analyse, NF);
             MES.Bind(OF, NF);
           }
           else
@@ -1664,6 +1773,7 @@ void BRepOffset_Inter3d::ContextIntByInt(
         if (!MES.IsBound(OF))
         {
           BRepOffset_Tool::EnLargeFace(OF, NF, true, true);
+          KeepWallInItsBand(F, Analyse, NF);
           MES.Bind(OF, NF);
           // SHOW_TOPO_SHAPE(OF, "OF");
           // SHOW_TOPO_SHAPE(NF, "NF");
@@ -1890,6 +2000,33 @@ void BRepOffset_Inter3d::ContextIntByArc(
         ExtentEdge(CF, OE, NE);
         TopoDS_Vertex V1, V2;
         TopExp::Vertices(OE, V1, V2);
+        // An end at a step (BRepOffset_Tool::ExtentFace; the vertex has the
+        // step for its image) is where the section ends: it met no edge
+        // there to be cut by, and stretched past it the section runs on
+        // inside its own face and cuts it in two. The flat of half a ball
+        // came out as a disc and a ring 0.025 wide.
+        const bool isStep1 = !V1.IsNull() && InitOffsetEdge.HasImage(V1);
+        const bool isStep2 = !V2.IsNull() && InitOffsetEdge.HasImage(V2);
+        if ((isStep1 || isStep2) && !V1.IsSame(V2))
+        {
+          TopoDS_Shape aCopy = OE.EmptyCopied();
+          NE                 = TopoDS::Edge(aCopy);
+          NE.Orientation(TopAbs_FORWARD);
+          BRepAdaptor_Curve aCE(OE);
+          const double      aLen = l - f;
+          double            aExt = 100. * aLen;
+          if (aCE.IsPeriodic())
+          {
+            aExt = std::min(aExt, (aCE.Period() - aLen) / 2.);
+          }
+          const double  aNF  = isStep1 ? f : f - aExt;
+          const double  aNL  = isStep2 ? l : l + aExt;
+          TopoDS_Vertex aNV1 = BRepLib_MakeVertex(aCE.Value(aNF));
+          TopoDS_Vertex aNV2 = BRepLib_MakeVertex(aCE.Value(aNL));
+          B.Range(NE, aNF, aNL);
+          B.Add(NE, aNV1.Oriented(TopAbs_FORWARD));
+          B.Add(NE, aNV2.Oriented(TopAbs_REVERSED));
+        }
         NE.Orientation(TopAbs_FORWARD);
         myAsDes->Add(NE, V1.Oriented(TopAbs_REVERSED));
         myAsDes->Add(NE, V2.Oriented(TopAbs_FORWARD));
