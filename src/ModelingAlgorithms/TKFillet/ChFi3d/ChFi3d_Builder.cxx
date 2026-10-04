@@ -950,6 +950,20 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
       case 2: {
         if (nba > 3)
         {
+          // An end OnSame at four sharp edges is a corner of three across a
+          // tangent split (PerformExtremity), made for one fillet ending
+          // there; the plate of two stripes does not take such an end (the
+          // result inside out). Refused, Compute runs again with that end a
+          // break point, as before.
+          for (It.Initialize(myVDataMap(Index)); It.More() && nba == 4; It.Next())
+          {
+            const occ::handle<ChFiDS_Spine>& aSp = It.Value()->Spine();
+            if ((aSp->FirstVertex().IsSame(Vtx) && aSp->FirstStatus() == ChFiDS_OnSame)
+                || (aSp->LastVertex().IsSame(Vtx) && aSp->LastStatus() == ChFiDS_OnSame))
+            {
+              throw Standard_Failure("Corner of two stripes at an end across a tangent split");
+            }
+          }
 #ifdef OCCT_DEBUG // perf
           ChFi3d_InitChron(cl_performmore3corner);
 #endif
