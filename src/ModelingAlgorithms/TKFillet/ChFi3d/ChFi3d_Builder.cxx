@@ -535,13 +535,27 @@ void ChFi3d_Builder::Compute()
                 tolc = tolv + 0.00001;
               }
             }
+            // the vertex covers the curve's end, which may lie a hair farther
+            // from it than the curve's tolerance says (a corner's extension
+            // starting off the vertex): BRepCheck would have it outside. Not
+            // more than a hair: an end farther off is a fault to show.
+            double tolcv = tolc;
+            if (!degen)
+            {
+              const double aGap =
+                c.Curve()->Value(II->Parameter()).Distance(BRep_Tool::Pnt(v));
+              if (aGap > tolcv && aGap <= tolcv + Precision::Confusion())
+              {
+                tolcv = aGap * (1. + 1.e-9); // and against rounding
+              }
+            }
             if (degen && tolc < tolv)
             {
               tolc = tolv;
             }
-            else if (tolc > tolv)
+            else if (tolcv > tolv)
             {
-              B1.UpdateVertex(v, tolc);
+              B1.UpdateVertex(v, tolcv);
             }
           }
           else if (gk == TopOpeBRepDS_POINT)
