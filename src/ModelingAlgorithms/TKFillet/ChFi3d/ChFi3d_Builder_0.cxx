@@ -27,6 +27,7 @@
 #include <BRepTopAdaptor_HVertex.hxx>
 #include <BRepTopAdaptor_TopolTool.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
 #include <ChFi3d.hxx>
 #include <ChFiDS_FilSpine.hxx>
 #include <ElCLib.hxx>
@@ -66,11 +67,13 @@
 #include <ProjLib_ProjectedCurve.hxx>
 #include <Standard_NotImplemented.hxx>
 #include <gp_Pnt.hxx>
+#include <NCollection_Map.hxx>
 #include <NCollection_Array1.hxx>
 #include <gp_XYZ.hxx>
 #include <TopAbs.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
@@ -497,6 +500,161 @@ void ChFi3d_conexfaces(const TopoDS_Edge& E,
       }
     }
   }
+}
+
+//=======================================================================
+// function : EdgeOnSplitToVertex
+// purpose  : The edge of <V> that the edge <E> between <F> and <Fv>
+//           continues as along <Fv> through pieces of <F>'s wall -- from
+//           an end of <E>, an edge of <Fv> bounding a face tangent to <F>
+//           across an edge of that end, and so on -- or a null edge. A
+//           wall kept in coplanar pieces (a body without Refine) ends on
+//           <Fv> at <V> as one face would.
+//=======================================================================
+
+TopoDS_Edge ChFi3d_EdgeOnSplitToVertex(const TopoDS_Edge&   E,
+                                       const TopoDS_Face&   F,
+                                       const TopoDS_Face&   Fv,
+                                       const TopoDS_Vertex& V,
+                                       const ChFiDS_Map&    EFMap,
+                                       const ChFiDS_Map&    VEMap)
+{
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> done;
+  TopoDS_Edge                                            Ecur = E;
+  TopoDS_Face                                            Fcur = F;
+  for (int hop = 0; hop < 4; ++hop)
+  {
+    done.Add(Ecur);
+    TopoDS_Edge Enext;
+    TopoDS_Face Fnext;
+    for (TopExp_Explorer exv(Ecur, TopAbs_VERTEX); exv.More() && Enext.IsNull(); exv.Next())
+    {
+      const TopoDS_Vertex& Vc = TopoDS::Vertex(exv.Current());
+      if (!VEMap.Contains(Vc))
+      {
+        continue;
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator ite(VEMap(Vc)); ite.More() && Enext.IsNull();
+           ite.Next())
+      {
+        const TopoDS_Edge& En = TopoDS::Edge(ite.Value());
+        if (done.Contains(En) || !EFMap.Contains(En))
+        {
+          continue;
+        }
+        // En between Fv and another face Fn
+        TopoDS_Face Fn;
+        bool        onFv = false;
+        for (NCollection_List<TopoDS_Shape>::Iterator itf(EFMap(En)); itf.More(); itf.Next())
+        {
+          if (itf.Value().IsSame(Fv))
+          {
+            onFv = true;
+          }
+          else
+          {
+            Fn = TopoDS::Face(itf.Value());
+          }
+        }
+        if (!onFv || Fn.IsNull() || Fn.IsSame(Fcur))
+        {
+          continue;
+        }
+        // Fn tangent to Fcur across an edge of Vc
+        for (NCollection_List<TopoDS_Shape>::Iterator itt(VEMap(Vc)); itt.More(); itt.Next())
+        {
+          const TopoDS_Edge& Et = TopoDS::Edge(itt.Value());
+          if (!EFMap.Contains(Et))
+          {
+            continue;
+          }
+          bool hasCur = false, hasN = false;
+          for (NCollection_List<TopoDS_Shape>::Iterator itf(EFMap(Et)); itf.More(); itf.Next())
+          {
+            hasCur = hasCur || itf.Value().IsSame(Fcur);
+            hasN   = hasN || itf.Value().IsSame(Fn);
+          }
+          if (hasCur && hasN && ChFi3d::IsTangentFaces(Et, Fcur, Fn))
+          {
+            Enext = En;
+            Fnext = Fn;
+            break;
+          }
+        }
+      }
+    }
+    if (Enext.IsNull())
+    {
+      return TopoDS_Edge();
+    }
+    for (TopExp_Explorer exv(Enext, TopAbs_VERTEX); exv.More(); exv.Next())
+    {
+      if (exv.Current().IsSame(V))
+      {
+        return Enext;
+      }
+    }
+    Ecur = Enext;
+    Fcur = Fnext;
+  }
+  return TopoDS_Edge();
+}
+
+//=======================================================================
+// function : SplitPieceOfSpine
+// purpose  : The face across <E> from <F>, when it is tangent to <F> and
+//           holds an edge of <Spine> that <E> does not touch, or a null
+//           face: <F> and that face are one wall kept in tangent pieces
+//           (a body without Refine), split along the spine, and the
+//           fillet starts on the other piece.
+//=======================================================================
+
+TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
+                                    const TopoDS_Face&               F,
+                                    const occ::handle<ChFiDS_Spine>& Spine,
+                                    const ChFiDS_Map&                EFMap)
+{
+  if (Spine.IsNull() || BRep_Tool::Degenerated(E) || !EFMap.Contains(E))
+  {
+    return TopoDS_Face();
+  }
+  TopoDS_Face Fo;
+  int         nbf = 0;
+  for (NCollection_List<TopoDS_Shape>::Iterator itf(EFMap(E)); itf.More(); itf.Next())
+  {
+    nbf++;
+    if (!itf.Value().IsSame(F))
+    {
+      Fo = TopoDS::Face(itf.Value());
+    }
+  }
+  if (nbf != 2 || Fo.IsNull())
+  {
+    return TopoDS_Face();
+  }
+  bool          hasSpine = false;
+  TopoDS_Vertex V1, V2;
+  TopExp::Vertices(E, V1, V2);
+  for (int ie = 1; ie <= Spine->NbEdges(); ie++)
+  {
+    const TopoDS_Edge& Es = Spine->Edges(ie);
+    for (TopExp_Explorer exv(Es, TopAbs_VERTEX); exv.More(); exv.Next())
+    {
+      if (exv.Current().IsSame(V1) || exv.Current().IsSame(V2))
+      {
+        return TopoDS_Face(); // across the spine, not along it
+      }
+    }
+    for (TopExp_Explorer exe(Fo, TopAbs_EDGE); exe.More() && !hasSpine; exe.Next())
+    {
+      hasSpine = exe.Current().IsSame(Es);
+    }
+  }
+  if (!hasSpine || !ChFi3d::IsTangentFaces(E, F, Fo))
+  {
+    return TopoDS_Face();
+  }
+  return Fo;
 }
 
 //=======================================================================

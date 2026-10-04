@@ -20,8 +20,10 @@
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_Image.hxx>
+#include <BRepLib_MakeFace.hxx>
 #include <BRepLib_MakeVertex.hxx>
 #include <BRepOffset_Analyse.hxx>
 #include <BRepOffset_Inter3d.hxx>
@@ -29,6 +31,7 @@
 #include <NCollection_List.hxx>
 #include <BRepOffset_Offset.hxx>
 #include <BRepOffset_Tool.hxx>
+#include <BRepTools.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -49,6 +52,8 @@
 #include <BOPTools_BoxTree.hxx>
 //
 #include <BOPTools_AlgoTools.hxx>
+
+#include <vector>
 
 //=================================================================================================
 
@@ -114,6 +119,67 @@ static void ExtentEdge(const TopoDS_Face& /*F*/, const TopoDS_Edge& E, TopoDS_Ed
     B.Add(NE, V2.Oriented(TopAbs_REVERSED));
   }
   NE.Orientation(E.Orientation());
+}
+
+//=======================================================================
+// function : KeepWallInItsBand
+// purpose  : A wall closing a tangent edge between two faces of one sphere
+//            (BRepOffset_Analyse::TreatTangentCaps) is a cone, and grown it
+//            runs on to its apex. The face at the wall's end cut it there
+//            too: the flat side of a half ball in two lunes, one removed,
+//            along a hyperbola that leaves the wall's band at one end and
+//            comes back into it at the other, and the section ran the length
+//            of the shape -- the flat's offset took it for an edge, and the
+//            kept lune's offset was left hanging. The wall stands in its band
+//            one thickness deep: grown across it by a tenth of the band.
+//=======================================================================
+static bool IsSphereCapWall(const TopoDS_Shape& theF, const BRepOffset_Analyse& theAnalyse)
+{
+  if (theF.ShapeType() != TopAbs_FACE
+      || BRepAdaptor_Surface(TopoDS::Face(theF), false).GetType() != GeomAbs_Cone
+      || theAnalyse.NewFaceOffset(theF) != 0.)
+  {
+    return false;
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator itNF(theAnalyse.NewFaces()); itNF.More();
+       itNF.Next())
+  {
+    if (itNF.Value().IsSame(theF))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void KeepWallInItsBand(const TopoDS_Face&        theF,
+                              const BRepOffset_Analyse& theAnalyse,
+                              TopoDS_Face&              theNF)
+{
+  if (theNF.IsNull() || !IsSphereCapWall(theF, theAnalyse))
+  {
+    return;
+  }
+  double aU1, aU2, aV1, aV2, aNU1, aNU2, aNV1, aNV2;
+  BRepTools::UVBounds(theF, aU1, aU2, aV1, aV2);
+  BRepTools::UVBounds(theNF, aNU1, aNU2, aNV1, aNV2);
+  const double aD   = 0.1 * (aV2 - aV1);
+  const double aNVL = std::max(aNV1, aV1 - aD), aNVH = std::min(aNV2, aV2 + aD);
+  if (aNVL == aNV1 && aNVH == aNV2)
+  {
+    return;
+  }
+  TopLoc_Location                  aLoc;
+  const occ::handle<Geom_Surface>& aS = BRep_Tool::Surface(theNF, aLoc);
+  BRepLib_MakeFace aMF(aS, aNU1, aNU2, aNVL, aNVH, Precision::Confusion());
+  if (!aMF.IsDone())
+  {
+    return;
+  }
+  TopoDS_Face aNF = aMF.Face();
+  aNF.Location(aLoc);
+  aNF.Orientation(theNF.Orientation());
+  theNF = aNF;
 }
 
 //=================================================================================================
@@ -520,6 +586,29 @@ void BRepOffset_Inter3d::ConnexIntByArc(const NCollection_List<TopoDS_Shape>& /*
 
 //=================================================================================================
 
+// Whether two faces lie on one plane.
+static bool OnOnePlane(const TopoDS_Face& theF1, const TopoDS_Face& theF2)
+{
+  BRepAdaptor_Surface aS1(theF1, false), aS2(theF2, false);
+  if (aS1.GetType() != GeomAbs_Plane || aS2.GetType() != GeomAbs_Plane)
+  {
+    return false;
+  }
+  const gp_Pln aP1 = aS1.Plane(), aP2 = aS2.Plane();
+  return aP1.Axis().Direction().IsParallel(aP2.Axis().Direction(), Precision::Angular())
+         && aP1.Distance(aP2.Location()) <= Precision::Confusion();
+}
+
+// Whether two faces on one plane face the same way.
+static bool FaceTheSameWay(const TopoDS_Face& theF1, const TopoDS_Face& theF2)
+{
+  BRepAdaptor_Surface aS1(theF1, false), aS2(theF2, false);
+  const bool isSameDir = aS1.Plane().Axis().Direction().Dot(aS2.Plane().Axis().Direction()) > 0.;
+  const bool isSameOri = (theF1.Orientation() == TopAbs_REVERSED)
+                         == (theF2.Orientation() == TopAbs_REVERSED);
+  return isSameDir == isSameOri;
+}
+
 void BRepOffset_Inter3d::ConnexIntByInt(
   const TopoDS_Shape&                                                                  SI,
   const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
@@ -569,13 +658,49 @@ void BRepOffset_Inter3d::ConnexIntByInt(
       TopExp::MapShapes(itNF.Value(), TopAbs_VERTEX, VEmap);
     }
   }
+  // The ends of a tangent edge between two faces of one sphere closed by a
+  // wall (KeepWallInItsBand), on any shape: the face at an end may meet the
+  // kept face there alone -- the flat side of a half ball in two lunes, its
+  // half beside the removed lune touching the kept one at the poles only --
+  // and its offset is cut by the kept face's.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aWallEnds;
+  if (!bIsPlanar)
+  {
+    aNb = VEmap.Extent();
+    for (NCollection_List<TopoDS_Shape>::Iterator itNF(Analyse.NewFaces()); itNF.More();
+         itNF.Next())
+    {
+      if (!IsSphereCapWall(itNF.Value(), Analyse))
+      {
+        continue;
+      }
+      for (TopExp_Explorer anExpV(SI, TopAbs_VERTEX); anExpV.More(); anExpV.Next())
+      {
+        const TopoDS_Shape& aV = anExpV.Current();
+        if (aWallEnds.Contains(aV) || !Analyse.HasAncestor(aV))
+        {
+          continue;
+        }
+        for (it.Initialize(Analyse.Ancestors(aV)); it.More(); it.Next())
+        {
+          if (Analyse.HasAncestor(it.Value())
+              && Analyse.Ancestors(it.Value()).First().IsSame(itNF.Value()))
+          {
+            aWallEnds.Add(aV);
+            VEmap.Add(aV);
+            break;
+          }
+        }
+      }
+    }
+  }
   //
   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     aDMVLF1, aDMVLF2, aDMIntFF;
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     aDMIntE;
   //
-  if (bIsPlanar)
+  if (bIsPlanar || !aWallEnds.IsEmpty())
   {
     // Find internal edges in the faces to skip them while preparing faces
     // for intersection through vertices
@@ -623,6 +748,21 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         const NCollection_List<TopoDS_Shape>& aLE = Analyse.Ancestors(aS);
         for (NCollection_List<TopoDS_Shape>::Iterator itLE(aLE); itLE.More(); itLE.Next())
         {
+          // The end of a removed face's tangent edge also lists the edges of
+          // its closure on the face at that end (TreatTangentCaps, for
+          // BRepOffset_Inter2d), which do not reach it. Their faces do not
+          // meet at the vertex: taken for faces that do, the wall and the
+          // face at the end were intersected here as well as through their
+          // edge, and their one section became two edges.
+          bool isAtVertex = false;
+          for (TopoDS_Iterator aItV(itLE.Value()); aItV.More() && !isAtVertex; aItV.Next())
+          {
+            isAtVertex = aS.IsSame(aItV.Value());
+          }
+          if (!isAtVertex)
+          {
+            continue;
+          }
           const NCollection_List<TopoDS_Shape>& aLEA = Analyse.Ancestors(itLE.Value());
           for (NCollection_List<TopoDS_Shape>::Iterator itLEA(aLEA); itLEA.More(); itLEA.Next())
           {
@@ -718,6 +858,63 @@ void BRepOffset_Inter3d::ConnexIntByInt(
 
           if (!itLE2.More())
           {
+            // Two faces meeting at the vertex alone are intersected there --
+            // unless one of them only carries on, in its own plane, a face
+            // the other already meets along an edge at the vertex: a box
+            // fused of two and not refined, every face across the joint in
+            // two coplanar pieces. Their offsets lie on one plane, the
+            // section is the one through that edge again, and with both the
+            // face had two edges on one line, one of them running on past
+            // the joint: no wire closed, and the face was never built.
+            auto carriesOn = [&](const TopoDS_Shape& theA, const TopoDS_Shape& theB) {
+              const NCollection_List<TopoDS_Shape>* pLEA = Analyse.Descendants(theA);
+              if (!pLEA || !MapSF.IsBound(theB))
+              {
+                return false;
+              }
+              const TopoDS_Face aOB = TopoDS::Face(MapSF(theB).Face());
+              for (NCollection_List<TopoDS_Shape>::Iterator itC(aLF); itC.More(); itC.Next())
+              {
+                const TopoDS_Shape& aFC = itC.Value();
+                if (aFC.IsSame(theA) || aFC.IsSame(theB) || !MapSF.IsBound(aFC))
+                {
+                  continue;
+                }
+                const NCollection_List<TopoDS_Shape>* pLEC = Analyse.Descendants(aFC);
+                if (!pLEC)
+                {
+                  continue;
+                }
+                bool isShared = false;
+                for (NCollection_List<TopoDS_Shape>::Iterator itEA(*pLEA);
+                     itEA.More() && !isShared;
+                     itEA.Next())
+                {
+                  const TopoDS_Shape& aEA = itEA.Value();
+                  if (!pLEC->Contains(aEA) || !Analyse.HasAncestor(aEA)
+                      || Analyse.Ancestors(aEA).Extent() != 2)
+                  {
+                    continue;
+                  }
+                  for (TopoDS_Iterator aItV(aEA); aItV.More() && !isShared; aItV.Next())
+                  {
+                    isShared = aS.IsSame(aItV.Value());
+                  }
+                }
+                if (isShared && OnOnePlane(TopoDS::Face(MapSF(aFC).Face()), aOB))
+                {
+                  return true;
+                }
+              }
+              return false;
+            };
+            // At the end of a wall on a sphere the face has no other way to
+            // the kept face's section: it takes it from the face it carries
+            // on (below, as a face on that plane).
+            if (!aWallEnds.Contains(aS) && (carriesOn(aFV1, aFV2) || carriesOn(aFV2, aFV1)))
+            {
+              continue;
+            }
             aLF1.Append(aFV1);
             aLF2.Append(aFV2);
           }
@@ -814,6 +1011,7 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         bool enlargeVfirst = true, enlargeVlast = true;
         BRepOffset_Tool::CheckBounds(F1, Analyse, enlargeU, enlargeVfirst, enlargeVlast);
         BRepOffset_Tool::EnLargeFace(OF1, NF1, true, true, enlargeU, enlargeVfirst, enlargeVlast);
+        KeepWallInItsBand(F1, Analyse, NF1);
         MES.Bind(OF1, NF1);
       }
       else
@@ -827,6 +1025,7 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         bool enlargeVfirst = true, enlargeVlast = true;
         BRepOffset_Tool::CheckBounds(F2, Analyse, enlargeU, enlargeVfirst, enlargeVlast);
         BRepOffset_Tool::EnLargeFace(OF2, NF2, true, true, enlargeU, enlargeVfirst, enlargeVlast);
+        KeepWallInItsBand(F2, Analyse, NF2);
         MES.Bind(OF2, NF2);
       }
       else
@@ -834,11 +1033,86 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         NF2 = TopoDS::Face(MES(OF2));
       }
       //
-      if (!IsDone(NF1, NF2))
+      if (!bEdge && !IsDone(NF1, NF2))
+      {
+        // Two faces meeting at a vertex alone, one of them on the plane of a
+        // face the other is cut by already: their section is that edge, and
+        // the face takes it rather than a second edge on the same line -- a
+        // box fused of two, one piece of its top removed: the closure of the
+        // removed piece's tangent edge runs a thickness into it, and the
+        // side beside it meets the other piece of the top there, on the line
+        // where the side beyond the joint meets that piece.
+        NCollection_List<TopoDS_Shape> aLShared;
+        TopoDS_Face                    aTaker;
+        for (int k = 0; k < 2 && aLShared.IsEmpty(); ++k)
+        {
+          const TopoDS_Face& aFP = k == 0 ? NF1 : NF2;
+          const TopoDS_Face& aFQ = k == 0 ? NF2 : NF1;
+          for (it.Initialize(myAsDes->Descendant(aFQ)); it.More(); it.Next())
+          {
+            const TopoDS_Shape& aNE = it.Value();
+            if (aNE.ShapeType() != TopAbs_EDGE || !myAsDes->HasAscendant(aNE))
+            {
+              continue;
+            }
+            for (it1.Initialize(myAsDes->Ascendant(aNE)); it1.More(); it1.Next())
+            {
+              const TopoDS_Shape& aFX = it1.Value();
+              if (aFX.ShapeType() != TopAbs_FACE || aFX.IsSame(aFQ) || aFX.IsSame(aFP)
+                  || !OnOnePlane(TopoDS::Face(aFX), aFP)
+                  || !FaceTheSameWay(TopoDS::Face(aFX), aFP))
+              {
+                continue;
+              }
+              // The edge as the face on the same plane holds it.
+              for (NCollection_List<TopoDS_Shape>::Iterator itX(myAsDes->Descendant(aFX));
+                   itX.More();
+                   itX.Next())
+              {
+                if (itX.Value().IsSame(aNE))
+                {
+                  aLShared.Append(itX.Value());
+                  aTaker = aFP;
+                  break;
+                }
+              }
+              break;
+            }
+          }
+        }
+        if (!aLShared.IsEmpty())
+        {
+          SHOW_TOPO_SHAPE(aTaker, "InterSharedOnPlane", aLShared);
+          myTouched.Add(aTaker);
+          myAsDes->Add(aTaker, aLShared);
+          SetDone(NF1, NF2);
+          TopoDS_Compound C;
+          B.MakeCompound(C);
+          if (Build.IsBound(aS))
+          {
+            for (TopExp_Explorer aExp(Build(aS), TopAbs_EDGE); aExp.More(); aExp.Next())
+            {
+              B.Add(C, aExp.Current());
+            }
+          }
+          for (it.Initialize(aLShared); it.More(); it.Next())
+          {
+            B.Add(C, it.Value());
+          }
+          Build.Bind(aS, C);
+          continue;
+        }
+      }
+      // Both ends of a wall on a sphere (KeepWallInItsBand) may meet one
+      // face, the flat side of a half ball in two lunes: the section there
+      // is a piece at each end, and each end takes its own.
+      if (!IsDone(NF1, NF2)
+          || (bEdge && (IsSphereCapWall(F1, Analyse) || IsSphereCapWall(F2, Analyse))))
       {
         NCollection_List<TopoDS_Shape> LInt1, LInt2;
         BRepOffset_Tool::Inter3D(NF1, NF2, LInt1, LInt2, CurSide, E, F1, F2);
         SetDone(NF1, NF2);
+        BRepOffset_Tool::StartSectionsFarFrom(bEdge ? TopoDS_Shape(E) : aS, NF1, NF2, LInt1, LInt2);
         if (!LInt1.IsEmpty())
         {
           Store(NF1, NF2, LInt1, LInt2);
@@ -1125,34 +1399,48 @@ void BRepOffset_Inter3d::ConnexIntByInt(
 
 //=================================================================================================
 
-// Whether two edges run the same way, each as its orientation has it: the
-// tangent of <theE> at its middle against the tangent of <theRef> at the
-// point nearest to it.
+// Whether two edges run the same way, each as its orientation has it: their
+// tangents where they come nearest each other.
+// Not the tangent of <theE> at its middle against that of <theRef> at the
+// extremum nearest to it: a section can be most of a circle of which the
+// reference follows a part, its middle then lies across the circle from the
+// reference, and the extremum found there is the farthest point, where the
+// two run opposite ways. How the circle is cut, and so where its middle
+// falls, depends on how the shape lies in space: half of a sphere's cap,
+// its bottom removed inward with the Intersection join, was 22.043 as made
+// and a valid solid of 11.598 turned by 40 degrees.
 static bool RunTheSameWay(const TopoDS_Edge& theE, const TopoDS_Edge& theRef)
 {
   BRepAdaptor_Curve aC(theE), aRef(theRef);
-  const double      aT = (aC.FirstParameter() + aC.LastParameter()) / 2.;
-  gp_Pnt            aP;
-  gp_Vec            aD;
-  aC.D1(aT, aP, aD);
-  Extrema_ExtPC anExt(aP, aRef);
-  if (!anExt.IsDone() || anExt.NbExt() == 0)
+  const int         aNb   = 32;
+  double            aBest = RealLast();
+  double            aTE   = (aC.FirstParameter() + aC.LastParameter()) / 2.;
+  double            aTR   = (aRef.FirstParameter() + aRef.LastParameter()) / 2.;
+  std::vector<gp_Pnt> aRefPnts;
+  for (int j = 0; j <= aNb; ++j)
   {
-    return true;
+    aRefPnts.push_back(aRef.Value(aRef.FirstParameter()
+                                  + (aRef.LastParameter() - aRef.FirstParameter()) * j / aNb));
   }
-  int    iMin   = 1;
-  double aDMin = anExt.SquareDistance(1);
-  for (int i = 2; i <= anExt.NbExt(); ++i)
+  for (int i = 0; i <= aNb; ++i)
   {
-    if (anExt.SquareDistance(i) < aDMin)
+    const double aT = aC.FirstParameter() + (aC.LastParameter() - aC.FirstParameter()) * i / aNb;
+    const gp_Pnt aP = aC.Value(aT);
+    for (int j = 0; j <= aNb; ++j)
     {
-      aDMin = anExt.SquareDistance(i);
-      iMin  = i;
+      const double aD2 = aP.SquareDistance(aRefPnts[j]);
+      if (aD2 < aBest)
+      {
+        aBest = aD2;
+        aTE   = aT;
+        aTR   = aRef.FirstParameter() + (aRef.LastParameter() - aRef.FirstParameter()) * j / aNb;
+      }
     }
   }
-  gp_Pnt aPR;
-  gp_Vec aDR;
-  aRef.D1(anExt.Point(iMin).Parameter(), aPR, aDR);
+  gp_Pnt aP, aPR;
+  gp_Vec aD, aDR;
+  aC.D1(aTE, aP, aD);
+  aRef.D1(aTR, aPR, aDR);
   if (theE.Orientation() == TopAbs_REVERSED)
   {
     aD.Reverse();
@@ -1317,6 +1605,7 @@ void BRepOffset_Inter3d::ContextIntByInt(
           if (!MES.IsBound(OF))
           {
             BRepOffset_Tool::EnLargeFace(OF, NF, true, true);
+            KeepWallInItsBand(aWall, Analyse, NF);
             MES.Bind(OF, NF);
           }
           else
@@ -1484,6 +1773,7 @@ void BRepOffset_Inter3d::ContextIntByInt(
         if (!MES.IsBound(OF))
         {
           BRepOffset_Tool::EnLargeFace(OF, NF, true, true);
+          KeepWallInItsBand(F, Analyse, NF);
           MES.Bind(OF, NF);
           // SHOW_TOPO_SHAPE(OF, "OF");
           // SHOW_TOPO_SHAPE(NF, "NF");
@@ -1501,6 +1791,7 @@ void BRepOffset_Inter3d::ContextIntByInt(
           LOE.Append(OE);
           BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, E, CF, F);
           SetDone(NF, CF);
+          BRepOffset_Tool::StartSectionsFarFrom(bEdge ? TopoDS_Shape(E) : aS, WCF, NF, LInt1, LInt2);
           // The section is oriented as if the removed face met the offset
           // one at a convex edge. At a concave one -- the floor of a blind
           // hole -- it comes out the wrong way round, and a band on the hole's
@@ -1709,6 +2000,33 @@ void BRepOffset_Inter3d::ContextIntByArc(
         ExtentEdge(CF, OE, NE);
         TopoDS_Vertex V1, V2;
         TopExp::Vertices(OE, V1, V2);
+        // An end at a step (BRepOffset_Tool::ExtentFace; the vertex has the
+        // step for its image) is where the section ends: it met no edge
+        // there to be cut by, and stretched past it the section runs on
+        // inside its own face and cuts it in two. The flat of half a ball
+        // came out as a disc and a ring 0.025 wide.
+        const bool isStep1 = !V1.IsNull() && InitOffsetEdge.HasImage(V1);
+        const bool isStep2 = !V2.IsNull() && InitOffsetEdge.HasImage(V2);
+        if ((isStep1 || isStep2) && !V1.IsSame(V2))
+        {
+          TopoDS_Shape aCopy = OE.EmptyCopied();
+          NE                 = TopoDS::Edge(aCopy);
+          NE.Orientation(TopAbs_FORWARD);
+          BRepAdaptor_Curve aCE(OE);
+          const double      aLen = l - f;
+          double            aExt = 100. * aLen;
+          if (aCE.IsPeriodic())
+          {
+            aExt = std::min(aExt, (aCE.Period() - aLen) / 2.);
+          }
+          const double  aNF  = isStep1 ? f : f - aExt;
+          const double  aNL  = isStep2 ? l : l + aExt;
+          TopoDS_Vertex aNV1 = BRepLib_MakeVertex(aCE.Value(aNF));
+          TopoDS_Vertex aNV2 = BRepLib_MakeVertex(aCE.Value(aNL));
+          B.Range(NE, aNF, aNL);
+          B.Add(NE, aNV1.Oriented(TopAbs_FORWARD));
+          B.Add(NE, aNV2.Oriented(TopAbs_REVERSED));
+        }
         NE.Orientation(TopAbs_FORWARD);
         myAsDes->Add(NE, V1.Oriented(TopAbs_REVERSED));
         myAsDes->Add(NE, V2.Oriented(TopAbs_FORWARD));
@@ -1897,6 +2215,7 @@ void BRepOffset_Inter3d::ContextIntByArc(
                 || LInt1.IsEmpty())
             {
               BRepOffset_Tool::Inter3D(CF, OF1, LInt1, LInt2, mySide, NullEdge, NullFace, NullFace);
+              BRepOffset_Tool::StartSectionsFarFrom(OF1, CF, OF1, LInt1, LInt2, true);
             }
             SHOW_TOPO_SHAPE(OF1, "CFV_E_Inter_", LInt2);
             Store(CF, OF1, LInt1, LInt2);

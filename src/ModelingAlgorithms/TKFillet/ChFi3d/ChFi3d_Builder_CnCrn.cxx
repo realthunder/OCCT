@@ -471,6 +471,36 @@ static void CurveHermite(const TopOpeBRepDS_DataStructure&                DStr,
       }
     }
   }
+  // The pieces are taken in the order of the faces, the first from the
+  // start of the curve and the last to its end -- each may run either way,
+  // the corner turns a backward one round. A curve lying along the edge
+  // between two faces is on both at once, and each projection keeps the
+  // part its face happens to claim, which can be the other way round; a
+  // face can also keep a part that reaches neither end. The curves stored
+  // from such pieces join the wrong points.
+  {
+    auto aTouches = [](const occ::handle<Geom_Curve>& theC, const gp_Pnt& theP) {
+      return theC->Value(theC->FirstParameter()).Distance(theP) < 1.e-4
+             || theC->Value(theC->LastParameter()).Distance(theP) < 1.e-4;
+    };
+    occ::handle<Geom_Curve> aFirst, aLast;
+    for (int k = cproj.Length() - nbface + 1; k <= cproj.Length(); k++)
+    {
+      if (!cproj.Value(k).IsNull())
+      {
+        if (aFirst.IsNull())
+        {
+          aFirst = cproj.Value(k);
+        }
+        aLast = cproj.Value(k);
+      }
+    }
+    if (!aFirst.IsNull()
+        && (!aTouches(aFirst, Bezier->Value(0.)) || !aTouches(aLast, Bezier->Value(1.))))
+    {
+      throw Standard_ConstructionError("Projected curve pieces do not run end to end");
+    }
+  }
   for (nb = 1; nb <= nbface - 1; nb++)
   {
     BRepAdaptor_Curve C(TopoDS::Edge(Ecom.Value(nb)));
@@ -1174,12 +1204,18 @@ static int SurfIndex(const NCollection_Array1<occ::handle<ChFiDS_Stripe>>& Strip
 // purpose  : Define Plate orientation compared to <theRefDir> previewing
 //           that Plate surface can have a sharp angle with adjacent
 //           filet (bug occ266: 2 chamfs, OnSame and OnDiff) and
-//           can be even twisted (grid tests cfi900 B1)
+//           can be even twisted (grid tests cfi900 B1).
+//           The pcurves go round the plate in the order given, but a
+//           boundary may run against that round: <theSense> is 1 where it
+//           does (GeomPlate_BuildPlateSurface::Sense()), and such a curve is
+//           walked from its last parameter, so each corner of the polygon
+//           is where one boundary hands over to the next.
 //=======================================================================
 
 static TopAbs_Orientation PlateOrientation(
   const occ::handle<Geom_Surface>&                                   thePlateSurf,
   const occ::handle<NCollection_HArray1<occ::handle<Geom2d_Curve>>>& thePCArr,
+  const occ::handle<NCollection_HArray1<int>>&                       theSense,
   const gp_Vec&                                                      theRefDir)
 {
   gp_Vec   du, dv;
@@ -1202,7 +1238,7 @@ static TopAbs_Orientation PlateOrientation(
     aPC  = thePCArr->Value(i);
     fpar = aPC->FirstParameter();
     lpar = aPC->LastParameter();
-    aPC->D0(fpar, uv);
+    aPC->D0(theSense->Value(i) == 1 ? lpar : fpar, uv);
     thePlateSurf->D1(uv.X(), uv.Y(), pp2, du, dv);
     gp_Vec n1 = du ^ dv;
     n1.Normalize();
@@ -2714,7 +2750,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   // 0 very often causes unpredictable undulations of solution
   int                         degree = 3, nbcurvpnt = 10, nbiter = 1;
   int                         constr = 1; // G1
-  GeomPlate_BuildPlateSurface PSurf(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
+  GeomPlate_BuildPlateSurface PSurfG1(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
+  // the boundaries as given, and their numbers of points, should the plate
+  // have to be built again on positions alone
+  NCollection_Sequence<occ::handle<Adaptor3d_Curve>> aBounds;
+  NCollection_Sequence<int>                          aBoundPts;
   // calculation of curves on surface for each stripe
   for (ic = 0; ic < nedge; ic++)
   {
@@ -2744,7 +2784,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
       Order.SetValue(ic, constr);
       occ::handle<GeomPlate_CurveConstraint> Cont =
         new GeomPlate_CurveConstraint(HCons, Order.Value(ic), nbcurvpnt, tolapp3d, angular, 0.1);
-      PSurf.Add(Cont);
+      PSurfG1.Add(Cont);
+      aBounds.Append(HCons);
+      aBoundPts.Append(nbcurvpnt);
 
       // calculate indexes of points and of the curve for the DS
       isfirst = (sens.Value(ic) == 1);
@@ -3138,6 +3180,35 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
 #endif
           }
 
+          // A projection keeps the direction it was projected in, and the
+          // curve is stored below as running from the end of <ic> to that of
+          // <icplus>: one running the other way had its points put at the
+          // wrong ends -- an edge whose FORWARD vertex sits at its last
+          // parameter -- and a plate boundary walked against the others.
+          if (!curveint.IsNull())
+          {
+            const gp_Pnt   Pic     = Asurf->Value(p2d1.X(), p2d1.Y());
+            const gp_Pnt   Picplus = Asurf->Value(p2d2.X(), p2d2.Y());
+            const gp_Pnt2d Uf      = pcurve->Value(pcurve->FirstParameter());
+            const gp_Pnt2d Ul      = pcurve->Value(pcurve->LastParameter());
+            const gp_Pnt   Pf      = Asurf->Value(Uf.X(), Uf.Y());
+            const gp_Pnt   Pl      = Asurf->Value(Ul.X(), Ul.Y());
+            if (Pf.Distance(Picplus) + Pl.Distance(Pic) < Pf.Distance(Pic) + Pl.Distance(Picplus))
+            {
+              occ::handle<Geom2d_Curve> aRevPC = pcurve->Reversed();
+              occ::handle<Geom_Curve>   aRevC  = curveint->Reversed();
+              // both reversed onto one parameter range, or neither
+              if (std::abs(aRevPC->FirstParameter() - aRevC->FirstParameter())
+                    < Precision::PConfusion()
+                  && std::abs(aRevPC->LastParameter() - aRevC->LastParameter())
+                       < Precision::PConfusion())
+              {
+                pcurve   = aRevPC;
+                curveint = aRevC;
+              }
+            }
+          }
+
           // construction of borders for Plate
           occ::handle<Geom2dAdaptor_Curve>      Acurv = new Geom2dAdaptor_Curve(pcurve);
           Adaptor3d_CurveOnSurface              CurvOnS(Acurv, Asurf);
@@ -3168,7 +3239,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           }
           occ::handle<GeomPlate_CurveConstraint> Cont =
             new GeomPlate_CurveConstraint(HCons, Order.Value(n3d), 10, tolapp3d, angular, 0.1);
-          PSurf.Add(Cont);
+          PSurfG1.Add(Cont);
+          aBounds.Append(HCons);
+          aBoundPts.Append(10);
 
           // calculation of curve 3d if it is not a projection
           if (curveint.IsNull())
@@ -3271,6 +3344,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
       TopAbs_Orientation orvt;
       TopAbs_Orientation oredge = TopAbs_FORWARD;
       int                indpoint1, indpoint2;
+      // the points made between the pieces, to give a point already made
+      // to the next piece that starts or ends there
+      NCollection_Sequence<int> madepoints;
       Indices(nedge, ic, icplus, icmoins);
       occ::handle<Geom2d_Curve> proj, proj2d;
       occ::handle<Geom_Curve>   projc, cproj;
@@ -3313,13 +3389,66 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           parfin = cproj->LastParameter();
           P1     = cproj->Value(pardeb);
           P2     = cproj->Value(parfin);
+
+          // The pieces are stored as running from the end of <ic> to that of
+          // <icplus>, like the curves of a single face above; a projection
+          // keeps the direction it was projected in, so one found running
+          // the other way is reversed, 2D and 3D together.
+          {
+            const bool P1Start = P1.Distance(tpt1.Point()) < 1.e-3
+                                 || (ind != 0 && P1.Distance(DStr.Point(ind).Point()) < 1.e-3);
+            const bool P2Start = P2.Distance(tpt1.Point()) < 1.e-3
+                                 || (ind != 0 && P2.Distance(DStr.Point(ind).Point()) < 1.e-3);
+            const bool P1End   = P1.Distance(tpt2.Point()) < 1.e-3;
+            const bool P2End   = P2.Distance(tpt2.Point()) < 1.e-3;
+            if ((P2Start && !P1Start) || (P1End && !P2End))
+            {
+              occ::handle<Geom2d_Curve> aRevPC = proj2d->Reversed();
+              occ::handle<Geom_Curve>   aRevC  = cproj->Reversed();
+              // both reversed onto one parameter range, or neither
+              if (std::abs(aRevPC->FirstParameter() - aRevC->FirstParameter())
+                    < Precision::PConfusion()
+                  && std::abs(aRevPC->LastParameter() - aRevC->LastParameter())
+                       < Precision::PConfusion())
+              {
+                proj2d = aRevPC;
+                cproj  = aRevC;
+                pardeb = cproj->FirstParameter();
+                parfin = cproj->LastParameter();
+                P1     = cproj->Value(pardeb);
+                P2     = cproj->Value(parfin);
+              }
+            }
+          }
+          // A point between two pieces is made once, by whichever piece
+          // reaches it first: the pieces come in the order of <Fproj>, which
+          // need not be the order along the curve, and a first piece that
+          // does not start at <ic>'s end has no point before it (<ind> 0,
+          // which is no point of the DS).
+          auto aMadePoint = [&](const gp_Pnt& thePnt) {
+            for (int k = 1; k <= madepoints.Length(); k++)
+            {
+              if (thePnt.Distance(DStr.Point(madepoints.Value(k)).Point()) < 1.e-3)
+              {
+                return madepoints.Value(k);
+              }
+            }
+            TopOpeBRepDS_Point aPoint(thePnt, error);
+            madepoints.Append(DStr.AddPoint(aPoint));
+            return madepoints.Last();
+          };
           if (P1.Distance(tpt1.Point()) < 1.e-3)
           {
             indpoint1 = indpoint(ic, 1);
           }
-          else
+          else if (ind != 0)
           {
             indpoint1 = ind;
+          }
+          else
+          {
+            indpoint1 = aMadePoint(P1);
+            ind       = indpoint1;
           }
           if (P2.Distance(tpt2.Point()) < 1.e-3)
           {
@@ -3327,8 +3456,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           }
           else
           {
-            TopOpeBRepDS_Point tpoint2(P2, error);
-            indpoint2 = DStr.AddPoint(tpoint2);
+            indpoint2 = aMadePoint(P2);
             ind       = indpoint2;
           }
           occ::handle<GeomAdaptor_Surface> Asurf;
@@ -3339,7 +3467,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           Order.SetValue(n3d, 1);
           occ::handle<GeomPlate_CurveConstraint> Cont =
             new GeomPlate_CurveConstraint(HCons, Order.Value(n3d), 10, tolapp3d, angular, 0.1);
-          PSurf.Add(Cont);
+          PSurfG1.Add(Cont);
+          aBounds.Append(HCons);
+          aBoundPts.Append(10);
           TopOpeBRepDS_Curve tcurv3d(cproj, error);
           indcurve3d.SetValue(n3d, DStr.AddCurve(tcurv3d));
           Interfp1 = ChFi3d_FilPointInDS(TopAbs_FORWARD, indcurve3d.Value(n3d), indpoint1, pardeb);
@@ -3474,7 +3604,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         Order.SetValue(n3d, 0);
         occ::handle<GeomPlate_CurveConstraint> Cont =
           new GeomPlate_CurveConstraint(HCons, Order.Value(n3d), 10, tolapp3d, angular, 0.1);
-        PSurf.Add(Cont);
+        PSurfG1.Add(Cont);
+        aBounds.Append(HCons);
+        aBoundPts.Append(10);
         TopOpeBRepDS_Curve tcurv3d(ctrim, 1.e-4);
         indcurve3d.SetValue(n3d, DStr.AddCurve(tcurv3d));
         Interfp1 =
@@ -3491,7 +3623,47 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   ChFi3d_InitChron(ch); // init performances for plate
 #endif
 
-  PSurf.Perform();
+  PSurfG1.Perform();
+
+  // Held tangent to the stripes, a plate can fold to meet them where a
+  // stripe's end meets a face at a sharp angle, and miss its own boundary
+  // by a good part of the radius; its approximation, allowed ten times that,
+  // then strays further, and the corner keeps edges of as large a
+  // tolerance, a face looping over itself, a volume nobody can integrate.
+  // A plate that misses its boundary by more than PlateG0Fallback() is
+  // built again on the positions alone, and taken if it fits better: a
+  // crease along the stripes instead of a fold.
+  const double                PlateG0Fallback = ChFi3d_Builder::PlateG0Fallback();
+  GeomPlate_BuildPlateSurface PSurfG0(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
+  bool                        isG0 = false;
+  if (PSurfG1.IsDone() && PSurfG1.G0Error() > PlateG0Fallback)
+  {
+    bool hasG1 = false;
+    for (int k = Order.Lower(); k <= Order.Upper(); k++)
+    {
+      hasG1 = hasG1 || Order.Value(k) > 0;
+    }
+    if (hasG1)
+    {
+      for (int k = 1; k <= aBounds.Length(); k++)
+      {
+        PSurfG0.Add(new GeomPlate_CurveConstraint(aBounds.Value(k),
+                                                  0,
+                                                  aBoundPts.Value(k),
+                                                  tolapp3d,
+                                                  angular,
+                                                  0.1));
+      }
+      PSurfG0.Perform();
+      isG0 = PSurfG0.IsDone() && PSurfG0.G0Error() < PSurfG1.G0Error();
+    }
+  }
+  if (isG0)
+  {
+    // no edge of the corner is tangent to its stripe now
+    Order.Init(0);
+  }
+  GeomPlate_BuildPlateSurface& PSurf = isG0 ? PSurfG0 : PSurfG1;
 
 #ifdef OCCT_DEBUG
   ChFi3d_ResultChron(ch, t_plate); // result performances for plate
@@ -3614,7 +3786,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
     orsurfdata = Fd->Orientation();
     //     if (scal>0) orplate=orsurfdata;
     //     else  orplate=TopAbs::Reverse(orsurfdata);
-    orplate = PlateOrientation(Surf, PSurf.Curves2d(), SumFaceNormalAtV1);
+    orplate = PlateOrientation(Surf, PSurf.Curves2d(), PSurf.Sense(), SumFaceNormalAtV1);
 
     //  creation of solidinterderence for Plate
     occ::handle<TopOpeBRepDS_SolidSurfaceInterference> SSI =

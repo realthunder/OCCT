@@ -39,10 +39,12 @@
 #include <ChFiDS_Stripe.hxx>
 #include <ChFiKPart_ComputeData.hxx>
 #include <ElCLib.hxx>
+#include <Extrema_ExtPC2d.hxx>
 #include <Extrema_ExtPS.hxx>
 #include <Extrema_LocateExtPC.hxx>
 #include <Extrema_POnCurv.hxx>
 #include <Geom2d_Curve.hxx>
+#include <Geom2dAdaptor_Curve.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_Surface.hxx>
@@ -52,6 +54,7 @@
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
 #include <gp_Vec.hxx>
+#include <gp_Vec2d.hxx>
 #include <gp_XYZ.hxx>
 #include <math_Vector.hxx>
 #include <Precision.hxx>
@@ -191,6 +194,138 @@ static void ChFi3d_CoupeParPlan(const ChFiDS_CommonPoint&         compoint1,
     plane = false;
   }
 }
+
+//=======================================================================
+// class   : SplitWallDomain
+// purpose : The domain of a face for the walk. A wall kept in tangent
+//           pieces (a body without Refine) splits under a fillet as one
+//           face would not: with the radius the width of the piece the
+//           spine is on, the fillet's line runs along the split itself,
+//           ON the boundary of both pieces, and the walk neither starts
+//           nor goes on. On the far piece, a point that is ON only that
+//           split is IN -- the piece the spine is on goes under the
+//           fillet whole, the far one keeps all of itself.
+//=======================================================================
+
+namespace
+{
+class SplitWallDomain : public BRepTopAdaptor_TopolTool
+{
+public:
+  SplitWallDomain(const occ::handle<ChFiDS_Spine>& theSpine, const ChFiDS_Map& theEFMap)
+      : mySpine(theSpine),
+        myEFMap(theEFMap)
+  {
+  }
+
+  void Initialize(const occ::handle<Adaptor3d_Surface>& theS) override
+  {
+    BRepTopAdaptor_TopolTool::Initialize(theS);
+    mySplits.Clear();
+    mySplitsReversed.Clear();
+    myOthers.Clear();
+    occ::handle<BRepAdaptor_Surface> aBS = occ::down_cast<BRepAdaptor_Surface>(theS);
+    if (aBS.IsNull())
+    {
+      return;
+    }
+    TopoDS_Face aF = aBS->Face();
+    aF.Orientation(TopAbs_FORWARD);
+    for (TopExp_Explorer ex(aF, TopAbs_EDGE); ex.More(); ex.Next())
+    {
+      const TopoDS_Edge&        anE = TopoDS::Edge(ex.Current());
+      double                    f, l;
+      occ::handle<Geom2d_Curve> aPC = BRep_Tool::CurveOnSurface(anE, aF, f, l);
+      if (aPC.IsNull())
+      {
+        continue;
+      }
+      if (ChFi3d_SplitPieceOfSpine(anE, aF, mySpine, myEFMap).IsNull())
+      {
+        myOthers.Append(Geom2dAdaptor_Curve(aPC, f, l));
+      }
+      else
+      {
+        mySplits.Append(Geom2dAdaptor_Curve(aPC, f, l));
+        mySplitsReversed.Append(anE.Orientation() == TopAbs_REVERSED);
+      }
+    }
+  }
+
+  TopAbs_State Classify(const gp_Pnt2d& theP,
+                        const double    theTol,
+                        const bool      theRecadre = true) override
+  {
+    const TopAbs_State aState = BRepTopAdaptor_TopolTool::Classify(theP, theTol, theRecadre);
+    if (aState != TopAbs_ON || mySplits.IsEmpty())
+    {
+      return aState;
+    }
+    // the nearest split, and whether the point is on the face's side of it
+    double aDSplit = Precision::Infinite(), aDOther = Precision::Infinite();
+    bool   isInside = false;
+    NCollection_List<bool>::Iterator itR(mySplitsReversed);
+    for (NCollection_List<Geom2dAdaptor_Curve>::Iterator it(mySplits); it.More();
+         it.Next(), itR.Next())
+    {
+      double aSide = 0.;
+      const double aD = distance(theP, it.Value(), &aSide);
+      if (aD < aDSplit)
+      {
+        aDSplit  = aD;
+        isInside = (itR.Value() ? -aSide : aSide) >= -Precision::Confusion();
+      }
+    }
+    for (NCollection_List<Geom2dAdaptor_Curve>::Iterator it(myOthers); it.More(); it.Next())
+    {
+      aDOther = std::min(aDOther, distance(theP, it.Value()));
+    }
+    return isInside && aDSplit < aDOther && aDOther > theTol ? TopAbs_IN : aState;
+  }
+
+  DEFINE_STANDARD_RTTI_INLINE(SplitWallDomain, BRepTopAdaptor_TopolTool)
+
+private:
+  // the distance from <theP> to <theC>; <theSide>, when given, the signed
+  // distance, positive on the left of the curve
+  static double distance(const gp_Pnt2d&            theP,
+                         const Geom2dAdaptor_Curve& theC,
+                         double*                    theSide = nullptr)
+  {
+    double aT = theC.FirstParameter();
+    double aD = theP.Distance(theC.Value(aT));
+    if (theP.Distance(theC.Value(theC.LastParameter())) < aD)
+    {
+      aT = theC.LastParameter();
+      aD = theP.Distance(theC.Value(aT));
+    }
+    Extrema_ExtPC2d anExt(theP, theC);
+    for (int i = 1; anExt.IsDone() && i <= anExt.NbExt(); i++)
+    {
+      if (std::sqrt(anExt.SquareDistance(i)) < aD)
+      {
+        aD = std::sqrt(anExt.SquareDistance(i));
+        aT = anExt.Point(i).Parameter();
+      }
+    }
+    if (theSide != nullptr)
+    {
+      gp_Pnt2d aFoot;
+      gp_Vec2d aTan;
+      theC.D1(aT, aFoot, aTan);
+      const double aMag = aTan.Magnitude();
+      *theSide = aMag > gp::Resolution() ? aTan.Crossed(gp_Vec2d(aFoot, theP)) / aMag : 0.;
+    }
+    return aD;
+  }
+
+  occ::handle<ChFiDS_Spine>             mySpine;
+  const ChFiDS_Map&                     myEFMap;
+  NCollection_List<Geom2dAdaptor_Curve> mySplits; // edges toward the spine's piece
+  NCollection_List<bool>                mySplitsReversed;
+  NCollection_List<Geom2dAdaptor_Curve> myOthers;
+};
+} // namespace
 
 //=================================================================================================
 
@@ -1515,6 +1650,11 @@ bool ChFi3d_Builder::StartSol(
             c1obstacle = false;
             break;
           }
+        }
+        if (c1obstacle
+            && !ChFi3d_EdgeOnSplitToVertex(anArcEdge, F, Fv, Vref, myEFMap, myVEMap).IsNull())
+        {
+          c1obstacle = false;
         }
       }
       if (c1obstacle)
@@ -3093,8 +3233,8 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
   Stripe->OrientationOnFace2(RefOr2);
   Stripe->Choix(RefChoix);
 
-  occ::handle<BRepTopAdaptor_TopolTool> It1 = new BRepTopAdaptor_TopolTool();
-  occ::handle<BRepTopAdaptor_TopolTool> It2 = new BRepTopAdaptor_TopolTool();
+  occ::handle<BRepTopAdaptor_TopolTool> It1 = new SplitWallDomain(Spine, myEFMap);
+  occ::handle<BRepTopAdaptor_TopolTool> It2 = new SplitWallDomain(Spine, myEFMap);
 
   double WFirst, WLast = 0.;
   gp_Vec TFirst, TLast, TEndPeriodic;
@@ -3369,9 +3509,9 @@ static double ChFi3d_BoxDiag(const Bnd_Box& box)
 
 void ChFi3d_Builder::PerformSetOfKGen(occ::handle<ChFiDS_Stripe>& Stripe, const bool Simul)
 {
-  occ::handle<BRepTopAdaptor_TopolTool>                   It1   = new BRepTopAdaptor_TopolTool();
-  occ::handle<BRepTopAdaptor_TopolTool>                   It2   = new BRepTopAdaptor_TopolTool();
   occ::handle<ChFiDS_Spine>&                              Spine = Stripe->ChangeSpine();
+  occ::handle<BRepTopAdaptor_TopolTool>                   It1   = new SplitWallDomain(Spine, myEFMap);
+  occ::handle<BRepTopAdaptor_TopolTool>                   It2   = new SplitWallDomain(Spine, myEFMap);
   NCollection_List<occ::handle<ChFiDS_ElSpine>>&          ll    = Spine->ChangeElSpines();
   NCollection_List<occ::handle<ChFiDS_ElSpine>>::Iterator ILES(ll);
   for (; ILES.More(); ILES.Next())

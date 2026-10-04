@@ -48,6 +48,10 @@ public:
   //! by vertices in <LV>.
   Standard_EXPORT void AddEdge(TopoDS_Edge& E, const NCollection_List<TopoDS_Shape>& LV);
 
+  //! Keep every piece <E> is cut into, used in this face or not: an edge
+  //! more than two faces share, each taking its own pieces.
+  Standard_EXPORT void KeepPieces(const TopoDS_Edge& E);
+
   //! Add <E> as const edge, E can be in the result.
   Standard_EXPORT void AddConstEdge(const TopoDS_Edge& E);
 
@@ -137,6 +141,8 @@ private:
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> myVerticesForSubstitute;
   //! Pieces of cut edges beyond the span the edge's own vertices gave it.
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myOutsideEdges;
+  //! Edges whose unused pieces are not purged (KeepPieces).
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myKeptEdges;
   BRepAlgo_Image                                                           myImageVV;
   double                                                                   myTolConf;
 };

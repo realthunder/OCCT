@@ -22,6 +22,7 @@
 #include <BOPDS_DS.hxx>
 #include <BOPTools_AlgoTools.hxx>
 #include <BOPTools_AlgoTools2D.hxx>
+#include <BRep_RepresentationLock.hxx>
 #include <BRep_TEdge.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepAdaptor_Curve.hxx>
@@ -48,6 +49,8 @@
 #include <GCPnts_AbscissaPoint.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <Geom2d_BezierCurve.hxx>
+#include <Geom2dAPI_Interpolate.hxx>
+#include <NCollection_HArray1.hxx>
 #include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_Circle.hxx>
 #include <Geom2d_Curve.hxx>
@@ -72,16 +75,23 @@
 #include <Geom_Surface.hxx>
 #include <Geom_SurfaceOfLinearExtrusion.hxx>
 #include <Geom_SurfaceOfRevolution.hxx>
+#include <Geom_Circle.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomAPI.hxx>
 #include <GeomAPI_ExtremaCurveCurve.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomConvert_ApproxCurve.hxx>
 #include <GeomConvert_CompCurveToBSplineCurve.hxx>
 #include <GeomInt_IntSS.hxx>
 #include <GeomLib.hxx>
 #include <GeomProjLib.hxx>
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+#include <Geom_SphericalSurface.hxx>
 #include <gp.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
@@ -1278,7 +1288,9 @@ static TopoDS_Edge Glue(const TopoDS_Edge&   E1,
 
 static void CheckIntersFF(const BOPDS_PDS&                                               pDS,
                           const TopoDS_Edge&                                             RefEdge,
-                          NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& TrueEdges)
+                          NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& TrueEdges,
+                          const TopoDS_Face& theRefFace1 = TopoDS_Face(),
+                          const TopoDS_Face& theRefFace2 = TopoDS_Face())
 {
   NCollection_DynamicArray<BOPDS_InterfFF>& aFFs = pDS->InterfFF();
   int                                       aNb  = aFFs.Length();
@@ -1306,6 +1318,11 @@ static void CheckIntersFF(const BOPDS_PDS&                                      
       {
         const occ::handle<BOPDS_PaveBlock>& aPB    = aPBIt.Value();
         int                                 nSect  = aPB->Edge();
+        if (nSect < 0)
+        {
+          // A block the filler made no edge for (below, in Inter3D).
+          continue;
+        }
         const TopoDS_Edge&                  anEdge = *(TopoDS_Edge*)&pDS->Shape(nSect);
         BB.Add(Edges, anEdge);
         nbe++;
@@ -1332,6 +1349,23 @@ static void CheckIntersFF(const BOPDS_PDS&                                      
     gp_Pnt        Pref    = BAcurve.Value((BAcurve.FirstParameter() + BAcurve.LastParameter()) / 2);
     TopoDS_Vertex Vref    = BRepLib_MakeVertex(Pref);
     double        MinDist = RealLast();
+    // Two blocks as near as each other are told apart by the faces the
+    // section is of, the second -- the one that stays, beside a removed
+    // face -- before the first. A cylinder cuts the sphere round its end in
+    // two circles, one each side of the edge they share and as far from it:
+    // the first found was taken, and which is found first depends on how the
+    // shape lies in space. A dome on a cylinder, the cylinder removed: the
+    // circle below the dome's edge, turned by 40 degrees, and a valid solid
+    // of 151.12 for 100.73.
+    double aTieDist[2] = {RealLast(), RealLast()};
+    auto   aDistTo     = [](const TopoDS_Shape& theS, const TopoDS_Face& theF) {
+      if (theF.IsNull())
+      {
+        return 0.;
+      }
+      BRepExtrema_DistShapeShape aDSS(theS, theF);
+      return aDSS.IsDone() && aDSS.NbSolution() > 0 ? aDSS.Value() : RealLast();
+    };
     NCollection_List<TopoDS_Shape>::Iterator itl(CompList);
     for (; itl.More(); itl.Next())
     {
@@ -1343,11 +1377,30 @@ static void CheckIntersFF(const BOPDS_PDS&                                      
         continue;
       }
 
-      double aDist = Projector.Value();
-      if (aDist < MinDist)
+      double       aDist = Projector.Value();
+      const double aTol  = 1.e-6 * std::max(1., std::min(aDist, MinDist));
+      if (aDist < MinDist - aTol)
       {
         MinDist         = aDist;
         NearestCompound = aCompound;
+        aTieDist[0]     = RealLast();
+      }
+      else if (aDist <= MinDist + aTol && !NearestCompound.IsNull())
+      {
+        if (aTieDist[0] == RealLast())
+        {
+          aTieDist[0] = aDistTo(NearestCompound, theRefFace2);
+          aTieDist[1] = aDistTo(NearestCompound, theRefFace1);
+        }
+        const double aD2 = aDistTo(aCompound, theRefFace2);
+        const double aD1 = aDistTo(aCompound, theRefFace1);
+        if (aD2 < aTieDist[0] - aTol || (aD2 <= aTieDist[0] + aTol && aD1 < aTieDist[1] - aTol))
+        {
+          MinDist         = std::min(MinDist, aDist);
+          NearestCompound = aCompound;
+          aTieDist[0]     = aD2;
+          aTieDist[1]     = aD1;
+        }
       }
     }
   }
@@ -1498,7 +1551,7 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> TrueEdges;
   if (!RefEdge.IsNull())
   {
-    CheckIntersFF(aPF.PDS(), RefEdge, TrueEdges);
+    CheckIntersFF(aPF.PDS(), RefEdge, TrueEdges, theRefFace1, theRefFace2);
   }
 
   bool addPCurve1 = true;
@@ -1535,6 +1588,14 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
       {
         const occ::handle<BOPDS_PaveBlock>& aPB    = aPBIt.Value();
         int                                 nSect  = aPB->Edge();
+        if (nSect < 0)
+        {
+          // A block of a section curve the filler made no edge for: two
+          // faces of one sphere, the lunes of half a ball, meet along the
+          // edge they share and nowhere else. Asked for as a shape, it was
+          // read past the end of the filler's shapes.
+          continue;
+        }
         const TopoDS_Edge&                  anEdge = *(TopoDS_Edge*)&pDS->Shape(nSect);
         if (!TrueEdges.IsEmpty() && !TrueEdges.Contains(anEdge))
         {
@@ -1654,8 +1715,51 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
         gp_Pnt            aRefPnt =
           aRefBAcurve.Value((aRefBAcurve.FirstParameter() + aRefBAcurve.LastParameter()) / 2);
 
+        // The angle below is taken to an extremum of the distance, which on
+        // an edge the reference point has no foot on is the farthest point,
+        // and it favours an edge whose middle lies far away: a plane through
+        // a sphere's axis cuts the enlarged sphere in two half circles, and
+        // the one beyond the pole was kept for the removed face's own
+        // meridian (half a dome, a side removed). The edge clearly nearest
+        // the reference point is the one; the angle decides between edges
+        // that are as near as each other.
+        {
+          const TopoDS_Vertex aRefV = BRepLib_MakeVertex(aRefPnt);
+          double              aMinDist = Precision::Infinite(), aNextDist = Precision::Infinite();
+          TopoDS_Edge         aNearest;
+          for (NCollection_List<TopoDS_Shape>::Iterator itN(L1); itN.More(); itN.Next())
+          {
+            BRepExtrema_DistShapeShape aDSS(aRefV, itN.Value());
+            if (!aDSS.IsDone() || aDSS.NbSolution() == 0)
+            {
+              aMinDist = Precision::Infinite();
+              aNearest.Nullify();
+              break;
+            }
+            const double aDist = aDSS.Value();
+            if (aDist < aMinDist)
+            {
+              aNextDist = aMinDist;
+              aMinDist  = aDist;
+              aNearest  = TopoDS::Edge(itN.Value());
+            }
+            else if (aDist < aNextDist)
+            {
+              aNextDist = aDist;
+            }
+          }
+          const double aDistTol =
+            std::max(10. * Precision::Confusion(), 0.01 * aRefPnt.Distance(aRefBAcurve.Value(
+                                                           aRefBAcurve.FirstParameter())));
+          if (!aNearest.IsNull() && aNextDist - aMinDist > aDistTol)
+          {
+            MinAngleEdge = aNearest;
+            MinAngle     = -1.;
+          }
+        }
+
         NCollection_List<TopoDS_Shape>::Iterator itl(L1);
-        for (; itl.More(); itl.Next())
+        for (; itl.More() && MinAngle >= 0.; itl.Next())
         {
           const TopoDS_Edge& anEdge = TopoDS::Edge(itl.Value());
 
@@ -2367,8 +2471,19 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
           P2[0] = C2->Value(fl2[0]);
           P2[1] = C2->Value(fl2[1]);
 
+          // A curve closed on itself has its end wherever it was started,
+          // and an end found on the other curve says nothing of the other
+          // places they cross: a section circle that starts on the line it
+          // is cut by gave that one point for both ends of its arc. Those
+          // are intersected whole, below.
+          const bool isClosed1 = std::abs(fl1[0]) < Precision::Infinite()
+                                 && std::abs(fl1[1]) < Precision::Infinite()
+                                 && P1[0].IsEqual(P1[1], TolConf);
+          const bool isClosed2 = std::abs(fl2[0]) < Precision::Infinite()
+                                 && std::abs(fl2[1]) < Precision::Infinite()
+                                 && P2[0].IsEqual(P2[1], TolConf);
           int i1;
-          for (i1 = 0; i1 < 2; i1++)
+          for (i1 = 0; i1 < 2 && !isClosed1 && !isClosed2; i1++)
           {
             for (int i2 = 0; i2 < 2; i2++)
             {
@@ -2386,7 +2501,7 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
               }
             }
           }
-          if (!YaSol)
+          if (!YaSol && !isClosed1 && !isClosed2)
           {
             for (i1 = 0; i1 < 2; i1++)
             {
@@ -2416,7 +2531,7 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
               }
             }
           }
-          if (!YaSol)
+          if (!YaSol && !isClosed1 && !isClosed2)
           {
             for (int i2 = 0; i2 < 2; i2++)
             {
@@ -2448,17 +2563,60 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
           }
         }
 
+        // On a periodic curve the intersection gives the parameter in the
+        // curve's first period, which need not be the edge's: an arc that
+        // starts on the period's end, cut a little past its own end, was
+        // cut to the rest of the circle (a third of a dome, a side removed
+        // inward: its neighbour's offset, extended to the removed face).
+        auto toRange = [](const occ::handle<Geom2d_Curve>& theC,
+                          const TopoDS_Edge&               theE,
+                          const TopoDS_Face&               theF,
+                          double&                          theU) {
+          double aF, aL;
+          BRep_Tool::Range(theE, theF, aF, aL);
+          auto aGap = [&](const double theV) {
+            return theV < aF ? aF - theV : (theV > aL ? theV - aL : 0.);
+          };
+          if (theC.IsNull() || !theC->IsPeriodic())
+          {
+            return aGap(theU);
+          }
+          // In the edge's range, or the nearest to it of the turns beyond;
+          // how far beyond is returned.
+          const double aPeriod = theC->Period();
+          while (aGap(theU + aPeriod) < aGap(theU) - Precision::PConfusion())
+          {
+            theU += aPeriod;
+          }
+          while (aGap(theU - aPeriod) < aGap(theU) - Precision::PConfusion())
+          {
+            theU -= aPeriod;
+          }
+          return aGap(theU);
+        };
         if (!YaSol)
         {
           Geom2dInt_GInter Inter(AC1, AC2, TolConf, TolConf);
 
           if (!Inter.IsEmpty() && Inter.NbPoints() > 0)
           {
-            YaSol        = true;
-            aCurrentFind = true;
-            U1           = Inter.Point(1).ParamOnFirst();
-            U2           = Inter.Point(1).ParamOnSecond();
-            P2d          = Inter.Point(1).Value();
+            // Every point: a line crosses a circle twice, and an edge with
+            // one neighbour at both its ends takes both crossings, each end
+            // its own (ExtentFace picks).
+            YaSol = true;
+            for (int ip = 1; ip <= Inter.NbPoints(); ++ip)
+            {
+              double aU1 = Inter.Point(ip).ParamOnFirst();
+              double aU2 = Inter.Point(ip).ParamOnSecond();
+              toRange(C1, E1, F, aU1);
+              toRange(C2, E2, F, aU2);
+              const gp_Pnt2d aP2d = Inter.Point(ip).Value();
+              TopoDS_Vertex  aV   = BRepLib_MakeVertex(S->Value(aP2d.X(), aP2d.Y()));
+              aV.Orientation(TopAbs_INTERNAL);
+              B.UpdateVertex(aV, aU1, TopoDS::Edge(E1.Oriented(TopAbs_FORWARD)), TolConf);
+              B.UpdateVertex(aV, aU2, TopoDS::Edge(E2.Oriented(TopAbs_FORWARD)), TolConf);
+              LV.Append(aV);
+            }
           }
           else if (!Inter.IsEmpty() && Inter.NbSegments() > 0)
           {
@@ -2488,6 +2646,8 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
         }
         if (aCurrentFind)
         {
+          toRange(C1, E1, F, U1);
+          toRange(C2, E2, F, U2);
           gp_Pnt        P = S->Value(P2d.X(), P2d.Y());
           TopoDS_Vertex V = BRepLib_MakeVertex(P);
           V.Orientation(TopAbs_INTERNAL);
@@ -2504,39 +2664,8 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
     itry++;
   }
 
-  if (LV.Extent() > 1)
-  {
-    //------------------------------------------------
-    // garde seulement les vertex les plus proches du
-    // debut et de la fin.
-    //------------------------------------------------
-    NCollection_List<TopoDS_Shape>::Iterator it(LV);
-    TopoDS_Vertex                            VF, VL;
-    double                                   UMin = Precision::Infinite();
-    double                                   UMax = -Precision::Infinite();
-    double                                   U;
-
-    for (; it.More(); it.Next())
-    {
-      TopoDS_Vertex CV         = TopoDS::Vertex(it.Value());
-      TopoDS_Shape  aLocalEdge = E1.Oriented(TopAbs_FORWARD);
-      U                        = BRep_Tool::Parameter(CV, TopoDS::Edge(aLocalEdge));
-      //      U = BRep_Tool::Parameter(CV,TopoDS::Edge(E1.Oriented(TopAbs_FORWARD)));
-      if (U < UMin)
-      {
-        VF   = CV;
-        UMin = U;
-      }
-      if (U > UMax)
-      {
-        VL   = CV;
-        UMax = U;
-      }
-    }
-    LV.Clear();
-    LV.Append(VF);
-    LV.Append(VL);
-  }
+  // Every crossing is returned: the first and the last along E1 were kept
+  // here once, and on a closed curve those are one point.
 
 #ifdef OCCT_DEBUG
   if (!YaSol)
@@ -3449,6 +3578,666 @@ void BRepOffset_Tool::CheckBounds(const TopoDS_Face&        F,
 
 //=================================================================================================
 
+// The pcurve of theC on theSph, with theC's own parameters, no farther from
+// it than theTol: interpolated through the points of theC, twice as many
+// until it is near enough. Null where that is never reached, or the curve
+// comes too near a pole of theSph for its longitude to be followed.
+static occ::handle<Geom2d_Curve> InterpolatedOnSphere(const occ::handle<Geom_Curve>& theC,
+                                                      const double                   theF,
+                                                      const double                   theL,
+                                                      const gp_Sphere&               theSph,
+                                                      const double                   theTol)
+{
+  for (int aNb = 32; aNb <= 4096; aNb *= 2)
+  {
+    occ::handle<NCollection_HArray1<gp_Pnt2d>> aPnts =
+      new NCollection_HArray1<gp_Pnt2d>(1, aNb + 1);
+    occ::handle<NCollection_HArray1<double>> aPars  = new NCollection_HArray1<double>(1, aNb + 1);
+    double                                   aPrevU = 0.;
+    for (int i = 0; i <= aNb; ++i)
+    {
+      const double aT = i == aNb ? theL : theF + (theL - theF) * i / aNb;
+      double       aU, aV;
+      ElSLib::Parameters(theSph, theC->Value(aT), aU, aV);
+      if (i > 0)
+      {
+        while (aU - aPrevU > M_PI)
+        {
+          aU -= 2. * M_PI;
+        }
+        while (aPrevU - aU > M_PI)
+        {
+          aU += 2. * M_PI;
+        }
+        if (std::abs(aU - aPrevU) > M_PI / 4.)
+        {
+          return occ::handle<Geom2d_Curve>();
+        }
+      }
+      aPrevU = aU;
+      aPnts->SetValue(i + 1, gp_Pnt2d(aU, aV));
+      aPars->SetValue(i + 1, aT);
+    }
+    Geom2dAPI_Interpolate anInterp(aPnts, aPars, false, Precision::PConfusion());
+    anInterp.Perform();
+    if (!anInterp.IsDone())
+    {
+      return occ::handle<Geom2d_Curve>();
+    }
+    const occ::handle<Geom2d_BSplineCurve> aC2d = anInterp.Curve();
+    double                                 aDev = 0.;
+    for (int i = 0; i < 2 * aNb; ++i)
+    {
+      const double   aT = theF + (theL - theF) * (i + 0.5) / (2 * aNb);
+      const gp_Pnt2d aP = aC2d->Value(aT);
+      aDev = std::max(aDev, ElSLib::Value(aP.X(), aP.Y(), theSph).Distance(theC->Value(aT)));
+    }
+    if (aDev <= theTol)
+    {
+      return aC2d;
+    }
+  }
+  return occ::handle<Geom2d_Curve>();
+}
+
+// How far a circle can be followed on theSph past its ends: theF and theL
+// are moved out, by steps of two degrees, while the circle stays ten degrees
+// off the sphere's poles and five off its seam, and to no more than most of
+// what is left of its turn. A removed face's wall lies past the face's
+// outline, and an edge two removed faces share is stretched for it: a pcurve
+// interpolated between the edge's ends alone is no curve beyond them.
+static bool ExtendOnSphere(const occ::handle<Geom_Curve>& theC,
+                           const gp_Sphere&               theSph,
+                           double&                        theF,
+                           double&                        theL)
+{
+  occ::handle<Geom_Curve> aC = theC;
+  if (aC->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
+  {
+    aC = occ::down_cast<Geom_TrimmedCurve>(aC)->BasisCurve();
+  }
+  if (!aC->IsKind(STANDARD_TYPE(Geom_Circle)))
+  {
+    return false;
+  }
+  const double aStep   = M_PI / 90.;
+  const double aMax    = (2. * M_PI - (theL - theF)) * 0.45;
+  auto         isClear = [&](const double theT) {
+    double aU, aV;
+    ElSLib::Parameters(theSph, aC->Value(theT), aU, aV);
+    return std::abs(aV) < M_PI / 2. - M_PI / 18. && aU > M_PI / 36. && aU < 2. * M_PI - M_PI / 36.;
+  };
+  double aDF = 0., aDL = 0.;
+  while (aDF + aStep <= aMax && isClear(theF - aDF - aStep))
+  {
+    aDF += aStep;
+  }
+  while (aDL + aStep <= aMax && isClear(theL + aDL + aStep))
+  {
+    aDL += aStep;
+  }
+  theF -= aDF;
+  theL += aDL;
+  return true;
+}
+
+//=================================================================================================
+
+occ::handle<Geom2d_Curve> BRepOffset_Tool::PCurveOnSphere(const occ::handle<Geom_Curve>& theC,
+                                                          const gp_Sphere&               theSph,
+                                                          double&                        theF,
+                                                          double&                        theL,
+                                                          const double                   theTol)
+{
+  double aF = theF, aL = theL;
+  if (!ExtendOnSphere(theC, theSph, aF, aL))
+  {
+    return occ::handle<Geom2d_Curve>();
+  }
+  occ::handle<Geom2d_Curve> aC2d = InterpolatedOnSphere(theC, aF, aL, theSph, theTol);
+  if (!aC2d.IsNull())
+  {
+    theF = aF;
+    theL = aL;
+  }
+  return aC2d;
+}
+
+// A face of a sphere that reaches a pole, on less than a whole turn, is put on
+// the same sphere with its axis turned: both new poles off the face and as
+// far from its outline as they can be, the new seam through the middle of
+// what the face leaves free of the turn. Grown past the meridians that bound
+// it, such a face has to run round its pole -- half a dome hollowed outward,
+// its flat neighbours' offsets cutting the offset sphere behind the pole --
+// and in its own parameters that is a whole turn of U with a seam up to the
+// pole, where U is only grown by a tenth of what is left of the turn. On the
+// turned sphere the same region is a plain patch, clear of both poles and
+// the seam.
+// The pole is an ordinary point there, and its degenerated edge takes a
+// pcurve that stays on that point: an edge of no extent in (u, v) as in
+// space, which the loops leave out of their wires (BRepAlgo_Loop::FindLoop).
+// False, and nothing changed, where the face is no such face.
+// With theTwin the face is left as it is: the twin is a new face on the
+// turned sphere with the same wires, whose edges take a second pcurve -- for
+// a face of the shape given, which is not the algorithm's to change.
+static bool TurnSphereOffPole(const TopoDS_Face& theF, TopoDS_Face* theTwin = nullptr)
+{
+  TopLoc_Location           aLoc;
+  occ::handle<Geom_Surface> aS = BRep_Tool::Surface(theF, aLoc);
+  // The twin of a face that is placed lies in the shape's own space, on the
+  // sphere as placed.
+  if (aS.IsNull()
+      || std::abs(aLoc.Transformation().ScaleFactor() - 1.) > Precision::Confusion())
+  {
+    return false;
+  }
+  if (aS->DynamicType() == STANDARD_TYPE(Geom_RectangularTrimmedSurface))
+  {
+    aS = occ::down_cast<Geom_RectangularTrimmedSurface>(aS)->BasisSurface();
+  }
+  occ::handle<Geom_SphericalSurface> aSphS = occ::down_cast<Geom_SphericalSurface>(aS);
+  if (aSphS.IsNull())
+  {
+    return false;
+  }
+  bool hasPole = false;
+  for (TopExp_Explorer anExp(theF, TopAbs_EDGE); anExp.More() && !hasPole; anExp.Next())
+  {
+    hasPole = BRep_Tool::Degenerated(TopoDS::Edge(anExp.Current()));
+  }
+  if (!hasPole)
+  {
+    return false;
+  }
+  double aUF1, aUF2, aVF1, aVF2;
+  CompactUVBounds(theF, aUF1, aUF2, aVF1, aVF2);
+  if (aUF2 - aUF1 > 2. * M_PI - Precision::PConfusion() || aUF2 - aUF1 < Precision::PConfusion())
+  {
+    return false;
+  }
+  const gp_Sphere       aSph    = aSphS->Sphere().Transformed(aLoc.Transformation());
+  const TopLoc_Location aNewLoc = theTwin ? TopLoc_Location() : aLoc;
+  const gp_Pnt    aC   = aSph.Location();
+
+  if (!theTwin)
+  {
+    BRepLib::BuildCurves3d(theF);
+  }
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEMap;
+  TopExp::MapShapes(theF, TopAbs_EDGE, anEMap);
+  for (int i = 1; theTwin && i <= anEMap.Extent(); ++i)
+  {
+    double aF, aL;
+    if (!BRep_Tool::Degenerated(TopoDS::Edge(anEMap(i)))
+        && BRep_Tool::Curve(TopoDS::Edge(anEMap(i)), aF, aL).IsNull())
+    {
+      return false;
+    }
+  }
+
+  std::vector<gp_Vec> anOutline;
+  for (int i = 1; i <= anEMap.Extent(); ++i)
+  {
+    const TopoDS_Edge aE = TopoDS::Edge(anEMap(i));
+    if (BRep_Tool::Degenerated(aE))
+    {
+      const TopoDS_Vertex aV = TopExp::FirstVertex(TopoDS::Edge(aE.Oriented(TopAbs_FORWARD)));
+      if (!aV.IsNull())
+      {
+        anOutline.push_back(gp_Vec(aC, BRep_Tool::Pnt(aV)).Normalized());
+      }
+      continue;
+    }
+    BRepAdaptor_Curve aBAC(aE);
+    const int         aNbS = 16;
+    for (int k = 0; k <= aNbS; ++k)
+    {
+      const gp_Pnt aP = aBAC.Value(aBAC.FirstParameter()
+                                   + (aBAC.LastParameter() - aBAC.FirstParameter()) * k / aNbS);
+      if (aP.Distance(aC) > gp::Resolution())
+      {
+        anOutline.push_back(gp_Vec(aC, aP).Normalized());
+      }
+    }
+  }
+
+  // The new axis: of the directions that keep both poles a twelfth of a turn
+  // from the face's outline at the least, and off the face, the one that
+  // keeps them farthest. A face with no such direction -- half a ball cut
+  // through its poles, its outline a whole great circle -- stays as it is.
+  struct Candidate
+  {
+    double myDot;
+    gp_Vec myAxis;
+  };
+
+  std::vector<Candidate> aCandidates;
+  const gp_Ax3&          anOld  = aSph.Position();
+  const double           aLimit = std::cos(M_PI / 6.);
+  for (int k = 0; k <= 45; ++k)
+  {
+    const double aT  = k * M_PI / 90.;
+    const int    aNb = k == 0 ? 1 : 180;
+    for (int j = 0; j < aNb; ++j)
+    {
+      const double aPh = j * M_PI / 90.;
+      const gp_Vec aA =
+        gp_Vec(anOld.Direction()) * std::cos(aT)
+        + (gp_Vec(anOld.XDirection()) * std::cos(aPh) + gp_Vec(anOld.YDirection()) * std::sin(aPh))
+            * std::sin(aT);
+      double aMax = 0.;
+      for (const gp_Vec& aD : anOutline)
+      {
+        aMax = std::max(aMax, std::abs(aA.Dot(aD)));
+        if (aMax > aLimit)
+        {
+          break;
+        }
+      }
+      if (aMax <= aLimit)
+      {
+        aCandidates.push_back({aMax, aA});
+      }
+    }
+  }
+  std::stable_sort(aCandidates.begin(),
+                   aCandidates.end(),
+                   [](const Candidate& theA, const Candidate& theB) {
+                     return std::llround(theA.myDot * 1.e8) < std::llround(theB.myDot * 1.e8);
+                   });
+  BRepTopAdaptor_FClass2d aClass(theF, Precision::PConfusion());
+  auto                    isOnFace = [&](const gp_Vec& theD) {
+    double aU, aV;
+    ElSLib::Parameters(aSph, aC.Translated(theD * aSph.Radius()), aU, aV);
+    return aClass.Perform(gp_Pnt2d(aU, aV)) != TopAbs_OUT;
+  };
+  bool   isFound = false;
+  gp_Dir anAxis;
+  for (const Candidate& aCand : aCandidates)
+  {
+    if (!isOnFace(aCand.myAxis) && !isOnFace(-aCand.myAxis))
+    {
+      anAxis  = gp_Dir(aCand.myAxis);
+      isFound = true;
+      break;
+    }
+  }
+  if (!isFound)
+  {
+    return false;
+  }
+  // The new seam: the middle of the widest stretch of the turn round the new
+  // axis that the outline leaves free.
+  const gp_Sphere     aTurned(gp_Ax3(aC, anAxis), aSph.Radius());
+  std::vector<double> aUs;
+  for (const gp_Vec& aD : anOutline)
+  {
+    double aU, aV;
+    ElSLib::Parameters(aTurned, aC.Translated(aD * aSph.Radius()), aU, aV);
+    aUs.push_back(aU);
+  }
+  std::sort(aUs.begin(), aUs.end());
+  double aGap = aUs.front() + 2. * M_PI - aUs.back(), aSeamU = aUs.back() + aGap / 2.;
+  for (size_t i = 1; i < aUs.size(); ++i)
+  {
+    if (aUs[i] - aUs[i - 1] > aGap + 1.e-9)
+    {
+      aGap   = aUs[i] - aUs[i - 1];
+      aSeamU = (aUs[i] + aUs[i - 1]) / 2.;
+    }
+  }
+  if (aGap < M_PI / 18.)
+  {
+    return false;
+  }
+  const gp_Dir aSeam(gp_Vec(aC, ElSLib::Value(aSeamU, 0., aTurned)));
+  gp_Ax3       aPos(aC, anAxis, aSeam);
+  if (!aSph.Position().Direct())
+  {
+    aPos.YReverse();
+  }
+  occ::handle<Geom_SphericalSurface> aNewS = new Geom_SphericalSurface(aPos, aSph.Radius());
+  // The face's own, of a shape that is placed, stays under its location: the
+  // sphere is worked out as placed and kept as it lies before that.
+  occ::handle<Geom_Surface> aOwnS = aNewS;
+  if (!theTwin && !aLoc.IsIdentity())
+  {
+    aOwnS = occ::down_cast<Geom_Surface>(aNewS->Transformed(aLoc.Transformation().Inverted()));
+  }
+  // A twin made before, for an earlier thickness of the same shape: its edges
+  // hold their pcurves on that turned sphere already, and take no more. The
+  // axis found is the same every time.
+  if (theTwin)
+  {
+    occ::handle<Geom_SphericalSurface> aKept;
+    for (int i = 1; i <= anEMap.Extent() && aKept.IsNull(); ++i)
+    {
+      const occ::handle<BRep_TEdge> aTE = occ::down_cast<BRep_TEdge>(anEMap(i).TShape());
+      // A frozen edge may take a cache on another thread meanwhile.
+      const BRep_RepresentationLock aLock(aTE.get());
+      for (NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(aTE->Curves());
+           anIt.More() && aKept.IsNull();
+           anIt.Next())
+      {
+        if (!anIt.Value()->IsCurveOnSurface())
+        {
+          continue;
+        }
+        const occ::handle<Geom_SphericalSurface> aCand =
+          occ::down_cast<Geom_SphericalSurface>(anIt.Value()->Surface());
+        if (!aCand.IsNull() && aCand != aSphS
+            && std::abs(aCand->Radius() - aSph.Radius()) <= Precision::Confusion()
+            && aCand->Position().Location().IsEqual(aPos.Location(), Precision::Confusion())
+            && aCand->Position().Direction().IsEqual(aPos.Direction(), Precision::Angular())
+            && aCand->Position().XDirection().IsEqual(aPos.XDirection(), Precision::Angular())
+            && aCand->Position().Direct() == aPos.Direct())
+        {
+          aKept = aCand;
+        }
+      }
+    }
+    for (int i = 1; i <= anEMap.Extent() && !aKept.IsNull(); ++i)
+    {
+      double aF, aL;
+      if (BRep_Tool::CurveOnSurface(TopoDS::Edge(anEMap(i)), aKept, aNewLoc, aF, aL).IsNull())
+      {
+        aKept.Nullify();
+      }
+    }
+    if (!aKept.IsNull())
+    {
+      BRep_Builder aTB;
+      aTB.MakeFace(*theTwin, aKept, aNewLoc, BRep_Tool::Tolerance(theF));
+      for (TopoDS_Iterator anIt(theF.Oriented(TopAbs_FORWARD)); anIt.More(); anIt.Next())
+      {
+        aTB.Add(*theTwin, anIt.Value());
+      }
+      theTwin->Orientation(theF.Orientation());
+      return true;
+    }
+  }
+  NCollection_DataMap<TopoDS_Shape, occ::handle<Geom2d_Curve>, TopTools_ShapeMapHasher> aPCurves;
+  for (int i = 1; i <= anEMap.Extent(); ++i)
+  {
+    const TopoDS_Edge aE = TopoDS::Edge(anEMap(i).Oriented(TopAbs_FORWARD));
+    if (BRep_Tool::Degenerated(aE))
+    {
+      const TopoDS_Vertex aV = TopExp::FirstVertex(aE);
+      if (aV.IsNull())
+      {
+        return false;
+      }
+      double aU, aVv;
+      ElSLib::Parameters(aNewS->Sphere(), BRep_Tool::Pnt(aV), aU, aVv);
+      NCollection_Array1<gp_Pnt2d> aPoles(1, 2);
+      aPoles.SetValue(1, gp_Pnt2d(aU, aVv));
+      aPoles.SetValue(2, gp_Pnt2d(aU, aVv));
+      aPCurves.Bind(aE, new Geom2d_BezierCurve(aPoles));
+      continue;
+    }
+    if (BRep_Tool::IsClosed(aE, theF))
+    {
+      return false;
+    }
+    double                        aF, aL;
+    const occ::handle<Geom_Curve> aC3d = BRep_Tool::Curve(aE, aF, aL);
+    if (aC3d.IsNull())
+    {
+      return false;
+    }
+    // An edge of the shape given keeps its tolerance, and its pcurve on the
+    // turned sphere has to lie within it, which the projection does not
+    // promise: the pcurve is interpolated, through as many points as that
+    // takes.
+    // The twin's reaches past the edge's ends as far as the sphere lets it
+    // (ExtendOnSphere); the edge keeps its range.
+    double aTol = BRep_Tool::Tolerance(aE);
+    double aFx = aF, aLx = aL;
+    if (theTwin)
+    {
+      ExtendOnSphere(aC3d, aNewS->Sphere(), aFx, aLx);
+    }
+    occ::handle<Geom2d_Curve> aC2d =
+      theTwin ? InterpolatedOnSphere(aC3d, aFx, aLx, aNewS->Sphere(), 0.1 * aTol)
+              : GeomProjLib::Curve2d(aC3d, aF, aL, aNewS, aTol);
+    if (aC2d.IsNull())
+    {
+      return false;
+    }
+    // Clear of the new seam, the pcurve lies in one period as it comes.
+    const gp_Pnt2d aP2d = aC2d->Value((aF + aL) / 2.);
+    if (aP2d.X() < Precision::PConfusion() || aP2d.X() > 2. * M_PI - Precision::PConfusion())
+    {
+      return false;
+    }
+    aPCurves.Bind(aE, aC2d);
+  }
+
+  BRep_Builder              aBB;
+  occ::handle<Geom2d_Curve> aNullPCurve;
+  const double              aTolF = BRep_Tool::Tolerance(theF);
+  for (int i = 1; i <= anEMap.Extent(); ++i)
+  {
+    const TopoDS_Edge aE = TopoDS::Edge(anEMap(i).Oriented(TopAbs_FORWARD));
+    if (!aPCurves.IsBound(aE))
+    {
+      continue;
+    }
+    double aF, aL;
+    BRep_Tool::Range(aE, aF, aL);
+    if (theTwin)
+    {
+      aBB.UpdateEdge(aE, aPCurves(aE), aNewS, aNewLoc, BRep_Tool::Tolerance(aE));
+      aBB.Range(aE, aNewS, aNewLoc, aF, aL);
+      continue;
+    }
+    aBB.UpdateEdge(aE, aNullPCurve, theF, BRep_Tool::Tolerance(aE));
+    aBB.UpdateEdge(aE, aPCurves(aE), aOwnS, aLoc, BRep_Tool::Tolerance(aE));
+    aBB.Range(aE, aF, aL);
+  }
+  if (theTwin)
+  {
+    aBB.MakeFace(*theTwin, aNewS, aNewLoc, aTolF);
+    for (TopoDS_Iterator anIt(theF.Oriented(TopAbs_FORWARD)); anIt.More(); anIt.Next())
+    {
+      aBB.Add(*theTwin, anIt.Value());
+    }
+    theTwin->Orientation(theF.Orientation());
+    return true;
+  }
+  aBB.UpdateFace(theF, aOwnS, aLoc, aTolF);
+  return true;
+}
+
+//=================================================================================================
+
+// A section that is a whole turn of a circle, closed on its own vertex, is
+// started again at the point of it farthest from <theRef>, the shape the
+// section is wanted beside.
+// The vertices that cut such an edge leave as many pieces as there are of
+// them, and the trimming (TrimEdge, from the least parameter to the
+// greatest) loses the piece the edge's own vertex lies in. Where the
+// intersection starts a circle depends on how the shape lies in space: half
+// of a sphere's cap, its bottom removed inward with the Intersection join,
+// had the start across the circle from the face as it is made, and in the
+// arc it needs once turned by 40 degrees -- a valid solid of 11.598 for
+// 22.043. An edge whose start is already in the far half is left as it is.
+void BRepOffset_Tool::StartSectionsFarFrom(const TopoDS_Shape&             theRef,
+                                           const TopoDS_Face&              theF1,
+                                           const TopoDS_Face&              theF2,
+                                           NCollection_List<TopoDS_Shape>& theL1,
+                                           NCollection_List<TopoDS_Shape>& theL2,
+                                           const bool                      theMayRunRoundF1,
+                                           const bool                      theMayRunRoundF2)
+{
+  if (theRef.IsNull())
+  {
+    return;
+  }
+  std::vector<gp_Pnt> aRefPnts;
+  if (theRef.ShapeType() == TopAbs_EDGE && !BRep_Tool::Degenerated(TopoDS::Edge(theRef)))
+  {
+    BRepAdaptor_Curve aRef(TopoDS::Edge(theRef));
+    if (Precision::IsInfinite(aRef.FirstParameter()) || Precision::IsInfinite(aRef.LastParameter()))
+    {
+      return;
+    }
+    for (int j = 0; j <= 16; ++j)
+    {
+      aRefPnts.push_back(aRef.Value(aRef.FirstParameter()
+                                    + (aRef.LastParameter() - aRef.FirstParameter()) * j / 16.));
+    }
+  }
+  else
+  {
+    for (TopExp_Explorer anExp(theRef, TopAbs_VERTEX); anExp.More(); anExp.Next())
+    {
+      aRefPnts.push_back(BRep_Tool::Pnt(TopoDS::Vertex(anExp.Current())));
+    }
+    for (TopExp_Explorer anExp(theRef, TopAbs_EDGE); anExp.More(); anExp.Next())
+    {
+      const TopoDS_Edge& aRE = TopoDS::Edge(anExp.Current());
+      if (BRep_Tool::Degenerated(aRE))
+      {
+        continue;
+      }
+      BRepAdaptor_Curve aRef(aRE);
+      if (Precision::IsInfinite(aRef.FirstParameter()) || Precision::IsInfinite(aRef.LastParameter()))
+      {
+        continue;
+      }
+      for (int j = 1; j < 16; ++j)
+      {
+        aRefPnts.push_back(aRef.Value(aRef.FirstParameter()
+                                      + (aRef.LastParameter() - aRef.FirstParameter()) * j / 16.));
+      }
+    }
+  }
+  if (aRefPnts.empty())
+  {
+    return;
+  }
+  NCollection_List<TopoDS_Shape>::Iterator anIt1(theL1), anIt2(theL2);
+  for (; anIt1.More() && anIt2.More(); anIt1.Next(), anIt2.Next())
+  {
+    const TopoDS_Edge anE = TopoDS::Edge(anIt1.Value());
+    if (!anE.IsSame(anIt2.Value()))
+    {
+      continue;
+    }
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(anE, aV1, aV2);
+    double                        aF, aL;
+    const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anE, aF, aL);
+    if (aV1.IsNull() || !aV1.IsSame(aV2) || aC.IsNull() || !aC->IsPeriodic()
+        || std::abs((aL - aF) - aC->Period()) > Precision::PConfusion())
+    {
+      continue;
+    }
+    // Only a section that closes on each face as it does in space: one that
+    // runs round a face's period starts on the face's seam, and stays there.
+    // Round a removed face's (theMayRunRoundF1, F2) it may start anywhere,
+    // as long as the face itself is no whole turn: the wall is built of its
+    // pieces as they come. On a whole turn -- a cone's side, a dome -- the
+    // wall has the face's seam, and the section starts there.
+    bool isClosedOnFaces = true;
+    for (const TopoDS_Face& aFace : {theF1, theF2})
+    {
+      double                          aPF, aPL;
+      const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(anE, aFace, aPF, aPL);
+      if (aC2d.IsNull())
+      {
+        isClosedOnFaces = false;
+        break;
+      }
+      if (aC2d->Value(aPF).Distance(aC2d->Value(aPL)) <= 1.e-6)
+      {
+        continue;
+      }
+      bool mayRunRound = aFace.IsSame(theF1) ? theMayRunRoundF1 : theMayRunRoundF2;
+      if (mayRunRound)
+      {
+        const occ::handle<Geom_Surface> aS = BRep_Tool::Surface(aFace);
+        double                          aU1, aU2, aV1, aV2;
+        BRepTools::UVBounds(aFace, aU1, aU2, aV1, aV2);
+        mayRunRound = !(aS->IsUPeriodic() && aU2 - aU1 >= aS->UPeriod() - 1.e-6)
+                      && !(aS->IsVPeriodic() && aV2 - aV1 >= aS->VPeriod() - 1.e-6);
+      }
+      if (!mayRunRound)
+      {
+        isClosedOnFaces = false;
+        break;
+      }
+    }
+    if (!isClosedOnFaces)
+    {
+      continue;
+    }
+    const int aNb   = 64;
+    double    aFar  = -1., aT0 = aF, aAtStart = 0.;
+    for (int k = 0; k < aNb; ++k)
+    {
+      const double aT = aF + (aL - aF) * k / aNb;
+      const gp_Pnt aP = aC->Value(aT);
+      double       aD = RealLast();
+      for (const gp_Pnt& aR : aRefPnts)
+      {
+        aD = std::min(aD, aP.SquareDistance(aR));
+      }
+      if (k == 0)
+      {
+        aAtStart = aD;
+      }
+      if (aD > aFar)
+      {
+        aFar = aD;
+        aT0  = aT;
+      }
+    }
+    // Squared distances: the start is in the far half already.
+    if (aAtStart >= 0.25 * aFar)
+    {
+      continue;
+    }
+    BRepLib_MakeEdge aME(aC, aT0, aT0 + (aL - aF));
+    if (!aME.IsDone())
+    {
+      continue;
+    }
+    TopoDS_Edge  aNE = aME.Edge();
+    BRep_Builder aB;
+    aB.UpdateEdge(aNE, BRep_Tool::Tolerance(anE));
+    try
+    {
+      BOPTools_AlgoTools2D::BuildPCurveForEdgeOnFace(aNE, theF1);
+      BOPTools_AlgoTools2D::BuildPCurveForEdgeOnFace(aNE, theF2);
+    }
+    catch (Standard_Failure const&)
+    {
+      continue;
+    }
+    double aPF, aPL;
+    if (BRep_Tool::CurveOnSurface(aNE, theF1, aPF, aPL).IsNull()
+        || BRep_Tool::CurveOnSurface(aNE, theF2, aPF, aPL).IsNull())
+    {
+      continue;
+    }
+    BRepLib::SameParameter(aNE, Precision::Confusion(), true);
+    SHOW_TOPO_SHAPE(aNE, "SectionStartedFar", anE);
+    anIt1.ChangeValue() = aNE.Oriented(anIt1.Value().Orientation());
+    anIt2.ChangeValue() = aNE.Oriented(anIt2.Value().Orientation());
+  }
+}
+
+//=================================================================================================
+
+bool BRepOffset_Tool::TurnedOffPole(const TopoDS_Face& theF, TopoDS_Face& theTwin)
+{
+  return TurnSphereOffPole(theF, &theTwin);
+}
+
+//=================================================================================================
+
 bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
                                   TopoDS_Face&       BF,
                                   const bool         CanExtentSurface,
@@ -3465,6 +4254,26 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
   //---------------------------
   // extension de la geometrie.
   //---------------------------
+  // On a sphere whose axis was turned off it already -- a removed face's
+  // twin (TurnedOffPole) -- the old pole's edge has a pcurve that stays on
+  // one point.
+  bool isTurned = false;
+  for (TopExp_Explorer anExp(F, TopAbs_EDGE); anExp.More() && !isTurned; anExp.Next())
+  {
+    const TopoDS_Edge& aE = TopoDS::Edge(anExp.Current());
+    if (BRep_Tool::Degenerated(aE))
+    {
+      double                          aF, aL;
+      const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(aE, F, aF, aL);
+      isTurned =
+        !aC2d.IsNull() && aC2d->Value(aF).Distance(aC2d->Value(aL)) <= Precision::PConfusion()
+        && aC2d->Value((aF + aL) / 2.).Distance(aC2d->Value(aF)) <= Precision::PConfusion();
+    }
+  }
+  if (!isTurned && CanExtentSurface && UpdatePCurve && theEnlargeU && theExtensionMode == 1)
+  {
+    isTurned = TurnSphereOffPole(F);
+  }
   TopLoc_Location           L;
   occ::handle<Geom_Surface> S = BRep_Tool::Surface(F, L);
   double                    UU1, VV1, UU2, VV2;
@@ -3538,7 +4347,13 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
     uperiodic     = true;
     double Period = S->UPeriod();
     double Delta  = Period - (UF2 - UF1);
-    double alpha  = 0.1;
+    // A sphere just turned has its seam in the middle of what the face
+    // leaves free of the turn, and may take most of it: a tenth was not
+    // enough for a thickness of a fifth of the radius, where the section of
+    // a neighbour's offset was cut short at the face's end and met the next
+    // section at its far crossing instead (three quarters of a dome, a side
+    // removed outward: a valid solid on the wrong side, 89.196 for 260.937).
+    double alpha  = isTurned ? 0.45 : 0.1;
     UU1           = UF1 - alpha * Delta;
     UU2           = UF2 + alpha * Delta;
     if ((UU2 - UU1) > Period)
@@ -3805,13 +4620,94 @@ void BRepOffset_Tool::BuildNeighbour(
 
 //=================================================================================================
 
+// The vertex between two new edges that lie on one curve -- the sections of
+// an offset face with two removed faces of one surface, the domes of a
+// sphere cut along its equator: where the vertex they had lies nearest that
+// curve. Two edges on one circle do not cross; asked for their crossing,
+// Inter2d answers with an end of one of them, wherever the section happened
+// to end. False where the edges are on two curves.
+static bool VertexOnOneCurve(const TopoDS_Edge&   theE1,
+                             const TopoDS_Edge&   theE2,
+                             const TopoDS_Vertex& theOld,
+                             const double         theTol,
+                             TopoDS_Vertex&       theV)
+{
+  BRepAdaptor_Curve aC1(theE1), aC2(theE2);
+  if (aC1.GetType() != aC2.GetType())
+  {
+    return false;
+  }
+  const double aTol = std::max(theTol, Precision::Confusion());
+  const gp_Pnt aP   = BRep_Tool::Pnt(theOld);
+  double       aU1 = 0., aU2 = 0.;
+  gp_Pnt       aFoot;
+  if (aC1.GetType() == GeomAbs_Circle)
+  {
+    const gp_Circ a1 = aC1.Circle(), a2 = aC2.Circle();
+    if (a1.Location().Distance(a2.Location()) > aTol || std::abs(a1.Radius() - a2.Radius()) > aTol
+        || !a1.Axis().Direction().IsParallel(a2.Axis().Direction(), Precision::Angular()))
+    {
+      return false;
+    }
+    aU1   = ElCLib::Parameter(a1, aP);
+    aU2   = ElCLib::Parameter(a2, aP);
+    aFoot = ElCLib::Value(aU1, a1);
+  }
+  else if (aC1.GetType() == GeomAbs_Line)
+  {
+    const gp_Lin a1 = aC1.Line(), a2 = aC2.Line();
+    if (!a1.Direction().IsParallel(a2.Direction(), Precision::Angular())
+        || a1.Distance(a2.Location()) > aTol)
+    {
+      return false;
+    }
+    aU1   = ElCLib::Parameter(a1, aP);
+    aU2   = ElCLib::Parameter(a2, aP);
+    aFoot = ElCLib::Value(aU1, a1);
+  }
+  else
+  {
+    return false;
+  }
+  // Each parameter in its edge's own range.
+  auto anInRange = [](const BRepAdaptor_Curve& theC, double& theU) {
+    const double aF = theC.FirstParameter(), aL = theC.LastParameter();
+    if (theC.IsPeriodic())
+    {
+      while (theU < aF - Precision::PConfusion())
+      {
+        theU += theC.Period();
+      }
+      while (theU > aL + Precision::PConfusion() && theU - theC.Period() >= aF - Precision::PConfusion())
+      {
+        theU -= theC.Period();
+      }
+    }
+    return theU >= aF - Precision::PConfusion() && theU <= aL + Precision::PConfusion();
+  };
+  if (!anInRange(aC1, aU1) || !anInRange(aC2, aU2))
+  {
+    return false;
+  }
+  BRep_Builder aB;
+  theV = BRepLib_MakeVertex(aFoot);
+  theV.Orientation(TopAbs_INTERNAL);
+  aB.UpdateVertex(theV, aU1, TopoDS::Edge(theE1.Oriented(TopAbs_FORWARD)), theTol);
+  aB.UpdateVertex(theV, aU2, TopoDS::Edge(theE2.Oriented(TopAbs_FORWARD)), theTol);
+  return true;
+}
+
+//=================================================================================================
+
 void BRepOffset_Tool::ExtentFace(
   const TopoDS_Face&                                                        F,
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ConstShapes,
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ToBuild,
   const TopAbs_State                                                        Side,
   const double                                                              TolConf,
-  TopoDS_Face&                                                              NF)
+  TopoDS_Face&                                                              NF,
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theSteps,
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theStepSides)
 {
 
   TopExp_Explorer                                                          exp, exp2;
@@ -3945,6 +4841,7 @@ void BRepOffset_Tool::ExtentFace(
         EnLargeFace(TopoDS::Face(FTB), StopFace, false);
         TopoDS_Face NullFace;
         BRepOffset_Tool::Inter3D(EF, StopFace, LInt1, LInt2, Side, E, NullFace, NullFace);
+        StartSectionsFarFrom(E, EF, StopFace, LInt1, LInt2, false, true);
         // No intersection, it may happen for example for a chosen (non-offsetted) planar face and
         // its neighbour offsetted cylindrical face, if the offset is directed so that
         // the radius of the cylinder becomes smaller.
@@ -3994,6 +4891,88 @@ void BRepOffset_Tool::ExtentFace(
     double                         f, l;
     TopoDS_Edge                    ERef;
     TopoDS_Vertex                  V1, V2;
+    // Of the crossings Inter2d found, the one a vertex moves to: the nearest
+    // to where the vertex is.
+    // Both edges that meet at the vertex give the same answer, whichever is
+    // asked first.
+    auto aNearestTo = [](const NCollection_List<TopoDS_Shape>& theLV, const TopoDS_Vertex& theV) {
+      const gp_Pnt  aP = BRep_Tool::Pnt(theV);
+      TopoDS_Vertex aBest;
+      double        aBestD = RealLast();
+      for (NCollection_List<TopoDS_Shape>::Iterator anIt(theLV); anIt.More(); anIt.Next())
+      {
+        const double aD = aP.Distance(BRep_Tool::Pnt(TopoDS::Vertex(anIt.Value())));
+        if (aD < aBestD)
+        {
+          aBestD = aD;
+          aBest  = TopoDS::Vertex(anIt.Value());
+        }
+      }
+      return aBest;
+    };
+
+    // A section and the edge beside it that never cross: the flat of half a
+    // ball beside a removed dome has its section with the dome's sphere and
+    // the offset of its own rim as two circles about one centre, a hair
+    // apart (t^2 / 2R), and the face was left without a wire. They are joined
+    // by a step. The vertex stays the neighbour's end; the section takes the
+    // point of it nearest the vertex.
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aStepV, aStepSec,
+      aStepOth;
+    auto aStepAt = [&](const TopoDS_Edge&   theE,
+                       const TopoDS_Edge&   theN,
+                       const TopoDS_Vertex& theVk,
+                       TopoDS_Vertex&       theV) -> bool {
+      const bool isESec = ToBuild.IsBound(theE), isNSec = ToBuild.IsBound(theN);
+      if (isESec == isNSec || aStepV.IsBound(theVk))
+      {
+        return false;
+      }
+      const TopoDS_Edge& aSecOld = isESec ? theE : theN;
+      const TopoDS_Edge& anOthOld = isESec ? theN : theE;
+      const TopoDS_Edge  aSec    = TopoDS::Edge(Build(aSecOld));
+      const TopoDS_Edge  anOth   = TopoDS::Edge(Build(anOthOld));
+      double             aF, aL;
+      TopLoc_Location    aLoc;
+      occ::handle<Geom_Curve> aC = BRep_Tool::Curve(aSec, aLoc, aF, aL);
+      if (aC.IsNull())
+      {
+        return false;
+      }
+      const gp_Pnt aPV = BRep_Tool::Pnt(theVk);
+      GeomAPI_ProjectPointOnCurve aProj(aPV.Transformed(aLoc.Transformation().Inverted()),
+                                        aC,
+                                        aF,
+                                        aL);
+      if (aProj.NbPoints() == 0 || aProj.LowerDistance() < Precision::Confusion())
+      {
+        return false;
+      }
+      const double aU = aProj.LowerDistanceParameter();
+      TopoDS_Vertex aVP =
+        BRepLib_MakeVertex(aProj.NearestPoint().Transformed(aLoc.Transformation()));
+      aVP.Orientation(TopAbs_INTERNAL);
+      B.UpdateVertex(aVP, aU, TopoDS::Edge(aSec.Oriented(TopAbs_FORWARD)), TolConf);
+      TopoDS_Vertex aV1o, aV2o;
+      TopExp::Vertices(anOthOld, aV1o, aV2o);
+      TopoDS_Vertex aVK = theVk;
+      if (ConstShapes.IsBound(theVk))
+      {
+        aVK = TopoDS::Vertex(ConstShapes(theVk));
+      }
+      const bool isFirst = theVk.IsSame(aV1o);
+      aVK.Orientation((isFirst != (anOth.Orientation() == TopAbs_REVERSED)) ? TopAbs_FORWARD
+                                                                              : TopAbs_REVERSED);
+      if (!TryParameter(anOthOld, aVK, anOth, TolConf))
+      {
+        ProjectVertexOnEdge(aVK, anOth, TolConf);
+      }
+      aStepV.Bind(theVk, aVP);
+      aStepSec.Bind(theVk, aSecOld);
+      aStepOth.Bind(theVk, anOthOld);
+      theV = aVK;
+      return true;
+    };
 
     for (exp2.Init(W.Oriented(TopAbs_FORWARD), TopAbs_EDGE); exp2.More(); exp2.Next())
     {
@@ -4017,26 +4996,30 @@ void BRepOffset_Tool::ExtentFace(
             //---------------
             if (!Build.IsBound(V1))
             {
-              Inter2d(EF,
-                      TopoDS::Edge(Build(E)),
-                      TopoDS::Edge(Build(NEOnV1)),
-                      LV,
-                      /*TolConf*/ Precision::Confusion());
-
-              if (!LV.IsEmpty())
+              if (VertexOnOneCurve(TopoDS::Edge(Build(E)),
+                                   TopoDS::Edge(Build(NEOnV1)),
+                                   V1,
+                                   Precision::Confusion(),
+                                   V))
               {
-                if (Build(E).Orientation() == TopAbs_FORWARD)
-                {
-                  V = TopoDS::Vertex(LV.First());
-                }
-                else
-                {
-                  V = TopoDS::Vertex(LV.Last());
-                }
+                LV.Clear();
               }
               else
               {
-                return;
+                Inter2d(EF,
+                        TopoDS::Edge(Build(E)),
+                        TopoDS::Edge(Build(NEOnV1)),
+                        LV,
+                        /*TolConf*/ Precision::Confusion());
+
+                if (!LV.IsEmpty())
+                {
+                  V = aNearestTo(LV, V1);
+                }
+                else if (!aStepAt(E, NEOnV1, V1, V))
+                {
+                  return;
+                }
               }
             }
             else
@@ -4093,26 +5076,30 @@ void BRepOffset_Tool::ExtentFace(
 
             if (!Build.IsBound(V2))
             {
-              Inter2d(EF,
-                      TopoDS::Edge(Build(E)),
-                      TopoDS::Edge(Build(NEOnV2)),
-                      LV,
-                      /*TolConf*/ Precision::Confusion());
-
-              if (!LV.IsEmpty())
+              if (VertexOnOneCurve(TopoDS::Edge(Build(E)),
+                                   TopoDS::Edge(Build(NEOnV2)),
+                                   V2,
+                                   Precision::Confusion(),
+                                   V))
               {
-                if (Build(E).Orientation() == TopAbs_FORWARD)
-                {
-                  V = TopoDS::Vertex(LV.Last());
-                }
-                else
-                {
-                  V = TopoDS::Vertex(LV.First());
-                }
+                LV.Clear();
               }
               else
               {
-                return;
+                Inter2d(EF,
+                        TopoDS::Edge(Build(E)),
+                        TopoDS::Edge(Build(NEOnV2)),
+                        LV,
+                        /*TolConf*/ Precision::Confusion());
+
+                if (!LV.IsEmpty())
+                {
+                  V = aNearestTo(LV, V2);
+                }
+                else if (!aStepAt(E, NEOnV2, V2, V))
+                {
+                  return;
+                }
               }
             }
             else
@@ -4184,6 +5171,28 @@ void BRepOffset_Tool::ExtentFace(
         //-----------------------------------------------------
         NV1 = TopoDS::Vertex(ConstShapes(V1));
         NV2 = TopoDS::Vertex(ConstShapes(V2));
+        // The section's end at a step is its own.
+        if (aStepSec.IsBound(V1) && aStepSec(V1).IsSame(E))
+        {
+          NV1 = TopoDS::Vertex(aStepV(V1));
+        }
+        if (aStepSec.IsBound(V2) && aStepSec(V2).IsSame(E))
+        {
+          NV2 = TopoDS::Vertex(aStepV(V2));
+        }
+        // The edge that keeps its vertex at a step, and its other one too,
+        // is the edge it was: a copy of it is an edge the faces beside this
+        // one do not have -- the tube round the flat's rim, which is not
+        // stretched -- and the shell came out open along it.
+        if (((aStepOth.IsBound(V1) && aStepOth(V1).IsSame(E))
+             || (aStepOth.IsBound(V2) && aStepOth(V2).IsSame(E)))
+            && NV1.IsSame(V1) && NV2.IsSame(V2))
+        {
+          Build.UnBind(E);
+          ConstShapes.Bind(E, E.Oriented(TopAbs_FORWARD));
+          B.Add(NW, E);
+          continue;
+        }
 
         TopoDS_Shape aLocalVertexOrientedNV1 = NV1.Oriented(TopAbs_INTERNAL);
         TopoDS_Shape aLocalEdge              = NE.Oriented(TopAbs_INTERNAL);
@@ -4270,7 +5279,52 @@ void BRepOffset_Tool::ExtentFace(
           //-------------------
           // edge is not ferme.
           //-------------------
-          if (Or == TopAbs_FORWARD)
+          // A whole turn between two vertices is two arcs, and the order of
+          // the vertices' parameters says nothing of which: a rim in two
+          // arcs had both replaced by the one half of the section circle,
+          // and the face came out with no area. The arc is the one whose
+          // middle is nearest the middle of the edge it replaces.
+          bool isArcOfTurn = false;
+          {
+            BRepAdaptor_Curve aTurn(TopoDS::Edge(Build(E)));
+            if (aTurn.IsPeriodic() && std::abs(l - f - aTurn.Period()) < Precision::PConfusion()
+                && std::abs(U1 - U2) > Precision::PConfusion() && !BRep_Tool::Degenerated(E))
+            {
+              const double      aLow = std::min(U1, U2), aHigh = std::max(U1, U2);
+              BRepAdaptor_Curve anOld(E);
+              const gp_Pnt      aMid =
+                anOld.Value((anOld.FirstParameter() + anOld.LastParameter()) / 2.);
+              const bool isBeyond = aMid.Distance(aTurn.Value((aHigh + aLow + aTurn.Period()) / 2.))
+                                    < aMid.Distance(aTurn.Value((aLow + aHigh) / 2.));
+              // The arc runs from the vertex of its lower parameter.
+              const bool isFromV1 = (U1 < U2) != isBeyond;
+              B.Add(NE, (isFromV1 ? NV1 : NV2).Oriented(TopAbs_FORWARD));
+              B.Add(NE, (isFromV1 ? NV2 : NV1).Oriented(TopAbs_REVERSED));
+              if (isBeyond)
+              {
+                B.Range(NE, aHigh, aLow + aTurn.Period());
+              }
+              else
+              {
+                B.Range(NE, aLow, aHigh);
+              }
+              if (isFromV1)
+              {
+                ConstShapes.Bind(E, NE);
+                NE.Orientation(E.Orientation());
+              }
+              else
+              {
+                ConstShapes.Bind(E, NE.Oriented(TopAbs_REVERSED));
+                NE.Orientation(TopAbs::Reverse(E.Orientation()));
+              }
+              isArcOfTurn = true;
+            }
+          }
+          if (isArcOfTurn)
+          {
+          }
+          else if (Or == TopAbs_FORWARD)
           {
             if (U1 > U2)
             {
@@ -4345,6 +5399,68 @@ void BRepOffset_Tool::ExtentFace(
         ConstShapes.Bind(E, NE.Oriented(TopAbs_FORWARD));
       }
       B.Add(NW, NE);
+    }
+    // The steps: straight in the face's parameters, from the vertex that
+    // stays to the section's end.
+    for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator
+           aStepIt(aStepV);
+         aStepIt.More();
+         aStepIt.Next())
+    {
+      const TopoDS_Vertex& aVk = TopoDS::Vertex(aStepIt.Key());
+      const TopoDS_Vertex  aVP = TopoDS::Vertex(aStepIt.Value());
+      const TopoDS_Vertex  aVK = TopoDS::Vertex(ConstShapes(aVk));
+      TopLoc_Location      aSLoc;
+      const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(NF, aSLoc);
+      GeomAPI_ProjectPointOnSurf      aPrK(
+        BRep_Tool::Pnt(aVK).Transformed(aSLoc.Transformation().Inverted()),
+        aSurf);
+      GeomAPI_ProjectPointOnSurf aPrP(
+        BRep_Tool::Pnt(aVP).Transformed(aSLoc.Transformation().Inverted()),
+        aSurf);
+      if (aPrK.NbPoints() == 0 || aPrP.NbPoints() == 0)
+      {
+        continue;
+      }
+      double aUK, aVKp, aUP, aVPp;
+      aPrK.LowerDistanceParameters(aUK, aVKp);
+      aPrP.LowerDistanceParameters(aUP, aVPp);
+      const gp_Pnt2d aPK2(aUK, aVKp), aPP2(aUP, aVPp);
+      const double   aLen = aPK2.Distance(aPP2);
+      if (aLen < gp::Resolution())
+      {
+        continue;
+      }
+      occ::handle<Geom2d_Line> aLine = new Geom2d_Line(aPK2, gp_Dir2d(gp_Vec2d(aPK2, aPP2)));
+      TopoDS_Edge              aStep;
+      B.MakeEdge(aStep);
+      B.UpdateEdge(aStep, aLine, NF, TolConf);
+      B.Add(aStep, aVK.Oriented(TopAbs_FORWARD));
+      B.Add(aStep, aVP.Oriented(TopAbs_REVERSED));
+      B.Range(aStep, 0., aLen);
+      BRepLib::BuildCurve3d(aStep, TolConf);
+      // The way round the wire: the section leaves the vertex, or comes to it.
+      TopoDS_Edge aSecInW;
+      for (exp2.Init(W.Oriented(TopAbs_FORWARD), TopAbs_EDGE); exp2.More(); exp2.Next())
+      {
+        if (exp2.Current().IsSame(aStepSec(aVk)))
+        {
+          aSecInW = TopoDS::Edge(exp2.Current());
+          break;
+        }
+      }
+      TopoDS_Vertex aSV1, aSV2;
+      TopExp::Vertices(aSecInW, aSV1, aSV2);
+      const bool isLeaving = aVk.IsSame(aSV1) == (aSecInW.Orientation() == TopAbs_FORWARD);
+      B.Add(NW, aStep.Oriented(isLeaving ? TopAbs_FORWARD : TopAbs_REVERSED));
+      if (theSteps != nullptr)
+      {
+        theSteps->Bind(aVk, aStep.Oriented(isLeaving ? TopAbs_FORWARD : TopAbs_REVERSED));
+      }
+      if (theStepSides != nullptr)
+      {
+        theStepSides->Bind(aVk, aStepOth(aVk));
+      }
     }
     B.Add(NF, NW.Oriented(W.Orientation()));
   }

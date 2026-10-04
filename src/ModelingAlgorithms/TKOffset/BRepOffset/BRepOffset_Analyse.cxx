@@ -30,11 +30,17 @@
 #include <BRepOffset_Tool.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
+#include <Geom2d_Curve.hxx>
 #include <Geom_Curve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <GeomLProp_SLProps.hxx>
 #include <gp.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Cone.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
+#include <gp_Sphere.hxx>
 #include <gp_Vec.hxx>
 #include <IntTools_Context.hxx>
 #include <TopExp.hxx>
@@ -864,6 +870,223 @@ static TopoDS_Face PlanarFaceOn(const NCollection_List<TopoDS_Shape>& theEdges,
   return aF;
 }
 
+// Both faces on one sphere: the sphere.
+static bool AreOnOneSphere(const TopoDS_Face& theF1, const TopoDS_Face& theF2, gp_Sphere& theSph)
+{
+  BRepAdaptor_Surface aS1(theF1, false), aS2(theF2, false);
+  if (aS1.GetType() != GeomAbs_Sphere || aS2.GetType() != GeomAbs_Sphere)
+  {
+    return false;
+  }
+  const gp_Sphere aSph1 = aS1.Sphere(), aSph2 = aS2.Sphere();
+  if (aSph1.Location().Distance(aSph2.Location()) > Precision::Confusion()
+      || std::abs(aSph1.Radius() - aSph2.Radius()) > Precision::Confusion())
+  {
+    return false;
+  }
+  theSph = aSph1;
+  return true;
+}
+
+// The wall closing a tangent edge between two faces of one sphere. The edge
+// is a circle; carried a thickness round the sphere into the cap (theD, at
+// the edge's middle) it is the circle of the same axis there, and the wall
+// runs from that circle across the thickness on the cone from the sphere's
+// centre through it -- square to the sphere, as a plane's wall is square to
+// the plane. Its edges: on the cap (theEp), across the thickness at each end
+// (theTe, from theVp to theVpn), and where the kept face's offset meets it
+// (theEpn). Its normal runs into the cap.
+static TopoDS_Face SphereCapWall(const gp_Sphere&         theSph,
+                                 const BRepAdaptor_Curve& theC,
+                                 const TopoDS_Vertex      theV[2],
+                                 const gp_Dir&            theD,
+                                 const gp_Dir&            theNrm,
+                                 const double             theOffset,
+                                 TopoDS_Vertex            theVp[2],
+                                 TopoDS_Vertex            theVpn[2],
+                                 TopoDS_Edge              theTe[2],
+                                 TopoDS_Edge&             theEp,
+                                 TopoDS_Edge&             theEpn)
+{
+  const gp_Pnt aO  = theSph.Location();
+  const double aR  = theSph.Radius();
+  const gp_Dir aA  = theC.Circle().Axis().Direction();
+  const double f   = theC.FirstParameter(), l = theC.LastParameter();
+  const gp_Pnt aPm = theC.Value((f + l) / 2.);
+  // The polar angle of a point from the axis, and its way off the axis.
+  auto aRadial = [&](const gp_Pnt& theP) {
+    const gp_Vec aW(aO, theP);
+    const gp_Vec aU = aW - gp_Vec(aA) * aW.Dot(gp_Vec(aA));
+    return aU.Magnitude() < Precision::Confusion() ? gp_Vec() : aU.Normalized();
+  };
+  const gp_Vec aWm(aO, aPm);
+  const gp_Vec aUm = aRadial(aPm);
+  if (aUm.Magnitude() < 0.5)
+  {
+    return TopoDS_Face();
+  }
+  const double aTh0 = std::atan2(aUm.Dot(aWm), aWm.Dot(gp_Vec(aA)));
+  const gp_Vec aETh = aUm * std::cos(aTh0) - gp_Vec(aA) * std::sin(aTh0);
+  const double aS   = gp_Vec(theD).Dot(aETh) > 0. ? 1. : -1.;
+  const double aTh1 = aTh0 + aS * std::abs(theOffset) / aR;
+  if (aTh1 < 1.e-3 || aTh1 > M_PI - 1.e-3 || std::abs(aTh1 - M_PI / 2.) < 1.e-6)
+  {
+    return TopoDS_Face();
+  }
+  // The kept face's offset: off the sphere or into it.
+  const double aRn = aR + (gp_Vec(theNrm).Dot(aWm) > 0. ? theOffset : -theOffset);
+  if (aRn < Precision::Confusion())
+  {
+    return TopoDS_Face();
+  }
+  const gp_Vec aU0 = aRadial(BRep_Tool::Pnt(theV[0])), aU1 = aRadial(BRep_Tool::Pnt(theV[1]));
+  if (aU0.Magnitude() < 0.5 || aU1.Magnitude() < 0.5)
+  {
+    return TopoDS_Face();
+  }
+  // The cone: its apex at the centre, its generators aTh1 off the axis; v
+  // runs along them from the sphere, u round the axis from V's side.
+  const bool   isUp  = aTh1 < M_PI / 2.;
+  const gp_Dir aZ    = isUp ? aA : aA.Reversed();
+  const gp_Ax3 anAx(aO.Translated(gp_Vec(aA) * (aR * std::cos(aTh1))), aZ, gp_Dir(aU0));
+  const gp_Cone aCone(anAx, isUp ? aTh1 : M_PI - aTh1, aR * std::sin(aTh1));
+  // V's partner round the axis, the way the edge runs.
+  double aU1Par = std::atan2(aU0.Crossed(aU1).Dot(gp_Vec(aZ)), aU0.Dot(aU1));
+  if (theC.DN(f, 1).Dot(gp_Vec(aZ).Crossed(aU0)) > 0.)
+  {
+    if (aU1Par <= Precision::Angular())
+    {
+      aU1Par += 2. * M_PI;
+    }
+  }
+  else if (aU1Par >= -Precision::Angular())
+  {
+    aU1Par -= 2. * M_PI;
+  }
+  const double     aVn = aRn - aR;
+  BRepLib_MakeFace aMF(aCone,
+                       std::min(0., aU1Par),
+                       std::max(0., aU1Par),
+                       std::min(0., aVn),
+                       std::max(0., aVn));
+  if (!aMF.IsDone())
+  {
+    return TopoDS_Face();
+  }
+  TopoDS_Face aWall = aMF.Face();
+  // Its edges, told apart by where their vertices lie.
+  const double aTol = 1.e-6 * aR;
+  gp_Pnt       aPp[2];
+  for (int i = 0; i < 2; ++i)
+  {
+    const gp_Vec aU = i == 0 ? aU0 : aU1;
+    aPp[i] = aO.Translated((aU * std::sin(aTh1) + gp_Vec(aA) * std::cos(aTh1)) * aR);
+  }
+  for (TopExp_Explorer anExp(aWall, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(anExp.Current());
+    TopoDS_Vertex      aV1, aV2;
+    TopExp::Vertices(anE, aV1, aV2);
+    const double aD1 = aO.Distance(BRep_Tool::Pnt(aV1)), aD2 = aO.Distance(BRep_Tool::Pnt(aV2));
+    const bool   isR1 = std::abs(aD1 - aR) < aTol, isR2 = std::abs(aD2 - aR) < aTol;
+    if (isR1 && isR2)
+    {
+      theEp = anE;
+    }
+    else if (!isR1 && !isR2)
+    {
+      theEpn = anE;
+    }
+    else
+    {
+      const TopoDS_Vertex& aVR = isR1 ? aV1 : aV2;
+      const int i = BRep_Tool::Pnt(aVR).Distance(aPp[0]) < BRep_Tool::Pnt(aVR).Distance(aPp[1]) ? 0 : 1;
+      theTe[i]  = anE;
+      theVp[i]  = aVR;
+      theVpn[i] = isR1 ? aV2 : aV1;
+    }
+  }
+  if (theEp.IsNull() || theEpn.IsNull() || theTe[0].IsNull() || theTe[1].IsNull()
+      || theTe[0].IsSame(theTe[1]))
+  {
+    return TopoDS_Face();
+  }
+  // Into the cap.
+  BRepAdaptor_Surface aBAS(aWall, false);
+  gp_Pnt              aP;
+  gp_Vec              aDU, aDV;
+  aBAS.D1(0.5 * aU1Par, 0.5 * aVn, aP, aDU, aDV);
+  gp_Vec aNW = aDU ^ aDV;
+  if (aWall.Orientation() == TopAbs_REVERSED)
+  {
+    aNW.Reverse();
+  }
+  const gp_Vec aUmid = aRadial(aP);
+  const gp_Vec anInto =
+    (aUmid * std::cos(aTh1) - gp_Vec(aA) * std::sin(aTh1)) * aS;
+  if (aNW.Dot(anInto) < 0.)
+  {
+    aWall.Reverse();
+  }
+  return aWall;
+}
+
+// The type of the edge where the kept face's offset meets the wall of
+// SphereCapWall, as ChFi3d::DefineConnectType gives it for a plane's wall:
+// the edge lies off the kept face's sphere and has no pcurve on it, and the
+// face's normal there is the sphere's, where the edge points.
+static ChFiDS_TypeOfConcavity SphereCapWallEdgeType(const TopoDS_Edge& theE,
+                                                    const TopoDS_Face& theWall,
+                                                    const gp_Sphere&   theSph,
+                                                    const gp_Dir&      theNrm,
+                                                    const gp_Pnt&      theOnKept)
+{
+  double                          f, l;
+  const occ::handle<Geom2d_Curve> aC2 = BRep_Tool::CurveOnSurface(theE, theWall, f, l);
+  if (aC2.IsNull())
+  {
+    return ChFiDS_Other;
+  }
+  BRepAdaptor_Curve aBAC(theE);
+  const double      aMid = 0.5 * (f + l);
+  gp_Pnt            aP;
+  gp_Vec            aT;
+  aBAC.D1(aMid, aP, aT);
+  if (aT.Magnitude() < gp::Resolution())
+  {
+    return ChFiDS_Other;
+  }
+  aT.Normalize();
+  if (BRepTools::OriEdgeInFace(theE, theWall) == TopAbs_REVERSED)
+  {
+    aT.Reverse();
+  }
+  if (theWall.Orientation() == TopAbs_REVERSED)
+  {
+    aT.Reverse();
+  }
+  BRepAdaptor_Surface aBAS(theWall, false);
+  const gp_Pnt2d      aUV = aC2->Value(aMid);
+  gp_Pnt              aPS;
+  gp_Vec              aDU, aDV;
+  aBAS.D1(aUV.X(), aUV.Y(), aPS, aDU, aDV);
+  gp_Vec aN1 = aDU ^ aDV;
+  if (theWall.Orientation() == TopAbs_REVERSED)
+  {
+    aN1.Reverse();
+  }
+  gp_Vec aN2(theSph.Location(), aP);
+  if (gp_Vec(theNrm).Dot(gp_Vec(theSph.Location(), theOnKept)) < 0.)
+  {
+    aN2.Reverse();
+  }
+  if (aN1.Magnitude() < gp::Resolution() || aN2.Magnitude() < gp::Resolution())
+  {
+    return ChFiDS_Other;
+  }
+  return aT.Dot(aN1.Normalized() ^ aN2.Normalized()) > 0. ? ChFiDS_Convex : ChFiDS_Concave;
+}
+
 void BRepOffset_Analyse::TreatTangentCaps(
   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theCaps,
   const double                                                         theOffset)
@@ -899,7 +1122,14 @@ void BRepOffset_Analyse::TreatTangentCaps(
         continue;
       }
       BRepAdaptor_Curve aBAC(aEC);
-      if (aBAC.GetType() != GeomAbs_Line)
+      // Or a circle between two faces of one sphere -- the half ball with its
+      // sphere in two domes or two lunes, one removed. The kept face is its
+      // own strip, as a plane is, and its offset runs on round the sphere a
+      // thickness into the cap, to a wall square to the sphere: a cone from
+      // its centre.
+      gp_Sphere  aSph;
+      const bool isOnSphere = aBAC.GetType() == GeomAbs_Circle && AreOnOneSphere(aCF, aN, aSph);
+      if (aBAC.GetType() != GeomAbs_Line && !isOnSphere)
       {
         continue;
       }
@@ -913,8 +1143,9 @@ void BRepOffset_Analyse::TreatTangentCaps(
       // plane is the strip's.
       const double f = aBAC.FirstParameter(), l = aBAC.LastParameter();
       const gp_Dir aNrm = FaceNormalOnEdge(aEC, aN, (f + l) / 2.);
-      if (!aNrm.IsEqual(FaceNormalOnEdge(aEC, aN, f), 10. * Precision::Angular())
-          || !aNrm.IsEqual(FaceNormalOnEdge(aEC, aN, l), 10. * Precision::Angular()))
+      if (!isOnSphere
+          && (!aNrm.IsEqual(FaceNormalOnEdge(aEC, aN, f), 10. * Precision::Angular())
+              || !aNrm.IsEqual(FaceNormalOnEdge(aEC, aN, l), 10. * Precision::Angular())))
       {
         continue;
       }
@@ -958,6 +1189,37 @@ void BRepOffset_Analyse::TreatTangentCaps(
         {
           aFV[i] = TopoDS::Face(NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator(aMF).Value());
         }
+        else if (aMF.Extent() > 1)
+        {
+          // More than one: the face at the end is split too -- a box fused of
+          // two, not refined, every face across the joint in two pieces. The
+          // closure runs into the cap, so it meets the piece beside the cap:
+          // the one sharing the cap's other edge at this vertex.
+          for (TopExp_Explorer anExpC(aCF, TopAbs_EDGE); anExpC.More() && !isOk; anExpC.Next())
+          {
+            const TopoDS_Edge& aEO = TopoDS::Edge(anExpC.Current());
+            if (aEO.IsSame(aEC) || !myAncestors.Contains(aEO))
+            {
+              continue;
+            }
+            TopoDS_Vertex aO1, aO2;
+            TopExp::Vertices(aEO, aO1, aO2);
+            if (!aV[i].IsSame(aO1) && !aV[i].IsSame(aO2))
+            {
+              continue;
+            }
+            for (NCollection_List<TopoDS_Shape>::Iterator itF(Ancestors(aEO)); itF.More();
+                 itF.Next())
+            {
+              if (aMF.Contains(itF.Value()))
+              {
+                aFV[i] = TopoDS::Face(itF.Value());
+                isOk   = true;
+                break;
+              }
+            }
+          }
+        }
       }
       if (!isOk)
       {
@@ -965,42 +1227,61 @@ void BRepOffset_Analyse::TreatTangentCaps(
       }
       // V -> V' (a thickness into the cap) -> V'n (across the thickness).
       TopoDS_Vertex aVp[2], aVpn[2];
-      for (int i = 0; i < 2; ++i)
-      {
-        const gp_Pnt aP  = BRep_Tool::Pnt(aV[i]);
-        const gp_Pnt aPp = aP.Translated(gp_Vec(aD) * aT);
-        aBB.MakeVertex(aVp[i], aPp, Precision::Confusion());
-        aBB.MakeVertex(aVpn[i], aPp.Translated(gp_Vec(aNrm) * (aSign * aT)), Precision::Confusion());
-      }
-      BRepLib_MakeEdge aMS1(aV[0], aVp[0]), aMS2(aV[1], aVp[1]), aMEp(aVp[0], aVp[1]),
-        aMT1(aVp[0], aVpn[0]), aMT2(aVp[1], aVpn[1]), aMEpn(aVpn[0], aVpn[1]);
-      if (!aMS1.IsDone() || !aMS2.IsDone() || !aMEp.IsDone() || !aMT1.IsDone() || !aMT2.IsDone()
-          || !aMEpn.IsDone())
-      {
-        continue;
-      }
-      const TopoDS_Edge aS[2] = {aMS1.Edge(), aMS2.Edge()};
-      const TopoDS_Edge aTe[2] = {aMT1.Edge(), aMT2.Edge()};
-      const TopoDS_Edge aEp = aMEp.Edge(), aEpn = aMEpn.Edge();
+      TopoDS_Edge   aS[2], aTe[2], aEp, aEpn;
       // A planar kept face is its own tangent plane: its offset runs on to
       // the wall, and a strip would only lie on it (its sections with the
       // faces at the ends doubling the kept face's). The wall then meets the
-      // kept face itself.
-      const bool isPlanarN = BRepAdaptor_Surface(aN, false).GetType() == GeomAbs_Plane;
-      NCollection_List<TopoDS_Shape> aLStrip, aLWall;
-      aLStrip.Append(aEC.Oriented(TopAbs_FORWARD));
-      aLStrip.Append(aS[1]);
-      aLStrip.Append(aEp);
-      aLStrip.Append(aS[0]);
-      aLWall.Append(aEp);
-      aLWall.Append(aTe[1]);
-      aLWall.Append(aEpn);
-      aLWall.Append(aTe[0]);
-      const TopoDS_Face aStrip = isPlanarN ? TopoDS_Face() : PlanarFaceOn(aLStrip, aNrm);
-      const TopoDS_Face aWall  = PlanarFaceOn(aLWall, aD);
-      if ((!isPlanarN && aStrip.IsNull()) || aWall.IsNull())
+      // kept face itself. So does a face of the cap's own sphere.
+      const bool isPlanarN =
+        isOnSphere || BRepAdaptor_Surface(aN, false).GetType() == GeomAbs_Plane;
+      TopoDS_Face aStrip, aWall;
+      if (isOnSphere)
       {
-        continue;
+        aWall = SphereCapWall(aSph, aBAC, aV, aD, aNrm, aSign * aT, aVp, aVpn, aTe, aEp, aEpn);
+        if (aWall.IsNull())
+        {
+          continue;
+        }
+      }
+      else
+      {
+        for (int i = 0; i < 2; ++i)
+        {
+          const gp_Pnt aP  = BRep_Tool::Pnt(aV[i]);
+          const gp_Pnt aPp = aP.Translated(gp_Vec(aD) * aT);
+          aBB.MakeVertex(aVp[i], aPp, Precision::Confusion());
+          aBB.MakeVertex(aVpn[i],
+                         aPp.Translated(gp_Vec(aNrm) * (aSign * aT)),
+                         Precision::Confusion());
+        }
+        BRepLib_MakeEdge aMS1(aV[0], aVp[0]), aMS2(aV[1], aVp[1]), aMEp(aVp[0], aVp[1]),
+          aMT1(aVp[0], aVpn[0]), aMT2(aVp[1], aVpn[1]), aMEpn(aVpn[0], aVpn[1]);
+        if (!aMS1.IsDone() || !aMS2.IsDone() || !aMEp.IsDone() || !aMT1.IsDone()
+            || !aMT2.IsDone() || !aMEpn.IsDone())
+        {
+          continue;
+        }
+        aS[0]  = aMS1.Edge();
+        aS[1]  = aMS2.Edge();
+        aTe[0] = aMT1.Edge();
+        aTe[1] = aMT2.Edge();
+        aEp    = aMEp.Edge();
+        aEpn   = aMEpn.Edge();
+        NCollection_List<TopoDS_Shape> aLStrip, aLWall;
+        aLStrip.Append(aEC.Oriented(TopAbs_FORWARD));
+        aLStrip.Append(aS[1]);
+        aLStrip.Append(aEp);
+        aLStrip.Append(aS[0]);
+        aLWall.Append(aEp);
+        aLWall.Append(aTe[1]);
+        aLWall.Append(aEpn);
+        aLWall.Append(aTe[0]);
+        aStrip = isPlanarN ? TopoDS_Face() : PlanarFaceOn(aLStrip, aNrm);
+        aWall  = PlanarFaceOn(aLWall, aD);
+        if ((!isPlanarN && aStrip.IsNull()) || aWall.IsNull())
+        {
+          continue;
+        }
       }
       // The face the wall's far edge meets: the strip, or the kept face.
       const TopoDS_Face& aNear = isPlanarN ? aN : aStrip;
@@ -1059,6 +1340,42 @@ void BRepOffset_Analyse::TreatTangentCaps(
         myAncestors.Add(aTi, aLT);
         myMapEdgeType.Bind(aTi, NCollection_List<BRepOffset_Interval>());
         EdgeAnalyse(aTi, aWall, aFV[i], aSinTol, myMapEdgeType(aTi));
+        // The wall's end edge is a line square to the kept face, and lies on
+        // the face at the end only where that face is a plane. On a curved
+        // one -- the sphere of half a dome, the tangent edge ending at its
+        // pole -- it has no pcurve to be analysed by: the edge is convex or
+        // concave as the wall runs behind the face or in front of it, seen
+        // from where the edge's middle falls on the face.
+        if (BRepAdaptor_Surface(aFV[i], false).GetType() != GeomAbs_Plane)
+        {
+          const gp_Pnt aPi  = BRep_Tool::Pnt(aVp[i]), aPn = BRep_Tool::Pnt(aVpn[i]);
+          const gp_Pnt aMid = aPi.XYZ() * 0.5 + aPn.XYZ() * 0.5;
+          const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(aFV[i]);
+          GeomAPI_ProjectPointOnSurf      aProj(aMid, aSurf);
+          if (aProj.NbPoints() > 0)
+          {
+            double aU, aVv;
+            aProj.LowerDistanceParameters(aU, aVv);
+            GeomLProp_SLProps aProps(aSurf, aU, aVv, 1, Precision::Confusion());
+            if (aProps.IsNormalDefined())
+            {
+              gp_Dir aNF = aProps.Normal();
+              if (aFV[i].Orientation() == TopAbs_REVERSED)
+              {
+                aNF.Reverse();
+              }
+              const gp_Vec aAlong(BRep_Tool::Pnt(aV[i]), BRep_Tool::Pnt(aV[1 - i]));
+              double aF1, aL1;
+              BRep_Tool::Range(aTi, aF1, aL1);
+              NCollection_List<BRepOffset_Interval>& aLI = myMapEdgeType(aTi);
+              aLI.Clear();
+              aLI.Append(BRepOffset_Interval(aF1,
+                                             aL1,
+                                             aAlong.Dot(gp_Vec(aNF)) < 0. ? ChFiDS_Convex
+                                                                          : ChFiDS_Concave));
+            }
+          }
+        }
 
         aLVp.Append(anInFace(aEp, aWall));
         aLVp.Append(aTi);
@@ -1092,7 +1409,21 @@ void BRepOffset_Analyse::TreatTangentCaps(
         aLE.Append(aNear);
         myAncestors.Add(aEpnW, aLE);
         myMapEdgeType.Bind(aEpnW, NCollection_List<BRepOffset_Interval>());
-        EdgeAnalyse(aEpnW, aWall, aNear, aSinTol, myMapEdgeType(aEpnW));
+        if (isOnSphere)
+        {
+          // Off the kept face's sphere, the edge has no pcurve on it: the
+          // kept face's normal is the sphere's, where the edge points.
+          double aF1, aL1;
+          BRep_Tool::Range(aEpnW, aF1, aL1);
+          myMapEdgeType(aEpnW).Append(
+            BRepOffset_Interval(aF1,
+                                aL1,
+                                SphereCapWallEdgeType(aEpnW, aWall, aSph, aNrm, aBAC.Value((f + l) / 2.))));
+        }
+        else
+        {
+          EdgeAnalyse(aEpnW, aWall, aNear, aSinTol, myMapEdgeType(aEpnW));
+        }
         aReplace(aNear, isPlanarN ? aEC : aEp, aEpnW);
       }
       // In the cap, the tangent edge gives way to the wall's edge.

@@ -806,6 +806,16 @@ void BRepOffset_Offset::Init(
     } // end of if (!DegEdges.IsEmpty())
   } // end of processing offsets of faces with possible degenerated edges
 
+  // The apexes were taken on the surface as it lies before the face's
+  // location, and become vertices of the offset face: they go where the face
+  // is. Left behind, the offset of a cone that had been moved ran from its
+  // base to the apex of the cone before the move.
+  if (!L.IsIdentity() && !IsTransformed)
+  {
+    MinApex.Transform(L.Transformation());
+    MaxApex.Transform(L.Transformation());
+  }
+
   // find the PCurves of the edges of <Faces>
 
   BRep_Builder myBuilder;
@@ -887,6 +897,8 @@ void BRepOffset_Offset::Init(
       double                    f, l;
       occ::handle<Geom2d_Curve> C2d = BRep_Tool::CurveOnSurface(E, CurFace, f, l);
       TopoDS_Edge               OE;
+      double                    aRangeAtApex[2] = {0., 0.};
+      bool                      hasRangeAtApex  = false;
       if (MapSS.IsBound(E) && !VonDegen.Contains(V1) && !VonDegen.Contains(V2))
       { // c`est un edge de couture
         OE                                    = TopoDS::Edge(MapSS(E));
@@ -1038,6 +1050,9 @@ void BRepOffset_Offset::Init(
           }
           // myBuilder.Range(OE,f,l);
           myBuilder.Range(OE, myFace, f, l);
+          aRangeAtApex[0] = f;
+          aRangeAtApex[1] = l;
+          hasRangeAtApex  = true;
           if (!BRep_Tool::Degenerated(E) && TheSurf->IsUClosed())
           {
             TopoDS_Shape              aLocalShapeReversedE = E.Reversed();
@@ -1080,6 +1095,22 @@ void BRepOffset_Offset::Init(
         if (!BRep_Tool::Degenerated(OE))
         {
           ComputeCurve3d(OE, C2d, TheSurf, L, BRep_Tool::Tolerance(E));
+          // An edge re-trimmed at the apex got its range on the face only,
+          // and the 3d curve computed for it came with none: a line, from
+          // -2e100 to 2e100. The face's (u, v) bounds were infinite with it
+          // -- EnLargeFace then kept the wrong side of the apex, and the
+          // offset never met the removed face -- and an intersection on the
+          // edge was given a parameter of 2e100. The iso computed here runs
+          // with its pcurve, so the pcurve's range is the curve's.
+          if (hasRangeAtApex)
+          {
+            double                  aF3d, aL3d;
+            occ::handle<Geom_Curve> aC3d = BRep_Tool::Curve(OE, aF3d, aL3d);
+            if (!aC3d.IsNull() && (Precision::IsInfinite(aF3d) || Precision::IsInfinite(aL3d)))
+            {
+              myBuilder.Range(OE, aRangeAtApex[0], aRangeAtApex[1], true);
+            }
+          }
         }
         MapSS.Bind(E, OE);
       }

@@ -1,0 +1,3 @@
+[submodule "tests/fork"]
+	path = tests/fork
+	url = ../OCCT-tests.git

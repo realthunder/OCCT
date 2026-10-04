@@ -567,6 +567,14 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
       {
         // Construction by filling remplissage
         // ----------------------------
+        if (!sameparam && Hpivot.IsNull())
+        {
+          // the fill between two distinct points runs along the pivot, and
+          // the stripes do not end on one edge here: there is none
+          PerformMoreThreeCorner(Index, 2);
+          done = true;
+          return;
+        }
         double                         uPCArc1, uPCArc2;
         gp_Pnt2d                       p2da1, p2df1, p2da2, p2df2, p2dfac1, p2dfac2;
         gp_Vec2d                       v2dfac1, v2dfac2;

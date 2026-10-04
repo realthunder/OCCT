@@ -50,6 +50,7 @@
 #include <Standard_OutOfRange.hxx>
 #include <StdFail_NotDone.hxx>
 #include <gce_MakePln.hxx>
+#include <Precision.hxx>
 #include <ProjLib.hxx>
 #include <IntAna2d_AnaIntersection.hxx>
 #include <IntAna2d_IntPoint.hxx>
@@ -322,6 +323,17 @@ double EstimDist(const gp_Cone& theCon1, const gp_Cone& theCon2)
 
   double aDist = std::max(aMinDist[0], aMinDist[1]);
   return aDist;
+}
+
+// The sphere's centre on the other surface's axis: the section is circles
+// round that axis. The sphere's own axis -- any line through its centre --
+// says nothing of it, yet the two axes were asked to meet exactly at the
+// centre, and rounding answered as the sphere happened to be turned: a cone
+// with its apex at the centre met the sphere in circles, or, the sphere's
+// axis turned off its pole, in B-splines walked point by point.
+static bool IsCentreOnAxis(const gp_Ax1& theAxis, const gp_Pnt& theCentre)
+{
+  return gp_Lin(theAxis).Distance(theCentre) <= Precision::Confusion();
 }
 
 //=================================================================================================
@@ -1373,9 +1385,8 @@ IntAna_QuadQuadGeo::IntAna_QuadQuadGeo(const gp_Cylinder& Cyl,
 void IntAna_QuadQuadGeo::Perform(const gp_Cylinder& Cyl, const gp_Sphere& Sph, const double)
 {
   done           = true;
-  gp_Pnt      Pt = Sph.Location();
-  AxeOperator A1A2(Cyl.Axis(), Sph.Position().Axis());
-  if ((A1A2.Intersect() && Pt.Distance(A1A2.PtIntersect()) == 0.0) || (A1A2.Same()))
+  gp_Pnt Pt = Sph.Location();
+  if (IsCentreOnAxis(Cyl.Axis(), Pt))
   {
     if (Sph.Radius() < Cyl.Radius())
     {
@@ -1920,21 +1931,27 @@ void IntAna_QuadQuadGeo::Perform(const gp_Sphere& Sph, const gp_Cone& Con, const
   //
   done = true;
   //
-  AxeOperator A1A2(Con.Axis(), Sph.Position().Axis());
-  gp_Pnt      Pt = Sph.Location();
+  gp_Pnt Pt = Sph.Location();
   //
-  if ((A1A2.Intersect() && (Pt.Distance(A1A2.PtIntersect()) == 0.0)) || A1A2.Same())
+  if (IsCentreOnAxis(Con.Axis(), Pt))
   {
     gp_Pnt ConApex        = Con.Apex();
     double dApexSphCenter = Pt.Distance(ConApex);
-    gp_Dir ConDir;
-    if (dApexSphCenter > RealEpsilon())
+    // Along the axis, from the apex towards the centre. The line between
+    // the two points is no direction where they are a rounding apart -- an
+    // apex 1e-15 off the centre of a sphere that was placed sent the circles
+    // off along it, and the section was empty.
+    gp_Dir ConDir = Con.Position().Direction();
+    if (dApexSphCenter > Precision::Confusion())
     {
-      ConDir = gp_Dir(gp_Vec(ConApex, Pt));
+      if (gp_Vec(ConApex, Pt).Dot(gp_Vec(ConDir)) < 0.)
+      {
+        ConDir.Reverse();
+      }
     }
     else
     {
-      ConDir = Con.Position().Direction();
+      dApexSphCenter = 0.;
     }
 
     double Rad = Sph.Radius();

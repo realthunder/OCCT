@@ -39,6 +39,8 @@ class TopoDS_Shape;
 class BRepAlgo_AsDes;
 class BRepAlgo_Image;
 class Geom_Curve;
+class Geom2d_Curve;
+class gp_Sphere;
 
 class BRepOffset_Tool
 {
@@ -126,6 +128,39 @@ public:
                                           bool&                     enlargeVfirst,
                                           bool&                     enlargeVlast);
 
+  //! A face of a sphere that reaches a pole, on less than a whole turn, on
+  //! the same sphere with its axis turned off the face: <theTwin> is a new
+  //! face with the wires of <theF>, whose edges take a pcurve on the turned
+  //! sphere beside their own. <theF> is not changed. False where the face is
+  //! no such face, or no axis keeps both poles clear of it.
+  Standard_EXPORT static bool TurnedOffPole(const TopoDS_Face& theF, TopoDS_Face& theTwin);
+
+  //! A section that is a whole turn of a circle, closed on its own vertex,
+  //! is started again at the point of it farthest from <theRef>, the shape
+  //! the section is wanted beside: the trimming loses the piece the edge's
+  //! own vertex lies in. <theL1> and <theL2> are the section as Inter3D gave
+  //! it for <theF1> and <theF2>. An edge that runs round a face's period is
+  //! left as it is, unless that face is a removed one (<theMayRunRound>).
+  Standard_EXPORT static void StartSectionsFarFrom(const TopoDS_Shape&             theRef,
+                                                   const TopoDS_Face&              theF1,
+                                                   const TopoDS_Face&              theF2,
+                                                   NCollection_List<TopoDS_Shape>& theL1,
+                                                   NCollection_List<TopoDS_Shape>& theL2,
+                                                   const bool theMayRunRoundF1 = false,
+                                                   const bool theMayRunRoundF2 = false);
+
+  //! The pcurve of the circle <theC> on <theSph>, with the circle's own
+  //! parameters, no farther from it than <theTol>. <theF> and <theL> are
+  //! moved out as far as the circle can be followed there: ten degrees off
+  //! the sphere's poles, five off its seam, most of what is left of its
+  //! turn. Null where <theC> is no circle or comes too near a pole.
+  Standard_EXPORT static occ::handle<Geom2d_Curve> PCurveOnSphere(
+    const occ::handle<Geom_Curve>& theC,
+    const gp_Sphere&               theSph,
+    double&                        theF,
+    double&                        theL,
+    const double                   theTol);
+
   //! Returns True if The Surface of <NF> has changed.
   //! if <ChangeGeom> is TRUE the surface can be
   //! changed .
@@ -155,13 +190,23 @@ public:
                                           const double       theLenBeforeVfirst = -1.,
                                           const double       theLenAfterVlast   = -1.);
 
+  //! Stretches the face F to the context faces of ToBuild.
+  //! Where the section with a context face and the edge beside it never cross
+  //! -- two circles about one centre in a plane -- the two are joined by a
+  //! step: a straight edge in the face's parameters from the vertex, which
+  //! stays the neighbour's end, to the nearest point of the section. theSteps
+  //! then has the step under the vertex of F, its first vertex the one that
+  //! stays, and theStepSides the edge of F that keeps the vertex.
   Standard_EXPORT static void ExtentFace(
     const TopoDS_Face&                                                        F,
     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ConstShapes,
     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ToBuild,
     const TopAbs_State                                                        Side,
     const double                                                              TolConf,
-    TopoDS_Face&                                                              NF);
+    TopoDS_Face&                                                              NF,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theSteps = nullptr,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theStepSides =
+      nullptr);
 
   //! Via the wire explorer store in <NOnV1> for
   //! an Edge <E> of <W> his Edge neighbour on the first

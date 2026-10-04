@@ -4061,7 +4061,7 @@ void BOPAlgo_PaveFiller::UpdateBlocksWithSharedVertices()
   // split edges of the faces end on the new one, the section edge would
   // not connect, and the faces it should split would stay whole: a fuse of
   // two solids sharing a face came out empty. Whether a shared vertex is
-  // replaced here can turn on 1e-14 in the input (tests/occ-issues local02).
+  // replaced here can turn on 1e-14 in the input (tests/fork/occ-issues local02).
   if (!aMVReplaced.IsEmpty())
   {
     const int aNbS = myDS->NbSourceShapes();
@@ -4099,7 +4099,7 @@ bool BOPAlgo_PaveFiller::EstimatePaveOnCurve(const int          nV,
   // The tolerance PutPaveOnCurve() puts the vertex on the curve with. With
   // less, a vertex at a distance between the two is not replaced here, yet
   // PutPaveOnCurve() takes it onto the curve and raises its tolerance in
-  // place -- an input's vertex, in non-destructive mode (tests/occ-issues
+  // place -- an input's vertex, in non-destructive mode (tests/fork/occ-issues
   // local04).
   bIsVertexOnLine = myContext->IsVertexOnLine(aV, aIC, aTolR3D + myFuzzyValue, aT);
   return bIsVertexOnLine;

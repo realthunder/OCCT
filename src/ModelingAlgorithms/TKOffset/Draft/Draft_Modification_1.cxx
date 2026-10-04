@@ -99,7 +99,8 @@ static double SmartParameter(Draft_EdgeInfo&,
                              const gp_Pnt&,
                              const int,
                              const occ::handle<Geom_Surface>&,
-                             const occ::handle<Geom_Surface>&);
+                             const occ::handle<Geom_Surface>&,
+                             bool&);
 
 static TopAbs_Orientation Orientation(const TopoDS_Shape&, const TopoDS_Face&);
 
@@ -1511,8 +1512,15 @@ void Draft_Modification::Perform()
             {
               occ::handle<Geom_Surface> S1 = myFMap.FindFromKey(Einf2.FirstFace()).Geometry();
               occ::handle<Geom_Surface> S2 = myFMap.FindFromKey(Einf2.SecondFace()).Geometry();
+              bool isOk = false;
               Vinf.ChangeParameter(Edg2) =
-                SmartParameter(Einf2, BRep_Tool::Tolerance(Edg2), pvt, done, S1, S2);
+                SmartParameter(Einf2, BRep_Tool::Tolerance(Edg2), pvt, done, S1, S2, isOk);
+              if (!isOk)
+              {
+                errStat  = Draft_VertexRecomputation;
+                badShape = TVV;
+                return;
+              }
             }
             else
             {
@@ -1528,8 +1536,15 @@ void Draft_Modification::Perform()
           {
             occ::handle<Geom_Surface> S1 = myFMap.FindFromKey(Einf1.FirstFace()).Geometry();
             occ::handle<Geom_Surface> S2 = myFMap.FindFromKey(Einf1.SecondFace()).Geometry();
+            bool isOk = false;
             Vinf.ChangeParameter(Edg1) =
-              SmartParameter(Einf1, BRep_Tool::Tolerance(Edg1), pvt, done, S1, S2);
+              SmartParameter(Einf1, BRep_Tool::Tolerance(Edg1), pvt, done, S1, S2, isOk);
+            if (!isOk)
+            {
+              errStat  = Draft_VertexRecomputation;
+              badShape = TVV;
+              return;
+            }
           }
           else
           {
@@ -1615,8 +1630,15 @@ void Draft_Modification::Perform()
         {
           occ::handle<Geom_Surface> S1 = myFMap.FindFromKey(Einf.FirstFace()).Geometry();
           occ::handle<Geom_Surface> S2 = myFMap.FindFromKey(Einf.SecondFace()).Geometry();
+          bool isOk = false;
           Vinf.ChangeParameter(Edg) =
-            SmartParameter(Einf, BRep_Tool::Tolerance(Edg), pvt, done, S1, S2);
+            SmartParameter(Einf, BRep_Tool::Tolerance(Edg), pvt, done, S1, S2, isOk);
+          if (!isOk)
+          {
+            errStat  = Draft_VertexRecomputation;
+            badShape = TVV;
+            return;
+          }
         }
         else
         {
@@ -1631,6 +1653,52 @@ void Draft_Modification::Perform()
             }
           }
           Vinf.ChangeParameter(Edg) = param;
+        }
+      }
+    }
+  }
+
+  // Every face of the shape at a vertex must pass through the vertex's new
+  // point. A face the draft does not reach -- one that touches a drafted
+  // face at a vertex only -- keeps its surface, and the point its edges
+  // give the vertex can lie off it: the draft cannot be made by moving the
+  // geometry alone (a new edge would be needed there).
+  {
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      aVFMap;
+    TopExp::MapShapesAndAncestors(myShape, TopAbs_VERTEX, TopAbs_FACE, aVFMap);
+    for (int i = 1; i <= myVMap.Extent(); i++)
+    {
+      const TopoDS_Vertex& aV = myVMap.FindKey(i);
+      if (!aVFMap.Contains(aV))
+      {
+        continue;
+      }
+      const gp_Pnt aP   = myVMap(i).Geometry();
+      const double aTol = std::max(BRep_Tool::Tolerance(aV), 0.1 * Precision::Confusion());
+      for (NCollection_List<TopoDS_Shape>::Iterator anIt(aVFMap.FindFromKey(aV)); anIt.More();
+           anIt.Next())
+      {
+        const TopoDS_Face&        aF = TopoDS::Face(anIt.Value());
+        occ::handle<Geom_Surface> aS;
+        if (myFMap.Contains(aF))
+        {
+          aS = myFMap.FindFromKey(aF).Geometry();
+        }
+        if (aS.IsNull())
+        {
+          aS = BRep_Tool::Surface(aF);
+        }
+        GeomAPI_ProjectPointOnSurf aProj(aP, aS);
+        if (!aProj.IsDone() || aProj.NbPoints() == 0)
+        {
+          continue;
+        }
+        if (aProj.LowerDistance() > 100. * aTol)
+        {
+          errStat  = Draft_VertexRecomputation;
+          badShape = aV;
+          return;
         }
       }
     }
@@ -2097,7 +2165,12 @@ static bool Choose(
   {
     occ::handle<Geom_Surface> S1 = theFMap.FindFromKey(Einf.FirstFace()).Geometry();
     occ::handle<Geom_Surface> S2 = theFMap.FindFromKey(Einf.SecondFace()).Geometry();
-    prm = SmartParameter(Einf, BRep_Tool::Tolerance(Eref), BRep_Tool::Pnt(Vtx), done, S1, S2);
+    bool isOk = false;
+    prm = SmartParameter(Einf, BRep_Tool::Tolerance(Eref), BRep_Tool::Pnt(Vtx), done, S1, S2, isOk);
+    if (!isOk)
+    {
+      prm = param;
+    }
   }
   else
   {
@@ -2126,8 +2199,18 @@ static bool Choose(
         {
           occ::handle<Geom_Surface> S1 = theFMap.FindFromKey(Einfo.FirstFace()).Geometry();
           occ::handle<Geom_Surface> S2 = theFMap.FindFromKey(Einfo.SecondFace()).Geometry();
-          prm =
-            SmartParameter(Einfo, BRep_Tool::Tolerance(Edg), BRep_Tool::Pnt(Vtx), anewdone, S1, S2);
+          bool isOk = false;
+          prm       = SmartParameter(Einfo,
+                               BRep_Tool::Tolerance(Edg),
+                               BRep_Tool::Pnt(Vtx),
+                               anewdone,
+                               S1,
+                               S2,
+                               isOk);
+          if (!isOk)
+          {
+            prm = anewparam;
+          }
         }
         else
         {
@@ -2271,13 +2354,21 @@ static double Parameter(const occ::handle<Geom_Curve>& C, const gp_Pnt& P, int& 
 
 //=================================================================================================
 
+// The parameter of <Pnt> on the edge's new curve when it lies past the curve's
+// <sign> end: the first pcurve is extended to the point and the curve rebuilt
+// from it. <theIsDone> is false, and the edge info left with its old curves,
+// when that rebuild fails -- the point's projection does not lie along the
+// second surface, say, as when the drafted face no longer meets it near the
+// edge. The return value is then meaningless.
 static double SmartParameter(Draft_EdgeInfo&                  Einf,
                              const double                     EdgeTol,
                              const gp_Pnt&                    Pnt,
                              const int                        sign,
                              const occ::handle<Geom_Surface>& S1,
-                             const occ::handle<Geom_Surface>& S2)
+                             const occ::handle<Geom_Surface>& S2,
+                             bool&                            theIsDone)
 {
+  theIsDone = false;
   occ::handle<Geom2d_Curve> NewC2d;
   constexpr double          Tol  = Precision::Confusion();
   double                    Etol = EdgeTol;
@@ -2304,6 +2395,10 @@ static double SmartParameter(Draft_EdgeInfo&                  Einf,
                                 S2,
                                 Etol);
     Einf.ChangeSecondPC()            = pcu2;
+  }
+  if (pcu1.IsNull() || pcu2.IsNull())
+  {
+    return 0.;
   }
 
   GeomAPI_ProjectPointOnSurf Projector(Pnt, S1);
@@ -2351,7 +2446,6 @@ static double SmartParameter(Draft_EdgeInfo&                  Einf,
     }
     NewC2d = BCurve;
   }
-  Einf.ChangeFirstPC()                          = NewC2d;
   occ::handle<Geom2dAdaptor_Curve>         hcur = new Geom2dAdaptor_Curve(NewC2d);
   occ::handle<GeomAdaptor_Surface>         hsur = new GeomAdaptor_Surface(S1);
   Adaptor3d_CurveOnSurface                 cons(hcur, hsur);
@@ -2359,11 +2453,22 @@ static double SmartParameter(Draft_EdgeInfo&                  Einf,
   occ::handle<GeomAdaptor_Surface>         hsur2 = new GeomAdaptor_Surface(S2);
   occ::handle<ProjLib_HCompProjectedCurve> HProjector =
     new ProjLib_HCompProjectedCurve(hsur2, hcons, Tol, Tol);
+  if (HProjector->NbCurves() < 1)
+  {
+    return 0.;
+  }
   double Udeb, Ufin;
   HProjector->Bounds(1, Udeb, Ufin);
   int                   MaxSeg = 20 + HProjector->NbIntervals(GeomAbs_C3);
   Approx_CurveOnSurface appr(HProjector, hsur2, Udeb, Ufin, Tol);
   appr.Perform(MaxSeg, 10, GeomAbs_C1, false, false);
+  // not IsDone(): a result short of the tolerance is still taken
+  if (appr.Curve2d().IsNull() || appr.Curve3d().IsNull())
+  {
+    return 0.;
+  }
+  theIsDone             = true;
+  Einf.ChangeFirstPC()  = NewC2d;
   Einf.ChangeSecondPC() = appr.Curve2d();
   Einf.ChangeGeometry() = appr.Curve3d();
   Einf.SetNewGeometry(true);

@@ -155,6 +155,17 @@ private:
   //! Returns false, doing nothing, when the faces that stay are one piece.
   Standard_EXPORT bool MakeThickSolidByPieces(const Message_ProgressRange& theRange);
 
+  //! A thick solid of a solid with a face of a sphere that runs from pole
+  //! to pole on more than a third of a turn: the face is first cut in two
+  //! or more, the thick solid is made of that shape, and its history is
+  //! given back under the faces and edges of the shape given. Returns
+  //! false, doing nothing, where there is no such face or it can stay whole.
+  Standard_EXPORT bool MakeThickSolidOfSplit(const Message_ProgressRange& theRange);
+
+  //! MakeThickSolid but for its last check: a result that reaches far past
+  //! the shape, a face left unbounded, is refused there.
+  Standard_EXPORT void MakeThickSolidOrRunaway(const Message_ProgressRange& theRange);
+
   //! Set the faces that are to be removed
   Standard_EXPORT void SetFaces();
 
@@ -204,8 +215,13 @@ private:
 
   Standard_EXPORT void MakeSolid(const Message_ProgressRange& theRange);
 
+  //! theCut takes the offset edges ToContext has cut in pieces, each with
+  //! its pieces in place of it: an edge of a face that is not stretched.
   Standard_EXPORT void ToContext(
-    NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF);
+    NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
+    NCollection_DataMap<TopoDS_Shape,
+                        NCollection_List<TopoDS_Shape>,
+                        TopTools_ShapeMapHasher>& theCut);
 
   //! Private method use to update the map face<->offset
   Standard_EXPORT void UpdateFaceOffset();

@@ -33,6 +33,8 @@
 #include <BRepOffset_Analyse.hxx>
 #include <BRepOffset_Offset.hxx>
 #include <BRepOffset_Tool.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_SphericalSurface.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <Geom2d_BezierCurve.hxx>
@@ -1153,6 +1155,17 @@ static bool ExtendPCurve(const occ::handle<Geom2d_Curve>& aPCurve,
   double FirstPar = NewPCurve->FirstParameter();
   double LastPar  = NewPCurve->LastParameter();
 
+  // A pcurve that stays on one point -- the edge of a sphere's pole on the
+  // sphere with its axis turned (BRepOffset_Tool::EnLargeFace) -- has no
+  // direction to be prolonged in.
+  if (NewPCurve->Value(FirstPar).Distance(NewPCurve->Value(LastPar)) <= Precision::PConfusion()
+      && NewPCurve->Value((FirstPar + LastPar) / 2.).Distance(NewPCurve->Value(FirstPar))
+           <= Precision::PConfusion())
+  {
+    NewPCurve = aPCurve;
+    return false;
+  }
+
   if (NewPCurve->IsKind(STANDARD_TYPE(Geom2d_BoundedCurve))
       && (FirstPar > anEf - a2Offset || LastPar < anEl + a2Offset))
   {
@@ -1229,6 +1242,72 @@ static bool ExtendPCurve(const occ::handle<Geom2d_Curve>& aPCurve,
 
 //=================================================================================================
 
+// The pcurve of a circle on a sphere, prolonged as the circle runs. A bounded
+// pcurve there is one made for a sphere with its axis turned
+// (BRepOffset_Tool::EnLargeFace); ExtendPCurve adds a straight segment at
+// each end, in (u, v), where the circle's image bends, and the edge's own
+// range was then stretched to most of the turn, far past the segments: the
+// equator of half a ball, between two faces of its sphere, came back with a
+// pcurve 0.23 off its curve under a tolerance to match, and the solid, valid,
+// weighed 90.23 for 89.03. The pcurve is interpolated through the circle's
+// points, as far as the sphere lets it be followed. False where the edge is
+// no such edge, and the pcurve as it was.
+static bool ExtendPCurveOnSphere(const TopoDS_Edge&                           theE,
+                                 const occ::handle<BRep_CurveRepresentation>& theRep,
+                                 const double                                 theEf,
+                                 const double                                 theEl,
+                                 occ::handle<Geom2d_Curve>&                   theNewPCurve)
+{
+  if (theRep->IsCurveOnClosedSurface())
+  {
+    return false;
+  }
+  occ::handle<Geom_Surface> aS = theRep->Surface();
+  if (aS->IsKind(STANDARD_TYPE(Geom_RectangularTrimmedSurface)))
+  {
+    aS = occ::down_cast<Geom_RectangularTrimmedSurface>(aS)->BasisSurface();
+  }
+  const occ::handle<Geom_SphericalSurface> aSph = occ::down_cast<Geom_SphericalSurface>(aS);
+  if (aSph.IsNull())
+  {
+    return false;
+  }
+  TopLoc_Location         aLocC;
+  double                  aF3d, aL3d;
+  occ::handle<Geom_Curve> aC = BRep_Tool::Curve(theE, aLocC, aF3d, aL3d);
+  if (aC.IsNull())
+  {
+    return false;
+  }
+  // The curve as the surface lies: both are kept under the edge's location.
+  const TopLoc_Location aRel = theRep->Location().Inverted() * (theE.Location().Inverted() * aLocC);
+  if (!aRel.IsIdentity())
+  {
+    aC = occ::down_cast<Geom_Curve>(aC->Transformed(aRel.Transformation()));
+  }
+  const occ::handle<Geom2d_Curve> anOld = theRep->PCurve();
+  double                          aF = theEf, aL = theEl;
+  const occ::handle<Geom2d_Curve> aNew =
+    BRepOffset_Tool::PCurveOnSphere(aC, aSph->Sphere(), aF, aL, 0.1 * BRep_Tool::Tolerance(theE));
+  if (aNew.IsNull())
+  {
+    return false;
+  }
+  // The same curve where the old one is defined, in the same period.
+  for (int i = 0; i <= 2; ++i)
+  {
+    const double aT = theEf + (theEl - theEf) * i / 2.;
+    if (aNew->Value(aT).Distance(anOld->Value(aT)) > 1.e-4)
+    {
+      return false;
+    }
+  }
+  theNewPCurve = aNew;
+  return true;
+}
+
+//=================================================================================================
+
 //  Modified by skv - Fri Dec 26 17:00:55 2003 OCC4455 Begin
 // static void ExtentEdge(const TopoDS_Edge& E,TopoDS_Edge& NE)
 bool BRepOffset_Inter2d::ExtentEdge(const TopoDS_Edge& E, TopoDS_Edge& NE, const double theOffset)
@@ -1273,7 +1352,13 @@ bool BRepOffset_Inter2d::ExtentEdge(const TopoDS_Edge& E, TopoDS_Edge& NE, const
           && (FirstPar > anEf - a2Offset || LastPar < anEl + a2Offset))
       {
         occ::handle<Geom2d_Curve> NewPCurve;
-        if (ExtendPCurve(theCurve, anEf, anEl, a2Offset, NewPCurve))
+        if (ExtendPCurveOnSphere(NE, CurveRep, anEf, anEl, NewPCurve))
+        {
+          CurveRep->PCurve(NewPCurve);
+          FirstPar = NewPCurve->FirstParameter();
+          LastPar  = NewPCurve->LastParameter();
+        }
+        else if (ExtendPCurve(theCurve, anEf, anEl, a2Offset, NewPCurve))
         {
           CurveRep->PCurve(NewPCurve);
           FirstPar = NewPCurve->FirstParameter();
@@ -1460,6 +1545,16 @@ bool BRepOffset_Inter2d::ExtentEdge(const TopoDS_Edge& E, TopoDS_Edge& NE, const
         delta *= 0.95;
         f -= delta;
         l += delta;
+        // A bounded pcurve holds the edge to its own range: past it there
+        // is no pcurve (ExtendPCurveOnSphere).
+        if (!Precision::IsInfinite(FirstParOnPC) && f < FirstParOnPC)
+        {
+          f = FirstParOnPC;
+        }
+        if (!Precision::IsInfinite(LastParOnPC) && l > LastParOnPC)
+        {
+          l = LastParOnPC;
+        }
       }
       else if (C3d->IsClosed())
       {
@@ -2053,6 +2148,71 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
     TopoDS_Shape aLocalWire = W.Oriented(TopAbs_FORWARD);
     TopoDS_Shape aLocalFace = FI.Oriented(TopAbs_FORWARD);
     wexp.Init(TopoDS::Wire(aLocalWire), TopoDS::Face(aLocalFace));
+    // The pole of a sphere whose axis was turned off the face
+    // (BRepOffset_Tool::EnLargeFace) is an ordinary point of the offset face,
+    // and its degenerated edge no edge of the outline: the two edges that
+    // reach the pole are neighbours and meet each other there -- a removed
+    // face's border, stretched past the pole, is cut by the other edge's
+    // section. Not so where the two run on into each other, the meridians of
+    // half a turn, whose faces' offsets cut the sphere along one circle, nor
+    // where neither has a section.
+    auto haveOneSection = [&](const TopoDS_Shape& theE1, const TopoDS_Shape& theE2) {
+      if (!Build.IsBound(theE1) && !Build.IsBound(theE2))
+      {
+        return true;
+      }
+      TopoDS_Edge   aE1 = TopoDS::Edge(theE1), aE2 = TopoDS::Edge(theE2);
+      TopoDS_Vertex aV = CommonVertex(aE1, aE2);
+      if (aV.IsNull())
+      {
+        return true;
+      }
+      BRepAdaptor_Curve aC1(aE1), aC2(aE2);
+      gp_Pnt            aP;
+      gp_Vec            aD1, aD2;
+      aC1.D1(BRep_Tool::Parameter(aV, aE1), aP, aD1);
+      aC2.D1(BRep_Tool::Parameter(aV, aE2), aP, aD2);
+      return aD1.Magnitude() < gp::Resolution() || aD2.Magnitude() < gp::Resolution()
+             || aD1.IsParallel(aD2, 1.e-4);
+    };
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aTurnedPoles;
+    if (OFI)
+    {
+      NCollection_Sequence<TopoDS_Shape> aWEdges;
+      for (; wexp.More(); wexp.Next())
+      {
+        aWEdges.Append(wexp.Current());
+      }
+      const int aNbWE = aWEdges.Length();
+      for (int i = 1; i <= aNbWE && aNbWE > 2; ++i)
+      {
+        const TopoDS_Edge& aDE = TopoDS::Edge(aWEdges(i));
+        if (!BRep_Tool::Degenerated(aDE)
+            || haveOneSection(aWEdges(i == 1 ? aNbWE : i - 1), aWEdges(i == aNbWE ? 1 : i + 1)))
+        {
+          continue;
+        }
+        const TopoDS_Shape aGen = OFI->Generated(aDE);
+        if (aGen.IsNull() || aGen.ShapeType() != TopAbs_EDGE)
+        {
+          continue;
+        }
+        double                          aF, aL;
+        const occ::handle<Geom2d_Curve> aC2d =
+          BRep_Tool::CurveOnSurface(TopoDS::Edge(aGen), TopoDS::Face(OFI->Face()), aF, aL);
+        if (!aC2d.IsNull() && aC2d->Value(aF).Distance(aC2d->Value(aL)) <= Precision::PConfusion()
+            && aC2d->Value((aF + aL) / 2.).Distance(aC2d->Value(aF)) <= Precision::PConfusion())
+        {
+          aTurnedPoles.Add(aDE);
+        }
+      }
+      wexp.Init(TopoDS::Wire(aLocalWire), TopoDS::Face(aLocalFace));
+    }
+    auto isTurnedPole = [&](const TopoDS_Edge& theE) { return aTurnedPoles.Contains(theE); };
+    while (wexp.More() && isTurnedPole(wexp.Current()))
+    {
+      wexp.Next();
+    }
     if (!wexp.More())
     {
       continue; // Protection from case when explorer does not contain edges.
@@ -2065,6 +2225,10 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
       if (OFI || (Index & 1) == 0)
       {
         wexp.Next();
+        while (wexp.More() && isTurnedPole(wexp.Current()))
+        {
+          wexp.Next();
+        }
         if (wexp.More())
         {
           NextE = wexp.Current();

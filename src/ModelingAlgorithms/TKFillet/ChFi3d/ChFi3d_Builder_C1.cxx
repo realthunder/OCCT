@@ -19,6 +19,7 @@
 
 #include <Adaptor2d_Curve2d.hxx>
 #include <Blend_FuncInv.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgo_NormalProjection.hxx>
 #include <BRepBlend_Line.hxx>
 #include <BRepExtrema_ExtCC.hxx>
@@ -58,6 +59,7 @@
 #include <Geom_Surface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <GeomAbs_Shape.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomAdaptor_Curve.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomInt_IntSS.hxx>
@@ -224,6 +226,34 @@ static bool Update(const occ::handle<Adaptor3d_Surface>& fb,
         dist = std::abs(w - wop);
       }
     }
+    // None on the curve: a point at an end of it, found a rounding error
+    // past the end, is the end when the curve is tangent to the surface
+    // there (the point is ill-conditioned along it). A crossing found past
+    // the end is past the end.
+    if (isol == 0 && !isperiodic)
+    {
+      const double tolw = Precision::PConfusion();
+      for (i = 1; i <= nbp; i++)
+      {
+        const IntCurveSurface_IntersectionPoint& ip = Intersection.Point(i);
+        w                                           = ip.W();
+        if (uf - tolw > w || ul + tolw < w || std::abs(w - wop) >= dist)
+        {
+          continue;
+        }
+        gp_Pnt P;
+        gp_Vec T, DU, DV;
+        ct->D1(w, P, T);
+        fb->D1(ip.U(), ip.V(), P, DU, DV);
+        const gp_Vec N = DU.Crossed(DV);
+        if (T.Magnitude() > gp::Resolution() && N.Magnitude() > gp::Resolution()
+            && std::abs(T.Dot(N)) <= 1.e-6 * T.Magnitude() * N.Magnitude())
+        {
+          isol = i;
+          dist = std::abs(w - wop);
+        }
+      }
+    }
     if (isperiodic)
     {
       for (i = 1; i <= nbp; i++)
@@ -251,6 +281,10 @@ static bool Update(const occ::handle<Adaptor3d_Surface>& fb,
       if (isperiodic)
       {
         w = ElCLib::InPeriod(w, uf, ul);
+      }
+      else
+      {
+        w = std::min(std::max(w, uf), ul);
       }
     }
     else
@@ -306,6 +340,12 @@ static bool IntersUpdateOnSame(occ::handle<GeomAdaptor_Surface>& HGs,
   // add more or less restrictive criterions to
   // decide if the intersection is done with the face at
   // extended end or if the end is sharp.
+  // A fillet whose line on <Fop> collapsed to a point (its radius that of
+  // the face's curvature) has no curve there to intersect.
+  if (c3dFI.IsNull())
+  {
+    return false;
+  }
   double                         uf = FIop.FirstParameter();
   double                         ul = FIop.LastParameter();
   occ::handle<GeomAdaptor_Curve> Hc3df;
@@ -482,6 +522,33 @@ static void ComputeCurve2d(const occ::handle<Geom_Curve>& Ct,
   }
 }
 
+//=======================================================================
+// function : PCurveInFace
+// purpose  : the pcurve of <E> on <F>, for <E> as it lies in <F>. An edge
+//           with two pcurves on the surface of <F> that occurs in <F> only
+//           once -- a seam left on a piece of a split closed face -- would
+//           otherwise give the pcurve of its own orientation, which may lie
+//           a period away from the face.
+//=======================================================================
+
+static occ::handle<Geom2d_Curve> PCurveInFace(const TopoDS_Edge& E,
+                                              const TopoDS_Face& F,
+                                              double&            f,
+                                              double&            l)
+{
+  if (BRep_Tool::IsClosed(E, F) && !BRepTools::IsReallyClosed(E, F))
+  {
+    for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More(); ex.Next())
+    {
+      if (ex.Current().IsSame(E))
+      {
+        return BRep_Tool::CurveOnSurface(TopoDS::Edge(ex.Current()), F, f, l);
+      }
+    }
+  }
+  return BRep_Tool::CurveOnSurface(E, F, f, l);
+}
+
 //=================================================================================================
 
 static void ChFi3d_Recale(const BRepAdaptor_Surface& Bs,
@@ -587,6 +654,162 @@ bool ChFi3d_SelectStripe(NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator&
   return false;
 }
 
+static bool containV(const TopoDS_Face& F1, const TopoDS_Vertex& V);
+
+//=======================================================================
+// function : TangentNeighbour
+// purpose  : The edge of <V> between <F> and another face <Fn>, across
+//           which the two are tangent (one wall in two faces), or a null
+//           edge. <OF> is <F>'s orientation in the shell.
+//=======================================================================
+
+static TopoDS_Edge TangentNeighbour(const TopoDS_Vertex& V,
+                                    const TopoDS_Face&   F,
+                                    const TopoDS_Face&   Fn,
+                                    const ChFiDS_Map&    VEMap,
+                                    const ChFiDS_Map&    EFMap,
+                                    TopAbs_Orientation&  OF)
+{
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(VEMap(V)); itE.More(); itE.Next())
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+    TopoDS_Face        aF1, aF2;
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(anE)); itF.More(); itF.Next())
+    {
+      if (F.IsSame(itF.Value()))
+      {
+        aF1 = TopoDS::Face(itF.Value());
+      }
+      else if (Fn.IsSame(itF.Value()))
+      {
+        aF2 = TopoDS::Face(itF.Value());
+      }
+    }
+    if (!aF1.IsNull() && !aF2.IsNull() && ChFi3d::IsTangentFaces(anE, aF1, aF2))
+    {
+      OF = aF1.Orientation();
+      return anE;
+    }
+  }
+  return TopoDS_Edge();
+}
+
+static bool hasVertex(const TopoDS_Edge& E, const TopoDS_Vertex& V)
+{
+  TopoDS_Vertex aV1, aV2;
+  TopExp::Vertices(E, aV1, aV2);
+  return V.IsSame(aV1) || V.IsSame(aV2);
+}
+
+//=======================================================================
+// function : EdgesToArc
+// purpose  : The edges of <Fv> on the way from <V> to <Arc>, setting off
+//           away from <Away> (an edge of <V>) and never along it, each
+//           with its vertex toward <V>; empty when the way does not reach
+//           <Arc>. When the fillet is wider than the face beside <V>
+//           there, its common point lies on <Arc> beyond it, and these
+//           edges lie under the fillet.
+//=======================================================================
+
+static NCollection_List<TopoDS_Shape> EdgesToArc(const TopoDS_Face&   Fv,
+                                                 const TopoDS_Vertex& V,
+                                                 const TopoDS_Edge&   Away,
+                                                 const TopoDS_Edge&   Arc)
+{
+  NCollection_List<TopoDS_Shape> aWay;
+  TopoDS_Vertex                  aV    = V;
+  TopoDS_Edge                    aPrev = Away;
+  for (int aStep = 0; aStep < 10; aStep++)
+  {
+    TopoDS_Edge aNext;
+    for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More() && aNext.IsNull(); ex.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(ex.Current());
+      if (anE.IsSame(aPrev) || BRep_Tool::Degenerated(anE))
+      {
+        continue;
+      }
+      TopoDS_Vertex aV1, aV2;
+      TopExp::Vertices(anE, aV1, aV2);
+      if (aV1.IsSame(aV) || aV2.IsSame(aV))
+      {
+        aNext = anE;
+      }
+    }
+    if (aNext.IsNull() || aNext.IsSame(Away))
+    {
+      break;
+    }
+    if (aNext.IsSame(Arc))
+    {
+      return aWay;
+    }
+    aWay.Append(aNext);
+    aWay.Append(aV);
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(aNext, aV1, aV2);
+    aV    = aV1.IsSame(aV) ? aV2 : aV1;
+    aPrev = aNext;
+  }
+  return NCollection_List<TopoDS_Shape>();
+}
+
+//=======================================================================
+// function : SplitUnderLine
+// purpose  : The edge of the face <F> the fillet's line on it runs along,
+//           or a null edge: the line, from the vertex <V1> to the vertex
+//           <V2>, lies on an edge joining the two, the split toward the
+//           piece of a wall kept in tangent pieces the spine is on (see
+//           ChFi3d_SplitPieceOfSpine). The radius is then that piece's
+//           width: the piece goes under the fillet, and the split with it.
+//=======================================================================
+
+static TopoDS_Edge SplitUnderLine(const TopoDS_Face&               F,
+                                  const TopoDS_Vertex&             V1,
+                                  const TopoDS_Vertex&             V2,
+                                  const ChFiDS_FaceInterference&   Fi,
+                                  const occ::handle<ChFiDS_Spine>& Spine,
+                                  const ChFiDS_Map&                EFMap,
+                                  const double                     Tol)
+{
+  if (V1.IsSame(V2) || Fi.PCurveOnFace().IsNull())
+  {
+    return TopoDS_Edge();
+  }
+  for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(ex.Current());
+    TopoDS_Vertex      aV1, aV2;
+    TopExp::Vertices(anE, aV1, aV2);
+    if (!((aV1.IsSame(V1) && aV2.IsSame(V2)) || (aV1.IsSame(V2) && aV2.IsSame(V1)))
+        || ChFi3d_SplitPieceOfSpine(anE, F, Spine, EFMap).IsNull())
+    {
+      continue;
+    }
+    // the line's points between its ends on the edge
+    BRepAdaptor_Surface aS(F, false);
+    BRepAdaptor_Curve   aC(anE);
+    bool                isOn = true;
+    for (int i = 1; i <= 3 && isOn; i++)
+    {
+      const double   t   = Fi.FirstParameter() + i * (Fi.LastParameter() - Fi.FirstParameter()) / 4;
+      const gp_Pnt2d aUV = Fi.PCurveOnFace()->Value(t);
+      Extrema_ExtPC  anExt(aS.Value(aUV.X(), aUV.Y()), aC);
+      double         aD2 = Precision::Infinite();
+      for (int j = 1; anExt.IsDone() && j <= anExt.NbExt(); j++)
+      {
+        aD2 = std::min(aD2, anExt.SquareDistance(j));
+      }
+      isOn = aD2 <= Tol * Tol;
+    }
+    if (isOn)
+    {
+      return anE;
+    }
+  }
+  return TopoDS_Edge();
+}
+
 //=======================================================================
 // function : PerformOneCorner
 // purpose  : Calculate a corner with three edges and a fillet.
@@ -672,6 +895,13 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   bool        onsame = (stat == ChFiDS_OnSame);
   TopoDS_Face Fv, Fad, Fop;
   TopoDS_Edge Arcpiv, Arcprol, Arcspine;
+  // edges of Fv from Vtx to Arcpiv when Arcpiv is not an edge of Vtx
+  NCollection_List<TopoDS_Shape> Swallowed;
+  // Arcprol in a face tangent to Fop across an edge of Vtx (one wall in two
+  // faces): that face, the edge, and whether the extension runs along it
+  TopoDS_Face Fprol;
+  TopoDS_Edge Etan;
+  bool        zobOnEtan = false;
   if (isfirst)
   {
     Arcspine = spine->Edges(1);
@@ -728,11 +958,43 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
           break;
         }
       }
+      // An arc of a wall kept in tangent pieces reaches Vtx along its other
+      // face through the pieces: it is on Vtx as the whole wall's would be,
+      // and the edge of Vtx it continues as stands for it.
+      TopoDS_Edge EV1 = CV1.Arc(), EV2 = CV2.Arc();
+      for (int ons = 1; ons <= 2 && sur1 != sur2; ons++)
+      {
+        if (ons == 1 ? sur1 : sur2)
+        {
+          continue;
+        }
+        const TopoDS_Edge& anArc = ons == 1 ? CV1.Arc() : CV2.Arc();
+        const TopoDS_Face  aF    = TopoDS::Face(DStr.Shape(Fd->Index(ons)));
+        TopoDS_Face        anOther;
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(anArc)); itF.More(); itF.Next())
+        {
+          if (!aF.IsSame(itF.Value()))
+          {
+            anOther = TopoDS::Face(itF.Value());
+          }
+        }
+        if (aF.IsNull() || anOther.IsNull())
+        {
+          continue;
+        }
+        const TopoDS_Edge anEV =
+          ChFi3d_EdgeOnSplitToVertex(anArc, aF, anOther, Vtx, myEFMap, myVEMap);
+        if (!anEV.IsNull())
+        {
+          (ons == 1 ? EV1 : EV2)   = anEV;
+          (ons == 1 ? sur1 : sur2) = true;
+        }
+      }
       if (sur1 && sur2)
       {
         TopoDS_Edge E[3];
-        E[0] = CV1.Arc();
-        E[1] = CV2.Arc();
+        E[0] = EV1;
+        E[1] = EV2;
         E[2] = Arcspine;
         if (ChFi3d_EdgeState(E, myEFMap) != ChFiDS_OnDiff)
         {
@@ -802,11 +1064,38 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     Fad.Orientation(TopAbs_FORWARD);
     Fop.Orientation(TopAbs_FORWARD);
 
-    // The edge that will be extended is returned.
-    for (It.Initialize(myVEMap(Vtx)); It.More() && Arcprol.IsNull(); It.Next())
+    // The edge that will be extended is returned: the edge of the vertex
+    // between Fv and Fop -- or a face tangent to Fop across an edge of the
+    // vertex (one wall in two faces). Arcpiv need not be an edge of the
+    // vertex: when the fillet is wider than Fad's side there, its common
+    // point lies on a face beyond it, and Fv has another edge at the vertex
+    // (Fad's old side), which is not the one to extend.
+    for (int pass = 0; pass < 3 && Arcprol.IsNull(); pass++)
     {
-      if (!Arcpiv.IsSame(It.Value()))
+      for (It.Initialize(myVEMap(Vtx)); It.More() && Arcprol.IsNull(); It.Next())
       {
+        if (Arcpiv.IsSame(It.Value()))
+        {
+          continue;
+        }
+        if (pass < 2)
+        {
+          bool isOp = false;
+          for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(It.Value()));
+               itF.More() && !isOp;
+               itF.Next())
+          {
+            const TopoDS_Face& aF   = TopoDS::Face(itF.Value());
+            TopAbs_Orientation aBid = TopAbs_FORWARD;
+            isOp = !aF.IsSame(Fv)
+                   && (pass == 0 ? aF.IsSame(Fop)
+                                 : !TangentNeighbour(Vtx, Fop, aF, myVEMap, myEFMap, aBid).IsNull());
+          }
+          if (!isOp)
+          {
+            continue;
+          }
+        }
         for (ex.Init(Fv, TopAbs_EDGE); ex.More(); ex.Next())
         {
           if (It.Value().IsSame(ex.Current()))
@@ -823,12 +1112,45 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       PerformIntersectionAtEnd(Index);
       return;
     }
+    // The fillet is wider than Fad's side at Vtx (coplanar faces of one wall,
+    // say): the edges of Fv on the way from Vtx to Arcpiv lie under the
+    // fillet, and nothing else cuts them away.
+    if (!containV(Fad, Vtx))
+    {
+      Swallowed = EdgesToArc(Fv, Vtx, Arcprol, Arcpiv);
+    }
     for (ex.Init(Fop, TopAbs_EDGE); ex.More(); ex.Next())
     {
       if (Arcprol.IsSame(ex.Current()))
       {
         OArcprolop = ex.Current().Orientation();
         break;
+      }
+    }
+    if (!ex.More())
+    {
+      // Arcprol is an edge of a face tangent to Fop: its orientation there,
+      // in the shell, stands for the one it would have in Fop.
+      TopAbs_Orientation aOFop = TopAbs_FORWARD;
+      for (It.Initialize(myEFMap(Arcprol)); It.More() && Etan.IsNull(); It.Next())
+      {
+        if (!Fv.IsSame(It.Value()))
+        {
+          Fprol = TopoDS::Face(It.Value());
+          Etan  = TangentNeighbour(Vtx, Fop, Fprol, myVEMap, myEFMap, aOFop);
+        }
+      }
+      if (!Etan.IsNull())
+      {
+        for (ex.Init(Fprol, TopAbs_EDGE); ex.More(); ex.Next())
+        {
+          if (Arcprol.IsSame(ex.Current()))
+          {
+            OArcprolop = aOFop == TopAbs_REVERSED ? TopAbs::Reverse(ex.Current().Orientation())
+                                                  : ex.Current().Orientation();
+            break;
+          }
+        }
       }
     }
     TopoDS_Face               FFv;
@@ -896,6 +1218,69 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       Update(HBs, pced, HGs, FiadArc, CPadArc, isfirst);
     }
 
+    // The fillet's line on Fop ended on Etan, the edge between Fop and the
+    // face Arcprol is extended in: its end is still there, and the
+    // extension runs along Etan. Or the line ended inside Fop, and its
+    // update to Fv's surface put the end on Etan: Fv's surface holds Etan
+    // from there to Vtx (Fv and Fprol one smooth wall, Fop tangent to it
+    // along Etan), so the extension runs along Etan just the same.
+    if (inters && !Etan.IsNull() && !CPopArc.IsOnArc())
+    {
+      const bool        wasOnEtan = saveCPopArc.IsOnArc() && saveCPopArc.Arc().IsSame(Etan);
+      BRepAdaptor_Curve aCEtan(Etan);
+      Extrema_ExtPC     anExt(CPopArc.Point(), aCEtan);
+      const double      aTol = std::max(wasOnEtan ? saveCPopArc.Tolerance() : CPopArc.Tolerance(),
+                                   10 * tolapp3d);
+      int               iMin = 0;
+      double            dMin = aTol * aTol;
+      for (int i = 1; anExt.IsDone() && i <= anExt.NbExt(); i++)
+      {
+        if (anExt.SquareDistance(i) <= dMin)
+        {
+          dMin = anExt.SquareDistance(i);
+          iMin = i;
+        }
+      }
+      if (iMin > 0 && wasOnEtan)
+      {
+        CPopArc.SetArc(aTol, Etan, anExt.Point(iMin).Parameter(), saveCPopArc.TransitionOnArc());
+        zobOnEtan = true;
+      }
+      else if (iMin > 0)
+      {
+        const double aPar  = anExt.Point(iMin).Parameter();
+        const double aParV = BRep_Tool::Parameter(Vtx, Etan);
+        // Etan between the end and Vtx lies on Fv's surface
+        bool onFv = std::abs(aParV - aPar) > Precision::PConfusion();
+        for (int k = 1; k <= 3 && onFv; k++)
+        {
+          const gp_Pnt               aP = aCEtan.Value(aPar + (aParV - aPar) * k / 4.);
+          GeomAPI_ProjectPointOnSurf aProj(aP, BRep_Tool::Surface(Fv));
+          onFv = aProj.NbPoints() > 0 && aProj.LowerDistance() <= aTol;
+        }
+        if (onFv)
+        {
+          // the transition the walk gives a line ending on an arc
+          TopAbs_Orientation anOr = Etan.Orientation();
+          for (ex.Init(Fop, TopAbs_EDGE); ex.More(); ex.Next())
+          {
+            if (Etan.IsSame(ex.Current()))
+            {
+              anOr = ex.Current().Orientation();
+              break;
+            }
+          }
+          TopAbs_Orientation aTr = TopAbs::Compose(FiopArc.Transition(), anOr);
+          if (isfirst)
+          {
+            aTr = TopAbs::Reverse(aTr);
+          }
+          CPopArc.SetArc(aTol, Etan, aPar, aTr);
+          zobOnEtan = true;
+        }
+      }
+    }
+
     if (thePrepareOnSame)
     {
       // saveCPopArc.SetParameter(wop);
@@ -911,6 +1296,20 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     {
       PerformIntersectionAtEnd(Index);
       return;
+    }
+    // A common point on an arc that does not reach Vtx: the fillet is
+    // wider than the face beside Vtx, and the edges of Fv on the way
+    // there lie under it, as in the case OnSame.
+    for (int ons = 1; ons <= 2; ons++)
+    {
+      const ChFiDS_CommonPoint& aCP    = Fd->Vertex(isfirst, ons);
+      const ChFiDS_CommonPoint& aCPOpp = Fd->Vertex(isfirst, 3 - ons);
+      if (aCP.IsOnArc() && aCPOpp.IsOnArc() && !hasVertex(aCP.Arc(), Vtx)
+          && hasVertex(aCPOpp.Arc(), Vtx))
+      {
+        NCollection_List<TopoDS_Shape> aWay = EdgesToArc(Fv, Vtx, aCPOpp.Arc(), aCP.Arc());
+        Swallowed.Append(aWay);
+      }
     }
     Bs.Initialize(Fv);
     occ::handle<BRepAdaptor_Curve2d> pced = new BRepAdaptor_Curve2d();
@@ -949,7 +1348,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     }
     else
     {
-      Hc1 = BRep_Tool::CurveOnSurface(CV1.Arc(), Fv, Ubid, Ubid);
+      Hc1 = PCurveInFace(CV1.Arc(), Fv, Ubid, Ubid);
       if (Hc1.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -962,7 +1361,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     }
     else
     {
-      Hc2 = BRep_Tool::CurveOnSurface(CV2.Arc(), Fv, Ubid, Ubid);
+      Hc2 = PCurveInFace(CV2.Arc(), Fv, Ubid, Ubid);
       if (Hc2.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -1392,6 +1791,52 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
 
   ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, box1, box2);
 
+  // The fillet's line on a face running from vertex to vertex along the
+  // split toward the piece the spine is on: the split goes with the piece.
+  for (int ons = 1; ons <= 2 && inters; ons++)
+  {
+    const ChFiDS_CommonPoint& aCP    = Fd->Vertex(isfirst, ons);
+    const ChFiDS_CommonPoint& aCPEnd = Fd->Vertex(!isfirst, ons);
+    if (!aCP.IsVertex() || !aCPEnd.IsVertex())
+    {
+      continue;
+    }
+    const TopoDS_Edge aSplit = SplitUnderLine(TopoDS::Face(DStr.Shape(Fd->Index(ons))),
+                                              aCP.Vertex(),
+                                              aCPEnd.Vertex(),
+                                              Fd->Interference(ons),
+                                              spine,
+                                              myEFMap,
+                                              10 * tolapp3d);
+    if (!aSplit.IsNull())
+    {
+      Swallowed.Append(aSplit);
+      Swallowed.Append(aCP.Vertex());
+    }
+  }
+  // The edges under the fillet go the way of the spine's edge: cut away
+  // from their end toward Vtx.
+  for (NCollection_List<TopoDS_Shape>::Iterator itS(Swallowed); itS.More() && inters; itS.Next())
+  {
+    const TopoDS_Edge&   anE = TopoDS::Edge(itS.Value());
+    itS.Next();
+    const TopoDS_Vertex& aV  = TopoDS::Vertex(itS.Value());
+    TopAbs_Orientation   aOV = TopAbs_FORWARD;
+    for (ex.Init(anE.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
+    {
+      if (aV.IsSame(ex.Current()))
+      {
+        aOV = ex.Current().Orientation();
+        break;
+      }
+    }
+    DStr.ChangeShapeInterferences(DStr.AddShape(anE))
+      .Append(ChFi3d_FilVertexInDS(TopAbs::Reverse(aOV),
+                                   DStr.AddShape(anE),
+                                   DStr.AddShape(aV),
+                                   BRep_Tool::Parameter(aV, anE)));
+  }
+
   if (onsame && inters)
   {
 // VARIANT 1:
@@ -1419,7 +1864,6 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     occ::handle<TopOpeBRepDS_CurvePointInterference> interfv =
       ChFi3d_FilVertexInDS(OVtx, IArcspine, IVtx, parVtx);
     DStr.ChangeShapeInterferences(IArcspine).Append(interfv);
-
     // Now the missing curves are constructed.
     TopoDS_Vertex V2;
     for (ex.Init(Arcprol.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
@@ -1442,14 +1886,14 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
 #endif
     const ChFiDS_FaceInterference& Fiop = Fd->Interference(IFopArc);
     gp_Pnt2d                       pop1, pop2, pv1, pv2;
-    Hc = BRep_Tool::CurveOnSurface(Arcprol, Fop, Ubid, Ubid);
+    Hc = PCurveInFace(Arcprol, Fop, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");
     }
     pop1 = Hc->Value(parVtx);
     pop2 = Fiop.PCurveOnFace()->Value(Fiop.Parameter(isfirst));
-    Hc   = BRep_Tool::CurveOnSurface(Arcprol, Fv, Ubid, Ubid);
+    Hc   = PCurveInFace(Arcprol, Fv, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -1590,7 +2034,47 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
         ChFi3d_FilCurveInDS(IZob, IShape, zob2dv, Et);
       DStr.ChangeShapeInterferences(IShape).Append(InterFv);
       Et = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolop));
-      int                                                Iop = DStr.AddShape(Fop);
+      if (zobOnEtan)
+      {
+        // The extension runs along Etan, which the fillet cuts at its end:
+        // it bounds Fprol, not Fop.
+        TopoDS_Face aFprolF = Fprol;
+        aFprolF.Orientation(TopAbs_FORWARD);
+        for (ex.Init(aFprolF, TopAbs_EDGE); ex.More(); ex.Next())
+        {
+          if (Arcprol.IsSame(ex.Current()))
+          {
+            Et = TopAbs::Reverse(TopAbs::Compose(OVtx, ex.Current().Orientation()));
+            break;
+          }
+        }
+        zob2dop = GeomProjLib::Curve2d(zob3d, Udeb, Ufin, BRep_Tool::Surface(aFprolF));
+        // On the period of Fprol's domain at Vtx: a projection on a periodic
+        // surface (a cylinder) lands on the surface's first period, which
+        // need not be the face's.
+        if (!zob2dop.IsNull())
+        {
+          const occ::handle<Geom_Surface> aSprol = BRep_Tool::Surface(aFprolF);
+          const gp_Pnt2d                  aUVv  = BRep_Tool::Parameters(Vtx, aFprolF);
+          const gp_Pnt2d                  aUVz  = zob2dop->Value(Udeb);
+          double                          aDu = 0., aDv = 0.;
+          if (aSprol->IsUPeriodic())
+          {
+            const double aPer = aSprol->UPeriod();
+            aDu               = aPer * std::floor((aUVv.X() - aUVz.X()) / aPer + 0.5);
+          }
+          if (aSprol->IsVPeriodic())
+          {
+            const double aPer = aSprol->VPeriod();
+            aDv               = aPer * std::floor((aUVv.Y() - aUVz.Y()) / aPer + 0.5);
+          }
+          if (aDu != 0. || aDv != 0.)
+          {
+            zob2dop->Translate(gp_Vec2d(aDu, aDv));
+          }
+        }
+      }
+      int Iop = DStr.AddShape(zobOnEtan ? Fprol : Fop);
       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> Interfop =
         ChFi3d_FilCurveInDS(IZob, Iop, zob2dop, Et);
       DStr.ChangeShapeInterferences(Iop).Append(Interfop);
@@ -1821,6 +2305,91 @@ static bool IsShrink(const Geom2dAdaptor_Curve& PC,
     default:;
   }
   return false;
+}
+
+//=======================================================================
+// function : SectionCrossesEndFace
+// purpose  : One side of the fillet ends at <P1> on <Arcpiv>, an edge of
+//           <Vtx> between <Fad> and the face at end <Fv>; the other side
+//           runs on past <Vtx> on its face, and is at <P2> in the same
+//           section. IntersectMoreCorner extends <Fv> to the section's
+//           curve: the piece added is the corner of the extended surface
+//           between <Vtx>, <P1> and <P2>, and holds the section. True
+//           when <Fv>'s other edge at <Vtx> runs into that corner -- a
+//           wall stands on <Fv> there (the end of an arm fused to a taller
+//           block): the section crosses <Fv>'s own edge, and what lies
+//           beyond that edge faces away from <Fv>.
+//=======================================================================
+
+static bool SectionCrossesEndFace(const TopoDS_Vertex& Vtx,
+                                  const TopoDS_Edge&   Arcpiv,
+                                  const TopoDS_Face&   Fad,
+                                  const gp_Pnt&        P1,
+                                  const gp_Pnt&        P2,
+                                  const ChFiDS_Map&    VEMap,
+                                  const ChFiDS_Map&    EFMap)
+{
+  TopoDS_Face Fv;
+  for (NCollection_List<TopoDS_Shape>::Iterator It(EFMap(Arcpiv)); It.More(); It.Next())
+  {
+    if (!Fad.IsSame(It.Value()))
+    {
+      Fv = TopoDS::Face(It.Value());
+      break;
+    }
+  }
+  if (Fv.IsNull())
+  {
+    return false;
+  }
+  TopoDS_Edge Arcprol;
+  for (NCollection_List<TopoDS_Shape>::Iterator It(VEMap(Vtx)); It.More(); It.Next())
+  {
+    const TopoDS_Edge& E = TopoDS::Edge(It.Value());
+    if (!E.IsSame(Arcpiv) && !BRep_Tool::Degenerated(E) && containE(Fv, E))
+    {
+      Arcprol = E;
+      break;
+    }
+  }
+  if (Arcprol.IsNull())
+  {
+    return false;
+  }
+  // Fv's normal at Vtx, and Arcprol's tangent there, away from Vtx
+  const gp_Pnt2d      uv = BRep_Tool::Parameters(Vtx, Fv);
+  BRepAdaptor_Surface Sv(Fv, false);
+  gp_Pnt              PV;
+  gp_Vec              DU, DV;
+  Sv.D1(uv.X(), uv.Y(), PV, DU, DV);
+  gp_Vec N = DU.Crossed(DV);
+  if (N.Magnitude() <= gp::Resolution())
+  {
+    return false;
+  }
+  N.Normalize();
+  BRepAdaptor_Curve Cprol(Arcprol);
+  gp_Pnt            PE;
+  gp_Vec            D;
+  const double      t = BRep_Tool::Parameter(Vtx, Arcprol);
+  Cprol.D1(t, PE, D);
+  if (std::abs(t - Cprol.LastParameter()) < std::abs(t - Cprol.FirstParameter()))
+  {
+    D.Reverse();
+  }
+  // the three directions from Vtx, in Fv's tangent plane
+  const gp_Pnt P = BRep_Tool::Pnt(Vtx);
+  gp_Vec       A(P, P1), B(P, P2);
+  A -= N * A.Dot(N);
+  B -= N * B.Dot(N);
+  D -= N * D.Dot(N);
+  const double sAB = A.Crossed(B).Dot(N);
+  const double tol = Precision::Angular() * A.Magnitude() * B.Magnitude();
+  if (std::abs(sAB) <= tol || D.Magnitude() <= gp::Resolution())
+  {
+    return false;
+  }
+  return A.Crossed(D).Dot(N) * sAB > 0. && D.Crossed(B).Dot(N) * sAB > 0.;
 }
 
 //=================================================================================================
@@ -2505,6 +3074,36 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
       }
       else
       {
+        const int                ip  = possible1 ? 1 : 2, io = 3 - ip;
+        ChFiDS_FaceInterference& Fio = Fd->ChangeInterference(io);
+        const double             w   = Fd->Interference(ip).Parameter(isfirst);
+        if (!couture && !bordlibre && w >= Fio.FirstParameter() && w <= Fio.LastParameter())
+        {
+          // The point of the line past Vtx in the section through the
+          // other side's end
+          const gp_Pnt2d uv = Fio.PCurveOnSurf()->Value(w);
+          const gp_Pnt   Po = DStr.Surface(Fd->Surf()).Surface()->Value(uv.X(), uv.Y());
+          if (SectionCrossesEndFace(Vtx,
+                                    Fd->Vertex(isfirst, ip).Arc(),
+                                    ip == 1 ? F1 : F2,
+                                    Fd->Vertex(isfirst, ip).Point(),
+                                    Po,
+                                    myVEMap,
+                                    myEFMap))
+          {
+            // The line is cut there, as an edge splitting its face there
+            // would cut it, and the corner is filled as that of the split
+            // face.
+            Fio.SetParameter(w, isfirst);
+            ChFiDS_CommonPoint& CVo = Fd->ChangeVertex(isfirst, io);
+            CVo.Reset();
+            CVo.SetPoint(Po);
+            CVo.SetTolerance(tolapp3d);
+            stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CVo, DStr), isfirst, io);
+            PerformMoreThreeCorner(Index, 1);
+            return;
+          }
+        }
         IntersectMoreCorner(Index);
         return;
       }
@@ -2627,7 +3226,10 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
   for (; nb <= nbface; nb++)
   {
     extend = false;
-    E2     = Edge[nb];
+    // the fillet meets the line of an edge between two faces beyond the
+    // edge's end at Vtx: the faces grow by the piece of that line from Vtx
+    bool pastVtx = false;
+    E2           = Edge[nb];
     if (!nb)
     {
       F = F1;
@@ -2933,6 +3535,29 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
             }
             cfacemoins1->D0(paredge2, pfac2);
             cface->D0(paredge2, pint);
+            // A point past the edge's end, given to the edge, would lengthen
+            // it -- and a second fillet cutting the same edge at its other end
+            // (a seam of coplanar faces under both) would then leave both
+            // versions of the edge. Across a seam of tangent faces, the piece
+            // beyond Vtx is a curve of its own.
+            if (nb != nbface && ChFi3d::IsTangentFaces(E2, F, Face[nb]))
+            {
+              double aF, aL;
+              BRep_Tool::Range(E2, aF, aL);
+              const gp_Pnt  aP    = C->Value(paredge2);
+              const double  aTolE = BRep_Tool::Tolerance(E2);
+              TopoDS_Vertex aVF, aVL;
+              TopExp::Vertices(E2, aVF, aVL);
+              if ((paredge2 < aF && aVF.IsSame(Vtx) && aP.Distance(BRep_Tool::Pnt(aVF)) > aTolE)
+                  || (paredge2 > aL && aVL.IsSame(Vtx)
+                      && aP.Distance(BRep_Tool::Pnt(aVL)) > aTolE))
+              {
+                pastVtx = true;
+                cint    = C;
+                C2dint1 = cfacemoins1;
+                C2dint2 = cface;
+              }
+            }
           }
           else if (C2dint1.IsNull() || C2dint2.IsNull())
           {
@@ -3317,7 +3942,7 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           ori = TopAbs_REVERSED;
         }
       }
-      if (!extend && !(oneintersection1 || oneintersection2))
+      if (!extend && !pastVtx && !(oneintersection1 || oneintersection2))
       {
         int Iarc2      = DStr.AddShape(Edge[nb]);
         Interfedge[nb] = ChFi3d_FilPointInDS(ori, Iarc2, indpoint2, paredge2);
@@ -3446,7 +4071,10 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         else
         {
           indice = DStr.AddShape(Face[nb - 1]);
-          DStr.SetNewSurface(Face[nb - 1], Sfacemoins1);
+          if (!pastVtx)
+          {
+            DStr.SetNewSurface(Face[nb - 1], Sfacemoins1);
+          }
         }
         //// for periodic 3d curves ////
         if (cad.IsPeriodic() && !C2dint1.IsNull())
@@ -3517,7 +4145,10 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         else
         {
           indice = DStr.AddShape(Face[nb]);
-          DStr.SetNewSurface(Face[nb], Sface);
+          if (!pastVtx)
+          {
+            DStr.SetNewSurface(Face[nb], Sface);
+          }
           if (Face[nb].Orientation() == Face[nb - 1].Orientation())
           {
             orient = TopAbs::Reverse(orient);
@@ -4952,7 +5583,11 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     // add here more or less restrictive criteria to
     // decide if the intersection with face is done at the
     // extended end or if there will be a cap on sharp end.
-    c3df                              = DStr.Curve(FiopArc.LineIndex()).Curve();
+    c3df = DStr.Curve(FiopArc.LineIndex()).Curve();
+    if (c3df.IsNull())
+    {
+      throw Standard_ConstructionError("IntersectMoreCorner : no fillet line on the face");
+    }
     double                         uf = FiopArc.FirstParameter();
     double                         ul = FiopArc.LastParameter();
     occ::handle<GeomAdaptor_Curve> Hc3df;
@@ -4972,7 +5607,7 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
       //  Modified by Sergey KHROMOV - Fri Dec 21 18:08:29 2001 End
       // Arcprol is an edge of tangency, ultimate adjustment by an extrema curve/curve is attempted.
       double                    ff, ll;
-      occ::handle<Geom2d_Curve> gpcprol = BRep_Tool::CurveOnSurface(Arcprol, Fv, ff, ll);
+      occ::handle<Geom2d_Curve> gpcprol = PCurveInFace(Arcprol, Fv, ff, ll);
       if (gpcprol.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -5015,7 +5650,7 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     }
     else
     {
-      Hc1 = BRep_Tool::CurveOnSurface(CV1.Arc(), Fv, Ubid, Ubid);
+      Hc1 = PCurveInFace(CV1.Arc(), Fv, Ubid, Ubid);
       if (Hc1.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -5028,7 +5663,7 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     }
     else
     {
-      Hc2 = BRep_Tool::CurveOnSurface(CV2.Arc(), Fv, Ubid, Ubid);
+      Hc2 = PCurveInFace(CV2.Arc(), Fv, Ubid, Ubid);
       if (Hc2.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -5340,14 +5975,14 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     }
     //  Modified by skv - Thu Aug 21 11:55:58 2008 OCC20222 End
     // fin modif
-    Hc = BRep_Tool::CurveOnSurface(Arcprolbis, Fop, Ubid, Ubid);
+    Hc = PCurveInFace(Arcprolbis, Fop, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");
     }
     pop1 = Hc->Value(parVtx);
     pop2 = Fiop.PCurveOnFace()->Value(Fiop.Parameter(isfirst));
-    Hc   = BRep_Tool::CurveOnSurface(Arcprol, Fv, Ubid, Ubid);
+    Hc   = PCurveInFace(Arcprol, Fv, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");

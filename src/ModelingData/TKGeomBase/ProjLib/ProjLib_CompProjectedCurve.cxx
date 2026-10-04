@@ -2352,6 +2352,15 @@ void FindSplitPoint(SplitDS& theSplitDS, const double theMinParam, const double 
         }
       }
 
+      // No extremum inside the surface: the nearest point is on its
+      // boundary, where the search finds none. Met at the start of a range
+      // the recursion opened just past a split already found -- the curve
+      // there only near the border, not on it.
+      if (aMinIdx < 1)
+      {
+        continue;
+      }
+
       // Check that is point will be projected to the periodic border.
       const Extrema_POnSurf& aPOnS = theSplitDS.myExtPS->Point(aMinIdx);
       double                 U, V, aProjParam;
