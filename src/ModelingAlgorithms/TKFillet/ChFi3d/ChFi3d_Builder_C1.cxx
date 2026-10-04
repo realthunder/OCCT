@@ -51,6 +51,9 @@
 #include <Geom2dAdaptor_Curve.hxx>
 #include <Geom2dInt_GInter.hxx>
 #include <Geom_BezierSurface.hxx>
+#include <Geom_Line.hxx>
+#include <GeomAPI_IntCS.hxx>
+#include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Geom_BoundedCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
@@ -65,6 +68,7 @@
 #include <GeomInt_IntSS.hxx>
 #include <GeomLib.hxx>
 #include <GeomProjLib.hxx>
+#include <gp_Lin.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
 #include <gp_Vec2d.hxx>
@@ -810,6 +814,95 @@ static TopoDS_Edge SplitUnderLine(const TopoDS_Face&               F,
   return TopoDS_Edge();
 }
 
+static bool containE(const TopoDS_Face& F1, const TopoDS_Edge& E);
+
+//=======================================================================
+// function : StraightFromVertex
+// purpose  : True when the edge <E> of the vertex <V> is a straight
+//           segment; <L> is then its line, from <V> on away from <E>.
+//=======================================================================
+
+static bool StraightFromVertex(const TopoDS_Edge& E, const TopoDS_Vertex& V, gp_Lin& L)
+{
+  TopoDS_Vertex aV1, aV2;
+  TopExp::Vertices(E, aV1, aV2);
+  if (aV1.IsSame(aV2) || BRep_Tool::Degenerated(E) || !hasVertex(E, V))
+  {
+    return false;
+  }
+  const gp_Pnt aP = BRep_Tool::Pnt(V);
+  const gp_Pnt aQ = BRep_Tool::Pnt(V.IsSame(aV1) ? aV2 : aV1);
+  if (aP.Distance(aQ) <= 10 * Precision::Confusion())
+  {
+    return false;
+  }
+  L = gp_Lin(aP, gp_Dir(gp_Vec(aQ, aP)));
+  BRepAdaptor_Curve aC(E);
+  const double      aTol = std::max(BRep_Tool::Tolerance(E), Precision::Confusion());
+  for (int i = 1; i < 8; i++)
+  {
+    const double t = aC.FirstParameter() + i * (aC.LastParameter() - aC.FirstParameter()) / 8;
+    if (L.Distance(aC.Value(t)) > aTol)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//=======================================================================
+// function : CurveOnFacePeriod
+// purpose  : The pcurve of <C> on <S>, the surface of <F> extended, on the
+//           period of <F>'s domain at its vertex <V> (where <C> starts),
+//           or a null curve when <C> does not lie on <S> within <Tol>.
+//=======================================================================
+
+static occ::handle<Geom2d_Curve> CurveOnFacePeriod(const occ::handle<Geom_Curve>&   C,
+                                                   const occ::handle<Geom_Surface>& S,
+                                                   const TopoDS_Face&               F,
+                                                   const TopoDS_Vertex&             V,
+                                                   const double                     Tol)
+{
+  occ::handle<Geom_Surface> aS = S;
+  const occ::handle<Geom_RectangularTrimmedSurface> aTrimmed =
+    occ::down_cast<Geom_RectangularTrimmedSurface>(aS);
+  if (!aTrimmed.IsNull())
+  {
+    aS = aTrimmed->BasisSurface();
+  }
+  const double              f = C->FirstParameter(), l = C->LastParameter();
+  occ::handle<Geom2d_Curve> aC2d = GeomProjLib::Curve2d(C, f, l, aS);
+  if (aC2d.IsNull())
+  {
+    return aC2d;
+  }
+  for (int i = 0; i <= 4; i++)
+  {
+    const double   t   = f + i * (l - f) / 4;
+    const gp_Pnt2d aUV = aC2d->Value(t);
+    if (aS->Value(aUV.X(), aUV.Y()).Distance(C->Value(t)) > Tol)
+    {
+      return occ::handle<Geom2d_Curve>();
+    }
+  }
+  const gp_Pnt2d aUVv = BRep_Tool::Parameters(V, F);
+  const gp_Pnt2d aUVc = aC2d->Value(f);
+  double         aDu = 0., aDv = 0.;
+  if (aS->IsUPeriodic())
+  {
+    aDu = aS->UPeriod() * std::floor((aUVv.X() - aUVc.X()) / aS->UPeriod() + 0.5);
+  }
+  if (aS->IsVPeriodic())
+  {
+    aDv = aS->VPeriod() * std::floor((aUVv.Y() - aUVc.Y()) / aS->VPeriod() + 0.5);
+  }
+  if (aDu != 0. || aDv != 0.)
+  {
+    aC2d->Translate(gp_Vec2d(aDu, aDv));
+  }
+  return aC2d;
+}
+
 //=======================================================================
 // function : PerformOneCorner
 // purpose  : Calculate a corner with three edges and a fillet.
@@ -902,6 +995,15 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   TopoDS_Face Fprol;
   TopoDS_Edge Etan;
   bool        zobOnEtan = false;
+  // The cut over a wall in two tangent faces (see below): the face beyond
+  // the one at Vtx, the straight edge between the two from Arcpiv's vertex
+  // Vp, its line carried on past Vp, the edge of Fad from Vp to Vtx, and
+  // the two faces' orientations in the shell
+  TopoDS_Face        FvT;
+  TopoDS_Edge        Etg, Eunder;
+  TopoDS_Vertex      Vp;
+  gp_Lin             LinTg;
+  TopAbs_Orientation OFvT = TopAbs_FORWARD, OFv = TopAbs_FORWARD;
   if (isfirst)
   {
     Arcspine = spine->Edges(1);
@@ -915,6 +1017,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   occ::handle<BRepAdaptor_Surface> HBs  = new BRepAdaptor_Surface();
   occ::handle<BRepAdaptor_Surface> HBad = new BRepAdaptor_Surface();
   occ::handle<BRepAdaptor_Surface> HBop = new BRepAdaptor_Surface();
+  occ::handle<BRepAdaptor_Surface> HBsT = new BRepAdaptor_Surface();
   BRepAdaptor_Surface&             Bs   = *HBs;
   BRepAdaptor_Surface&             Bad  = *HBad;
   BRepAdaptor_Surface&             Bop  = *HBop;
@@ -1060,6 +1163,61 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       throw StdFail_NotDone("OneCorner : face at end not found");
     }
 
+    // The fillet's line on Fad passes the end of the edge between Fad and
+    // the face at Vtx (a drafted wall's rounded corner, a cone) onto an
+    // edge of the face beyond it (the wall's plane), into which the face at
+    // Vtx runs on, tangent, across a straight edge from Arcpiv's vertex:
+    // one wall in two faces, and Fv does not hold Vtx. The cut runs over
+    // both, from Arcpiv on the face beyond (FvT) across that edge carried
+    // on past the vertex, to Fop on the face at Vtx, which is Fv from here.
+    if (!containV(Fv, Vtx))
+    {
+      for (ex.Init(Arcpiv, TopAbs_VERTEX); ex.More() && FvT.IsNull(); ex.Next())
+      {
+        const TopoDS_Vertex& aVp = TopoDS::Vertex(ex.Current());
+        for (It.Initialize(myVEMap(aVp)); It.More() && FvT.IsNull(); It.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(It.Value());
+          if (anE.IsSame(Arcpiv) || !hasVertex(anE, Vtx) || !containE(Fad, anE))
+          {
+            continue;
+          }
+          TopoDS_Face aFV;
+          for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(anE)); itF.More(); itF.Next())
+          {
+            if (!Fad.IsSame(itF.Value()))
+            {
+              aFV = TopoDS::Face(itF.Value());
+            }
+          }
+          if (aFV.IsNull() || aFV.IsSame(Fv) || aFV.IsSame(Fop))
+          {
+            continue;
+          }
+          TopAbs_Orientation anOT = TopAbs_FORWARD, anOV = TopAbs_FORWARD;
+          const TopoDS_Edge  anEtg = TangentNeighbour(aVp, Fv, aFV, myVEMap, myEFMap, anOT);
+          gp_Lin             aLin;
+          if (anEtg.IsNull() || !StraightFromVertex(anEtg, aVp, aLin))
+          {
+            continue;
+          }
+          TangentNeighbour(aVp, aFV, Fv, myVEMap, myEFMap, anOV);
+          FvT    = Fv;
+          Fv     = aFV;
+          Etg    = anEtg;
+          Eunder = anE;
+          Vp     = aVp;
+          LinTg  = aLin;
+          OFvT   = anOT;
+          OFv    = anOV;
+        }
+      }
+      if (!FvT.IsNull())
+      {
+        FvT.Orientation(TopAbs_FORWARD);
+      }
+    }
+
     Fv.Orientation(TopAbs_FORWARD);
     Fad.Orientation(TopAbs_FORWARD);
     Fop.Orientation(TopAbs_FORWARD);
@@ -1118,6 +1276,12 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     if (!containV(Fad, Vtx))
     {
       Swallowed = EdgesToArc(Fv, Vtx, Arcprol, Arcpiv);
+    }
+    // The edge of Fad from Arcpiv's vertex to Vtx lies under the fillet.
+    if (!FvT.IsNull())
+    {
+      Swallowed.Append(Eunder);
+      Swallowed.Append(Vtx);
     }
     for (ex.Init(Fop, TopAbs_EDGE); ex.More(); ex.Next())
     {
@@ -1180,6 +1344,25 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     {
       Bs.Initialize(Fv, false);
     }
+    if (!FvT.IsNull())
+    {
+      occ::handle<Geom_Surface> SfaceT = BRep_Tool::Surface(FvT);
+      const occ::handle<Geom_RectangularTrimmedSurface> aTrimmedT =
+        occ::down_cast<Geom_RectangularTrimmedSurface>(SfaceT);
+      if (!aTrimmedT.IsNull())
+      {
+        SfaceT = aTrimmedT->BasisSurface();
+      }
+      int prolT = 0;
+      ChFi3d_ExtendSurface(SfaceT, prolT);
+      TopoDS_Face FFvT;
+      BRE.MakeFace(FFvT, SfaceT, BRep_Tool::Tolerance(FvT));
+      HBsT->Initialize(FFvT, false);
+      if (prolT || !aTrimmedT.IsNull())
+      {
+        DStr.SetNewSurface(FvT, SfaceT);
+      }
+    }
     Bad.Initialize(Fad);
     Bop.Initialize(Fop);
   }
@@ -1220,11 +1403,11 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
                                 wop); // out
 
     occ::handle<BRepAdaptor_Curve2d> pced = new BRepAdaptor_Curve2d();
-    pced->Initialize(CPadArc.Arc(), Fv);
+    pced->Initialize(CPadArc.Arc(), FvT.IsNull() ? Fv : FvT);
     // in the case of degenerated Fi, parameter difference can be even negative (eap, occ293)
     if ((FiadArc.LastParameter() - FiadArc.FirstParameter()) > 10 * tolesp)
     {
-      Update(HBs, pced, HGs, FiadArc, CPadArc, isfirst);
+      Update(FvT.IsNull() ? HBs : HBsT, pced, HGs, FiadArc, CPadArc, isfirst);
     }
 
     // The fillet's line on Fop ended on Etan, the edge between Fop and the
@@ -1344,6 +1527,13 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   int Isurf = Fd->Surf();
   // the cut's end on Fop's side, in Fv's parameters
   gp_Pnt2d aCutOnOp;
+  // The cut over two faces (FvT set): its piece on FvT (Cc is the piece on
+  // Fv), the point between them, where it crosses Etg's line at wTg, and
+  // that line from Vp to there with its pcurves on FvT and Fv
+  occ::handle<Geom_Curve>   CcT, CTg;
+  occ::handle<Geom2d_Curve> PsT, PcT, PTgT, PTgV;
+  gp_Pnt                    PTg;
+  double                    wTg = 0.;
 
   if (inters)
   {
@@ -1359,7 +1549,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     }
     else
     {
-      Hc1 = PCurveInFace(CV1.Arc(), Fv, Ubid, Ubid);
+      Hc1 = PCurveInFace(CV1.Arc(), FvT.IsNull() ? Fv : FvT, Ubid, Ubid);
       if (Hc1.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -1372,7 +1562,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     }
     else
     {
-      Hc2 = PCurveInFace(CV2.Arc(), Fv, Ubid, Ubid);
+      Hc2 = PCurveInFace(CV2.Arc(), FvT.IsNull() ? Fv : FvT, Ubid, Ubid);
       if (Hc2.IsNull())
       {
         throw Standard_ConstructionError("Failed to get p-curve of edge");
@@ -1395,36 +1585,202 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     {
       pfil2 = Fi2.PCurveOnSurf()->Value(Fi2.Parameter(!isfirst));
     }
-    if (onsame)
+    if (!FvT.IsNull())
     {
-      ChFi3d_Recale(Bs, pfac1, pfac2, (IFadArc == 1));
+      // The point where the cut crosses from FvT to Fv: on Etg's line
+      // carried on past Vp, the nearest of its intersections with the
+      // fillet's surface within the surface's bounds.
+      const occ::handle<Geom_Surface>& aSfil = DStr.Surface(Fd->Surf()).Surface();
+      GeomAPI_IntCS                    anInt(new Geom_Line(LinTg), aSfil);
+      const double aU1 = HGs->FirstUParameter(), aU2 = HGs->LastUParameter();
+      const double aV1 = HGs->FirstVParameter(), aV2 = HGs->LastVParameter();
+      const double aMargU = 0.1 * (aU2 - aU1), aMargV = 0.1 * (aV2 - aV1);
+      gp_Pnt2d     pfilT;
+      bool         isFound = false;
+      for (int i = 1; anInt.IsDone() && i <= anInt.NbPoints(); i++)
+      {
+        double u, v, w;
+        anInt.Parameters(i, u, v, w);
+        if (aSfil->IsUPeriodic())
+        {
+          u = ElCLib::InPeriod(u, pfil1.X() - 0.5 * aSfil->UPeriod(),
+                               pfil1.X() + 0.5 * aSfil->UPeriod());
+        }
+        if (aSfil->IsVPeriodic())
+        {
+          v = ElCLib::InPeriod(v, pfil1.Y() - 0.5 * aSfil->VPeriod(),
+                               pfil1.Y() + 0.5 * aSfil->VPeriod());
+        }
+        if (w <= Precision::Confusion() || u < aU1 - aMargU || u > aU2 + aMargU || v < aV1 - aMargV
+            || v > aV2 + aMargV || (isFound && w >= wTg))
+        {
+          continue;
+        }
+        isFound = true;
+        wTg     = w;
+        pfilT.SetCoord(u, v);
+        PTg = anInt.Point(i);
+      }
+      if (!isFound)
+      {
+        throw Standard_Failure("OneCorner : the cut does not cross the wall's tangent edge");
+      }
+      CTg  = new Geom_TrimmedCurve(new Geom_Line(LinTg), 0., wTg);
+      PTgT = CurveOnFacePeriod(CTg, HBsT->Surface().Surface(), FvT, Vp, 10 * tolapp3d);
+      PTgV = CurveOnFacePeriod(CTg, HBs->Surface().Surface(), Fv, Vp, 10 * tolapp3d);
+      if (PTgT.IsNull() || PTgV.IsNull())
+      {
+        throw Standard_Failure("OneCorner : the wall's tangent edge does not carry on");
+      }
+      gp_Pnt2d       pfacT  = PTgT->Value(wTg);
+      gp_Pnt2d       pfacV  = PTgV->Value(wTg);
+      gp_Pnt2d&      pfacAd = IFadArc == 1 ? pfac1 : pfac2;
+      gp_Pnt2d&      pfacOp = IFopArc == 1 ? pfac1 : pfac2;
+      ChFi3d_Recale(*HBsT, pfacT, pfacAd, true);
+      ChFi3d_Recale(Bs, pfacV, pfacOp, true);
+      aCutOnOp = pfacOp;
+
+      // The piece on FvT runs from Arcpiv to the point, the one on Fv from
+      // there to its end on Fop's side. A curve starting at the point, at
+      // the end of the fillet's line, can come out loose (on a seam of Fv
+      // there, say); the one from the end on Fop's side to the fillet's
+      // line on Fv's surface carried on past Etg, cut at the point, can
+      // cross Fv's seam. Of the two, the one that fits better.
+      gp_Pnt2d pfacVAd;
+      {
+        const gp_Pnt2d&            pfilAd = IFadArc == 1 ? pfil1 : pfil2;
+        GeomAPI_ProjectPointOnSurf aProj(HGs->Value(pfilAd.X(), pfilAd.Y()),
+                                         HBs->Surface().Surface());
+        if (aProj.NbPoints() > 0)
+        {
+          double u, v;
+          aProj.LowerDistanceParameters(u, v);
+          pfacVAd.SetCoord(u, v);
+          ChFi3d_Recale(Bs, pfacV, pfacVAd, true);
+        }
+        else
+        {
+          pfacVAd = pfacV;
+        }
+      }
+      // the piece the k-th along the cut (from CV1), on FvT or Fv, starting
+      // or ending at the point, or on Fv through it to the fillet's line
+      auto aPiece = [&](const int                  k,
+                        const bool                 theWhole,
+                        occ::handle<Geom_Curve>&   theC,
+                        occ::handle<Geom2d_Curve>& thePs,
+                        occ::handle<Geom2d_Curve>& thePc,
+                        double&                    theTol) -> bool {
+        const bool           onT    = (k == IFadArc);
+        BRepAdaptor_Surface& aBs    = onT ? *HBsT : Bs;
+        const gp_Pnt2d&      pfacTV = onT ? pfacT : (theWhole ? pfacVAd : pfacV);
+        const gp_Pnt2d&      pfilA  = k == 2 && !theWhole ? pfilT : pfil1;
+        const gp_Pnt2d&      pfilB  = k == 1 && !theWhole ? pfilT : pfil2;
+        const gp_Pnt2d&      pfacA  = k == 1 ? pfac1 : pfacTV;
+        const gp_Pnt2d&      pfacB  = k == 1 ? pfacTV : pfac2;
+        Pardeb(1)                   = pfilA.X();
+        Pardeb(2)                   = pfilA.Y();
+        Pardeb(3)                   = pfacA.X();
+        Pardeb(4)                   = pfacA.Y();
+        Parfin(1)                   = pfilB.X();
+        Parfin(2)                   = pfilB.Y();
+        Parfin(3)                   = pfacB.X();
+        Parfin(4)                   = pfacB.Y();
+        double uu1, uu2, vv1, vv2;
+        ChFi3d_Boite(pfacA, pfacB, uu1, uu2, vv1, vv2);
+        ChFi3d_BoundFac(aBs, uu1, uu2, vv1, vv2);
+        theTol = tolapp3d;
+        if (!ChFi3d_ComputeCurves(HGs,
+                                  onT ? HBsT : HBs,
+                                  Pardeb,
+                                  Parfin,
+                                  theC,
+                                  thePs,
+                                  thePc,
+                                  tolapp3d,
+                                  tol2d,
+                                  theTol))
+        {
+          return false;
+        }
+        if (theWhole)
+        {
+          GeomAPI_ProjectPointOnCurve aProjC(PTg, theC);
+          if (aProjC.NbPoints() == 0 || aProjC.LowerDistance() > 10 * tolapp3d)
+          {
+            return false;
+          }
+          const double aPar = aProjC.LowerDistanceParameter();
+          theC = k == 2 ? new Geom_TrimmedCurve(theC, aPar, theC->LastParameter())
+                        : new Geom_TrimmedCurve(theC, theC->FirstParameter(), aPar);
+          // the piece kept's own: past the point the curve runs on off the
+          // parts of the surfaces it is computed on
+          theTol = std::max(ChFi3d_EvalTolReached(HGs, thePs, HBs, thePc, theC),
+                            aProjC.LowerDistance());
+        }
+        return true;
+      };
+      double aTolT = 0., aTolV = 0.;
+      if (!aPiece(IFadArc, false, CcT, PsT, PcT, aTolT))
+      {
+        throw Standard_Failure("OneCorner : echec calcul intersection");
+      }
+      const bool isCut = aPiece(IFopArc, false, Cc, Ps, Pc, aTolV);
+      if (!isCut || aTolV > tolapp3d)
+      {
+        occ::handle<Geom_Curve>   aC;
+        occ::handle<Geom2d_Curve> aPs, aPc;
+        double                    aTolW = 0.;
+        if (aPiece(IFopArc, true, aC, aPs, aPc, aTolW) && (!isCut || aTolW < aTolV))
+        {
+          Cc    = aC;
+          Ps    = aPs;
+          Pc    = aPc;
+          aTolV = aTolW;
+        }
+        else if (!isCut)
+        {
+          throw Standard_Failure("OneCorner : echec calcul intersection");
+        }
+      }
+      tolreached = std::max(aTolT, aTolV);
+      Udeb = Cc->FirstParameter();
+      Ufin = Cc->LastParameter();
+      couture = false;
     }
-    aCutOnOp = IFopArc == 1 ? pfac1 : pfac2;
-
-    Pardeb(1) = pfil1.X();
-    Pardeb(2) = pfil1.Y();
-    Pardeb(3) = pfac1.X();
-    Pardeb(4) = pfac1.Y();
-    Parfin(1) = pfil2.X();
-    Parfin(2) = pfil2.Y();
-    Parfin(3) = pfac2.X();
-    Parfin(4) = pfac2.Y();
-
-    double uu1, uu2, vv1, vv2;
-    ChFi3d_Boite(pfac1, pfac2, uu1, uu2, vv1, vv2);
-    ChFi3d_BoundFac(Bs, uu1, uu2, vv1, vv2);
-
-    if (!ChFi3d_ComputeCurves(HGs, HBs, Pardeb, Parfin, Cc, Ps, Pc, tolapp3d, tol2d, tolreached))
+    else
     {
-      throw Standard_Failure("OneCorner : echec calcul intersection");
+      if (onsame)
+      {
+        ChFi3d_Recale(Bs, pfac1, pfac2, (IFadArc == 1));
+      }
+      aCutOnOp = IFopArc == 1 ? pfac1 : pfac2;
+
+      Pardeb(1) = pfil1.X();
+      Pardeb(2) = pfil1.Y();
+      Pardeb(3) = pfac1.X();
+      Pardeb(4) = pfac1.Y();
+      Parfin(1) = pfil2.X();
+      Parfin(2) = pfil2.Y();
+      Parfin(3) = pfac2.X();
+      Parfin(4) = pfac2.Y();
+
+      double uu1, uu2, vv1, vv2;
+      ChFi3d_Boite(pfac1, pfac2, uu1, uu2, vv1, vv2);
+      ChFi3d_BoundFac(Bs, uu1, uu2, vv1, vv2);
+
+      if (!ChFi3d_ComputeCurves(HGs, HBs, Pardeb, Parfin, Cc, Ps, Pc, tolapp3d, tol2d, tolreached))
+      {
+        throw Standard_Failure("OneCorner : echec calcul intersection");
+      }
+
+      Udeb = Cc->FirstParameter();
+      Ufin = Cc->LastParameter();
+
+      //  determine if the curve has an intersection with edge of sewing
+
+      ChFi3d_Couture(Fv, couture, edgecouture);
     }
-
-    Udeb = Cc->FirstParameter();
-    Ufin = Cc->LastParameter();
-
-    //  determine if the curve has an intersection with edge of sewing
-
-    ChFi3d_Couture(Fv, couture, edgecouture);
 
     if (couture && !BRep_Tool::Degenerated(edgecouture))
     {
@@ -1477,10 +1833,12 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   }
   int                IShape = DStr.AddShape(Fv);
   TopAbs_Orientation Et     = TopAbs_FORWARD;
+  // the face Arcpiv bounds
+  const TopoDS_Face& FvArc = FvT.IsNull() ? Fv : FvT;
   if (IFadArc == 1)
   {
     TopExp_Explorer Exp;
-    for (Exp.Init(Fv.Oriented(TopAbs_FORWARD), TopAbs_EDGE); Exp.More(); Exp.Next())
+    for (Exp.Init(FvArc.Oriented(TopAbs_FORWARD), TopAbs_EDGE); Exp.More(); Exp.Next())
     {
       if (Exp.Current().IsSame(CV1.Arc()))
       {
@@ -1492,7 +1850,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   else
   {
     TopExp_Explorer Exp;
-    for (Exp.Init(Fv.Oriented(TopAbs_FORWARD), TopAbs_EDGE); Exp.More(); Exp.Next())
+    for (Exp.Init(FvArc.Oriented(TopAbs_FORWARD), TopAbs_EDGE); Exp.More(); Exp.Next())
     {
       if (Exp.Current().IsSame(CV2.Arc()))
       {
@@ -1512,7 +1870,83 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CV1, DStr), isfirst, 1);
   stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CV2, DStr), isfirst, 2);
 
-  if (!intcouture)
+  // the boxes of the cut's points: the one between its pieces
+  Bnd_Box boxT;
+  if (!FvT.IsNull())
+  {
+    // The cut over two faces, in two curves meeting where it crosses Etg's
+    // line carried on past Vp; the line from Vp to there bounds both faces.
+    // The curves and their points go in the DS here, as for a cut crossing
+    // a seam (below), and FILDS leaves the end alone.
+    indpt           = DStr.AddPoint(TopOpeBRepDS_Point(PTg, tolreached));
+    const int ICT   = DStr.AddCurve(TopOpeBRepDS_Curve(CcT, tolreached));
+    const int ICV   = DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tolreached));
+    const int IShT  = DStr.AddShape(FvT);
+    // Et is FvT's, from Arcpiv; Fv's is the same in the shell
+    const TopAbs_Orientation EtV = OFvT == OFv ? Et : TopAbs::Reverse(Et);
+    DStr.ChangeShapeInterferences(IShT).Append(ChFi3d_FilCurveInDS(ICT, IShT, PcT, Et));
+    DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(ICV, IShape, Pc, EtV));
+    // on the fillet's surface, as FILDS puts the end's curve
+    TopAbs_Orientation aTrafil1 = TopAbs_FORWARD;
+    if (Fd->IndexOfS1() > 0)
+    {
+      aTrafil1 = DStr.Shape(Fd->IndexOfS1()).Orientation();
+    }
+    aTrafil1 = TopAbs::Compose(aTrafil1, Fd->Orientation());
+    aTrafil1 = TopAbs::Compose(TopAbs::Reverse(Fd->InterferenceOnS1().Transition()), aTrafil1);
+    const TopAbs_Orientation EtS = isfirst ? TopAbs::Reverse(aTrafil1) : aTrafil1;
+    DStr.ChangeSurfaceInterferences(Isurf).Append(ChFi3d_FilCurveInDS(ICT, Isurf, PsT, EtS));
+    DStr.ChangeSurfaceInterferences(Isurf).Append(ChFi3d_FilCurveInDS(ICV, Isurf, Ps, EtS));
+    stripe->InDS(isfirst);
+    const int                      ind1 = stripe->IndexPoint(isfirst, 1);
+    const int                      ind2 = stripe->IndexPoint(isfirst, 2);
+    const int                      IC1  = IFadArc == 1 ? ICT : ICV;
+    const int                      IC2  = IFadArc == 1 ? ICV : ICT;
+    const occ::handle<Geom_Curve>& C1   = IFadArc == 1 ? CcT : Cc;
+    const occ::handle<Geom_Curve>& C2   = IFadArc == 1 ? Cc : CcT;
+    DStr.ChangeCurveInterferences(IC1).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, IC1, ind1, C1->FirstParameter()));
+    DStr.ChangeCurveInterferences(IC1).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IC1, indpt, C1->LastParameter()));
+    DStr.ChangeCurveInterferences(IC2).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, IC2, indpt, C2->FirstParameter()));
+    DStr.ChangeCurveInterferences(IC2).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IC2, ind2, C2->LastParameter()));
+
+    // Etg's line from Vp, on each face as Etg is there: the same way when
+    // Etg runs to Vp
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(TopoDS::Edge(Etg.Oriented(TopAbs_FORWARD)), aV1, aV2);
+    const bool         sameDir = Vp.IsSame(aV2);
+    const int          IG      = DStr.AddCurve(TopOpeBRepDS_Curve(CTg, tolreached));
+    for (int k = 0; k < 2; k++)
+    {
+      const TopoDS_Face& aF  = k == 0 ? FvT : Fv;
+      TopAbs_Orientation anO = TopAbs_FORWARD;
+      for (ex.Init(aF.Oriented(TopAbs_FORWARD), TopAbs_EDGE); ex.More(); ex.Next())
+      {
+        if (Etg.IsSame(ex.Current()))
+        {
+          anO = ex.Current().Orientation();
+          break;
+        }
+      }
+      DStr.ChangeShapeInterferences(k == 0 ? IShT : IShape)
+        .Append(ChFi3d_FilCurveInDS(IG,
+                                    k == 0 ? IShT : IShape,
+                                    k == 0 ? PTgT : PTgV,
+                                    sameDir ? anO : TopAbs::Reverse(anO)));
+    }
+    DStr.ChangeCurveInterferences(IG).Append(
+      ChFi3d_FilVertexInDS(TopAbs_FORWARD, IG, DStr.AddShape(Vp), 0.));
+    DStr.ChangeCurveInterferences(IG).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IG, indpt, wTg));
+    ChFi3d_EnlargeBox(IFadArc == 1 ? HBsT : HBs, IFadArc == 1 ? PcT : Pc,
+                      C1->FirstParameter(), C1->LastParameter(), box1, boxT);
+    ChFi3d_EnlargeBox(IFadArc == 1 ? HBs : HBsT, IFadArc == 1 ? Pc : PcT,
+                      C2->FirstParameter(), C2->LastParameter(), boxT, box2);
+  }
+  else if (!intcouture)
   {
     // there is no intersection with the sewing edge
     // the curve Cc is stored in the stripe
@@ -1801,7 +2235,10 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     DStr.ChangeCurveInterferences(Icurv2).Append(interfprol);
   }
 
-  ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, box1, box2);
+  if (FvT.IsNull())
+  {
+    ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, box1, box2);
+  }
 
   // The fillet's line on a face running from vertex to vertex along the
   // split toward the piece the spine is on: the split goes with the piece.
@@ -2143,6 +2580,10 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   if (!CV2.IsVertex())
   {
     ChFi3d_SetPointTolerance(DStr, box2, stripe->IndexPoint(isfirst, 2));
+  }
+  if (!FvT.IsNull())
+  {
+    ChFi3d_SetPointTolerance(DStr, boxT, indpt);
   }
 
 #ifdef OCCT_DEBUG
