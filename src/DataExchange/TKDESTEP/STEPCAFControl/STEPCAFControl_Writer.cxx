@@ -1225,6 +1225,13 @@ static bool getStyledItem(
 static bool setDefaultInstanceColor(const occ::handle<StepVisual_StyledItem>& theStyleItem,
                                     occ::handle<StepVisual_PresentationStyleAssignment>& thePSA)
 {
+  // No styled item of the referred shape to copy from -- getStyledItem() finds
+  // none for the components of an assembly written in one pass, which come
+  // before the shape they refer to: keep the default PSA as it is.
+  if (theStyleItem.IsNull() || theStyleItem->Styles().IsNull())
+  {
+    return false;
+  }
   bool anIsFound = false;
   for (NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>::Iterator
          aStyleIter(theStyleItem->Styles()->Array1());
