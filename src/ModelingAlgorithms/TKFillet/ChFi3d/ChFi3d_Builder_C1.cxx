@@ -1342,6 +1342,8 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   occ::handle<Geom2d_Curve>      c2d1, c2d2;
 
   int Isurf = Fd->Surf();
+  // the cut's end on Fop's side, in Fv's parameters
+  gp_Pnt2d aCutOnOp;
 
   if (inters)
   {
@@ -1397,6 +1399,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     {
       ChFi3d_Recale(Bs, pfac1, pfac2, (IFadArc == 1));
     }
+    aCutOnOp = IFopArc == 1 ? pfac1 : pfac2;
 
     Pardeb(1) = pfil1.X();
     Pardeb(2) = pfil1.Y();
@@ -1908,8 +1911,11 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       throw Standard_ConstructionError("Failed to get p-curve of edge");
     }
     pv1 = Hc->Value(parVtx);
-    pv2 = p2dbout;
-    ChFi3d_Recale(Bs, pv1, pv2, true);
+    // The extension starts where the cut ends, on the cut's period of a
+    // periodic Fv: Vtx on Fv's seam has a parameter on either side of it,
+    // and Arcprol's there need not be the cut's.
+    pv2 = aCutOnOp;
+    ChFi3d_Recale(Bs, pv1, pv2, false);
     NCollection_Array1<double> Pardeb(1, 4), Parfin(1, 4);
     Pardeb(1) = pop1.X();
     Pardeb(2) = pop1.Y();
