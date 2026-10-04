@@ -1639,6 +1639,25 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       ChFi3d_Recale(*HBsT, pfacT, pfacAd, true);
       ChFi3d_Recale(Bs, pfacV, pfacOp, true);
       aCutOnOp = pfacOp;
+      // The cut's end on Fop's side lies on Fv beside Eunder, between Vtx
+      // and Etg: Fv's surface carried on (a B-spline's, say) can meet the
+      // fillet's line again far off, nearer to where the walk ended.
+      {
+        double                          f, l;
+        const occ::handle<Geom2d_Curve> aPcU = BRep_Tool::CurveOnSurface(Eunder, Fv, f, l);
+        bool                            isBeside = false;
+        if (!aPcU.IsNull())
+        {
+          const double                  aMarg = 0.05 * (l - f);
+          Geom2dAPI_ProjectPointOnCurve aPr(pfacOp, aPcU, f - aMarg, l + aMarg);
+          isBeside = aPr.NbPoints() > 0 && aPr.LowerDistanceParameter() >= f - aMarg
+                     && aPr.LowerDistanceParameter() <= l + aMarg;
+        }
+        if (!isBeside)
+        {
+          throw Standard_Failure("OneCorner : the cut's end on the side is off the face at Vtx");
+        }
+      }
 
       // The piece on FvT runs from Arcpiv to the point, the one on Fv from
       // there to its end on Fop's side. A curve starting at the point, at
