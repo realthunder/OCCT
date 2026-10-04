@@ -1674,8 +1674,27 @@ void Draft_Modification::Perform()
       {
         continue;
       }
-      const gp_Pnt aP   = myVMap(i).Geometry();
-      const double aTol = std::max(BRep_Tool::Tolerance(aV), 0.1 * Precision::Confusion());
+      Draft_VertexInfo& aVinf = myVMap.ChangeFromIndex(i);
+      const gp_Pnt      aP    = aVinf.Geometry();
+      const double      aTol  = std::max(BRep_Tool::Tolerance(aV), 0.1 * Precision::Confusion());
+      for (aVinf.InitEdgeIterator(); aVinf.MoreEdge(); aVinf.NextEdge())
+      {
+        const Draft_EdgeInfo&          anEinf = myEMap.FindFromKey(aVinf.Edge());
+        const occ::handle<Geom_Curve>& aC     = anEinf.Geometry();
+        if (aC.IsNull())
+        {
+          continue;
+        }
+        // An edge the draft leaves alone keeps its curve, which the point
+        // must stay on (a wall split in coplanar pieces: the split edge).
+        if (!anEinf.NewGeometry()
+            && aC->Value(aVinf.Parameter(aVinf.Edge())).Distance(aP) > 100. * aTol)
+        {
+          errStat  = Draft_VertexRecomputation;
+          badShape = aV;
+          return;
+        }
+      }
       for (NCollection_List<TopoDS_Shape>::Iterator anIt(aVFMap.FindFromKey(aV)); anIt.More();
            anIt.Next())
       {
@@ -1830,6 +1849,30 @@ void Draft_Modification::Perform()
         errStat  = Draft_EdgeRecomputation;
         badShape = edg;
         return;
+      }
+    }
+    // An edge the draft shrinks to a point: its face has lost a side (or
+    // the whole face is gone) -- a change of topology the draft cannot make.
+    if (!BRep_Tool::Degenerated(edg))
+    {
+      const occ::handle<Geom_Curve>& aNewC = myEMap.FindFromKey(edg).Geometry();
+      double                         aF = 0.0, aL = 0.0;
+      const occ::handle<Geom_Curve>  anOldC = BRep_Tool::Curve(edg, aF, aL);
+      if (!aNewC.IsNull() && !anOldC.IsNull())
+      {
+        auto aChord = [](const occ::handle<Geom_Curve>& theC, double theF, double theL) {
+          const gp_Pnt aM = theC->Value(0.5 * (theF + theL));
+          return theC->Value(theF).Distance(aM) + aM.Distance(theC->Value(theL));
+        };
+        const double aNewLen = aChord(aNewC, pf, pl);
+        const double anOldLen =
+          aChord(anOldC, BRep_Tool::Parameter(Vf, edg), BRep_Tool::Parameter(Vl, edg));
+        if (aNewLen < Precision::Confusion() && anOldLen > 10. * Precision::Confusion())
+        {
+          errStat  = Draft_EdgeRecomputation;
+          badShape = edg;
+          return;
+        }
       }
     }
     if (myVMap.Contains(Vf))
