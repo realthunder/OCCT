@@ -20,10 +20,12 @@
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Curve2d.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <TopoDS_Shape.hxx>
 #include <NCollection_Sequence.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_DataMap.hxx>
+#include <NCollection_Map.hxx>
 #include <BRepLib.hxx>
 #include <BRepLib_MakeVertex.hxx>
 #include <BRepOffsetAPI_DraftAngle.hxx>
@@ -250,6 +252,44 @@ TopoDS_Shape BRepOffsetAPI_DraftAngle::ModifiedShape(const TopoDS_Shape& S) cons
 }
 
 //=================================================================================================
+// A draft moves geometry only. Where the true result needs a change of
+// topology -- a drafted face swept past an edge of a neighbour, one of a
+// wall's coplanar pieces drafted alone -- the faces it rebuilds come out
+// with wires crossing themselves or each other. A face that was valid in
+// the input and is not in the result refuses the draft.
+
+static bool draftFacesValid(const TopoDS_Shape&       theInput,
+                            const BRepTools_Modifier& theModifier,
+                            const TopoDS_Shape&       theResult)
+{
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aResultFaces;
+  for (TopExp_Explorer anExp(theResult, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    aResultFaces.Add(anExp.Current());
+  }
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+  for (TopExp_Explorer anExp(theInput, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Shape& aF = anExp.Current();
+    if (!aDone.Add(aF))
+    {
+      continue;
+    }
+    const TopoDS_Shape& aNewF = theModifier.ModifiedShape(aF);
+    // A face CorrectWires substituted is not checked.
+    if (aNewF.IsNull() || aNewF.IsSame(aF) || !aResultFaces.Contains(aNewF))
+    {
+      continue;
+    }
+    if (!BRepCheck_Analyzer(aNewF).IsValid() && BRepCheck_Analyzer(aF).IsValid())
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//=================================================================================================
 
 void BRepOffsetAPI_DraftAngle::Build(const Message_ProgressRange& /*theRange*/)
 {
@@ -263,6 +303,10 @@ void BRepOffsetAPI_DraftAngle::Build(const Message_ProgressRange& /*theRange*/)
     DoModif(myInitialShape);
     CorrectWires();
     CorrectVertexTol();
+    if (!draftFacesValid(myInitialShape, myModifier, myShape))
+    {
+      NotDone();
+    }
   }
 }
 
