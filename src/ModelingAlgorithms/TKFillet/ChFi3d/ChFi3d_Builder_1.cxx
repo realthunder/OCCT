@@ -713,7 +713,8 @@ static bool TangentOnVertex(const TopoDS_Vertex& V,
 
 void ChFi3d_Builder::PerformExtremity(const occ::handle<ChFiDS_Spine>& Spine)
 {
-  int NbG1Connections = 0;
+  int  NbG1Connections       = 0;
+  bool aOnSameAcrossSplit[2] = {false, false};
 
   for (int ii = 1; ii <= 2; ii++)
   {
@@ -814,6 +815,63 @@ void ChFi3d_Builder::PerformExtremity(const occ::handle<ChFiDS_Spine>& Spine)
       {
         sst = ChFi3d_EdgeState(E, myEFMap);
       }
+      else if (EdgesOfV.Extent() == 4)
+      {
+        // A face of the spine running on past V, tangent within the angular
+        // tolerance, into another face (a plate's side into its round end):
+        // one wall in two faces. With the edge between them left out, V may
+        // be a corner of three edges where the fillet ends OnSame against
+        // the third face, as at the wall in one piece; PerformOneCorner
+        // takes the wall's other face for the one the extension runs in.
+        TopoDS_Face aFs1, aFs2;
+        ChFi3d_conexfaces(E[0], aFs1, aFs2, myEFMap);
+        int  iSplit = 0, nbSplit = 0;
+        bool isDistinct = true;
+        for (int k = 2; k <= 4; k++)
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(EdgesOfV(k));
+          for (int l = 1; l < k; l++)
+          {
+            isDistinct = isDistinct && !anE.IsSame(EdgesOfV(l));
+          }
+          TopoDS_Face aFa, aFb;
+          ChFi3d_conexfaces(anE, aFa, aFb, myEFMap);
+          if (aFb.IsNull() || aFa.IsSame(aFb))
+          {
+            continue;
+          }
+          const bool isOnSpineFace = aFa.IsSame(aFs1) || aFa.IsSame(aFs2) || aFb.IsSame(aFs1)
+                                     || aFb.IsSame(aFs2);
+          if (isOnSpineFace && ChFi3d::IsTangentFaces(anE, aFa, aFb, angular, GeomAbs_G1))
+          {
+            iSplit = k;
+            nbSplit++;
+          }
+        }
+        // and a fan of four faces round V: the spine's two, the one the
+        // tangent face runs on into, and the face at the end
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFacesOfV;
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(myVFMap(V)); itF.More(); itF.Next())
+        {
+          aFacesOfV.Add(itF.Value());
+        }
+        if (isDistinct && nbSplit == 1 && aFacesOfV.Extent() == 4)
+        {
+          TopoDS_Edge E3[3];
+          for (int k = 1, n = 0; k <= 4; k++)
+          {
+            if (k != iSplit)
+            {
+              E3[n++] = TopoDS::Edge(EdgesOfV(k));
+            }
+          }
+          if (ChFi3d_EdgeState(E3, myEFMap) == ChFiDS_OnSame)
+          {
+            sst                        = ChFiDS_OnSame;
+            aOnSameAcrossSplit[ii - 1] = true;
+          }
+        }
+      }
       if (ii == 1)
       {
         Spine->SetFirstStatus(sst);
@@ -847,7 +905,7 @@ void ChFi3d_Builder::PerformExtremity(const occ::handle<ChFiDS_Spine>& Spine)
       }
     }
     nbf -= NbG1Connections;
-    if (nbf > 3)
+    if (nbf > 3 && !aOnSameAcrossSplit[0])
     {
       Spine->SetFirstStatus(ChFiDS_BreakPoint);
     }
@@ -870,7 +928,7 @@ void ChFi3d_Builder::PerformExtremity(const occ::handle<ChFiDS_Spine>& Spine)
       }
     }
     nbf -= NbG1Connections;
-    if (nbf > 3)
+    if (nbf > 3 && !aOnSameAcrossSplit[1])
     {
       Spine->SetLastStatus(ChFiDS_BreakPoint);
     }

@@ -355,6 +355,77 @@ void ChFi3d_Builder::Compute()
     }
   }
 
+  // An end OnSame at four sharp edges is one PerformExtremity found a corner
+  // of three across a tangent split. Whether the corner can be made of it
+  // depends on the radius; where it failed, the walk runs on past the end as
+  // at a break point, as it did before, and the end's state is put back for
+  // the next computation.
+  if (!done && !badvertices.IsEmpty())
+  {
+    NCollection_List<occ::handle<ChFiDS_Spine>> aFirst, aLast;
+    for (itel.Initialize(myListStripe); itel.More(); itel.Next())
+    {
+      const occ::handle<ChFiDS_Spine>& aSp = itel.Value()->Spine();
+      if (aSp.IsNull())
+      {
+        continue;
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator itV(badvertices); itV.More(); itV.Next())
+      {
+        const TopoDS_Vertex& aV = TopoDS::Vertex(itV.Value());
+        const bool isFirst = aSp->FirstStatus() == ChFiDS_OnSame && aSp->FirstVertex().IsSame(aV);
+        const bool isLast  = aSp->LastStatus() == ChFiDS_OnSame && aSp->LastVertex().IsSame(aV);
+        if (!isFirst && !isLast)
+        {
+          continue;
+        }
+        // the corner's own count, which can fail as the corner did
+        int aNbSharp = 0;
+        try
+        {
+          OCC_CATCH_SIGNALS
+          aNbSharp = ChFi3d_NumberOfSharpEdges(aV, myVEMap, myEFMap);
+        }
+        catch (Standard_Failure const&)
+        {
+          continue;
+        }
+        if (aNbSharp != 4)
+        {
+          continue;
+        }
+        if (isFirst)
+        {
+          aSp->SetFirstStatus(ChFiDS_BreakPoint);
+          aFirst.Append(aSp);
+        }
+        if (isLast)
+        {
+          aSp->SetLastStatus(ChFiDS_BreakPoint);
+          aLast.Append(aSp);
+        }
+      }
+    }
+    if (!aFirst.IsEmpty() || !aLast.IsEmpty())
+    {
+      // the stripes this computation left without a spine go first:
+      // Compute reads every spine before its own Reset
+      Reset();
+      Compute();
+      for (NCollection_List<occ::handle<ChFiDS_Spine>>::Iterator itS(aFirst); itS.More();
+           itS.Next())
+      {
+        itS.Value()->SetFirstStatus(ChFiDS_OnSame);
+      }
+      for (NCollection_List<occ::handle<ChFiDS_Spine>>::Iterator itS(aLast); itS.More();
+           itS.Next())
+      {
+        itS.Value()->SetLastStatus(ChFiDS_OnSame);
+      }
+      return;
+    }
+  }
+
 #ifdef OCCT_DEBUG // perf
   ChFi3d_ResultChron(cl_perffilletonvertex, t_perffilletonvertex);
   ChFi3d_InitChron(cl_filds);
@@ -844,7 +915,10 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
         {
           return;
         }
-        if (nba > 3)
+        // OnSame at four sharp edges: a corner of three once a face of the
+        // spine and the face it runs on into, tangent, are taken as one
+        // (PerformExtremity)
+        if (nba > 3 && !(nba == 4 && sp->Status(isfirst) == ChFiDS_OnSame))
         {
 #ifdef OCCT_DEBUG // perf
           ChFi3d_InitChron(cl_performatend);

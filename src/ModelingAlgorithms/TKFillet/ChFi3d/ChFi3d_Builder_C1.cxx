@@ -1159,10 +1159,19 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     BRep_Builder              BRE;
     occ::handle<Geom_Surface> Sface;
     Sface = BRep_Tool::Surface(Fv);
+    // A trimmed surface (a drafted wall's cone, say) stops at the face no
+    // less than the face does: the cut and the extension lie on its basis
+    // past the trim, in the same parameters.
+    const occ::handle<Geom_RectangularTrimmedSurface> aTrimmed =
+      occ::down_cast<Geom_RectangularTrimmedSurface>(Sface);
+    if (!aTrimmed.IsNull())
+    {
+      Sface = aTrimmed->BasisSurface();
+    }
     ChFi3d_ExtendSurface(Sface, prol);
     tol = BRep_Tool::Tolerance(Fv);
     BRE.MakeFace(FFv, Sface, tol);
-    if (prol)
+    if (prol || !aTrimmed.IsNull())
     {
       Bs.Initialize(FFv, false);
       DStr.SetNewSurface(Fv, Sface);
