@@ -56,6 +56,8 @@
 #include <NCollection_List.hxx>
 #include <ChFiDS_Regul.hxx>
 #include <ChFiDS_Spine.hxx>
+#include <ChFiDS_FilSpine.hxx>
+#include <ChFiDS_ChamfSpine.hxx>
 #include <NCollection_Array1.hxx>
 #include <Extrema_ExtCC.hxx>
 #include <Extrema_ExtPC.hxx>
@@ -1269,6 +1271,56 @@ static TopAbs_Orientation PlateOrientation(
 // function : PerformMoreThreeCorner
 // purpose  : Process case of a top with n edges.
 //=======================================================================
+
+// The smallest radius, or chamfer distance, of the stripes ending at <theV>:
+// at the corner where a stripe's radius varies, the largest it takes.
+// Precision::Infinite() when none is known.
+static double SmallestSizeAt(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
+                             const TopoDS_Vertex&                                 theV)
+{
+  double aMin = Precision::Infinite();
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(theStripes); it.More(); it.Next())
+  {
+    if (it.Value().IsNull() || it.Value()->Spine().IsNull())
+    {
+      continue;
+    }
+    const occ::handle<ChFiDS_Spine>& aSp  = it.Value()->Spine();
+    double                           aVal = -1.;
+    if (const occ::handle<ChFiDS_FilSpine> aFil = occ::down_cast<ChFiDS_FilSpine>(aSp))
+    {
+      const int anIE = aSp->FirstVertex().IsSame(theV)  ? 1
+                       : aSp->LastVertex().IsSame(theV) ? aSp->NbEdges()
+                                                         : 0;
+      aVal = anIE > 0 && aFil->IsConstant(anIE) ? aFil->Radius(anIE)
+                                                : aFil->MaxRadFromSeqAndLaws();
+    }
+    else if (const occ::handle<ChFiDS_ChamfSpine> aCha = occ::down_cast<ChFiDS_ChamfSpine>(aSp))
+    {
+      double aD1 = 0., aD2 = 0., anAng = 0.;
+      switch (aCha->IsChamfer())
+      {
+        case ChFiDS_Sym:
+          aCha->GetDist(aD1);
+          aD2 = aD1;
+          break;
+        case ChFiDS_TwoDist:
+          aCha->Dists(aD1, aD2);
+          break;
+        case ChFiDS_DistAngle:
+          aCha->GetDistAngle(aD1, anAng);
+          aD2 = aD1;
+          break;
+      }
+      aVal = std::min(aD1, aD2);
+    }
+    if (aVal > Precision::Confusion())
+    {
+      aMin = std::min(aMin, aVal);
+    }
+  }
+  return aMin;
+}
 
 void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
 {
@@ -3653,10 +3705,16 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   // by a good part of the radius; its approximation, allowed ten times that,
   // then strays further, and the corner keeps edges of as large a
   // tolerance, a face looping over itself, a volume nobody can integrate.
-  // A plate that misses its boundary by more than PlateG0Fallback() is
-  // built again on the positions alone, and taken if it fits better: a
-  // crease along the stripes instead of a fold.
-  const double                PlateG0Fallback = ChFi3d_Builder::PlateG0Fallback();
+  // A plate that misses its boundary by more than a fraction of the
+  // stripes' radius (PlateG0FallbackRatio(); else PlateG0Fallback(), a
+  // distance) is built again on the positions alone, and taken if it fits
+  // better: a crease along the stripes instead of a fold. The same miss is
+  // a fold at one radius and a rounding error at a radius a hundred times
+  // larger (FreeCAD case 5829, r 8, missed by 0.47% and creased at 1e-3).
+  const double aRatio  = ChFi3d_Builder::PlateG0FallbackRatio();
+  const double aSizeAt = aRatio > 0. ? SmallestSizeAt(myVDataMap(Jndex), V1) : Precision::Infinite();
+  const double PlateG0Fallback =
+    aSizeAt < Precision::Infinite() ? aRatio * aSizeAt : ChFi3d_Builder::PlateG0Fallback();
   GeomPlate_BuildPlateSurface PSurfG0(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
   bool                        isG0 = false;
   if (PSurfG1.IsDone() && PSurfG1.G0Error() > PlateG0Fallback)

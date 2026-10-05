@@ -85,7 +85,23 @@ extern bool ChFi3d_GettraceCHRON();
 
 namespace
 {
-std::atomic<double> THE_PLATE_G0_FALLBACK(1.e-3);
+std::atomic<double> THE_PLATE_G0_FALLBACK(Precision::Infinite());
+std::atomic<double> THE_PLATE_G0_FALLBACK_RATIO(0.01);
+} // namespace
+
+void ChFi3d_Builder::SetPlateG0FallbackRatio(const double theRatio)
+{
+  THE_PLATE_G0_FALLBACK_RATIO.store(theRatio, std::memory_order_relaxed);
+}
+
+double ChFi3d_Builder::PlateG0FallbackRatio()
+{
+  return THE_PLATE_G0_FALLBACK_RATIO.load(std::memory_order_relaxed);
+}
+
+double ChFi3d_SetPlateG0FallbackRatio(const double theRatio)
+{
+  return THE_PLATE_G0_FALLBACK_RATIO.exchange(theRatio, std::memory_order_relaxed);
 }
 
 void ChFi3d_Builder::SetPlateG0Fallback(const double theDistance)

@@ -180,16 +180,27 @@ public:
   Standard_EXPORT occ::handle<TopOpeBRepBuild_HBuilder> Builder() const;
 
   //! Sets how far, at most, a corner's plate may miss its boundary while
-  //! held tangent to the stripes it closes. A corner of more than three
-  //! faces is filled by a GeomPlate patch held G1 to the stripes; where a
-  //! stripe's end meets a face at a sharp angle the patch folds to stay
-  //! tangent and misses its boundary, and the corner's edges carry the
-  //! miss, ten times over, as their tolerance. A patch missing it by more
-  //! than this is built again on positions alone (G0) and taken if it fits
-  //! better: a crease along the stripe instead of a fold. The default is
-  //! 1.e-3; Precision::Infinite() keeps every tangent patch, as upstream
-  //! OCCT does. The setting is global, read by every builder at the
-  //! corner, and safe to change from any thread.
+  //! held tangent to the stripes it closes, as a fraction of the smallest
+  //! radius (or chamfer distance) of the stripes at the corner. A corner of
+  //! more than three faces is filled by a GeomPlate patch held G1 to the
+  //! stripes; where a stripe's end meets a face at a sharp angle the patch
+  //! folds to stay tangent and misses its boundary, and the corner's edges
+  //! carry the miss, ten times over, as their tolerance. A patch missing it
+  //! by more than this is built again on positions alone (G0) and taken if
+  //! it fits better: a crease along the stripe instead of a fold. The
+  //! default is 0.01; 0 or less leaves the decision to SetPlateG0Fallback().
+  //! The setting is global, read by every builder at the corner, and safe
+  //! to change from any thread.
+  Standard_EXPORT static void SetPlateG0FallbackRatio(const double theRatio);
+
+  //! Returns the fraction set by SetPlateG0FallbackRatio().
+  Standard_EXPORT static double PlateG0FallbackRatio();
+
+  //! Sets the same miss as a distance, used where the ratio of
+  //! SetPlateG0FallbackRatio() is 0 or less. The default is
+  //! Precision::Infinite(), which keeps every tangent patch, as upstream
+  //! OCCT does: with both left alone the ratio decides, with the ratio set
+  //! to 0 the fallback is off.
   Standard_EXPORT static void SetPlateG0Fallback(const double theDistance);
 
   //! Returns the distance set by SetPlateG0Fallback().
@@ -865,5 +876,9 @@ private:
 //! run time (dlsym/GetProcAddress) rather than link against them; returns the
 //! distance set before.
 extern "C" Standard_EXPORT double ChFi3d_SetPlateG0Fallback(const double theDistance);
+
+//! SetPlateG0FallbackRatio() for the same callers; returns the fraction set
+//! before.
+extern "C" Standard_EXPORT double ChFi3d_SetPlateG0FallbackRatio(const double theRatio);
 
 #endif // _ChFi3d_Builder_HeaderFile
