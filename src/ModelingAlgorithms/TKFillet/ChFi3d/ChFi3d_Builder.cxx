@@ -54,6 +54,10 @@
 #include <TopOpeBRepDS_PointIterator.hxx>
 
 #include <atomic>
+#include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
+#include <Geom_Curve.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 
 #ifdef OCCT_DEBUG
   #include <OSD_Chronometer.hxx>
@@ -193,6 +197,58 @@ void ChFi3d_Builder::ExtentAnalyse()
         break;
       default:
         break;
+    }
+  }
+}
+
+//=================================================================================================
+// An edge the fillet made whose curve ends off its vertex by more than the
+// edge's tolerance, but within the vertex's, takes that distance: at a corner
+// the extension of an edge ends at a point computed on the fillet's line, not
+// on the extension, and the cut there leaves it tangent -- BRepCheck's wire
+// check excuses a crossing near the vertex only while both edges keep within
+// twice their tolerance of the chord from the vertex, which the vertex's
+// offset alone exceeded (#631's Fillet002: 3.7e-7 off, tolerance 1e-7).
+// Edges of the input are left alone: the input shares them.
+
+static void ChFi3d_EdgesCoverTheirEnds(const TopoDS_Shape& theResult, const TopoDS_Shape& theInput)
+{
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anOld;
+  for (TopExp_Explorer ex(theInput, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    anOld.Add(ex.Current());
+  }
+  BRep_Builder                                           aB;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+  for (TopExp_Explorer ex(theResult, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(ex.Current());
+    if (anOld.Contains(anE) || !aDone.Add(anE) || BRep_Tool::Degenerated(anE))
+    {
+      continue;
+    }
+    double                         aF, aL;
+    const occ::handle<Geom_Curve>& aC = BRep_Tool::Curve(anE, aF, aL);
+    if (aC.IsNull())
+    {
+      continue;
+    }
+    const TopLoc_Location& aLoc = anE.Location();
+    double                 aTol = BRep_Tool::Tolerance(anE);
+    for (TopExp_Explorer exv(anE, TopAbs_VERTEX); exv.More(); exv.Next())
+    {
+      const TopoDS_Vertex& aV   = TopoDS::Vertex(exv.Current());
+      gp_Pnt               aP   = aC->Value(BRep_Tool::Parameter(aV, anE));
+      aP.Transform(aLoc.Transformation());
+      const double aGap = aP.Distance(BRep_Tool::Pnt(aV));
+      if (aGap > aTol && aGap <= BRep_Tool::Tolerance(aV))
+      {
+        aTol = aGap * (1. + 1.e-9);
+      }
+    }
+    if (aTol > BRep_Tool::Tolerance(anE))
+    {
+      aB.UpdateEdge(anE, aTol);
     }
   }
 }
@@ -650,6 +706,7 @@ void ChFi3d_Builder::Compute()
             }
           }
         }
+        ChFi3d_EdgesCoverTheirEnds(myShapeResult, myShape);
       }
       else
       {
