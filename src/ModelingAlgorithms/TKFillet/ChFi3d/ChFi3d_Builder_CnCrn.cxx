@@ -2959,6 +2959,29 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
       if (!oksea.Value(ic) && !moresurf.Value(ic) && !libre.Value(ic))
       {
         Indices(nedge, ic, icplus, icmoins);
+        // The curve is made on the face between <ic> and <icplus>, from a
+        // fillet's end read in its pcurve on the face it ends on. Two
+        // fillets tangent at the top skip the search for curves over
+        // several faces above: a fillet cut back past the edge of that face
+        // (#876: onto the post's plane beside its round end) ends on another,
+        // and its pcurve read in this face's parameters runs the curve off
+        // the face -- a plate inside out, 1e11 in volume.
+        for (int k = 0; k < 2; k++)
+        {
+          const int ick = k == 0 ? ic : icplus;
+          if (sharp.Value(ick))
+          {
+            continue;
+          }
+          const int ji   = k == 0 ? jf.Value(ic) : 3 - jf.Value(icplus);
+          const int iSd  = k == 0 ? i.Value(ic, icplus) : i.Value(icplus, ic);
+          const int iEnd = SurfIndex(CD, ick, iSd, ji == 1 ? FACE1 : FACE2);
+          if (iEnd != numfa.Value(ic, icplus))
+          {
+            throw Standard_Failure("PerformMoreThreeCorner : a fillet ends off the face of "
+                                   "the curve to the next");
+          }
+        }
         raccordbatten = false;
         if (!regul.Value(ic))
         {
