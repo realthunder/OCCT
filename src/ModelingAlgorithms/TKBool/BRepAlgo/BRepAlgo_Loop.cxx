@@ -852,10 +852,21 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
               {
                 aLV.Append(aVIt.Value());
               }
+              // A vertex is where it stands and where it sits on the edge:
+              // an edge not yet cut back runs on past the vertex that ends
+              // it, and two of them meet away from the vertex they share --
+              // the walls either side of a fillet's end, 0.38 from it at
+              // radius 8. Such a meeting is that vertex, not a crossing; a
+              // second one at its parameter left the wall without a wire.
+              const BRepAdaptor_Curve aCurve(aE);
               for (NCollection_List<TopoDS_Shape>::Iterator aVIt(aLV); aVIt.More(); aVIt.Next())
               {
-                const TopoDS_Vertex& aV = TopoDS::Vertex(aVIt.Value());
-                if (aP.Distance(BRep_Tool::Pnt(aV)) <= std::max(aTolX, BRep_Tool::Tolerance(aV)))
+                const TopoDS_Vertex& aV    = TopoDS::Vertex(aVIt.Value());
+                const double         aTolV = std::max(aTolX, BRep_Tool::Tolerance(aV));
+                double               aParV = 0.;
+                if (aP.Distance(BRep_Tool::Pnt(aV)) <= aTolV
+                    || (BRep_Tool::Parameter(aV, aE, aParV)
+                        && aP.Distance(aCurve.Value(aParV)) <= aTolV))
                 {
                   isFree = false;
                   break;
