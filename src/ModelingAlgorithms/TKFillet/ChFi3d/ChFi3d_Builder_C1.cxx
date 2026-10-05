@@ -1534,6 +1534,8 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   occ::handle<Geom2d_Curve> PsT, PcT, PTgT, PTgV;
   gp_Pnt                    PTg;
   double                    wTg = 0.;
+  // the tolerances the two pieces reached, each its own
+  double tolT = tolapp3d, tolV = tolapp3d;
 
   if (inters)
   {
@@ -1763,6 +1765,8 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
         }
       }
       tolreached = std::max(aTolT, aTolV);
+      tolT       = aTolT;
+      tolV       = aTolV;
       Udeb = Cc->FirstParameter();
       Ufin = Cc->LastParameter();
       couture = false;
@@ -1896,10 +1900,12 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     // The cut over two faces, in two curves meeting where it crosses Etg's
     // line carried on past Vp; the line from Vp to there bounds both faces.
     // The curves and their points go in the DS here, as for a cut crossing
-    // a seam (below), and FILDS leaves the end alone.
+    // a seam (below), and FILDS leaves the end alone. Each curve keeps the
+    // tolerance it reached -- the piece over Fv's seam can come out looser
+    // than the others -- and the point between them the largest.
     indpt           = DStr.AddPoint(TopOpeBRepDS_Point(PTg, tolreached));
-    const int ICT   = DStr.AddCurve(TopOpeBRepDS_Curve(CcT, tolreached));
-    const int ICV   = DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tolreached));
+    const int ICT   = DStr.AddCurve(TopOpeBRepDS_Curve(CcT, tolT));
+    const int ICV   = DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tolV));
     const int IShT  = DStr.AddShape(FvT);
     // Et is FvT's, from Arcpiv; Fv's is the same in the shell
     const TopAbs_Orientation EtV = OFvT == OFv ? Et : TopAbs::Reverse(Et);
@@ -1937,7 +1943,9 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     TopoDS_Vertex aV1, aV2;
     TopExp::Vertices(TopoDS::Edge(Etg.Oriented(TopAbs_FORWARD)), aV1, aV2);
     const bool         sameDir = Vp.IsSame(aV2);
-    const int          IG      = DStr.AddCurve(TopOpeBRepDS_Curve(CTg, tolreached));
+    const double tolG =
+      std::max(ChFi3d_EvalTolReached(HBsT, PTgT, HBs, PTgV, CTg), Precision::Confusion());
+    const int    IG   = DStr.AddCurve(TopOpeBRepDS_Curve(CTg, tolG));
     for (int k = 0; k < 2; k++)
     {
       const TopoDS_Face& aF  = k == 0 ? FvT : Fv;

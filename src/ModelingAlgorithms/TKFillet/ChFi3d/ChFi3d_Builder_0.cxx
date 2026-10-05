@@ -4231,12 +4231,32 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
   // classic intersections have failed, the path is approached in vain.
 
   double Step = 0.1;
+  // A line approximated off the surfaces by more than tol3d (the walk's
+  // points too far apart for its curvature) is walked again finer, a few
+  // times; the closest one is kept.
+  double                    aFine     = 1.;
+  int                       aNbRefine = 0;
+  bool                      hasBest   = false;
+  double                    aBestTol  = 0.;
+  occ::handle<Geom_Curve>   aBestC3d;
+  occ::handle<Geom2d_Curve> aBestPc1, aBestPc2;
+  auto                      aFail = [&]() -> bool {
+    if (!hasBest)
+    {
+      return false;
+    }
+    C3d        = aBestC3d;
+    Pc1        = aBestPc1;
+    Pc2        = aBestPc2;
+    tolreached = aBestTol;
+    return true;
+  };
   for (;;)
   {
     // Attention the parameters of arrow for the path and
     // the tolerance for the approximation can't be taken as those of the
     // Builder, so they are reestimated as much as possible.
-    double           fleche = 1.e-3 * pdeb.Distance(pfin);
+    double           fleche = 1.e-3 * aFine * pdeb.Distance(pfin);
     double           tolap  = 1.e-7;
     IntWalk_PWalking IntKK(S1, S2, tol3d, tol3d, fleche, Step);
 
@@ -4258,20 +4278,20 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
     }
     if (!depok)
     {
-      return false;
+      return aFail();
     }
     pintdep.Parameters(depart(1), depart(2), depart(3), depart(4));
     IntKK.Perform(depart);
     if (!IntKK.IsDone())
     {
-      return false;
+      return aFail();
     }
     if (IntKK.NbPoints() <= 30)
     {
       Step *= 0.5;
       if (Step <= 0.0001)
       {
-        return false;
+        return aFail();
       }
     }
     else
@@ -4333,7 +4353,7 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
       nbp = indf;
       if (nbp == 1)
       {
-        return false;
+        return aFail();
       }
       // The extremities are inserted in the line if the extremity points on it
       // are too far and if pardeb and parfin are good.
@@ -4407,7 +4427,7 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
       approx.Perform(S1, S2, WL, true, true, true, 1, nbp);
       if (!approx.IsDone())
       {
-        return false;
+        return aFail();
       }
       //      tolreached = approx.TolReached3d();
       //      double tolr2d = approx.TolReached2d();
@@ -4446,7 +4466,21 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
       tolreached                              = ChFi3d_EvalTolReached(S1, Pc1, S2, Pc2, C3d);
       tolreached                              = std::max(tolreached, ddeb);
       tolreached                              = std::max(tolreached, dfin);
-      return true;
+      if (!hasBest || tolreached < aBestTol)
+      {
+        hasBest  = true;
+        aBestTol = tolreached;
+        aBestC3d = C3d;
+        aBestPc1 = Pc1;
+        aBestPc2 = Pc2;
+      }
+      if (aBestTol <= tol3d || aNbRefine >= 3 || Step <= 0.001)
+      {
+        return aFail();
+      }
+      aNbRefine++;
+      aFine *= 0.25;
+      Step *= 0.5;
     }
   }
 }
