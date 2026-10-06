@@ -61,6 +61,7 @@
 #include <NCollection_Array1.hxx>
 #include <Extrema_ExtCC.hxx>
 #include <Extrema_ExtPC.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
 #include <Extrema_POnCurv.hxx>
 #include <FairCurve_Batten.hxx>
 #include <Geom2d_BSplineCurve.hxx>
@@ -1272,6 +1273,119 @@ static TopAbs_Orientation PlateOrientation(
 // purpose  : Process case of a top with n edges.
 //=======================================================================
 
+// The setback of <theStripe>'s end at the corner (<isFirst>), less than 0
+// where none is set (ChFiDS_FilSpine::SetSetback).
+static double SetbackOf(const occ::handle<ChFiDS_Stripe>& theStripe, const bool isFirst)
+{
+  const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(theStripe->Spine());
+  return aSp.IsNull() ? -1. : aSp->Setback(isFirst);
+}
+
+// The largest radius of <theStripe> at its end at the corner (<isFirst>), 0
+// for a stripe that is not a fillet's.
+static double RadiusOf(const occ::handle<ChFiDS_Stripe>& theStripe, const bool isFirst)
+{
+  const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(theStripe->Spine());
+  if (aSp.IsNull())
+  {
+    return 0.;
+  }
+  const int anIE = isFirst ? 1 : aSp->NbEdges();
+  return aSp->IsConstant(anIE) ? aSp->Radius(anIE) : aSp->MaxRadFromSeqAndLaws();
+}
+
+// How far from <theV>, along <theE>, the point of <theE> nearest <theP> is:
+// where on its edge a stripe's contact point at a corner stands.
+static double AbscissaFromVertex(const TopoDS_Edge&   theE,
+                                 const TopoDS_Vertex& theV,
+                                 const gp_Pnt&        theP)
+{
+  BRepAdaptor_Curve aC(theE);
+  const double      aUV = BRep_Tool::Parameter(theV, theE);
+  // past an end of the edge there is no extremum: the end nearer the point
+  double aU = theP.SquareDistance(aC.Value(aC.FirstParameter()))
+                  < theP.SquareDistance(aC.Value(aC.LastParameter()))
+                ? aC.FirstParameter()
+                : aC.LastParameter();
+  Extrema_ExtPC anExt(theP, aC);
+  if (anExt.IsDone() && anExt.NbExt() > 0)
+  {
+    double aMin = theP.SquareDistance(aC.Value(aU));
+    for (int k = 1; k <= anExt.NbExt(); k++)
+    {
+      if (anExt.SquareDistance(k) < aMin)
+      {
+        aMin = anExt.SquareDistance(k);
+        aU   = anExt.Point(k).Parameter();
+      }
+    }
+  }
+  return GCPnts_AbscissaPoint::Length(aC, std::min(aUV, aU), std::max(aUV, aU));
+}
+
+// The parameter on <theE> at <theDist> from <theV> along it. False where
+// the edge is not that long.
+static bool EdgeParamAtSetback(const TopoDS_Edge&   theE,
+                               const TopoDS_Vertex& theV,
+                               const double         theDist,
+                               double&              theParam)
+{
+  BRepAdaptor_Curve aC(theE);
+  const double      aUV = BRep_Tool::Parameter(theV, theE);
+  if (theDist >= GCPnts_AbscissaPoint::Length(aC))
+  {
+    return false;
+  }
+  const bool isFromFirst =
+    std::abs(aUV - aC.FirstParameter()) <= std::abs(aUV - aC.LastParameter());
+  GCPnts_AbscissaPoint aPnt(aC, isFromFirst ? theDist : -theDist, aUV);
+  if (!aPnt.IsDone())
+  {
+    return false;
+  }
+  theParam = aPnt.Parameter();
+  return true;
+}
+
+// The parameter of the contact of <theSD> on its face <theOnS> (1 or 2) at
+// <theDist> from <theV> along <theE>, the stripe's edge there, between the
+// end of <theSD> at the corner (<isFirst>) and its other end. Where the
+// stripe ends farther from the corner than that already, its end. False
+// where the contact does not reach <theDist>.
+static bool StripeParamAtSetback(const TopOpeBRepDS_DataStructure&   DStr,
+                                 const occ::handle<ChFiDS_SurfData>& theSD,
+                                 const int                           theOnS,
+                                 const bool                          isFirst,
+                                 const TopoDS_Edge&                  theE,
+                                 const TopoDS_Vertex&                theV,
+                                 const double                        theDist,
+                                 double&                             theParam)
+{
+  const ChFiDS_FaceInterference&   aFi = theSD->Interference(theOnS);
+  const occ::handle<Geom_Surface>& aS  = DStr.Surface(theSD->Surf()).Surface();
+  auto aBeyond = [&](const double theT) {
+    const gp_Pnt2d aUV = aFi.PCurveOnSurf()->Value(theT);
+    return AbscissaFromVertex(theE, theV, aS->Value(aUV.X(), aUV.Y())) - theDist;
+  };
+  double aNear = aFi.Parameter(isFirst), aFar = aFi.Parameter(!isFirst);
+  if (aBeyond(aNear) >= 0.)
+  {
+    theParam = aNear;
+    return true;
+  }
+  if (aBeyond(aFar) < 0.)
+  {
+    return false;
+  }
+  for (int k = 0; k < 100 && std::abs(aFar - aNear) > Precision::PConfusion(); k++)
+  {
+    const double aMid = 0.5 * (aNear + aFar);
+    (aBeyond(aMid) < 0. ? aNear : aFar) = aMid;
+  }
+  theParam = 0.5 * (aNear + aFar);
+  return true;
+}
+
 // The smallest radius, or chamfer distance, of the stripes ending at <theV>:
 // at the corner where a stripe's radius varies, the largest it takes.
 // Precision::Infinite() when none is known.
@@ -1626,6 +1740,20 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
       SummarizeNormal(V1, Fcur, Ecur, SumFaceNormalAtV1);
     }
   }
+  // the setbacks asked at this corner, per stripe: a setback corner
+  // (ChFiDS_FilSpine::SetSetback) is set back on every edge, below
+  NCollection_Array1<double> setback(0, size);
+  setback.Init(-1.);
+  bool isSetback = false;
+  for (ic = 0; ic < nedge; ic++)
+  {
+    if (!sharp.Value(ic))
+    {
+      setback.SetValue(ic, SetbackOf(CD.Value(ic), sens.Value(ic) == 1));
+      isSetback = isSetback || setback.Value(ic) >= 0.;
+    }
+  }
+
   // mise a jour du tableau regul
   for (ic = 0; ic < nedge; ic++)
   {
@@ -1756,7 +1884,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
     }
     isOnSameDiff = isOnSame && isOnDiff;
   }
-  if (isOnSameDiff)
+  if (isOnSameDiff && !isSetback)
   {
 #ifdef OCCT_DEBUG
     std::cout << "OnSame + OnDiff, PerformMoreThreeCorner() calls PerformOneCorner()" << std::endl;
@@ -1769,7 +1897,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   // Fvive is found anew if it does not correspond
   // to two faces adjacent to Evive (cts16288)
 
-  if (!deuxconges && !isOnSameDiff)
+  if (!deuxconges && !isOnSameDiff && !isSetback)
   {
     for (ic = 0; ic < nedge; ic++)
     {
@@ -2087,10 +2215,130 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
     }
   }
 
+  // A setback corner: each stripe is cut back to its setback along its
+  // edge from the vertex, or to where it meets its neighbours if that is
+  // farther (setback 0 asks for just that; a stripe meeting neither is cut
+  // at its radius), and each sharp edge at the largest setback beside it.
+  // The opening is closed as a corner whose stripes do not meet: one curve
+  // on each face between two cuts, below, and one plate. An edge whose faces
+  // are tangent is cut as any other, never crossed by a curve projected over
+  // several faces: such a plate came out valid in memory and not once
+  // written, its volume a twentieth off (realthunder/FreeCAD#876).
+  if (isSetback)
+  {
+    for (ic = 0; ic < nedge; ic++)
+    {
+      regul.SetValue(ic, false);
+    }
+    NCollection_Array1<double> aMeet(0, size);
+    aMeet.Init(-1.);
+    for (ic = 0; ic < nedge; ic++)
+    {
+      Indices(nedge, ic, icplus, icmoins);
+      if (!oksea.Value(ic))
+      {
+        continue;
+      }
+      Calcul_P2dOnSurf(CD.Value(ic), jf.Value(ic), i.Value(ic, icplus), p.Value(ic, icplus), p2);
+      indice = SurfIndex(CD, ic, i.Value(ic, icplus), ChFiSURFACE);
+      DStr.Surface(indice).Surface()->D0(p2.X(), p2.Y(), pic);
+      for (int k = 0; k < 2; k++)
+      {
+        const int ick = k == 0 ? ic : icplus;
+        aMeet.SetValue(
+          ick,
+          std::max(aMeet.Value(ick), AbscissaFromVertex(TopoDS::Edge(Evive.Value(ick)), V1, pic)));
+      }
+    }
+    NCollection_Array1<double> aDist(0, size);
+    double                     aLargest = 0.;
+    for (ic = 0; ic < nedge; ic++)
+    {
+      if (!sharp.Value(ic))
+      {
+        const double aD = aMeet.Value(ic) >= 0. ? aMeet.Value(ic)
+                                                : RadiusOf(CD.Value(ic), sens.Value(ic) == 1);
+        aDist.SetValue(ic, std::max(setback.Value(ic), aD));
+        aLargest = std::max(aLargest, aDist.Value(ic));
+      }
+    }
+    for (ic = 0; ic < nedge; ic++)
+    {
+      Indices(nedge, ic, icplus, icmoins);
+      oksea.SetValue(ic, false);
+      if (sharp.Value(ic))
+      {
+        double aD = -1.;
+        if (!sharp.Value(icplus))
+        {
+          aD = std::max(aD, aDist.Value(icplus));
+        }
+        if (!sharp.Value(icmoins))
+        {
+          aD = std::max(aD, aDist.Value(icmoins));
+        }
+        double aU = 0.;
+        if (!EdgeParamAtSetback(TopoDS::Edge(Evive.Value(ic)),
+                                V1,
+                                aD >= 0. ? aD : aLargest,
+                                aU))
+        {
+          throw Standard_Failure("PerformMoreThreeCorner : a corner's setback exceeds an edge");
+        }
+        p.SetValue(ic, icplus, aU);
+        p.SetValue(ic, icmoins, aU);
+        i.SetValue(ic, icplus, 1);
+        i.SetValue(ic, icmoins, 1);
+        continue;
+      }
+      // the stripe's piece at the corner, or where the setback runs past
+      // it, the next one, the pieces in between dropped
+      isfirst = (sens.Value(ic) == 1);
+      for (;;)
+      {
+        const int isd = ChFi3d_IndexOfSurfData(V1, CD.Value(ic), sense);
+        const occ::handle<ChFiDS_SurfData>& aSD = CD.Value(ic)->SetOfSurfData()->Value(isd);
+        double                              aParams[2] = {0., 0.};
+        bool                                isReached  = true;
+        for (int k = 0; k < 2 && isReached; k++)
+        {
+          isReached = StripeParamAtSetback(DStr,
+                                           aSD,
+                                           k == 0 ? jf.Value(ic) : 3 - jf.Value(ic),
+                                           isfirst,
+                                           TopoDS::Edge(Evive.Value(ic)),
+                                           V1,
+                                           aDist.Value(ic),
+                                           aParams[k]);
+        }
+        if (isReached)
+        {
+          Index.SetValue(ic, isd);
+          i.SetValue(ic, icplus, isd);
+          i.SetValue(ic, icmoins, isd);
+          p.SetValue(ic, icplus, aParams[0]);
+          p.SetValue(ic, icmoins, aParams[1]);
+          break;
+        }
+        if (CD.Value(ic)->SetOfSurfData()->Length() < 2)
+        {
+          throw Standard_Failure("PerformMoreThreeCorner : a corner's setback runs past the "
+                                 "stripe");
+        }
+        occ::handle<ChFiDS_Stripe> aStrip = CD.Value(ic);
+        RemoveSD(aStrip, isd, isd);
+      }
+    }
+    inters = false;
+    // the faces of stripes cut short of their corner above, which the
+    // curves over several faces would take: the cuts are on the near ones
+    Fproj.Clear();
+  }
+
   // case if there are only intersections
   // the parametres on Pcurves are the extremities of the stripe
   double para;
-  if (!inters)
+  if (!inters && !isSetback)
   {
     for (ic = 0; ic < nedge; ic++)
     {
@@ -2288,7 +2536,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
 
   double tolcp = 0;
   gp_Pnt PE, sommet = BRep_Tool::Pnt(V1);
-  if (!deuxconges)
+  if (!deuxconges && !isSetback)
   {
     for (ic = 0; ic < nedge; ic++)
     {
@@ -2407,7 +2655,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   // in case of a free border the parameter corresponding
   // to the common point on the free edge is chosen.
 
-  for (ic = 0; ic < nedge; ic++)
+  for (ic = 0; ic < nedge && !isSetback; ic++)
   {
     if (TopoDS::Edge(Evive.Value(ic)).IsSame(edgelibre1)
         || TopoDS::Edge(Evive.Value(ic)).IsSame(edgelibre2))
@@ -2732,7 +2980,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   // it is checked if the extremities of the intersection coincide with commonpoints
 
   bool intersection = false, introuve;
-  if (nconges == 2 && !deuxconges)
+  if (nconges == 2 && !deuxconges && !isSetback)
   {
     gp_Pnt P1, P2, P3, P4;
     int    ic1 = 0, ic2 = 0;

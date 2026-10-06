@@ -206,6 +206,20 @@ public:
   //! Returns the distance set by SetPlateG0Fallback().
   Standard_EXPORT static double PlateG0Fallback();
 
+  //! Sets how far a fillet's corner that cannot be built may be set back,
+  //! as a multiple of the largest radius of the stripes at the corner. Where
+  //! Compute() fails at a vertex, it is computed again with the stripes there
+  //! cut back and the opening filled by one patch (a setback corner, see
+  //! ChFiDS_FilSpine::SetSetback): first where the stripes meet, then 1,
+  //! 1.5, 2... times the radius, up to this multiple, and the first valid
+  //! result is kept. Fillets only, and only where the computation fails as
+  //! a whole; nothing that is built today changes. The default is 2; 0 or
+  //! less turns it off. Global, and safe to change from any thread.
+  Standard_EXPORT static void SetCornerSetbackFallback(const double theMultiple);
+
+  //! Returns the multiple set by SetCornerSetbackFallback().
+  Standard_EXPORT static double CornerSetbackFallback();
+
   //! Method, implemented in the inheritants, calculates
   //! the elements of construction of the surface (fillet or
   //! chamfer).
@@ -790,6 +804,16 @@ protected:
   bool                                                                              hasresult;
 
 private:
+  //! The setback fallback of SetCornerSetbackFallback(), after a computation
+  //! that failed at vertices: computes again with the stripes there set back
+  //! further and further, and keeps the first valid result; puts the
+  //! setbacks and the failed computation back where none is.
+  Standard_EXPORT void ComputeSetbackFallback();
+
+  //! True where a fillet stripe ending at the vertex of myVDataMap(Index)
+  //! has a setback set there (ChFiDS_FilSpine::SetSetback).
+  Standard_EXPORT bool HasSetbackAt(const int Index) const;
+
   Standard_EXPORT bool FaceTangency(const TopoDS_Edge&   E0,
                                     const TopoDS_Edge&   E1,
                                     const TopoDS_Vertex& V) const;
@@ -880,5 +904,9 @@ extern "C" Standard_EXPORT double ChFi3d_SetPlateG0Fallback(const double theDist
 //! SetPlateG0FallbackRatio() for the same callers; returns the fraction set
 //! before.
 extern "C" Standard_EXPORT double ChFi3d_SetPlateG0FallbackRatio(const double theRatio);
+
+//! SetCornerSetbackFallback() for the same callers; returns the multiple set
+//! before.
+extern "C" Standard_EXPORT double ChFi3d_SetCornerSetbackFallback(const double theMultiple);
 
 #endif // _ChFi3d_Builder_HeaderFile

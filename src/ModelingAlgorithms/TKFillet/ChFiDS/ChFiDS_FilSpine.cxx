@@ -47,6 +47,20 @@ ChFiDS_FilSpine::ChFiDS_FilSpine(const double Tol)
 
 //=================================================================================================
 
+void ChFiDS_FilSpine::SetSetback(const bool isFirst, const double theDist)
+{
+  (isFirst ? mySetbackFirst : mySetbackLast) = theDist < 0. ? -1. : theDist;
+}
+
+//=================================================================================================
+
+double ChFiDS_FilSpine::Setback(const bool isFirst) const
+{
+  return isFirst ? mySetbackFirst : mySetbackLast;
+}
+
+//=================================================================================================
+
 void ChFiDS_FilSpine::Reset(const bool AllData)
 {
   ChFiDS_Spine::Reset(AllData);

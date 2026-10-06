@@ -16,6 +16,7 @@
 
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <ChFiDS_ErrorStatus.hxx>
+#include <ChFiDS_FilSpine.hxx>
 #include <ChFiDS_Spine.hxx>
 #include <Geom_Surface.hxx>
 #include <Law_Linear.hxx>
@@ -255,6 +256,74 @@ void BRepFilletAPI_MakeFillet::SetLaw(const int                        IC,
 void BRepFilletAPI_MakeFillet::SetRadius(const double Radius, const int IC, const TopoDS_Vertex& V)
 {
   myBuilder.SetRadius(Radius, IC, V);
+}
+
+//=================================================================================================
+
+namespace
+{
+// Sets the setback of the end of <theSp> at <theV>, if one of them is there;
+// a closed contour's both.
+void SetSpineSetback(const occ::handle<ChFiDS_Spine>& theSp,
+                     const TopoDS_Vertex&             theV,
+                     const double                     theD)
+{
+  const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(theSp);
+  if (aSp.IsNull())
+  {
+    return;
+  }
+  if (aSp->FirstVertex().IsSame(theV))
+  {
+    aSp->SetSetback(true, theD);
+  }
+  if (aSp->LastVertex().IsSame(theV))
+  {
+    aSp->SetSetback(false, theD);
+  }
+}
+} // namespace
+
+void BRepFilletAPI_MakeFillet::SetSetback(const TopoDS_Vertex& V,
+                                          const TopoDS_Edge&   E,
+                                          const double         D)
+{
+  const int IC = myBuilder.Contains(E);
+  if (IC > 0)
+  {
+    SetSpineSetback(myBuilder.Value(IC), V, D);
+  }
+}
+
+//=================================================================================================
+
+void BRepFilletAPI_MakeFillet::SetSetback(const TopoDS_Vertex& V, const double D)
+{
+  for (int IC = 1; IC <= myBuilder.NbElements(); IC++)
+  {
+    SetSpineSetback(myBuilder.Value(IC), V, D);
+  }
+}
+
+//=================================================================================================
+
+double BRepFilletAPI_MakeFillet::Setback(const TopoDS_Vertex& V, const TopoDS_Edge& E) const
+{
+  const int IC = myBuilder.Contains(E);
+  if (IC <= 0)
+  {
+    return -1.;
+  }
+  const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(myBuilder.Value(IC));
+  if (aSp.IsNull())
+  {
+    return -1.;
+  }
+  if (aSp->FirstVertex().IsSame(V))
+  {
+    return aSp->Setback(true);
+  }
+  return aSp->LastVertex().IsSame(V) ? aSp->Setback(false) : -1.;
 }
 
 //=================================================================================================

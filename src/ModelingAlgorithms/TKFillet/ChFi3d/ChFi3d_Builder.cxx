@@ -27,6 +27,7 @@
 #include <NCollection_HSequence.hxx>
 #include <ChFiDS_Stripe.hxx>
 #include <NCollection_List.hxx>
+#include <ChFiDS_FilSpine.hxx>
 #include <ChFiDS_Spine.hxx>
 #include <Geom2d_Curve.hxx>
 #include <gp_Pnt2d.hxx>
@@ -40,6 +41,7 @@
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
@@ -54,7 +56,19 @@
 #include <TopOpeBRepDS_PointIterator.hxx>
 
 #include <atomic>
+#include <exception>
+#include <sstream>
 #include <BRep_Builder.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepLProp_SLProps.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepTools.hxx>
 #include <BRep_Tool.hxx>
 #include <Geom_Curve.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
@@ -87,6 +101,10 @@ namespace
 {
 std::atomic<double> THE_PLATE_G0_FALLBACK(Precision::Infinite());
 std::atomic<double> THE_PLATE_G0_FALLBACK_RATIO(0.01);
+std::atomic<double> THE_CORNER_SETBACK_FALLBACK(2.);
+// set while Compute() runs inside the setback fallback, or the plain
+// computation the fallback starts from: those do not fall back again
+thread_local bool THE_IN_SETBACK_COMPUTE = false;
 } // namespace
 
 void ChFi3d_Builder::SetPlateG0FallbackRatio(const double theRatio)
@@ -117,6 +135,21 @@ double ChFi3d_Builder::PlateG0Fallback()
 double ChFi3d_SetPlateG0Fallback(const double theDistance)
 {
   return THE_PLATE_G0_FALLBACK.exchange(theDistance, std::memory_order_relaxed);
+}
+
+void ChFi3d_Builder::SetCornerSetbackFallback(const double theMultiple)
+{
+  THE_CORNER_SETBACK_FALLBACK.store(theMultiple, std::memory_order_relaxed);
+}
+
+double ChFi3d_Builder::CornerSetbackFallback()
+{
+  return THE_CORNER_SETBACK_FALLBACK.load(std::memory_order_relaxed);
+}
+
+double ChFi3d_SetCornerSetbackFallback(const double theMultiple)
+{
+  return THE_CORNER_SETBACK_FALLBACK.exchange(theMultiple, std::memory_order_relaxed);
 }
 
 //=================================================================================================
@@ -271,8 +304,349 @@ static void ChFi3d_EdgesCoverTheirEnds(const TopoDS_Shape& theResult, const Topo
 
 //=================================================================================================
 
+namespace
+{
+// Sets THE_IN_SETBACK_COMPUTE for as long as it lives.
+class SetbackComputeGuard
+{
+public:
+  SetbackComputeGuard() { THE_IN_SETBACK_COMPUTE = true; }
+
+  ~SetbackComputeGuard() { THE_IN_SETBACK_COMPUTE = false; }
+};
+
+// False where a stripe ending at <theV> has no point at that end, on either
+// face: the corner there has not made its end.
+bool StripeEndsHavePoints(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
+                          const TopoDS_Vertex&                                 theV)
+{
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(theStripes); it.More();
+       it.Next())
+  {
+    int aSens = 0;
+    ChFi3d_IndexOfSurfData(theV, it.Value(), aSens);
+    const bool                       isFirst = aSens == 1;
+    const occ::handle<ChFiDS_Spine>& aSp     = it.Value()->Spine();
+    if (!aSp.IsNull() && aSp->Status(isFirst) == ChFiDS_FreeBoundary)
+    {
+      continue;
+    }
+    if (it.Value()->IndexPoint(isFirst, 1) == 0 || it.Value()->IndexPoint(isFirst, 2) == 0)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The largest tolerance of an edge of <theShape>.
+double MaxEdgeTolerance(const TopoDS_Shape& theShape)
+{
+  double aTol = 0.;
+  for (TopExp_Explorer anExp(theShape, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    aTol = std::max(aTol, BRep_Tool::Tolerance(TopoDS::Edge(anExp.Current())));
+  }
+  return aTol;
+}
+
+// Whether <theShape> has a face of no area.
+bool HasFaceWithoutArea(const TopoDS_Shape& theShape)
+{
+  for (TopExp_Explorer anExp(theShape, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    GProp_GProps aProps;
+    BRepGProp::SurfaceProperties(anExp.Current(), aProps);
+    if (std::abs(aProps.Mass()) < Precision::SquareConfusion())
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Whether <theShape> is a result the setback fallback may hand back: no edge
+// looser than <theMaxTol>, no face of no area, valid as BRepCheck finds it,
+// and valid as it reads back from its own text. A corner's plate whose
+// boundary ran over several faces was valid in memory, and not once
+// written; a set back corner on #523's cylinder was valid with an edge of
+// 0.39 at radius 3; corners of #876's Fillet002 were valid with a face of
+// area 2e-17 between two edges, which no mesh covers.
+bool IsValidResult(const TopoDS_Shape& theShape, const double theMaxTol)
+{
+  if (theShape.IsNull() || MaxEdgeTolerance(theShape) > theMaxTol
+      || HasFaceWithoutArea(theShape) || !BRepCheck_Analyzer(theShape).IsValid())
+  {
+    return false;
+  }
+  std::stringstream aStream;
+  BRepTools::Write(theShape, aStream);
+  TopoDS_Shape aRead;
+  BRep_Builder aBuilder;
+  BRepTools::Read(aRead, aStream, aBuilder);
+  return !aRead.IsNull() && BRepCheck_Analyzer(aRead).IsValid();
+}
+
+// The normal of <theF>, outward, at its point nearest <theP>.
+gp_Dir OutwardNormalAt(const TopoDS_Face& theF, const gp_Pnt& theP)
+{
+  BRepAdaptor_Surface aS(theF);
+  GeomAPI_ProjectPointOnSurf aProj(theP, BRep_Tool::Surface(theF));
+  double aU = 0., aV = 0.;
+  if (aProj.NbPoints() > 0)
+  {
+    aProj.LowerDistanceParameters(aU, aV);
+  }
+  BRepLProp_SLProps aProps(aS, aU, aV, 1, Precision::Confusion());
+  gp_Dir aN = aProps.IsNormalDefined() ? aProps.Normal() : gp::DZ();
+  return theF.Orientation() == TopAbs_REVERSED ? aN.Reversed() : aN;
+}
+
+// Whether every fillet of <theStripes> is in <theResult>: the midpoint of
+// each edge filleted lies off the result's faces by half the distance a
+// fillet of its radius moves it, r (1 / cos(a / 2) - 1) for the angle a
+// between its faces' normals there, and by 1e-6 at least. A set back
+// corner's computation could come out valid and be the input itself, the
+// fillet asked for dropped (radius 0.8 on a right angle, 0.33 when it is
+// made); on the near flat edges of #876's drafted walls a fillet moves it
+// by thousandths of a thousandth.
+bool AreFilletsMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
+                    const ChFiDS_Map&                                   theEFMap,
+                    const TopoDS_Shape&                                 theResult)
+{
+  TopoDS_Compound aFaces;
+  BRep_Builder    aBuilder;
+  aBuilder.MakeCompound(aFaces);
+  for (TopExp_Explorer anExp(theResult, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    aBuilder.Add(aFaces, anExp.Current());
+  }
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(theStripes); it.More();
+       it.Next())
+  {
+    const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(it.Value()->Spine());
+    if (aSp.IsNull())
+    {
+      continue;
+    }
+    for (int j = 1; j <= aSp->NbEdges(); j++)
+    {
+      const TopoDS_Edge& anE = aSp->Edges(j);
+      BRepAdaptor_Curve  aC(anE);
+      const gp_Pnt       aMid = aC.Value(0.5 * (aC.FirstParameter() + aC.LastParameter()));
+      const double       aR   = aSp->IsConstant(j) ? aSp->Radius(j) : aSp->MaxRadFromSeqAndLaws();
+      double             aMove = 0.;
+      if (theEFMap.Contains(anE))
+      {
+        const NCollection_List<TopoDS_Shape>& aFs = theEFMap.FindFromKey(anE);
+        if (aFs.Extent() >= 2)
+        {
+          const double anA = OutwardNormalAt(TopoDS::Face(aFs.First()), aMid)
+                               .Angle(OutwardNormalAt(TopoDS::Face(aFs.Last()), aMid));
+          aMove = aR * (1. / std::cos(0.5 * anA) - 1.);
+        }
+      }
+      BRepExtrema_DistShapeShape aDist(BRepBuilderAPI_MakeVertex(aMid).Vertex(), aFaces);
+      if (!aDist.IsDone() || aDist.Value() < std::max(0.5 * aMove, 1.e-6))
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// The largest radius at the end of <theSp> numbered <theIE> in the spine.
+double LargestRadiusAt(const occ::handle<ChFiDS_FilSpine>& theSp, const int theIE)
+{
+  return theSp->IsConstant(theIE) ? theSp->Radius(theIE) : theSp->MaxRadFromSeqAndLaws();
+}
+} // namespace
+
+//=================================================================================================
+
+bool ChFi3d_Builder::HasSetbackAt(const int Index) const
+{
+  const TopoDS_Vertex& aV = myVDataMap.FindKey(Index);
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(myVDataMap(Index)); it.More();
+       it.Next())
+  {
+    const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(it.Value()->Spine());
+    if (aSp.IsNull())
+    {
+      continue;
+    }
+    int aSens = 0;
+    ChFi3d_IndexOfSurfData(aV, it.Value(), aSens);
+    const bool isFirst = aSens == 1;
+    if (aSp->Setback(isFirst) >= 0. && aSp->Status(isFirst) != ChFiDS_FreeBoundary)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+//=================================================================================================
+
+void ChFi3d_Builder::ComputeSetbackFallback()
+{
+  const double aMultiple = CornerSetbackFallback();
+  if (done || aMultiple <= 0. || badvertices.IsEmpty())
+  {
+    return;
+  }
+  // the fillet stripes' ends at the vertices the computation failed at, the
+  // setbacks they had, and the largest radius at each of those vertices
+  struct SetbackEnd
+  {
+    occ::handle<ChFiDS_FilSpine> Spine;
+    bool                         IsFirst;
+    double                       Before;
+    double                       Radius;
+  };
+  NCollection_Sequence<SetbackEnd>                anEnds;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aVertices;
+  // the vertices failed at that are not set back yet; true where one is added
+  auto addFailed = [&]() {
+    bool isAdded = false;
+    for (NCollection_List<TopoDS_Shape>::Iterator itV(badvertices); itV.More(); itV.Next())
+    {
+      const TopoDS_Vertex& aV = TopoDS::Vertex(itV.Value());
+      if (!aVertices.Add(aV))
+      {
+        continue;
+      }
+      const int aFirstE = anEnds.Length() + 1;
+      double    aRadius = 0.;
+      for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();
+           itS.Next())
+      {
+        const occ::handle<ChFiDS_FilSpine> aSp =
+          occ::down_cast<ChFiDS_FilSpine>(itS.Value()->Spine());
+        if (aSp.IsNull())
+        {
+          continue;
+        }
+        for (int k = 0; k < 2; k++)
+        {
+          const bool isFirst = k == 0;
+          if (!(isFirst ? aSp->FirstVertex() : aSp->LastVertex()).IsSame(aV)
+              || aSp->Status(isFirst) == ChFiDS_FreeBoundary || (!isFirst && aSp->IsPeriodic()))
+          {
+            continue;
+          }
+          aRadius = std::max(aRadius, LargestRadiusAt(aSp, isFirst ? 1 : aSp->NbEdges()));
+          anEnds.Append({aSp, isFirst, aSp->Setback(isFirst), 0.});
+        }
+      }
+      for (int i = aFirstE; i <= anEnds.Length(); i++)
+      {
+        anEnds.ChangeValue(i).Radius = aRadius;
+      }
+      isAdded = isAdded || aFirstE <= anEnds.Length();
+    }
+    return isAdded;
+  };
+  if (!addFailed())
+  {
+    return;
+  }
+  // how loose an edge of a result may be: as the input's loosest, or a
+  // twentieth of the smallest radius set back -- today's fillets keep edges
+  // of up to about a thirtieth of theirs (the plate fallback's measure)
+  const double aMaxTolIn = MaxEdgeTolerance(myShape);
+  // what a computation that failed leaves behind, cleared for the next: the
+  // stripes it left without a spine, which Compute reads before its own
+  // Reset, and the topological builder, which a Perform broken off by an
+  // exception left half cleared (a crash in the next Perform; the same
+  // builder computed twice crashes upstream as well)
+  auto FreshComputation = [&]() {
+    Reset();
+    myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
+  };
+  auto aMaxTol = [&]() {
+    double aRadius = Precision::Infinite();
+    for (int i = 1; i <= anEnds.Length(); i++)
+    {
+      if (anEnds.Value(i).Radius > 0.)
+      {
+        aRadius = std::min(aRadius, anEnds.Value(i).Radius);
+      }
+    }
+    return std::max(aMaxTolIn, aRadius < Precision::Infinite() ? 0.05 * aRadius : 0.);
+  };
+
+  // where the stripes meet, then 1, 1.5, 2... times the radius; a step that
+  // fails at a vertex not set back yet is taken again with that one set back
+  // too, as a corner set back can move the failure to the next
+  for (double aStep = 0.; aStep <= aMultiple + Precision::Confusion();)
+  {
+    for (int i = 1; i <= anEnds.Length(); i++)
+    {
+      const SetbackEnd& anEnd = anEnds.Value(i);
+      anEnd.Spine->SetSetback(anEnd.IsFirst, std::max(anEnd.Before, aStep * anEnd.Radius));
+    }
+    try
+    {
+      OCC_CATCH_SIGNALS
+      FreshComputation();
+      Compute();
+      if (done && IsValidResult(myShapeResult, aMaxTol())
+          && AreFilletsMade(myListStripe, myEFMap, myShapeResult))
+      {
+        return;
+      }
+    }
+    catch (Standard_Failure const&)
+    {
+    }
+    if (!addFailed())
+    {
+      aStep = aStep < 1. ? 1. : aStep + 0.5;
+    }
+  }
+
+  // nothing valid: the setbacks as they were, and the failure as it was
+  for (int i = 1; i <= anEnds.Length(); i++)
+  {
+    const SetbackEnd& anEnd = anEnds.Value(i);
+    anEnd.Spine->SetSetback(anEnd.IsFirst, anEnd.Before);
+  }
+  FreshComputation();
+  Compute();
+}
+
+//=================================================================================================
+
 void ChFi3d_Builder::Compute()
 {
+  if (!THE_IN_SETBACK_COMPUTE)
+  {
+    // the computation, and where it fails at a vertex, the setback fallback;
+    // a failure the fallback does not mend is the computation's own
+    SetbackComputeGuard aGuard;
+    std::exception_ptr  aFailure;
+    try
+    {
+      Compute();
+    }
+    catch (Standard_Failure const&)
+    {
+      if (badvertices.IsEmpty())
+      {
+        throw;
+      }
+      aFailure = std::current_exception();
+      done     = false;
+    }
+    ComputeSetbackFallback();
+    if (aFailure && !done)
+    {
+      std::rethrow_exception(aFailure);
+    }
+    return;
+  }
 
 #ifdef OCCT_DEBUG // perf
   t_total              = 0;
@@ -400,10 +774,33 @@ void ChFi3d_Builder::Compute()
     int j;
     for (j = 1; j <= myVDataMap.Extent(); j++)
     {
+      bool isPartial = false;
       try
       {
         OCC_CATCH_SIGNALS
+        const bool hadPartial = hasresult;
+        const int  aNbShapes  = DStr.NbShapes();
         PerformFilletOnVertex(j);
+        // a corner that keeps only a partial result has failed too: the
+        // computation ends without a shape, and this is the vertex
+        isPartial = hasresult && !hadPartial;
+        // a corner that returns with a stripe's end at it given no point has
+        // failed: the DS would be read at point 0 below, out of its sight
+        if (!StripeEndsHavePoints(myVDataMap(j), myVDataMap.FindKey(j)))
+        {
+          throw Standard_Failure("A corner left a stripe's end without its points");
+        }
+        // nor one that put a null shape in the DS: the topological build
+        // dereferences every shape there (two stripes' corner of
+        // issue273_Fillet001, edges 38 and 39 at 0.3; a crash as soon as
+        // another corner of the fillet was mended)
+        for (int k = aNbShapes + 1; k <= DStr.NbShapes(); k++)
+        {
+          if (DStr.Shape(k).IsNull())
+          {
+            throw Standard_Failure("A corner put a null shape in the DS");
+          }
+        }
       }
       catch (Standard_Failure const& anException)
       {
@@ -414,8 +811,9 @@ void ChFi3d_Builder::Compute()
         badvertices.Append(myVDataMap.FindKey(j));
         hasresult = false;
         done      = true;
+        isPartial = false;
       }
-      if (!done)
+      if (!done || isPartial)
       {
         badvertices.Append(myVDataMap.FindKey(j));
       }
@@ -992,6 +1390,14 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
     }
     nba=nba/2;*/
   int nba = ChFi3d_NumberOfSharpEdges(Vtx, myVEMap, myEFMap);
+
+  // A setback corner: the stripes ending here are cut back and the opening
+  // is filled by one patch, whatever the count of stripes and edges.
+  if (nondegenere && nba >= 3 && HasSetbackAt(Index))
+  {
+    PerformMoreThreeCorner(Index, i);
+    return;
+  }
 
   if (nondegenere)
   { // Normal processing

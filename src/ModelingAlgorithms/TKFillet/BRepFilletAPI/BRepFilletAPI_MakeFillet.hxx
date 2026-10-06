@@ -197,6 +197,23 @@ public:
                               const TopoDS_Edge&               E,
                               const occ::handle<Law_Function>& L);
 
+  //! Sets back the end at the vertex V of the contour that holds the edge E:
+  //! its fillet stops D from V, measured along the edge, and the corner at V
+  //! is closed by one patch over the opening the fillets leave, tangent to
+  //! them (a setback corner; every fillet and every sharp edge at V is set
+  //! back, the others by their own setbacks, or as far as the fillets beside
+  //! them). D 0 sets V back only as far as its fillets meet; less than 0
+  //! removes the setback. Nothing happens where no contour holds E or ends
+  //! at V. Only the OCCT fork has setback corners.
+  Standard_EXPORT void SetSetback(const TopoDS_Vertex& V, const TopoDS_Edge& E, const double D);
+
+  //! Sets back every contour ending at the vertex V by D, as above.
+  Standard_EXPORT void SetSetback(const TopoDS_Vertex& V, const double D);
+
+  //! Returns the setback of the end at V of the contour that holds E, less
+  //! than 0 where none is set.
+  Standard_EXPORT double Setback(const TopoDS_Vertex& V, const TopoDS_Edge& E) const;
+
   //! Assigns FShape as the type of fillet shape built by this algorithm.
   Standard_EXPORT void SetFilletShape(const ChFi3d_FilletShape FShape);
 

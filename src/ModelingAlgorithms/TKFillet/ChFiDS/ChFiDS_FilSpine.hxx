@@ -93,6 +93,17 @@ public:
   //! returns the maximum radius if the fillet is non-constant
   Standard_EXPORT double MaxRadFromSeqAndLaws() const;
 
+  //! Sets the setback of the contour's first end (<isFirst>) or last end:
+  //! the stripe stops <theDist> from the end's vertex, measured along the
+  //! spine, and the corner there is filled by one patch over the opening
+  //! (ChFi3d_Builder::PerformMoreThreeCorner). 0 asks for the smallest
+  //! setback the corner allows -- where the stripes meet today; less than 0
+  //! removes the setback. Kept over Reset(), as the radii are.
+  Standard_EXPORT void SetSetback(const bool isFirst, const double theDist);
+
+  //! The setback of the first or last end, less than 0 where none is set.
+  Standard_EXPORT double Setback(const bool isFirst) const;
+
   DEFINE_STANDARD_RTTIEXT(ChFiDS_FilSpine, ChFiDS_Spine)
 
 private:
@@ -102,6 +113,8 @@ private:
 
   NCollection_Sequence<gp_XY>                 parandrad;
   NCollection_List<occ::handle<Law_Function>> laws;
+  double                                      mySetbackFirst = -1.;
+  double                                      mySetbackLast  = -1.;
 };
 
 #endif // _ChFiDS_FilSpine_HeaderFile
