@@ -328,6 +328,23 @@ double BRepFilletAPI_MakeFillet::Setback(const TopoDS_Vertex& V, const TopoDS_Ed
 
 //=================================================================================================
 
+void BRepFilletAPI_SetSetback(BRepFilletAPI_MakeFillet& theMaker,
+                              const TopoDS_Vertex&      theV,
+                              const TopoDS_Edge*        theE,
+                              const double              theD)
+{
+  if (theE != nullptr)
+  {
+    theMaker.SetSetback(theV, *theE, theD);
+  }
+  else
+  {
+    theMaker.SetSetback(theV, theD);
+  }
+}
+
+//=================================================================================================
+
 void BRepFilletAPI_MakeFillet::SetFilletShape(const ChFi3d_FilletShape FShape)
 {
   myBuilder.SetFilletShape(FShape);

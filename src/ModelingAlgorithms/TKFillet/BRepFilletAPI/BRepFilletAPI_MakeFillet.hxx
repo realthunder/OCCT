@@ -401,4 +401,13 @@ private:
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myMap;
 };
 
+//! SetSetback() for callers that look the toolkit's features up at run time
+//! (dlsym/GetProcAddress) rather than link against them, as the
+//! ChFi3d_SetPlateG0Fallback() family: SetSetback(theV, *theE, theD), or
+//! SetSetback(theV, theD) where theE is null.
+extern "C" Standard_EXPORT void BRepFilletAPI_SetSetback(BRepFilletAPI_MakeFillet& theMaker,
+                                                         const TopoDS_Vertex&      theV,
+                                                         const TopoDS_Edge*        theE,
+                                                         const double              theD);
+
 #endif // _BRepFilletAPI_MakeFillet_HeaderFile
