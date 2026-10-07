@@ -61,6 +61,32 @@ double ChFiDS_FilSpine::Setback(const bool isFirst) const
 
 //=================================================================================================
 
+void ChFiDS_FilSpine::SetFaceDepth(const bool          isFirst,
+                                   const TopoDS_Shape& theFace,
+                                   const double        theDepth)
+{
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& aMap =
+    isFirst ? myFaceDepthFirst : myFaceDepthLast;
+  if (theDepth > 0.)
+  {
+    aMap.Bind(theFace, theDepth);
+  }
+  else
+  {
+    aMap.UnBind(theFace);
+  }
+}
+
+//=================================================================================================
+
+double ChFiDS_FilSpine::FaceDepth(const bool isFirst, const TopoDS_Shape& theFace) const
+{
+  const double* aD = (isFirst ? myFaceDepthFirst : myFaceDepthLast).Seek(theFace);
+  return aD != nullptr ? *aD : 0.;
+}
+
+//=================================================================================================
+
 void ChFiDS_FilSpine::Reset(const bool AllData)
 {
   ChFiDS_Spine::Reset(AllData);

@@ -23,6 +23,7 @@
 #include <Precision.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopOpeBRepBuild_HBuilder.hxx>
@@ -324,6 +325,65 @@ double BRepFilletAPI_MakeFillet::Setback(const TopoDS_Vertex& V, const TopoDS_Ed
     return aSp->Setback(true);
   }
   return aSp->LastVertex().IsSame(V) ? aSp->Setback(false) : -1.;
+}
+
+//=================================================================================================
+
+void BRepFilletAPI_MakeFillet::SetFaceDepth(const TopoDS_Vertex& V,
+                                            const TopoDS_Face&   F,
+                                            const double         D)
+{
+  for (int IC = 1; IC <= myBuilder.NbElements(); IC++)
+  {
+    const occ::handle<ChFiDS_FilSpine> aSp =
+      occ::down_cast<ChFiDS_FilSpine>(myBuilder.Value(IC));
+    if (aSp.IsNull())
+    {
+      continue;
+    }
+    if (aSp->FirstVertex().IsSame(V))
+    {
+      aSp->SetFaceDepth(true, F, D);
+    }
+    if (aSp->LastVertex().IsSame(V))
+    {
+      aSp->SetFaceDepth(false, F, D);
+    }
+  }
+}
+
+//=================================================================================================
+
+double BRepFilletAPI_MakeFillet::FaceDepth(const TopoDS_Vertex& V, const TopoDS_Face& F) const
+{
+  for (int IC = 1; IC <= myBuilder.NbElements(); IC++)
+  {
+    const occ::handle<ChFiDS_FilSpine> aSp =
+      occ::down_cast<ChFiDS_FilSpine>(myBuilder.Value(IC));
+    if (aSp.IsNull())
+    {
+      continue;
+    }
+    if (aSp->FirstVertex().IsSame(V) && aSp->FaceDepth(true, F) > 0.)
+    {
+      return aSp->FaceDepth(true, F);
+    }
+    if (aSp->LastVertex().IsSame(V) && aSp->FaceDepth(false, F) > 0.)
+    {
+      return aSp->FaceDepth(false, F);
+    }
+  }
+  return 0.;
+}
+
+//=================================================================================================
+
+void BRepFilletAPI_SetFaceDepth(BRepFilletAPI_MakeFillet& theMaker,
+                                const TopoDS_Vertex&      theV,
+                                const TopoDS_Face&        theF,
+                                const double              theD)
+{
+  theMaker.SetFaceDepth(theV, theF, theD);
 }
 
 //=================================================================================================

@@ -40,6 +40,7 @@ class TopoDS_Shape;
 class TopoDS_Edge;
 class Law_Function;
 class TopoDS_Vertex;
+class TopoDS_Face;
 class TopOpeBRepBuild_HBuilder;
 class Geom_Surface;
 
@@ -213,6 +214,18 @@ public:
   //! Returns the setback of the end at V of the contour that holds E, less
   //! than 0 where none is set.
   Standard_EXPORT double Setback(const TopoDS_Vertex& V, const TopoDS_Edge& E) const;
+
+  //! Sets the depth of the face F at the setback corner at the vertex V:
+  //! the corner patch's boundary on F bows into F, away from V, D at its
+  //! middle, measured from the straight line between its ends (where it
+  //! meets the fillets or sharp edges beside it). 0 or less removes it, the
+  //! boundary then the fairest curve between its ends. Only a corner that is
+  //! set back (SetSetback) takes it. Only the OCCT fork has setback corners.
+  Standard_EXPORT void SetFaceDepth(const TopoDS_Vertex& V, const TopoDS_Face& F, const double D);
+
+  //! Returns the depth of the face F at the corner at V, 0 where none is
+  //! set.
+  Standard_EXPORT double FaceDepth(const TopoDS_Vertex& V, const TopoDS_Face& F) const;
 
   //! Assigns FShape as the type of fillet shape built by this algorithm.
   Standard_EXPORT void SetFilletShape(const ChFi3d_FilletShape FShape);
@@ -409,5 +422,11 @@ extern "C" Standard_EXPORT void BRepFilletAPI_SetSetback(BRepFilletAPI_MakeFille
                                                          const TopoDS_Vertex&      theV,
                                                          const TopoDS_Edge*        theE,
                                                          const double              theD);
+
+//! SetFaceDepth() for the same callers.
+extern "C" Standard_EXPORT void BRepFilletAPI_SetFaceDepth(BRepFilletAPI_MakeFillet& theMaker,
+                                                           const TopoDS_Vertex&      theV,
+                                                           const TopoDS_Face&        theF,
+                                                           const double              theD);
 
 #endif // _BRepFilletAPI_MakeFillet_HeaderFile

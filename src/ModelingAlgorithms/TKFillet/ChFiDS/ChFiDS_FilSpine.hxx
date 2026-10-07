@@ -23,6 +23,9 @@
 #include <NCollection_List.hxx>
 #include <gp_XY.hxx>
 #include <NCollection_Sequence.hxx>
+#include <NCollection_DataMap.hxx>
+#include <TopoDS_Shape.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 
 class TopoDS_Edge;
 class TopoDS_Vertex;
@@ -104,6 +107,20 @@ public:
   //! The setback of the first or last end, less than 0 where none is set.
   Standard_EXPORT double Setback(const bool isFirst) const;
 
+  //! Sets the depth of the face <theFace> at the first end's corner
+  //! (<isFirst>) or the last end's, for a setback corner: the patch's
+  //! boundary on that face bows into it, away from the vertex, <theDepth>
+  //! at its middle, measured from the straight line between its ends. 0 or
+  //! less removes it; the boundary is then the fairest curve between its
+  //! ends. Kept over Reset(), as the setbacks are.
+  Standard_EXPORT void SetFaceDepth(const bool          isFirst,
+                                    const TopoDS_Shape& theFace,
+                                    const double        theDepth);
+
+  //! The depth of <theFace> at the first or last end's corner, 0 where none
+  //! is set.
+  Standard_EXPORT double FaceDepth(const bool isFirst, const TopoDS_Shape& theFace) const;
+
   DEFINE_STANDARD_RTTIEXT(ChFiDS_FilSpine, ChFiDS_Spine)
 
 private:
@@ -115,6 +132,8 @@ private:
   NCollection_List<occ::handle<Law_Function>> laws;
   double                                      mySetbackFirst = -1.;
   double                                      mySetbackLast  = -1.;
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> myFaceDepthFirst;
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> myFaceDepthLast;
 };
 
 #endif // _ChFiDS_FilSpine_HeaderFile

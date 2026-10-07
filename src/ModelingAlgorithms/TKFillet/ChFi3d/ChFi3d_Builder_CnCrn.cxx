@@ -64,6 +64,7 @@
 #include <GCPnts_AbscissaPoint.hxx>
 #include <Extrema_POnCurv.hxx>
 #include <FairCurve_Batten.hxx>
+#include <Geom2d_BezierCurve.hxx>
 #include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom2d_Line.hxx>
@@ -75,6 +76,7 @@
 #include <Geom_Curve.hxx>
 #include <Geom_Surface.hxx>
 #include <GeomAdaptor_Surface.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomInt_IntSS.hxx>
 #include <GeomLib.hxx>
 #include <GeomPlate_BuildPlateSurface.hxx>
@@ -637,6 +639,164 @@ static bool SectionDirOnFace(const TopOpeBRepDS_DataStructure& DStr,
 }
 
 //=======================================================================
+// function : ContactEndDirs
+// purpose  : the tangents, at the ends of a curve between two stripes, of
+//           the curves it starts and ends on (contact curves or sharp
+//           edges' pcurves), as a batten held to them takes them
+//=======================================================================
+
+static void ContactEndDirs(const occ::handle<Geom2d_Curve>& curv2d1,
+                           const occ::handle<Geom2d_Curve>& curv2d2,
+                           const double                     picicplus,
+                           const double                     picplusic,
+                           const bool                       inverseic,
+                           const bool                       inverseicplus,
+                           gp_Dir2d&                        dir3,
+                           gp_Dir2d&                        dir4)
+{
+  GeomLProp_CLProps2d CL1(curv2d1, picicplus, 1, 1.e-4);
+  GeomLProp_CLProps2d CL2(curv2d2, picplusic, 1, 1.e-4);
+  CL1.Tangent(dir3);
+  CL2.Tangent(dir4);
+  if (inverseic)
+  {
+    dir3.Reverse();
+  }
+  if (inverseicplus)
+  {
+    dir4.Reverse();
+  }
+}
+
+//=======================================================================
+// function : EndAngle2
+// purpose  : the angle between the chord <theChord>, from the first end to
+//           the second, and the direction <theD> leaving the second end, as
+//           FairCurve_Batten::SetAngle2 takes it
+//=======================================================================
+
+static double EndAngle2(const gp_Dir2d& theChord, const gp_Dir2d& theD)
+{
+  return theChord.Angle(theD) > 0 ? M_PI - theChord.Angle(theD) : -M_PI - theChord.Angle(theD);
+}
+
+//=======================================================================
+// function : ChooseEndDirs
+// purpose  : a setback corner's face curve leaves an end in its stripe's
+//           section direction (theSec1, theSec2, where given) within
+//           theFreeAngle of the chord, else in the contact curve's (dir3,
+//           dir4 as given) where that one is, else in the section's
+//=======================================================================
+
+static void ChooseEndDirs(const gp_Dir2d& theChord,
+                          const double    theFreeAngle,
+                          const gp_Dir2d* theSec1,
+                          const gp_Dir2d* theSec2,
+                          gp_Dir2d&       dir3,
+                          gp_Dir2d&       dir4)
+{
+  if (theSec1 != nullptr
+      && (std::abs(theChord.Angle(*theSec1)) <= theFreeAngle
+          || std::abs(theChord.Angle(dir3)) > theFreeAngle))
+  {
+    dir3 = *theSec1;
+  }
+  if (theSec2 != nullptr
+      && (std::abs(EndAngle2(theChord, *theSec2)) <= theFreeAngle
+          || std::abs(EndAngle2(theChord, dir4)) > theFreeAngle))
+  {
+    dir4 = *theSec2;
+  }
+}
+
+//=======================================================================
+// function : DepthCurve
+// purpose  : a setback corner's face curve with a depth: the cubic, in the
+//           face's parameters, from p2d1 to p2d2 leaving them in dir3 and
+//           (backwards) dir4, its middle on the point theDepth, in space,
+//           from the middle of its chord, square to the chord in the face,
+//           on the side away from theAway (the vertex). Each arm takes the
+//           length that puts it there; false where one would point back.
+//=======================================================================
+
+static bool DepthCurve(const GeomAdaptor_Surface&  theSurf,
+                       const gp_Pnt2d&             p2d1,
+                       const gp_Pnt2d&             p2d2,
+                       const gp_Dir2d&             dir3,
+                       const gp_Dir2d&             dir4,
+                       const gp_Pnt2d&             theAway,
+                       const double                theDepth,
+                       occ::handle<Geom2d_Curve>& pcurve)
+{
+  const gp_Pnt2d aMid((p2d1.XY() + p2d2.XY()) / 2.);
+  gp_Pnt         aP, aP1, aP2;
+  gp_Vec         aSu, aSv;
+  theSurf.D1(aMid.X(), aMid.Y(), aP, aSu, aSv);
+  aP1                  = theSurf.Value(p2d1.X(), p2d1.Y());
+  aP2                  = theSurf.Value(p2d2.X(), p2d2.Y());
+  const gp_Vec aNormal = aSu.Crossed(aSv);
+  gp_Vec       aSide   = aNormal.Crossed(gp_Vec(aP1, aP2));
+  if (aSide.Magnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  aSide.Normalize();
+  const gp_Pnt aAway = theSurf.Value(theAway.X(), theAway.Y());
+  if (aSide.Dot(gp_Vec(aAway, aP)) < 0.)
+  {
+    aSide.Reverse();
+  }
+  // the point the curve's middle is to pass, in the face's parameters
+  const gp_Pnt              aTarget = aP.Translated(aSide * theDepth);
+  GeomAPI_ProjectPointOnSurf aProj(aTarget, theSurf.Surface());
+  if (aProj.NbPoints() < 1)
+  {
+    return false;
+  }
+  double aU, aV;
+  aProj.LowerDistanceParameters(aU, aV);
+  // a cubic's middle is that of its chord moved by 3/8 of its arms:
+  // a1 dir3 + a2 dir4 = (target - middle) / 0.375
+  const gp_XY  aW   = (gp_XY(aU, aV) - aMid.XY()) / 0.375;
+  const double aDet = dir3.X() * dir4.Y() - dir3.Y() * dir4.X();
+  if (std::abs(aDet) < 1.e-6)
+  {
+    return false;
+  }
+  const double aArm1 = (aW.X() * dir4.Y() - aW.Y() * dir4.X()) / aDet;
+  const double aArm2 = (dir3.X() * aW.Y() - dir3.Y() * aW.X()) / aDet;
+  if (aArm1 <= 0. || aArm2 <= 0.)
+  {
+    return false;
+  }
+  NCollection_Array1<gp_Pnt2d> aPoles(1, 4);
+  aPoles(1) = p2d1;
+  aPoles(2) = gp_Pnt2d(p2d1.XY() + dir3.XY() * aArm1);
+  aPoles(3) = gp_Pnt2d(p2d2.XY() + dir4.XY() * aArm2);
+  aPoles(4) = p2d2;
+  pcurve    = new Geom2d_BezierCurve(aPoles);
+  return true;
+}
+
+//=======================================================================
+// function : InFace
+// purpose  : whether the curve <theC> stays within the face's parameter box
+//=======================================================================
+
+static bool InFace(const TopoDS_Face& theFace, const occ::handle<Geom2d_Curve>& theC)
+{
+  double umin, vmin, umax, vmax;
+  BRepTools::UVBounds(theFace, umin, umax, vmin, vmax);
+  Bnd_Box2d           bc;
+  Geom2dAdaptor_Curve acur(theC);
+  BndLib_Add2dCurve::Add(acur, 0, bc);
+  double uminc, vminc, umaxc, vmaxc;
+  bc.Get(uminc, vminc, umaxc, vmaxc);
+  return uminc >= umin - 1.e-7 && umaxc <= umax + 1.e-7 && vminc >= vmin - 1.e-7
+         && vmaxc <= vmax + 1.e-7;
+}
+
+//=======================================================================
 // function : CalculBatten
 // purpose  : calcule a batten between curves 2d  curv2d1 and curv2d2 at points p2d1 and p2d2
 //=======================================================================
@@ -669,44 +829,19 @@ static void CalculBatten(const occ::handle<GeomAdaptor_Surface>& ASurf,
   bool isplane;
   bool anglebig = false;
   isplane       = ASurf->GetType() == GeomAbs_Plane;
-  gp_Dir2d            dir1(xdir, ydir);
-  GeomLProp_CLProps2d CL1(curv2d1, picicplus, 1, 1.e-4);
-  GeomLProp_CLProps2d CL2(curv2d2, picplusic, 1, 1.e-4);
-  gp_Dir2d            dir3, dir4;
-  CL1.Tangent(dir3);
-  CL2.Tangent(dir4);
-  if (inverseic)
-  {
-    dir3.Reverse();
-  }
-  if (inverseicplus)
-  {
-    dir4.Reverse();
-  }
-  const auto anEndAngle2 = [&dir1](const gp_Dir2d& theD) {
-    return dir1.Angle(theD) > 0 ? M_PI - dir1.Angle(theD) : -M_PI - dir1.Angle(theD);
-  };
+  gp_Dir2d dir1(xdir, ydir);
+  gp_Dir2d dir3, dir4;
+  ContactEndDirs(curv2d1, curv2d2, picicplus, picplusic, inverseic, inverseicplus, dir3, dir4);
   // the section's direction where it is within theFreeAngle of the chord,
   // else the contact curve's where that one is (a section pointing away
   // from the next stripe: freed, the curve kinked at the cut)
-  if (theDir1 != nullptr
-      && (std::abs(dir1.Angle(*theDir1)) <= theFreeAngle
-          || std::abs(dir1.Angle(dir3)) > theFreeAngle))
-  {
-    dir3 = *theDir1;
-  }
-  if (theDir2 != nullptr
-      && (std::abs(anEndAngle2(*theDir2)) <= theFreeAngle
-          || std::abs(anEndAngle2(dir4)) > theFreeAngle))
-  {
-    dir4 = *theDir2;
-  }
+  ChooseEndDirs(dir1, theFreeAngle, theDir1, theDir2, dir3, dir4);
   double           h = p2d2.Distance(p2d1) / 20;
   FairCurve_Batten Bat(p2d1, p2d2, h);
   Bat.SetFreeSliding(true);
   double ang1, ang2;
   ang1 = dir1.Angle(dir3);
-  ang2 = anEndAngle2(dir4);
+  ang2 = EndAngle2(dir1, dir4);
   if (contraint1 && contraint2)
   {
     anglebig = (std::abs(ang1) > 1.2) || (std::abs(ang2) > 1.2);
@@ -758,30 +893,7 @@ static void CalculBatten(const occ::handle<GeomAdaptor_Surface>& ASurf,
     if (Ok)
     {
       pcurve = Bat.Curve();
-      double umin, vmin, umax, vmax;
-      BRepTools::UVBounds(Face, umin, umax, vmin, vmax);
-      Bnd_Box2d           bf, bc;
-      Geom2dAdaptor_Curve acur(pcurve);
-      BndLib_Add2dCurve::Add(acur, 0, bc);
-      bf.Update(umin, vmin, umax, vmax);
-      double uminc, vminc, umaxc, vmaxc;
-      bc.Get(uminc, vminc, umaxc, vmaxc);
-      if (uminc < umin - 1.e-7)
-      {
-        Ok = false;
-      }
-      if (umaxc > umax + 1.e-7)
-      {
-        Ok = false;
-      }
-      if (vminc < vmin - 1.e-7)
-      {
-        Ok = false;
-      }
-      if (vmaxc > vmax + 1.e-7)
-      {
-        Ok = false;
-      }
+      Ok     = InFace(Face, pcurve);
     }
     if (!Ok)
     {
@@ -1360,6 +1472,30 @@ static double SetbackOf(const occ::handle<ChFiDS_Stripe>& theStripe, const bool 
 {
   const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(theStripe->Spine());
   return aSp.IsNull() ? -1. : aSp->Setback(isFirst);
+}
+
+// The depth asked for <theFace> at the corner by any stripe ending there
+// (ChFiDS_FilSpine::SetFaceDepth), 0 where none is.
+static double FaceDepthAt(const NCollection_Array1<occ::handle<ChFiDS_Stripe>>& theCD,
+                          const NCollection_Array1<int>&                        theSens,
+                          const NCollection_Array1<bool>&                       theSharp,
+                          const int                                             theNb,
+                          const TopoDS_Shape&                                   theFace)
+{
+  for (int k = 0; k < theNb; k++)
+  {
+    if (theSharp.Value(k))
+    {
+      continue;
+    }
+    const occ::handle<ChFiDS_FilSpine> aSp =
+      occ::down_cast<ChFiDS_FilSpine>(theCD.Value(k)->Spine());
+    if (!aSp.IsNull() && aSp->FaceDepth(theSens.Value(k) == 1, theFace) > 0.)
+    {
+      return aSp->FaceDepth(theSens.Value(k) == 1, theFace);
+    }
+  }
+  return 0.;
 }
 
 // The largest radius of <theStripe> at its end at the corner (<isFirst>), 0
@@ -3617,35 +3753,68 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                 }
               }
             }
-            CalculBatten(Asurf,
-                         TopoDS::Face(Fvive(ic, icplus)),
-                         xdir,
-                         ydir,
-                         p2d1,
-                         p2d2,
-                         contraint1,
-                         contraint2,
-                         curv2d1,
-                         curv2d2,
-                         p.Value(ic, icplus),
-                         p.Value(icplus, ic),
-                         inverseic,
-                         inverseicplus,
-                         pcurve,
-                         // A setback corner's cut can sit level with the next
-                         // stripe's contact line (a stripe at d0 beside one
-                         // set back farther): held tangent to its own contact
-                         // line, at right angles to the chord, the curve
-                         // rose and hooked back 0.54 past its ends on a box
-                         // corner. Freed there, it meets the stripe at an
-                         // angle; ends nearer the chord (45 deg at even
-                         // setbacks, under 85 at 3, 1.5 and 2) keep theirs.
-                         // With the sections' directions above an end takes
-                         // the section's within 85 deg, else the contact
-                         // line's, and is freed only when neither is.
-                         isSetback ? 85. * M_PI / 180. : M_PI,
-                         pSecDir1,
-                         pSecDir2);
+            const double aDepth =
+              isSetback ? FaceDepthAt(CD, sens, sharp, nedge, Fvive(ic, icplus)) : 0.;
+            if (aDepth > 0.)
+            {
+              // a depth asked for the face: the curve's ends as below, its
+              // middle that far out into the face
+              gp_Dir2d aD3, aD4;
+              ContactEndDirs(curv2d1,
+                             curv2d2,
+                             p.Value(ic, icplus),
+                             p.Value(icplus, ic),
+                             inverseic,
+                             inverseicplus,
+                             aD3,
+                             aD4);
+              ChooseEndDirs(gp_Dir2d(xdir, ydir),
+                            85. * M_PI / 180.,
+                            pSecDir1,
+                            pSecDir2,
+                            aD3,
+                            aD4);
+              const gp_Pnt2d aV2d =
+                BRep_Tool::Parameters(V1, TopoDS::Face(Fvive(ic, icplus)));
+              if (!DepthCurve(*Asurf, p2d1, p2d2, aD3, aD4, aV2d, aDepth, pcurve)
+                  || !InFace(TopoDS::Face(Fvive(ic, icplus)), pcurve))
+              {
+                throw Standard_Failure("PerformMoreThreeCorner : a face's depth at a setback "
+                                       "corner cannot be reached on the face");
+              }
+            }
+            else
+            {
+              CalculBatten(Asurf,
+                           TopoDS::Face(Fvive(ic, icplus)),
+                           xdir,
+                           ydir,
+                           p2d1,
+                           p2d2,
+                           contraint1,
+                           contraint2,
+                           curv2d1,
+                           curv2d2,
+                           p.Value(ic, icplus),
+                           p.Value(icplus, ic),
+                           inverseic,
+                           inverseicplus,
+                           pcurve,
+                           // A setback corner's cut can sit level with the next
+                           // stripe's contact line (a stripe at d0 beside one
+                           // set back farther): held tangent to its own contact
+                           // line, at right angles to the chord, the curve
+                           // rose and hooked back 0.54 past its ends on a box
+                           // corner. Freed there, it meets the stripe at an
+                           // angle; ends nearer the chord (45 deg at even
+                           // setbacks, under 85 at 3, 1.5 and 2) keep theirs.
+                           // With the sections' directions above an end takes
+                           // the section's within 85 deg, else the contact
+                           // line's, and is freed only when neither is.
+                           isSetback ? 85. * M_PI / 180. : M_PI,
+                           pSecDir1,
+                           pSecDir2);
+            }
 #ifdef OCCT_DEBUG
             ChFi3d_ResultChron(ch, t_batten); // resulting performances for battens
 #endif
