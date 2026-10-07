@@ -82,9 +82,12 @@
 #include <GeomPlate_MakeApprox.hxx>
 #include <GeomPlate_PlateG0Criterion.hxx>
 #include <GeomPlate_Surface.hxx>
+#include <gp.hxx>
 #include <gp_Dir2d.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
+#include <gp_Vec.hxx>
+#include <gp_Vec2d.hxx>
 #include <math_Matrix.hxx>
 #include <PLib.hxx>
 #include <Precision.hxx>
@@ -576,6 +579,64 @@ static void CalculDroite(const gp_Pnt2d&            p2d1,
 }
 
 //=======================================================================
+// function : SectionDirOnFace
+// purpose  : the direction in which the cut section of a setback stripe runs
+//           on past its end into the face it ends on, in that face's
+//           parameters at <theOnFace>. The section is the straight line, in
+//           the stripe surface's parameters, from its point <thePOther> on
+//           contact curve 3 - <theJ> to <thePEnd> on contact curve <theJ>.
+//=======================================================================
+
+static bool SectionDirOnFace(const TopOpeBRepDS_DataStructure& DStr,
+                             const occ::handle<ChFiDS_Stripe>& theCD,
+                             const int                         theSd,
+                             const int                         theJ,
+                             const double                      thePEnd,
+                             const double                      thePOther,
+                             const GeomAdaptor_Surface&        theFace,
+                             const gp_Pnt2d&                   theOnFace,
+                             gp_Dir2d&                         theDir)
+{
+  const occ::handle<ChFiDS_SurfData>& aSD = theCD->SetOfSurfData()->Value(theSd);
+  const ChFiDS_FaceInterference&      aIEnd =
+    theJ == 1 ? aSD->InterferenceOnS1() : aSD->InterferenceOnS2();
+  const ChFiDS_FaceInterference& aIOther =
+    theJ == 1 ? aSD->InterferenceOnS2() : aSD->InterferenceOnS1();
+  if (aIEnd.PCurveOnSurf().IsNull() || aIOther.PCurveOnSurf().IsNull())
+  {
+    return false;
+  }
+  const gp_Pnt2d aEnd   = aIEnd.PCurveOnSurf()->Value(thePEnd);
+  const gp_Pnt2d aOther = aIOther.PCurveOnSurf()->Value(thePOther);
+  const gp_Vec2d aStep(aOther, aEnd);
+  if (aStep.Magnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  gp_Pnt aP;
+  gp_Vec aSu, aSv;
+  DStr.Surface(aSD->Surf()).Surface()->D1(aEnd.X(), aEnd.Y(), aP, aSu, aSv);
+  const gp_Vec aT = aSu * aStep.X() + aSv * aStep.Y();
+  gp_Vec       aFu, aFv;
+  theFace.D1(theOnFace.X(), theOnFace.Y(), aP, aFu, aFv);
+  // aT in the face's tangent plane, least squares in (u, v)
+  const double a11 = aFu.Dot(aFu), a12 = aFu.Dot(aFv), a22 = aFv.Dot(aFv);
+  const double b1 = aT.Dot(aFu), b2 = aT.Dot(aFv);
+  const double aDet = a11 * a22 - a12 * a12;
+  if (std::abs(aDet) < gp::Resolution())
+  {
+    return false;
+  }
+  const gp_Vec2d aD((b1 * a22 - b2 * a12) / aDet, (a11 * b2 - a12 * b1) / aDet);
+  if (aD.Magnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  theDir = gp_Dir2d(aD);
+  return true;
+}
+
+//=======================================================================
 // function : CalculBatten
 // purpose  : calcule a batten between curves 2d  curv2d1 and curv2d2 at points p2d1 and p2d2
 //=======================================================================
@@ -595,9 +656,15 @@ static void CalculBatten(const occ::handle<GeomAdaptor_Surface>& ASurf,
                          const bool                              inverseic,
                          const bool                              inverseicplus,
                          occ::handle<Geom2d_Curve>&              pcurve,
-                         const double                            theFreeAngle = M_PI)
+                         const double                            theFreeAngle = M_PI,
+                         const gp_Dir2d*                         theDir1      = nullptr,
+                         const gp_Dir2d*                         theDir2      = nullptr)
 // theFreeAngle: an end whose tangent turns farther than this from the chord
-// is left free, the curve meeting the stripe there at an angle
+// is left free, the curve meeting the stripe there at an angle.
+// theDir1, theDir2: the directions the curve leaves its ends in, each
+// pointing away from its stripe into the face, in place of the contact
+// curves' tangents; with them the curve is never a straight line for the
+// size of its angles, only for a batten that fails or leaves the face
 {
   bool isplane;
   bool anglebig = false;
@@ -616,19 +683,30 @@ static void CalculBatten(const occ::handle<GeomAdaptor_Surface>& ASurf,
   {
     dir4.Reverse();
   }
+  const auto anEndAngle2 = [&dir1](const gp_Dir2d& theD) {
+    return dir1.Angle(theD) > 0 ? M_PI - dir1.Angle(theD) : -M_PI - dir1.Angle(theD);
+  };
+  // the section's direction where it is within theFreeAngle of the chord,
+  // else the contact curve's where that one is (a section pointing away
+  // from the next stripe: freed, the curve kinked at the cut)
+  if (theDir1 != nullptr
+      && (std::abs(dir1.Angle(*theDir1)) <= theFreeAngle
+          || std::abs(dir1.Angle(dir3)) > theFreeAngle))
+  {
+    dir3 = *theDir1;
+  }
+  if (theDir2 != nullptr
+      && (std::abs(anEndAngle2(*theDir2)) <= theFreeAngle
+          || std::abs(anEndAngle2(dir4)) > theFreeAngle))
+  {
+    dir4 = *theDir2;
+  }
   double           h = p2d2.Distance(p2d1) / 20;
   FairCurve_Batten Bat(p2d1, p2d2, h);
   Bat.SetFreeSliding(true);
   double ang1, ang2;
   ang1 = dir1.Angle(dir3);
-  if (dir1.Angle(dir4) > 0)
-  {
-    ang2 = M_PI - dir1.Angle(dir4);
-  }
-  else
-  {
-    ang2 = -M_PI - dir1.Angle(dir4);
-  }
+  ang2 = anEndAngle2(dir4);
   if (contraint1 && contraint2)
   {
     anglebig = (std::abs(ang1) > 1.2) || (std::abs(ang2) > 1.2);
@@ -645,7 +723,7 @@ static void CalculBatten(const occ::handle<GeomAdaptor_Surface>& ASurf,
   {
     isplane = false;
   }
-  if (anglebig && !isplane)
+  if (anglebig && !isplane && theDir1 == nullptr && theDir2 == nullptr)
   {
     CalculDroite(p2d1, xdir, ydir, pcurve);
   }
@@ -3495,6 +3573,50 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
             {
               contraint2 = false;
             }
+            // A setback corner's curve leaves each fillet across it, the
+            // way the fillet's cut section runs on into the face, and bows
+            // away from the corner: held to the contact lines instead, it
+            // bowed toward the corner, the patch pinched between the
+            // fillets, and where a cut sat level with the next contact line
+            // it was asked to leave at right angles to its chord.
+            gp_Dir2d  aSecDir1, aSecDir2;
+            gp_Dir2d* pSecDir1 = nullptr;
+            gp_Dir2d* pSecDir2 = nullptr;
+            if (isSetback)
+            {
+              int aNext, aPrev;
+              if (!sharp.Value(ic) && contraint1)
+              {
+                if (SectionDirOnFace(DStr,
+                                     CD.Value(ic),
+                                     i.Value(ic, icplus),
+                                     jf.Value(ic),
+                                     p.Value(ic, icplus),
+                                     p.Value(ic, icmoins),
+                                     *Asurf,
+                                     p2d1,
+                                     aSecDir1))
+                {
+                  pSecDir1 = &aSecDir1;
+                }
+              }
+              if (!sharp.Value(icplus) && contraint2)
+              {
+                Indices(nedge, icplus, aNext, aPrev);
+                if (SectionDirOnFace(DStr,
+                                     CD.Value(icplus),
+                                     i.Value(icplus, ic),
+                                     3 - jf.Value(icplus),
+                                     p.Value(icplus, ic),
+                                     p.Value(icplus, aNext),
+                                     *Asurf,
+                                     p2d2,
+                                     aSecDir2))
+                {
+                  pSecDir2 = &aSecDir2;
+                }
+              }
+            }
             CalculBatten(Asurf,
                          TopoDS::Face(Fvive(ic, icplus)),
                          xdir,
@@ -3518,7 +3640,12 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                          // corner. Freed there, it meets the stripe at an
                          // angle; ends nearer the chord (45 deg at even
                          // setbacks, under 85 at 3, 1.5 and 2) keep theirs.
-                         isSetback ? 85. * M_PI / 180. : M_PI);
+                         // With the sections' directions above an end takes
+                         // the section's within 85 deg, else the contact
+                         // line's, and is freed only when neither is.
+                         isSetback ? 85. * M_PI / 180. : M_PI,
+                         pSecDir1,
+                         pSecDir2);
 #ifdef OCCT_DEBUG
             ChFi3d_ResultChron(ch, t_batten); // resulting performances for battens
 #endif
