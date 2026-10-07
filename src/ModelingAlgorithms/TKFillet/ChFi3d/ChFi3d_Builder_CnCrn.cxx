@@ -594,7 +594,10 @@ static void CalculBatten(const occ::handle<GeomAdaptor_Surface>& ASurf,
                          const double                            picplusic,
                          const bool                              inverseic,
                          const bool                              inverseicplus,
-                         occ::handle<Geom2d_Curve>&              pcurve)
+                         occ::handle<Geom2d_Curve>&              pcurve,
+                         const double                            theFreeAngle = M_PI)
+// theFreeAngle: an end whose tangent turns farther than this from the chord
+// is left free, the curve meeting the stripe there at an angle
 {
   bool isplane;
   bool anglebig = false;
@@ -648,7 +651,7 @@ static void CalculBatten(const occ::handle<GeomAdaptor_Surface>& ASurf,
   }
   else
   {
-    if (contraint1)
+    if (contraint1 && std::abs(ang1) <= theFreeAngle)
     {
       Bat.SetAngle1(ang1);
     }
@@ -656,7 +659,7 @@ static void CalculBatten(const occ::handle<GeomAdaptor_Surface>& ASurf,
     {
       Bat.SetConstraintOrder1(0);
     }
-    if (contraint2)
+    if (contraint2 && std::abs(ang2) <= theFreeAngle)
     {
       Bat.SetAngle2(ang2);
     }
@@ -3050,6 +3053,13 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   // 0 very often causes unpredictable undulations of solution
   int                         degree = 3, nbcurvpnt = 10, nbiter = 1;
   int                         constr = 1; // G1
+  // A setback corner's boundaries run several radii: held tangent at ten
+  // points each, the plate creased by up to 7 deg against the stripes of a
+  // box corner set back 6 x r, by 1.8 at twenty (thirty: no better).
+  if (isSetback)
+  {
+    nbcurvpnt = 20;
+  }
   GeomPlate_BuildPlateSurface PSurfG1(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
   // the boundaries as given, and their numbers of points, should the plate
   // have to be built again on positions alone
@@ -3497,7 +3507,16 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                          p.Value(icplus, ic),
                          inverseic,
                          inverseicplus,
-                         pcurve);
+                         pcurve,
+                         // A setback corner's cut can sit level with the next
+                         // stripe's contact line (a stripe at d0 beside one
+                         // set back farther): held tangent to its own contact
+                         // line, at right angles to the chord, the curve
+                         // rose and hooked back 0.54 past its ends on a box
+                         // corner. Freed there, it meets the stripe at an
+                         // angle; ends nearer the chord (45 deg at even
+                         // setbacks, under 85 at 3, 1.5 and 2) keep theirs.
+                         isSetback ? 85. * M_PI / 180. : M_PI);
 #ifdef OCCT_DEBUG
             ChFi3d_ResultChron(ch, t_batten); // resulting performances for battens
 #endif
@@ -4017,6 +4036,15 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
     PSurf.Disc2dContour(4, S2d);
     PSurf.Disc3dContour(4, 0, S3d);
     seuil = std::max(tolapp, 10 * PSurf.G0Error());
+    // A setback corner's approximation is held to the plate's own miss of
+    // its boundary, not ten times it, with more patches to do it in. At ten
+    // times, the larger the setback the sooner it stopped: 23x23 poles at
+    // 2 x r, 9x9 at 6 x r, its boundary 5.8e-2 off the stripes there.
+    if (isSetback)
+    {
+      seuil     = std::max(tolapp, PSurf.G0Error());
+      nbcarreau = 16;
+    }
     GeomPlate_PlateG0Criterion critere(S2d, S3d, seuil);
     GeomPlate_MakeApprox       Mapp(gpPlate, critere, tolapp, nbcarreau, degmax);
     occ::handle<Geom_Surface>  Surf(Mapp.Surface());
@@ -4039,7 +4067,12 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
     //     gp_Pnt2d uv;
     //     double scal;
 
-    TopOpeBRepDS_Surface Tsurf(Surf, Mapp.ApproxError());
+    // The approximation's error is to the plate, which no shape holds: what
+    // the face has to answer for is its fit to the boundary, the criterion
+    // (which the curves' tolerances already carry). A setback corner's
+    // plate, hard to approximate inside, gave its face and so every edge of
+    // it 1.4e-2 where the boundary was 1.1e-3 off (box corner at 4 x r).
+    TopOpeBRepDS_Surface Tsurf(Surf, isSetback ? apperror : Mapp.ApproxError());
     int                  Isurf = DStr.AddSurface(Tsurf);
     // lbo : historique QDF.
     if (!myEVIMap.IsBound(V1))
