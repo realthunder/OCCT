@@ -904,6 +904,261 @@ static occ::handle<Geom2d_Curve> CurveOnFacePeriod(const occ::handle<Geom_Curve>
 }
 
 //=======================================================================
+// function : CrossingsOnFace
+// purpose  : Where the segment of <L> from <W1> to <W2> (and <Tol> past
+//           its ends) meets the edges of <F> within <Tol> (or an edge's
+//           tolerance): each as the edge, the parameter on <L> and the one
+//           on the edge. False when the segment runs along an edge.
+//=======================================================================
+
+namespace
+{
+struct LineCrossing
+{
+  TopoDS_Edge Edge;
+  double      W;
+  double      Par;
+};
+} // namespace
+
+static bool CrossingsOnFace(const occ::handle<Geom_Line>&   L,
+                            const double                    W1,
+                            const double                    W2,
+                            const TopoDS_Face&              F,
+                            const double                    Tol,
+                            NCollection_List<LineCrossing>& Crossings)
+{
+  // a crossing at an end of the segment is one
+  const GeomAdaptor_Curve aSeg(L, std::min(W1, W2) - Tol, std::max(W1, W2) + Tol);
+  for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(ex.Current());
+    if (BRep_Tool::Degenerated(anE))
+    {
+      continue;
+    }
+    const double      aTol = std::max(Tol, BRep_Tool::Tolerance(anE));
+    BRepAdaptor_Curve aC(anE);
+    Extrema_ExtCC     anExt(aSeg, aC);
+    if (!anExt.IsDone())
+    {
+      return false;
+    }
+    if (anExt.IsParallel())
+    {
+      if (anExt.SquareDistance(1) <= aTol * aTol)
+      {
+        return false;
+      }
+      continue;
+    }
+    for (int i = 1; i <= anExt.NbExt(); i++)
+    {
+      if (anExt.SquareDistance(i) > aTol * aTol)
+      {
+        continue;
+      }
+      Extrema_POnCurv aP1, aP2;
+      anExt.Points(i, aP1, aP2);
+      bool isKnown = false;
+      for (NCollection_List<LineCrossing>::Iterator it(Crossings); it.More() && !isKnown; it.Next())
+      {
+        isKnown = it.Value().Edge.IsSame(anE) && std::abs(it.Value().W - aP1.Parameter()) <= aTol;
+      }
+      if (!isKnown)
+      {
+        Crossings.Append({anE, aP1.Parameter(), aP2.Parameter()});
+      }
+    }
+  }
+  return true;
+}
+
+//=======================================================================
+// function : LineOverSplit
+// purpose  : The fillet's line on the plane face <Fop>, the straight line
+//           <L3d> from its end at <W0> (the walk stopped at the spine's
+//           end, in the face), carried on away from the fillet (back when
+//           <isFirst>) to the face at end <Fv>: it crosses one edge of
+//           <Fop>, <Esplit>, into <Fn> -- a piece of the same plane, the
+//           same way up: a wall kept in coplanar pieces -- and meets <Fv>
+//           on an edge of <Fn> and <Fv>, <Earc>, crossing no other. <L> is
+//           the line, <WQ>, <WP> its parameters at <Esplit> and <Earc>,
+//           <ParQ>, <ParP> theirs. The line then ends on <Fv> as it would
+//           on the wall in one face, and runs over both pieces.
+//=======================================================================
+
+static bool LineOverSplit(const occ::handle<Geom_Curve>& L3d,
+                          const double                   W0,
+                          const bool                     isFirst,
+                          const TopoDS_Face&             Fop,
+                          const TopoDS_Face&             Fv,
+                          const ChFiDS_Map&              EFMap,
+                          const double                   Tol,
+                          occ::handle<Geom_Line>&        L,
+                          TopoDS_Edge&                   Esplit,
+                          TopoDS_Face&                   Fn,
+                          TopoDS_Edge&                   Earc,
+                          double&                        WQ,
+                          double&                        WP,
+                          double&                        ParQ,
+                          double&                        ParP)
+{
+  if (L3d.IsNull())
+  {
+    return false;
+  }
+  const GeomAdaptor_Curve aC(L3d);
+  if (aC.GetType() != GeomAbs_Line)
+  {
+    return false;
+  }
+  L = new Geom_Line(aC.Line());
+  if (L->Value(W0).Distance(L3d->Value(W0)) > Tol)
+  {
+    return false;
+  }
+  const BRepAdaptor_Surface aSop(Fop, false);
+  if (aSop.GetType() != GeomAbs_Plane)
+  {
+    return false;
+  }
+  // where the line meets Fv's surface, the nearest past its end
+  const double              aSense = isFirst ? -1. : 1.;
+  occ::handle<Geom_Surface> aSv    = BRep_Tool::Surface(Fv);
+  GeomAPI_IntCS             anInt(L, aSv);
+  bool                      isFound = false;
+  for (int i = 1; anInt.IsDone() && i <= anInt.NbPoints(); i++)
+  {
+    double u, v, w;
+    anInt.Parameters(i, u, v, w);
+    if ((w - W0) * aSense > Tol && (!isFound || (w - WP) * aSense < 0.))
+    {
+      WP      = w;
+      isFound = true;
+    }
+  }
+  if (!isFound)
+  {
+    return false;
+  }
+  // on the way there, on Fop: one crossing, an edge into a coplanar piece
+  NCollection_List<LineCrossing> aOnOp;
+  if (!CrossingsOnFace(L, W0 + 10. * aSense * Tol, WP, Fop, Tol, aOnOp) || aOnOp.Extent() != 1)
+  {
+    return false;
+  }
+  Esplit = aOnOp.First().Edge;
+  WQ     = aOnOp.First().W;
+  ParQ   = aOnOp.First().Par;
+  if (std::abs(WP - WQ) <= Tol || EFMap(Esplit).Extent() != 2)
+  {
+    return false;
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator it(EFMap(Esplit)); it.More(); it.Next())
+  {
+    if (!Fop.IsSame(it.Value()))
+    {
+      Fn = TopoDS::Face(it.Value());
+    }
+  }
+  if (Fn.IsNull() || Fn.IsSame(Fv))
+  {
+    return false;
+  }
+  const BRepAdaptor_Surface aSn(Fn, false);
+  if (aSn.GetType() != GeomAbs_Plane)
+  {
+    return false;
+  }
+  const gp_Pln aPlOp = aSop.Plane(), aPlN = aSn.Plane();
+  gp_Dir       aNOp = aPlOp.Axis().Direction(), aNN = aPlN.Axis().Direction();
+  if (Fop.Orientation() == TopAbs_REVERSED)
+  {
+    aNOp.Reverse();
+  }
+  if (Fn.Orientation() == TopAbs_REVERSED)
+  {
+    aNN.Reverse();
+  }
+  if (aNOp.Dot(aNN) < 1. - 1.e-9 || aPlOp.Distance(aPlN.Location()) > Tol)
+  {
+    return false;
+  }
+  // on Fn: from Esplit to an edge Fn shares with Fv, nothing between
+  NCollection_List<LineCrossing> aOnN;
+  if (!CrossingsOnFace(L, WQ, WP, Fn, Tol, aOnN))
+  {
+    return false;
+  }
+  const double aTolW = 10. * Tol;
+  for (NCollection_List<LineCrossing>::Iterator it(aOnN); it.More(); it.Next())
+  {
+    const LineCrossing& aX = it.Value();
+    if (aX.Edge.IsSame(Esplit) && std::abs(aX.W - WQ) <= aTolW)
+    {
+      continue;
+    }
+    if (Earc.IsNull() && std::abs(aX.W - WP) <= aTolW && containE(Fv, aX.Edge))
+    {
+      Earc = aX.Edge;
+      ParP = aX.Par;
+      continue;
+    }
+    return false;
+  }
+  if (Earc.IsNull())
+  {
+    return false;
+  }
+  // both points inside their edges
+  for (int k = 0; k < 2; k++)
+  {
+    const TopoDS_Edge& anE = k == 0 ? Esplit : Earc;
+    const double       aP  = k == 0 ? ParQ : ParP;
+    double             f, l;
+    BRep_Tool::Range(anE, f, l);
+    const double aTolP =
+      BRepAdaptor_Curve(anE).Resolution(std::max(Tol, BRep_Tool::Tolerance(anE)));
+    if (aP <= f + aTolP || aP >= l - aTolP)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//=======================================================================
+// function : TransitionOnEdge
+// purpose  : The transition of the fillet's line with the interference
+//           <Fi> on the face <Fi>'s face leaving (arriving through, when
+//           <isFirst>) the face <F> across its edge <E>, as the walk gives a
+//           line ending on an arc. <F> is <Fi>'s face or a piece of the same
+//           plane beside it, the same way up in the shell: one the other way
+//           round on its surface (<isReversed>) has the line the other way.
+//=======================================================================
+
+static TopAbs_Orientation TransitionOnEdge(const ChFiDS_FaceInterference& Fi,
+                                           const TopoDS_Face&             F,
+                                           const TopoDS_Edge&             E,
+                                           const bool                     isFirst,
+                                           const bool                     isReversed = false)
+{
+  TopAbs_Orientation anOr = E.Orientation();
+  for (TopExp_Explorer ex(F.Oriented(TopAbs_FORWARD), TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    if (E.IsSame(ex.Current()))
+    {
+      anOr = ex.Current().Orientation();
+      break;
+    }
+  }
+  const TopAbs_Orientation aTr =
+    TopAbs::Compose(isReversed ? TopAbs::Reverse(Fi.Transition()) : Fi.Transition(), anOr);
+  return isFirst ? TopAbs::Reverse(aTr) : aTr;
+}
+
+//=======================================================================
 // function : PerformOneCorner
 // purpose  : Calculate a corner with three edges and a fillet.
 //           3 separate case: (22/07/94 only 1st is implemented)
@@ -1004,6 +1259,14 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   TopoDS_Vertex      Vp;
   gp_Lin             LinTg;
   TopAbs_Orientation OFvT = TopAbs_FORWARD, OFv = TopAbs_FORWARD;
+  // The fillet's line over a wall in coplanar pieces (see LineOverSplit):
+  // its side, the line, the edge it crosses and the one it ends on, the
+  // piece beyond, and the parameters of the two points
+  int                    onsOS = 0;
+  occ::handle<Geom_Line> LinOS;
+  TopoDS_Edge            EsplitOS, EarcOS;
+  TopoDS_Face            FnOS;
+  double                 wQOS = 0., wPOS = 0., parQOS = 0., parPOS = 0.;
   if (isfirst)
   {
     Arcspine = spine->Edges(1);
@@ -1484,6 +1747,73 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   else
   {
     inters = FindFace(Vtx, CV1, CV2, Fv, Fop);
+    // The walk stopped at the spine's end with one side on an arc of Vtx
+    // and the other in its face, a plane: the line there, carried on,
+    // crosses into a coplanar piece of the same wall and meets the face at
+    // end beyond (a wall kept in pieces, the radius wider than the piece's
+    // edge at Vtx). The line ends on that edge of the piece, as it would on
+    // the wall in one face, and is carried over the split below.
+    if (!inters && CV1.IsOnArc() != CV2.IsOnArc())
+    {
+      const int                 onsArc = CV1.IsOnArc() ? 1 : 2;
+      const int                 onsAir = 3 - onsArc;
+      const ChFiDS_CommonPoint& aCPArc = Fd->Vertex(isfirst, onsArc);
+      const TopoDS_Face         aFArc  = TopoDS::Face(DStr.Shape(Fd->Index(onsArc)));
+      const TopoDS_Face         aFAir  = TopoDS::Face(DStr.Shape(Fd->Index(onsAir)));
+      ChFiDS_FaceInterference&  aFi    = Fd->ChangeInterference(onsAir);
+      TopoDS_Face               aFv;
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(aCPArc.Arc())); itF.More();
+           itF.Next())
+      {
+        if (!aFArc.IsSame(itF.Value()))
+        {
+          aFv = TopoDS::Face(itF.Value());
+        }
+      }
+      if (hasVertex(aCPArc.Arc(), Vtx) && !aFv.IsNull() && containV(aFv, Vtx)
+          && aFi.LineIndex() != 0
+          && LineOverSplit(DStr.Curve(aFi.LineIndex()).Curve(),
+                           aFi.Parameter(isfirst),
+                           isfirst,
+                           aFAir,
+                           aFv,
+                           myEFMap,
+                           10 * tolapp3d,
+                           LinOS,
+                           EsplitOS,
+                           FnOS,
+                           EarcOS,
+                           wQOS,
+                           wPOS,
+                           parQOS,
+                           parPOS))
+      {
+        ChFiDS_CommonPoint&      aCPAir  = Fd->ChangeVertex(isfirst, onsAir);
+        const ChFiDS_CommonPoint aSaved  = aCPAir;
+        const double             aSavedW = aFi.Parameter(isfirst);
+        aCPAir.Reset();
+        aCPAir.SetPoint(LinOS->Value(wPOS));
+        aCPAir.SetArc(std::max(aSaved.Tolerance(), 10 * tolapp3d),
+                      EarcOS,
+                      parPOS,
+                      TransitionOnEdge(aFi,
+                                       FnOS,
+                                       EarcOS,
+                                       isfirst,
+                                       FnOS.Orientation() != aFAir.Orientation()));
+        aFi.SetParameter(wPOS, isfirst);
+        inters = FindFace(Vtx, CV1, CV2, Fv, Fop);
+        if (inters)
+        {
+          onsOS = onsAir;
+        }
+        else
+        {
+          aCPAir = aSaved;
+          aFi.SetParameter(aSavedW, isfirst);
+        }
+      }
+    }
     if (!inters)
     {
       PerformIntersectionAtEnd(Index);
@@ -1973,6 +2303,113 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     ChFi3d_EnlargeBox(IFadArc == 1 ? HBs : HBsT, IFadArc == 1 ? Pc : PcT,
                       C2->FirstParameter(), C2->LastParameter(), boxT, box2);
   }
+  else if (onsOS != 0)
+  {
+    // The line over a wall in coplanar pieces: its piece on the far one,
+    // from where it crosses the split (Q) to the cut's end (P), and the
+    // cut, go in the DS here, as for the cut over two faces above; the
+    // line on the face the spine is on ends at Q, and FILDS ends it there.
+    if (intcouture)
+    {
+      throw Standard_Failure("OneCorner : the cut over a split wall crosses a seam");
+    }
+    const int onsArc = 3 - onsOS;
+    const int indP   = stripe->IndexPoint(isfirst, onsOS);
+    const int indArc = stripe->IndexPoint(isfirst, onsArc);
+    // on the fillet's surface, as FILDS puts the end's curve and the lines
+    TopAbs_Orientation aTrafil1 = TopAbs_FORWARD;
+    if (Fd->IndexOfS1() > 0)
+    {
+      aTrafil1 = DStr.Shape(Fd->IndexOfS1()).Orientation();
+    }
+    aTrafil1 = TopAbs::Compose(aTrafil1, Fd->Orientation());
+    aTrafil1 = TopAbs::Compose(TopAbs::Reverse(Fd->InterferenceOnS1().Transition()), aTrafil1);
+    const TopAbs_Orientation EtS = isfirst ? TopAbs::Reverse(aTrafil1) : aTrafil1;
+
+    // the cut, from CV1's side to CV2's
+    const int ICut = DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tolreached));
+    DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(ICut, IShape, Pc, Et));
+    DStr.ChangeSurfaceInterferences(Isurf).Append(ChFi3d_FilCurveInDS(ICut, Isurf, Ps, EtS));
+    DStr.ChangeCurveInterferences(ICut).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, ICut, onsOS == 1 ? indP : indArc, Udeb));
+    DStr.ChangeCurveInterferences(ICut).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, ICut, onsOS == 2 ? indP : indArc, Ufin));
+
+    // P on the edge of the far piece and the face at end
+    ChFiDS_FaceInterference& aFi  = Fd->ChangeInterference(onsOS);
+    const TopoDS_Face        aFOp = TopoDS::Face(DStr.Shape(Fd->Index(onsOS)));
+    // the far piece the other way round on its surface: the line too
+    const bool isRevN = FnOS.Orientation() != aFOp.Orientation();
+    DStr.ChangeShapeInterferences(DStr.AddShape(EarcOS))
+      .Append(ChFi3d_FilPointInDS(TransitionOnEdge(aFi, FnOS, EarcOS, isfirst, isRevN),
+                                  DStr.AddShape(EarcOS),
+                                  indP,
+                                  parPOS));
+    Bnd_Box boxP;
+    ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, onsOS == 1 ? boxP : box1, onsOS == 2 ? boxP : box2);
+    ChFi3d_EnlargeBox(EarcOS, myEFMap(EarcOS), parPOS, boxP);
+    boxP.Add(LinOS->Value(wPOS));
+
+    // the line ends at Q on the split, where FILDS takes it
+    ChFiDS_CommonPoint& aCPOp = Fd->ChangeVertex(isfirst, onsOS);
+    const double        aTolQ = std::max(aCPOp.Tolerance(), 10 * tolapp3d);
+    aCPOp.Reset();
+    aCPOp.SetPoint(LinOS->Value(wQOS));
+    aCPOp.SetArc(aTolQ, EsplitOS, parQOS, TransitionOnEdge(aFi, aFOp, EsplitOS, isfirst));
+    aFi.SetParameter(wQOS, isfirst);
+    const int indQ = ChFi3d_IndexPointInDS(aCPOp, DStr);
+    stripe->SetIndexPoint(indQ, isfirst, onsOS);
+    stripe->InDS(isfirst);
+    (onsOS == 1 ? box1 : box2).Add(LinOS->Value(wQOS));
+
+    // the piece from Q to P, the way the line runs, on the far piece and
+    // on the fillet's surface, as FILDS puts the line
+    const double aWa = std::min(wQOS, wPOS), aWb = std::max(wQOS, wPOS);
+    const occ::handle<Geom_Curve> aCQP = new Geom_TrimmedCurve(LinOS, aWa, aWb);
+    occ::handle<Geom2d_Curve>     aPcN = CurveOnFacePeriod(aCQP,
+                                                       BRep_Tool::Surface(FnOS),
+                                                       FnOS,
+                                                       TopExp::FirstVertex(EsplitOS),
+                                                       10 * tolapp3d);
+    occ::handle<Geom2d_Curve>     aPsS = aFi.PCurveOnSurf();
+    const occ::handle<Geom2d_TrimmedCurve> aPsTr = occ::down_cast<Geom2d_TrimmedCurve>(aPsS);
+    if (!aPsTr.IsNull())
+    {
+      aPsS = aPsTr->BasisCurve();
+    }
+    if (aPcN.IsNull() || aPsS.IsNull())
+    {
+      throw Standard_Failure("OneCorner : the line over a split wall has no pcurve");
+    }
+    aPsS = new Geom2d_TrimmedCurve(aPsS, aWa, aWb);
+    const occ::handle<GeomAdaptor_Surface> aHSn =
+      new GeomAdaptor_Surface(BRep_Tool::Surface(FnOS));
+    const double aTolQP = std::max(ChFi3d_EvalTolReached(HGs, aPsS, aHSn, aPcN, aCQP),
+                                   Precision::Confusion());
+    if (aTolQP > 10 * tolapp3d)
+    {
+      throw Standard_Failure("OneCorner : the line over a split wall is off the fillet");
+    }
+    const int IQP = DStr.AddCurve(TopOpeBRepDS_Curve(aCQP, aTolQP));
+    const int IFn = DStr.AddShape(FnOS);
+    DStr.ChangeShapeInterferences(IFn).Append(
+      ChFi3d_FilCurveInDS(IQP,
+                          IFn,
+                          aPcN,
+                          isRevN ? TopAbs::Reverse(aFi.Transition()) : aFi.Transition()));
+    DStr.ChangeSurfaceInterferences(Isurf).Append(
+      ChFi3d_FilCurveInDS(IQP, Isurf, aPsS, onsOS == 1 ? aTrafil1 : TopAbs::Reverse(aTrafil1)));
+    DStr.ChangeCurveInterferences(IQP).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, IQP, isfirst ? indP : indQ, aWa));
+    DStr.ChangeCurveInterferences(IQP).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IQP, isfirst ? indQ : indP, aWb));
+    ChFiDS_Regul aRegul;
+    aRegul.SetCurve(IQP);
+    aRegul.SetS1(Isurf, false);
+    aRegul.SetS2(IFn, true);
+    myRegul.Append(aRegul);
+    ChFi3d_SetPointTolerance(DStr, boxP, indP);
+  }
   else if (!intcouture)
   {
     // there is no intersection with the sewing edge
@@ -2262,7 +2699,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     DStr.ChangeCurveInterferences(Icurv2).Append(interfprol);
   }
 
-  if (FvT.IsNull())
+  if (FvT.IsNull() && onsOS == 0)
   {
     ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, box1, box2);
   }
