@@ -4102,8 +4102,10 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
   gp_Pnt2d                   pfil1, pfac1, pfil2, pfac2, pint, pfildeb;
   occ::handle<Geom2d_Curve>  Hc1, Hc2;
   IntCurveSurface_HInter     inters;
-  int                        proledge[nn], prolface[nn + 1]; // last prolface[nn] is for Fd
-  int                        shrink[nn];
+  // all of them zero: an extension is made once, ChFi3d_ExtendSurface
+  // leaving a face it is given as made alone (the last prolface[nn] is for Fd)
+  int                        proledge[nn] = {}, prolface[nn + 1] = {};
+  int                        shrink[nn]   = {};
   TopoDS_Face                faceprol[nn];
   int                        indcurve[nn], indpoint2 = 0, indpoint1 = 0;
   occ::handle<TopOpeBRepDS_CurvePointInterference>   Interfp1, Interfp2, Interfedge[nn];
@@ -6463,7 +6465,7 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
     }
     TopoDS_Face               FFv;
     double                    tol;
-    int                       prol;
+    int                       prol = 0;
     BRep_Builder              BRE;
     occ::handle<Geom_Surface> Sface;
     Sface = BRep_Tool::Surface(Fv);
