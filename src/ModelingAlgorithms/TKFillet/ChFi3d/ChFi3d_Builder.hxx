@@ -810,6 +810,12 @@ private:
   //! setbacks and the failed computation back where none is.
   Standard_EXPORT void ComputeSetbackFallback();
 
+  //! After a computation that failed with a fillet on edges short for its
+  //! radius: once more with the spines extended at least 1.5 radius past
+  //! the corners (ChFi3d_LongSpineExtension), the result kept on the setback
+  //! fallback's terms; otherwise the computation again as it was.
+  Standard_EXPORT void ComputeLongExtension();
+
   //! True where a fillet stripe ending at the vertex of myVDataMap(Index)
   //! has a setback set there (ChFiDS_FilSpine::SetSetback).
   Standard_EXPORT bool HasSetbackAt(const int Index) const;

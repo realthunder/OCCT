@@ -489,6 +489,92 @@ bool ChFi3d_Builder::HasSetbackAt(const int Index) const
 
 //=================================================================================================
 
+void ChFi3d_Builder::ComputeLongExtension()
+{
+  // a fillet stripe on edges short for its radius at an end it is extended
+  // at (ExtentOneCorner): half its length there, under 1.5 radius
+  bool   isShort = false;
+  double aRadius = Precision::Infinite();
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();
+       itS.Next())
+  {
+    const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(itS.Value()->Spine());
+    if (aSp.IsNull() || aSp->IsPeriodic())
+    {
+      continue;
+    }
+    const double aLength = aSp->LastParameter(aSp->NbEdges());
+    for (int k = 0; k < 2; k++)
+    {
+      const double aRad  = LargestRadiusAt(aSp, k == 0 ? 1 : aSp->NbEdges());
+      const bool   isEnd = !aSp->IsTangencyExtremity(k == 0);
+      aRadius            = std::min(aRadius, aRad);
+      isShort            = isShort || (isEnd && 0.5 * aLength < 1.5 * aRad);
+    }
+  }
+  if (!isShort)
+  {
+    return;
+  }
+  // as the setback fallback takes a result: valid, every fillet made, no
+  // edge looser than the input's or a twentieth of the radius
+  const double aMaxTol = std::max(MaxEdgeTolerance(myShape), 0.05 * aRadius);
+  auto         FreshComputation = [&]() {
+    Reset();
+    myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
+  };
+  ChFi3d_LongSpineExtension() = true;
+  try
+  {
+    OCC_CATCH_SIGNALS
+    FreshComputation();
+    Compute();
+    if (done && IsValidResult(myShapeResult, aMaxTol)
+        && AreFilletsMade(myListStripe, myEFMap, myShapeResult))
+    {
+      ChFi3d_LongSpineExtension() = false;
+      return;
+    }
+  }
+  catch (Standard_Failure const&)
+  {
+    done = false;
+  }
+  // and failing at a vertex, set back there as well
+  if (!done)
+  {
+    try
+    {
+      OCC_CATCH_SIGNALS
+      ComputeSetbackFallback();
+    }
+    catch (Standard_Failure const&)
+    {
+      done = false;
+    }
+    if (done)
+    {
+      ChFi3d_LongSpineExtension() = false;
+      return;
+    }
+  }
+  ChFi3d_LongSpineExtension() = false;
+  // nothing better: the computation as it was, its failure with it
+  done = false;
+  try
+  {
+    OCC_CATCH_SIGNALS
+    FreshComputation();
+    Compute();
+  }
+  catch (Standard_Failure const&)
+  {
+    done = false;
+  }
+}
+
+//=================================================================================================
+
 void ChFi3d_Builder::ComputeSetbackFallback()
 {
   const double aMultiple = CornerSetbackFallback();
@@ -624,7 +710,9 @@ void ChFi3d_Builder::Compute()
   if (!THE_IN_SETBACK_COMPUTE)
   {
     // the computation, and where it fails at a vertex, the setback fallback;
-    // a failure the fallback does not mend is the computation's own
+    // then, on edges short for their radius, the spines extended further
+    // (ComputeLongExtension). A failure the fallbacks do not mend is the
+    // computation's own
     SetbackComputeGuard aGuard;
     std::exception_ptr  aFailure;
     try
@@ -633,14 +721,14 @@ void ChFi3d_Builder::Compute()
     }
     catch (Standard_Failure const&)
     {
-      if (badvertices.IsEmpty())
-      {
-        throw;
-      }
       aFailure = std::current_exception();
       done     = false;
     }
     ComputeSetbackFallback();
+    if (!done)
+    {
+      ComputeLongExtension();
+    }
     if (aFailure && !done)
     {
       std::rethrow_exception(aFailure);

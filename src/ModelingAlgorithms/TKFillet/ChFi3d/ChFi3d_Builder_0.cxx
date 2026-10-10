@@ -93,6 +93,14 @@ extern void   ChFi3d_SettraceDRAWSPINE(const bool b);
 
 //=================================================================================================
 
+bool& ChFi3d_LongSpineExtension()
+{
+  thread_local bool isLong = false;
+  return isLong;
+}
+
+//=================================================================================================
+
 double ChFi3d_InPeriod(const double U, const double UFirst, const double ULast, const double Eps)
 {
   const double period = ULast - UFirst;

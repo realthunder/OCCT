@@ -2455,6 +2455,18 @@ void ChFi3d_FilBuilder::ExtentOneCorner(const TopoDS_Vertex& V, const occ::handl
   {
     Coeff *= 2; // It is necessary to go to the end and to evaluate the length
   }
+  // Tried again after a failure (ChFi3d_LongSpineExtension): not shorter
+  // than 1.5 radius, as ExtentTwoCorner. On an edge short for its radius
+  // half the spine leaves the walk short of where the lines meet the faces
+  // at the end (a line carried over a split there needs the walk past the
+  // vertex by the radius and more).
+  occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(Spine);
+  if (ChFi3d_LongSpineExtension() && !fsp.IsNull() && dU > 0.)
+  {
+    const double aRad =
+      fsp->IsConstant() ? fsp->Radius() : MaxRad(fsp, ChFi3d_EdgeFromV1(V, S, Sens));
+    Coeff = std::max(Coeff, 1.5 * aRad / dU);
+  }
 
   if (Sens == 1)
   {

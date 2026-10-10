@@ -57,6 +57,11 @@ extern OSD_Chronometer simul, elspine, chemine;
 
 double ChFi3d_InPeriod(const double U, const double UFirst, const double ULast, const double Eps);
 
+//! Set while ChFi3d_Builder::Compute tries again with the spines extended
+//! at least 1.5 radius past a corner (ChFi3d_FilBuilder::ExtentOneCorner):
+//! a fillet failed at the end of an edge short for its radius.
+bool& ChFi3d_LongSpineExtension();
+
 void ChFi3d_Boite(const gp_Pnt2d& p1,
                   const gp_Pnt2d& p2,
                   double&         mu,
