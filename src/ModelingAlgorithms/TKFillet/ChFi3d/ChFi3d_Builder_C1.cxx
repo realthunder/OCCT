@@ -1071,9 +1071,12 @@ static bool LineOverSplit(const occ::handle<Geom_Curve>& L3d,
   {
     return false;
   }
-  // on the way there, on Fop: one crossing, an edge into a coplanar piece
+  // on the way there, on Fop: one crossing, an edge into a coplanar piece.
+  // From a little before the end: the split can cross the line within the
+  // tolerance of its end, on either side of it, where the walk ended at the
+  // split without seeing it -- the line is straight, cut there all the same.
   NCollection_List<LineCrossing> aOnOp;
-  if (!CrossingsOnFace(L, W0 + 2. * aSense * Tol, WP, Fop, Tol, aOnOp) || aOnOp.Extent() != 1)
+  if (!CrossingsOnFace(L, W0 - 2. * aSense * Tol, WP, Fop, Tol, aOnOp) || aOnOp.Extent() != 1)
   {
     return false;
   }
