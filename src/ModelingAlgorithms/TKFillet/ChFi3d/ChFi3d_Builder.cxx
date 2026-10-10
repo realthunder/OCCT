@@ -72,6 +72,16 @@
 #include <BRep_Tool.hxx>
 #include <Geom_Curve.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+#include <BRepTools_History.hxx>
+#include <BRepTools_ReShape.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <BRepTopAdaptor_FClass2d.hxx>
+#include <NCollection_DataMap.hxx>
+#include <NCollection_Sequence.hxx>
+#include <TopExp.hxx>
+#include <TopoDS_Iterator.hxx>
+#include <TopoDS_Wire.hxx>
+#include <NCollection_IndexedMap.hxx>
 
 #ifdef OCCT_DEBUG
   #include <OSD_Chronometer.hxx>
@@ -300,6 +310,313 @@ static void ChFi3d_EdgesCoverTheirEnds(const TopoDS_Shape& theResult, const Topo
       aB.UpdateEdge(anE, aTol);
     }
   }
+}
+
+
+//=================================================================================================
+// A face of the result whose one wire runs through a point twice, at two
+// vertices there, the corner's new one and one of the input (#523 at the
+// cylinder's radius: the fillet's line on the top is tangent to the
+// cylinder's circle at its vertex, and the top is the box's rectangle and
+// the cylinder's whole disc, touching there). BRepCheck lets the wire be,
+// its vertices 4e-15 apart; BOP's check calls the vertex self-intersecting,
+// and made one vertex the wire is unorientable. The face is two regions
+// meeting at a point: the corner's vertex is replaced by the input's, and
+// the face split there in two, each bounded by one loop of its wire -- only
+// where both loops bound a region, not where a loop round a hole touches
+// the outer one. Returns the history of the change, null when there was
+// none.
+
+namespace
+{
+// a face pinched at a point, and where its wire passes the point
+struct PinchedFace
+{
+  TopoDS_Face                        Face;    // forward
+  TopoDS_Vertex                      Keep;    // the input's vertex there
+  TopoDS_Vertex                      Drop;    // the other
+  NCollection_Sequence<TopoDS_Shape> Ordered; // the wire's edges in order
+  int                                K1 = 0;  // the edges ending at the point
+  int                                K2 = 0;
+};
+
+// The wire of <theP> from the edge after <theFrom>, <theNb> edges, with the
+// edges as <theReShape> has them.
+TopoDS_Wire PinchLoop(const PinchedFace&                    theP,
+                      const int                             theFrom,
+                      const int                             theNb,
+                      const occ::handle<BRepTools_ReShape>& theReShape)
+{
+  BRep_Builder aB;
+  TopoDS_Wire  aW;
+  aB.MakeWire(aW);
+  for (int n = 0; n < theNb; n++)
+  {
+    const TopoDS_Shape& anE = theP.Ordered((theFrom + n) % theP.Ordered.Length() + 1);
+    aB.Add(aW, theReShape.IsNull() ? anE : theReShape->Value(anE));
+  }
+  aW.Closed(true);
+  return aW;
+}
+
+// <theF>, one wire, pinched: its wire passes twice through a point, at two
+// vertices there with no edge between them, one of them the input's, at one
+// point of the face's parameters, and each loop of the wire from there
+// bounds a region of its own.
+bool FindPinch(const TopoDS_Face&                                                   theF,
+               const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theInputV,
+               PinchedFace&                                                         theP)
+{
+  TopoDS_Wire aW;
+  int         aNbW = 0;
+  for (TopExp_Explorer exW(theF, TopAbs_WIRE); exW.More(); exW.Next(), aNbW++)
+  {
+    aW = TopoDS::Wire(exW.Current());
+  }
+  if (aNbW != 1)
+  {
+    return false;
+  }
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aWV;
+  TopExp::MapShapes(aW, TopAbs_VERTEX, aWV);
+  int           aNbPinch = 0;
+  TopoDS_Vertex aV1, aV2;
+  for (int i = 1; i <= aWV.Extent(); i++)
+  {
+    const TopoDS_Vertex& aVi = TopoDS::Vertex(aWV(i));
+    for (int j = i + 1; j <= aWV.Extent(); j++)
+    {
+      const TopoDS_Vertex& aVj = TopoDS::Vertex(aWV(j));
+      if (BRep_Tool::Pnt(aVi).Distance(BRep_Tool::Pnt(aVj))
+          > std::max(BRep_Tool::Tolerance(aVi), BRep_Tool::Tolerance(aVj)))
+      {
+        continue;
+      }
+      bool isJoined = false;
+      for (TopExp_Explorer exE(aW, TopAbs_EDGE); exE.More() && !isJoined; exE.Next())
+      {
+        TopoDS_Vertex aE1, aE2;
+        TopExp::Vertices(TopoDS::Edge(exE.Current()), aE1, aE2);
+        isJoined = (aE1.IsSame(aVi) && aE2.IsSame(aVj)) || (aE1.IsSame(aVj) && aE2.IsSame(aVi));
+      }
+      if (!isJoined)
+      {
+        aNbPinch++;
+        aV1 = aVi;
+        aV2 = aVj;
+      }
+    }
+  }
+  if (aNbPinch != 1 || theInputV.Contains(aV1) == theInputV.Contains(aV2))
+  {
+    return false;
+  }
+  theP.Face = theF;
+  theP.Keep = theInputV.Contains(aV1) ? aV1 : aV2;
+  theP.Drop = theInputV.Contains(aV1) ? aV2 : aV1;
+  theP.Ordered.Clear();
+  for (BRepTools_WireExplorer wex(aW, theF); wex.More(); wex.Next())
+  {
+    theP.Ordered.Append(wex.Current());
+  }
+  int aNbE = 0;
+  for (TopoDS_Iterator itE(aW); itE.More(); itE.Next())
+  {
+    aNbE++;
+  }
+  if (theP.Ordered.Length() != aNbE)
+  {
+    return false;
+  }
+  int aNbAt = 0;
+  theP.K1 = theP.K2 = 0;
+  for (int k = 1; k <= theP.Ordered.Length(); k++)
+  {
+    const TopoDS_Vertex aV = TopExp::LastVertex(TopoDS::Edge(theP.Ordered(k)), true);
+    if (aV.IsSame(theP.Keep) || aV.IsSame(theP.Drop))
+    {
+      aNbAt++;
+      if (theP.K1 == 0)
+      {
+        theP.K1 = k;
+      }
+      else
+      {
+        theP.K2 = k;
+      }
+    }
+  }
+  if (aNbAt != 2)
+  {
+    return false;
+  }
+  // one point of the face's parameters: on a closed surface the wire can
+  // pass a point twice a period apart, as at a seam
+  auto anEndUV = [&theF](const TopoDS_Shape& theE) {
+    gp_Pnt2d aFirst, aLast;
+    BRep_Tool::UVPoints(TopoDS::Edge(theE), theF, aFirst, aLast);
+    return theE.Orientation() == TopAbs_REVERSED ? aFirst : aLast;
+  };
+  const gp_Pnt2d            aUV1 = anEndUV(theP.Ordered(theP.K1));
+  const gp_Pnt2d            aUV2 = anEndUV(theP.Ordered(theP.K2));
+  const BRepAdaptor_Surface aS(theF, false);
+  const double              aTol = 10. * std::max(BRep_Tool::Tolerance(theP.Keep),
+                                                  BRep_Tool::Tolerance(theP.Drop));
+  if (std::abs(aUV1.X() - aUV2.X()) > aS.UResolution(aTol)
+      || std::abs(aUV1.Y() - aUV2.Y()) > aS.VResolution(aTol))
+  {
+    return false;
+  }
+  // each loop a region, not a hole touching the other
+  const int aNb = theP.Ordered.Length();
+  for (int aLoop = 0; aLoop < 2; aLoop++)
+  {
+    const TopoDS_Wire aLW =
+      aLoop == 0 ? PinchLoop(theP, theP.K1, theP.K2 - theP.K1, nullptr)
+                 : PinchLoop(theP, theP.K2, aNb - theP.K2 + theP.K1, nullptr);
+    TopoDS_Face aPiece = TopoDS::Face(theF.EmptyCopied());
+    BRep_Builder().Add(aPiece, aLW);
+    if (BRepTopAdaptor_FClass2d(aPiece, Precision::PConfusion()).PerformInfinitePoint()
+        != TopAbs_OUT)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+} // namespace
+
+static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&       theResult,
+                                                              const TopoDS_Shape& theInput)
+{
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputV;
+  TopExp::MapShapes(theInput, TopAbs_VERTEX, anInputV);
+  NCollection_List<PinchedFace>                                             aPinches;
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aDropToKeep;
+  for (TopExp_Explorer exF(theResult, TopAbs_FACE); exF.More(); exF.Next())
+  {
+    PinchedFace aP;
+    if (!FindPinch(TopoDS::Face(exF.Current().Oriented(TopAbs_FORWARD)), anInputV, aP)
+        || (aDropToKeep.IsBound(aP.Drop) && !aDropToKeep(aP.Drop).IsSame(aP.Keep)))
+    {
+      continue;
+    }
+    aDropToKeep.Bind(aP.Drop, aP.Keep);
+    aPinches.Append(aP);
+  }
+  if (aPinches.IsEmpty())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+
+  // the vertices made one, everywhere; the edges at a vertex dropped take
+  // the vertex kept at the same parameter
+  BRep_Builder                   aB;
+  occ::handle<BRepTools_ReShape> aMerge = new BRepTools_ReShape;
+  for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(
+         aDropToKeep);
+       it.More();
+       it.Next())
+  {
+    const TopoDS_Vertex& aDrop = TopoDS::Vertex(it.Key());
+    const TopoDS_Vertex& aKeep = TopoDS::Vertex(it.Value());
+    const double         aTol =
+      BRep_Tool::Pnt(aDrop).Distance(BRep_Tool::Pnt(aKeep)) + BRep_Tool::Tolerance(aDrop);
+    if (aTol > BRep_Tool::Tolerance(aKeep))
+    {
+      aB.UpdateVertex(aKeep, aTol);
+    }
+    aMerge->Replace(aDrop.Oriented(TopAbs_FORWARD), aKeep.Oriented(TopAbs_FORWARD));
+  }
+  NCollection_List<TopoDS_Shape> anEdges, aKeeps;
+  NCollection_List<double>       aParams;
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aResultEdges;
+  TopExp::MapShapes(theResult, TopAbs_EDGE, aResultEdges);
+  for (int i = 1; i <= aResultEdges.Extent(); i++)
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(aResultEdges(i));
+    for (TopoDS_Iterator itV(anE); itV.More(); itV.Next())
+    {
+      if (aDropToKeep.IsBound(itV.Value()))
+      {
+        anEdges.Append(anE);
+        aKeeps.Append(aDropToKeep(itV.Value()));
+        aParams.Append(BRep_Tool::Parameter(TopoDS::Vertex(itV.Value()), anE));
+      }
+    }
+  }
+  const TopoDS_Shape                       aMerged = aMerge->Apply(theResult);
+  NCollection_List<TopoDS_Shape>::Iterator itK(aKeeps);
+  NCollection_List<double>::Iterator       itP(aParams);
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(anEdges); itE.More();
+       itE.Next(), itK.Next(), itP.Next())
+  {
+    const TopoDS_Vertex& aKeep = TopoDS::Vertex(itK.Value());
+    aB.UpdateVertex(aKeep,
+                    itP.Value(),
+                    TopoDS::Edge(aMerge->Value(itE.Value())),
+                    BRep_Tool::Tolerance(aKeep));
+  }
+
+  // each face split there in two, a face for each loop of its wire
+  occ::handle<BRepTools_ReShape> aSplit = new BRepTools_ReShape;
+  for (NCollection_List<PinchedFace>::Iterator itF(aPinches); itF.More(); itF.Next())
+  {
+    const PinchedFace& aP  = itF.Value();
+    const int          aNb = aP.Ordered.Length();
+    const TopoDS_Face  aMF = TopoDS::Face(aMerge->Value(aP.Face).Oriented(TopAbs_FORWARD));
+    TopoDS_Compound    aPieces;
+    aB.MakeCompound(aPieces);
+    for (int aLoop = 0; aLoop < 2; aLoop++)
+    {
+      TopoDS_Face aPiece = TopoDS::Face(aMF.EmptyCopied());
+      aB.Add(aPiece,
+             aLoop == 0 ? PinchLoop(aP, aP.K1, aP.K2 - aP.K1, aMerge)
+                        : PinchLoop(aP, aP.K2, aNb - aP.K2 + aP.K1, aMerge));
+      aB.Add(aPieces, aPiece);
+    }
+    aSplit->Replace(aMF, aPieces);
+  }
+  theResult                               = aSplit->Apply(aMerged);
+  occ::handle<BRepTools_History> aHistory = aMerge->History();
+  aHistory->Merge(aSplit->History());
+  return aHistory;
+}
+
+//=================================================================================================
+// The shapes of <theShapes> as <theHistory> has made them, in place.
+
+static void ChFi3d_Remap(NCollection_List<TopoDS_Shape>&       theShapes,
+                         const occ::handle<BRepTools_History>& theHistory)
+{
+  NCollection_List<TopoDS_Shape> anImages;
+  for (NCollection_List<TopoDS_Shape>::Iterator it(theShapes); it.More(); it.Next())
+  {
+    if (theHistory->IsRemoved(it.Value()))
+    {
+      continue;
+    }
+    const NCollection_List<TopoDS_Shape>& aModified = theHistory->Modified(it.Value());
+    if (aModified.IsEmpty())
+    {
+      anImages.Append(it.Value());
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator itM(aModified); itM.More(); itM.Next())
+    {
+      // a face split: the compound of its pieces
+      if (itM.Value().ShapeType() != TopAbs_COMPOUND)
+      {
+        anImages.Append(itM.Value());
+      }
+      for (TopoDS_Iterator itC(itM.Value());
+           itM.Value().ShapeType() == TopAbs_COMPOUND && itC.More();
+           itC.Next())
+      {
+        anImages.Append(itC.Value());
+      }
+    }
+  }
+  theShapes = anImages;
 }
 
 //=================================================================================================
@@ -1209,6 +1526,37 @@ void ChFi3d_Builder::Compute()
           }
         }
         ChFi3d_EdgesCoverTheirEnds(myShapeResult, myShape);
+        // the builder's history, which Generated and BRepFilletAPI read,
+        // as the result has its shapes now
+        const occ::handle<BRepTools_History> aTouch =
+          ChFi3d_SplitPinchedFaces(myShapeResult, myShape);
+        if (!aTouch.IsNull())
+        {
+          for (int iS = 1; iS <= DStr.NbShapes(); iS++)
+          {
+            for (TopAbs_State aSt : {TopAbs_IN, TopAbs_OUT, TopAbs_ON})
+            {
+              if (myCoup->IsSplit(DStr.Shape(iS), aSt))
+              {
+                ChFi3d_Remap(myCoup->ChangeBuilder().ChangeSplit(DStr.Shape(iS), aSt), aTouch);
+              }
+            }
+          }
+          for (NCollection_DataMap<TopoDS_Shape, NCollection_List<int>,
+                                   TopTools_ShapeMapHasher>::Iterator itEV(myEVIMap);
+               itEV.More();
+               itEV.Next())
+          {
+            for (NCollection_List<int>::Iterator itI(itEV.Value()); itI.More(); itI.Next())
+            {
+              // NewFaces is the builder's own list, read-only only through
+              // the accessor
+              ChFi3d_Remap(
+                const_cast<NCollection_List<TopoDS_Shape>&>(myCoup->NewFaces(itI.Value())),
+                aTouch);
+            }
+          }
+        }
       }
       else
       {
@@ -1668,3 +2016,4 @@ const NCollection_List<TopoDS_Shape>& ChFi3d_Builder::Generated(const TopoDS_Sha
   }
   return myGenerated;
 }
+
