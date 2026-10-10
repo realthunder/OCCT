@@ -1272,6 +1272,137 @@ static void StoreLineOverSplit(TopOpeBRepDS_DataStructure&             DStr,
 }
 
 //=======================================================================
+// function : KeepCurveOnFace
+// purpose  : The corner's curve on <F> (<C>, from <First> to <Last>) can
+//           end tangent to an iso-line bounding <F> -- a fillet of the
+//           radius of the cylinder it ends on leaves the cylinder's circle
+//           at fourth order -- and its approximation then runs a rounding
+//           error past the line near the end: the face's wire crosses
+//           itself there. The curve is refined towards that end (simple
+//           knots, the curve as smooth as it was) until its poles close in
+//           on it, the poles past the line are put on it and the one next
+//           to the end a margin inside, so the curve leaves the line at an
+//           angle: within the hull of its poles, it is inside but at its
+//           end. Left alone when that moves the curve more than
+//           Precision::Confusion(). Returns how far it moved the curve in
+//           3D, at most (0 when left alone).
+//=======================================================================
+
+static double KeepCurveOnFace(occ::handle<Geom2d_Curve>& C,
+                              const TopoDS_Face&         F,
+                              const double               First,
+                              const double               Last)
+{
+  occ::handle<Geom2d_BSplineCurve> aBS = occ::down_cast<Geom2d_BSplineCurve>(C);
+  if (aBS.IsNull() || F.IsNull())
+  {
+    return 0.;
+  }
+  BRepAdaptor_Surface aS(F, false);
+  double              aU1, aU2, aV1, aV2;
+  BRepTools::UVBounds(F, aU1, aU2, aV1, aV2);
+  const double aMaxMove = Precision::Confusion();
+  const double aMargin  = 0.1 * Precision::Confusion();
+  double       aMoved   = 0.;
+  for (int anEnd = 0; anEnd < 2; ++anEnd)
+  {
+    const bool   isLast = anEnd == 1;
+    const double aT     = isLast ? Last : First;
+    if (std::abs(aT - (isLast ? aBS->LastParameter() : aBS->FirstParameter()))
+        > Precision::PConfusion())
+    {
+      continue;
+    }
+    const gp_Pnt2d aEnd = aBS->Value(aT);
+    for (int aBound = 0; aBound < 4; ++aBound)
+    {
+      const bool onU = aBound < 2;
+      if (onU ? aS.IsUPeriodic() : aS.IsVPeriodic())
+      {
+        continue;
+      }
+      // parameter per unit of length across the line
+      const double aRes  = onU ? aS.UResolution(1.) : aS.VResolution(1.);
+      const double aLine = aBound == 0 ? aU1 : aBound == 1 ? aU2 : aBound == 2 ? aV1 : aV2;
+      const double aSide = aBound % 2 == 0 ? -1. : 1.;
+      auto         past  = [&](const gp_Pnt2d& P) {
+        return aSide * ((onU ? P.X() : P.Y()) - aLine);
+      };
+      if (std::abs(past(aEnd)) > aRes * Precision::Confusion())
+      {
+        continue;
+      }
+      bool isPast = false;
+      for (int i = 1; i <= aBS->NbPoles() && !isPast; ++i)
+      {
+        isPast = past(aBS->Pole(i)) > 0.;
+      }
+      if (!isPast)
+      {
+        continue;
+      }
+      // simple knots nearer the end each time: the poles close in on the
+      // curve there, and the curve keeps its continuity. The refinement
+      // that moves the curve least, once within twice the margin.
+      const double                     aRange = aBS->LastParameter() - aBS->FirstParameter();
+      occ::handle<Geom2d_BSplineCurve> aRef   = occ::down_cast<Geom2d_BSplineCurve>(aBS->Copy());
+      occ::handle<Geom2d_BSplineCurve> aBest;
+      double                           aBestMove = aMaxMove;
+      for (int k = 1; k <= 12 && aBestMove > 2. * aMargin; ++k)
+      {
+        // a knot there already stays as it is
+        NCollection_Array1<double> aKnot(1, 1);
+        NCollection_Array1<int>    aMult(1, 1);
+        aKnot(1) = isLast ? aT - std::ldexp(aRange, -k) : aT + std::ldexp(aRange, -k);
+        aMult(1) = 1;
+        aRef->InsertKnots(aKnot, aMult, 0., false);
+        const int aNb   = aRef->NbPoles();
+        const int aNext = isLast ? aNb - 1 : 2;
+        // how far past the line, or short of the margin next to the end
+        auto   over  = [&](const int i) {
+          return past(aRef->Pole(i)) + (i == aNext ? aMargin * aRes : 0.);
+        };
+        double aMove = 0.;
+        for (int i = 1; i <= aNb; ++i)
+        {
+          aMove = std::max(aMove, over(i) / aRes);
+        }
+        if (aMove > aBestMove)
+        {
+          continue;
+        }
+        aBest     = occ::down_cast<Geom2d_BSplineCurve>(aRef->Copy());
+        aBestMove = aMove;
+        for (int i = 1; i <= aNb; ++i)
+        {
+          const double anOver = over(i);
+          if (anOver > 0.)
+          {
+            gp_Pnt2d aP = aBest->Pole(i);
+            if (onU)
+            {
+              aP.SetX(aP.X() - aSide * anOver);
+            }
+            else
+            {
+              aP.SetY(aP.Y() - aSide * anOver);
+            }
+            aBest->SetPole(i, aP);
+          }
+        }
+      }
+      if (!aBest.IsNull())
+      {
+        aBS    = aBest;
+        aMoved = std::max(aMoved, aBestMove);
+      }
+    }
+  }
+  C = aBS;
+  return aMoved;
+}
+
+//=======================================================================
 // function : PerformOneCorner
 // purpose  : Calculate a corner with three edges and a fillet.
 //           3 separate case: (22/07/94 only 1st is implemented)
@@ -2246,6 +2377,17 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       //  determine if the curve has an intersection with edge of sewing
 
       ChFi3d_Couture(Fv, couture, edgecouture);
+    }
+
+    // a curve ending tangent to its face's boundary kept on the face
+    const double aKeptV = KeepCurveOnFace(Pc, Fv, Udeb, Ufin);
+    tolV += aKeptV;
+    tolreached += aKeptV;
+    if (!FvT.IsNull())
+    {
+      const double aKeptT = KeepCurveOnFace(PcT, FvT, CcT->FirstParameter(), CcT->LastParameter());
+      tolT += aKeptT;
+      tolreached = std::max(tolreached, tolT);
     }
 
     if (couture && !BRep_Tool::Degenerated(edgecouture))
