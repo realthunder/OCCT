@@ -975,35 +975,6 @@ static bool CrossingsOnFace(const occ::handle<Geom_Line>&   L,
 }
 
 //=======================================================================
-// function : CoplanarPieces
-// purpose  : True when the faces <F1> and <F2>, oriented as in the shell,
-//           are pieces of one plane the same way up: a wall kept in
-//           coplanar pieces (a body without Refine).
-//=======================================================================
-
-static bool CoplanarPieces(const TopoDS_Face& F1, const TopoDS_Face& F2, const double Tol)
-{
-  const BRepAdaptor_Surface aS1(F1, false), aS2(F2, false);
-  if (aS1.GetType() != GeomAbs_Plane || aS2.GetType() != GeomAbs_Plane)
-  {
-    return false;
-  }
-  const gp_Pln aPl1 = aS1.Plane(), aPl2 = aS2.Plane();
-  // the surface's normal, whichever way its axes turn
-  gp_Dir aN1 = aPl1.Position().XDirection().Crossed(aPl1.Position().YDirection());
-  gp_Dir aN2 = aPl2.Position().XDirection().Crossed(aPl2.Position().YDirection());
-  if (F1.Orientation() == TopAbs_REVERSED)
-  {
-    aN1.Reverse();
-  }
-  if (F2.Orientation() == TopAbs_REVERSED)
-  {
-    aN2.Reverse();
-  }
-  return aN1.Dot(aN2) >= 1. - 1.e-9 && aPl1.Distance(aPl2.Location()) <= Tol;
-}
-
-//=======================================================================
 // function : LineOverSplit
 // purpose  : The fillet's line on the plane face <Fop>, the straight line
 //           <L3d> from its end at <W0> (the walk stopped at the spine's
@@ -1098,7 +1069,7 @@ static bool LineOverSplit(const occ::handle<Geom_Curve>& L3d,
   {
     return false;
   }
-  if (!CoplanarPieces(Fop, Fn, Tol))
+  if (!ChFi3d_CoplanarPieces(Fop, Fn, Tol))
   {
     return false;
   }
@@ -3591,7 +3562,7 @@ static bool ArcPastSplit(const TopoDS_Vertex& Vtx,
         Fn = TopoDS::Face(itF.Value());
       }
     }
-    if (Fn.IsNull() || Fn.IsSame(Fs) || !CoplanarPieces(Fs, Fn, Tol))
+    if (Fn.IsNull() || Fn.IsSame(Fs) || !ChFi3d_CoplanarPieces(Fs, Fn, Tol))
     {
       continue;
     }

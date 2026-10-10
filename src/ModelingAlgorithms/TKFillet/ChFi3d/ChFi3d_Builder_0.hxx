@@ -123,6 +123,8 @@ TopoDS_Edge ChFi3d_EdgeOnSplitToVertex(const TopoDS_Edge&   E,
                                        const ChFiDS_Map&    EFMap,
                                        const ChFiDS_Map&    VEMap);
 
+bool ChFi3d_CoplanarPieces(const TopoDS_Face& F1, const TopoDS_Face& F2, const double Tol);
+
 TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
                                     const TopoDS_Face&               F,
                                     const occ::handle<ChFiDS_Spine>& Spine,

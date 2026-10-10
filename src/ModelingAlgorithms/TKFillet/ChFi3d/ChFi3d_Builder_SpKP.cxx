@@ -742,6 +742,93 @@ static void FillSD(TopOpeBRepDS_DataStructure&                               DSt
 }
 
 //=======================================================================
+// function : OnSplit
+// purpose  : True when the end <PH> of a hatching on <F> is on edges of <F>
+//           across which lies a coplanar piece of it: a split of a wall
+//           kept in pieces (a body without Refine), not the wall's end.
+//=======================================================================
+
+static bool OnSplit(const HatchGen_PointOnHatching&                                 PH,
+                    const NCollection_DataMap<int, occ::handle<Adaptor2d_Curve2d>>& M,
+                    const TopoDS_Face&                                              F,
+                    const ChFiDS_Map&                                               EFMap,
+                    const double                                                    Tol)
+{
+  if (PH.NbPoints() == 0)
+  {
+    return false;
+  }
+  for (int k = 1; k <= PH.NbPoints(); k++)
+  {
+    occ::handle<BRepAdaptor_Curve2d> HE =
+      occ::down_cast<BRepAdaptor_Curve2d>(M(PH.Point(k).Index()));
+    if (HE.IsNull() || !EFMap.Contains(HE->Edge()) || EFMap(HE->Edge()).Extent() != 2)
+    {
+      return false;
+    }
+    TopoDS_Face Fo;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(EFMap(HE->Edge())); it.More(); it.Next())
+    {
+      if (!it.Value().IsSame(F))
+      {
+        Fo = TopoDS::Face(it.Value());
+      }
+    }
+    if (Fo.IsNull() || !ChFi3d_CoplanarPieces(F, Fo, Tol))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//=======================================================================
+// function : Near
+// purpose  : True when the line of <CD> on its side <ons> runs at most
+//           <Tol> from its parameter <W1> to <W2>.
+//=======================================================================
+
+static bool Near(TopOpeBRepDS_DataStructure&         DStr,
+                 const occ::handle<ChFiDS_SurfData>& CD,
+                 const int                           ons,
+                 const double                        W1,
+                 const double                        W2,
+                 const double                        Tol)
+{
+  const occ::handle<Geom_Surface>& aSurf = DStr.Surface(CD->Surf()).Surface();
+  const occ::handle<Geom2d_Curve>& aPC   = CD->Interference(ons).PCurveOnSurf();
+  if (aSurf.IsNull() || aPC.IsNull())
+  {
+    return false;
+  }
+  const gp_Pnt2d aP1 = aPC->Value(W1), aP2 = aPC->Value(W2);
+  return aSurf->Value(aP1.X(), aP1.Y()).Distance(aSurf->Value(aP2.X(), aP2.Y())) <= Tol;
+}
+
+//=======================================================================
+// function : RunOn
+// purpose  : The end of <CD>'s line on its side <ons> put at <W>, in the
+//           face, where its other side ends: the line runs on over a
+//           split (see OnSplit).
+//=======================================================================
+
+static void RunOn(TopOpeBRepDS_DataStructure&   DStr,
+                  occ::handle<ChFiDS_SurfData>& CD,
+                  const int                     ons,
+                  const double                  W,
+                  const bool                    isFirst)
+{
+  const occ::handle<Geom_Surface>& aSurf = DStr.Surface(CD->Surf()).Surface();
+  CD->ChangeInterference(ons).SetParameter(W, isFirst);
+  const gp_Pnt2d      aP = CD->Interference(ons).PCurveOnSurf()->Value(W);
+  ChFiDS_CommonPoint& CP = CD->ChangeVertex(isFirst, ons);
+  const double        aTol = CP.Tolerance();
+  CP.Reset();
+  CP.SetPoint(aSurf->Value(aP.X(), aP.Y()));
+  CP.SetTolerance(aTol);
+}
+
+//=======================================================================
 // function : SplitKPart
 // purpose  : Reconstruct SurfData depending on restrictions of faces.
 //=======================================================================
@@ -1054,21 +1141,49 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
           {
             if (f2 <= l1 && f1 <= l2)
             {
-              if (f1 >= f2 - tol2d)
+              // At the spine's end, one line cut at a split of its wall a
+              // little short of where the other's piece ends: no walk can
+              // start in that sliver, its other side on the edge of its
+              // face. The line runs on over the coplanar piece instead, as
+              // where the split is past the end, and is carried over the
+              // split at the end (LineOverSplit).
+              const bool isFirstSD = intf && SetData.IsEmpty() && period1 == 0. && period2 == 0.;
+              const bool isLastSD  = intl && i == Nb1 && j == Nb2 && period1 == 0. && period2 == 0.;
+              const bool over1f    = isFirstSD && f1 > f2 + tol2d && Dom1.HasFirstPoint()
+                                  && Near(DStr, CD, 1, f1, f2, 10 * tolapp3d)
+                                  && OnSplit(Dom1.FirstPoint(), M1, F1, myEFMap, tolapp3d);
+              const bool over2f    = isFirstSD && f2 > f1 + tol2d && Dom2.HasFirstPoint()
+                                  && Near(DStr, CD, 2, f2, f1, 10 * tolapp3d)
+                                  && OnSplit(Dom2.FirstPoint(), M2, F2, myEFMap, tolapp3d);
+              const bool over1l    = isLastSD && l1 < l2 - tol2d && Dom1.HasSecondPoint()
+                                  && Near(DStr, CD, 1, l1, l2, 10 * tolapp3d)
+                                  && OnSplit(Dom1.SecondPoint(), M1, F1, myEFMap, tolapp3d);
+              const bool over2l    = isLastSD && l2 < l1 - tol2d && Dom2.HasSecondPoint()
+                                  && Near(DStr, CD, 2, l2, l1, 10 * tolapp3d)
+                                  && OnSplit(Dom2.SecondPoint(), M2, F2, myEFMap, tolapp3d);
+              if ((f1 >= f2 - tol2d || over2f) && !over1f)
               {
                 FillSD(DStr, CD, M1, Dom1, f1, true, 1, pitol, bout1);
               }
-              if (f2 >= f1 - tol2d)
+              if ((f2 >= f1 - tol2d || over1f) && !over2f)
               {
                 FillSD(DStr, CD, M2, Dom2, f2, true, 2, pitol, bout1);
               }
-              if (l1 >= l2 - tol2d)
+              if ((l1 >= l2 - tol2d || over1l) && !over2l)
               {
                 FillSD(DStr, CD, M2, Dom2, l2, false, 2, pitol, bout2);
               }
-              if (l2 >= l1 - tol2d)
+              if ((l2 >= l1 - tol2d || over2l) && !over1l)
               {
                 FillSD(DStr, CD, M1, Dom1, l1, false, 1, pitol, bout2);
+              }
+              if (over1f || over2f)
+              {
+                RunOn(DStr, CD, over1f ? 1 : 2, over1f ? f2 : f1, true);
+              }
+              if (over1l || over2l)
+              {
+                RunOn(DStr, CD, over1l ? 1 : 2, over1l ? l2 : l1, false);
               }
               SetData.Append(CD);
               CD = CpSD(DStr, CD);
