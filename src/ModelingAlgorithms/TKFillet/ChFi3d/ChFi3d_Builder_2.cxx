@@ -4105,6 +4105,42 @@ void ChFi3d_Builder::PerformSetOfSurf(occ::handle<ChFiDS_Stripe>& Stripe, const 
 
   PerformSetOfKGen(Stripe, Simul);
 
+  // The surfaces reach the spine's ends, or near: a walk along the whole
+  // spine that stops where its face ends -- at a vertex between two of the
+  // spine's edges, the next edge's face giving it no line -- is taken for
+  // finished there (PerformSetOfSurfOnElSpine: the guide reaches the end),
+  // and the corner at the spine's end took the surface that stops short for
+  // the fillet's. Short: by more than ten times the surface's width at its
+  // end, and more than half the spine's edge it stops on -- an end face on
+  // a slant stops a surface a width or two before its vertex.
+  if (!Simul && !sp->IsPeriodic() && !Stripe->SetOfSurfData().IsNull()
+      && !Stripe->SetOfSurfData()->Sequence().IsEmpty())
+  {
+    const NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeq =
+      Stripe->SetOfSurfData()->Sequence();
+    const double aLen = sp->LastParameter(sp->NbEdges());
+    for (int k = 0; k < 2; k++)
+    {
+      const bool                          isFirst = k == 0;
+      const occ::handle<ChFiDS_SurfData>& aSD     = isFirst ? aSeq.First() : aSeq.Last();
+      const double aW   = isFirst ? aSD->FirstSpineParam() : aSD->LastSpineParam();
+      const double aGap = isFirst ? aW : aLen - aW;
+      if (aGap <= 0.)
+      {
+        continue;
+      }
+      const int    iEd    = sp->Index(std::min(std::max(aW, 0.), aLen), !isFirst);
+      const double anEdge = sp->LastParameter(iEd) - sp->FirstParameter(iEd);
+      const double aWidth =
+        aSD->Vertex(isFirst, 1).Point().Distance(aSD->Vertex(isFirst, 2).Point());
+      if (aGap > 10. * aWidth && aGap > 0.5 * anEdge)
+      {
+        sp->SetErrorStatus(ChFiDS_WalkingFailure);
+        throw Standard_Failure("PerformSetOfSurf : the stripe stops short of its spine's end");
+      }
+    }
+  }
+
   if (!Simul)
   {
     ChFi3d_MakeExtremities(Stripe, DStr, myEFMap, tolapp3d, tol2d);
