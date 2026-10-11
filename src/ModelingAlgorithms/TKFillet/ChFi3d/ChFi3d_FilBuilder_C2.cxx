@@ -16,6 +16,7 @@
 
 #include <Adaptor3d_CurveOnSurface.hxx>
 #include <BRep_Tool.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepBlend_Line.hxx>
 #include <BRepLProp_CLProps.hxx>
 #include <BRepTopAdaptor_TopolTool.hxx>
@@ -34,7 +35,10 @@
 #include <ChFiDS_State.hxx>
 #include <ChFiDS_Stripe.hxx>
 #include <ChFiKPart_ComputeData.hxx>
+#include <Extrema_ExtCC.hxx>
+#include <Extrema_POnCurv.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
 #include <Geom2dAdaptor_Curve.hxx>
 #include <Geom2dConvert.hxx>
@@ -42,6 +46,7 @@
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomFill_ConstrainedFilling.hxx>
 #include <GeomFill_SimpleBound.hxx>
+#include <GeomProjLib.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
@@ -49,6 +54,7 @@
 #include <gp_Pnt2d.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_NotImplemented.hxx>
+#include <Precision.hxx>
 #include <StdFail_NotDone.hxx>
 #include <NCollection_Array1.hxx>
 #include <Standard_Integer.hxx>
@@ -56,6 +62,7 @@
 #include <TopAbs.hxx>
 #include <TopAbs_Orientation.hxx>
 #include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -118,6 +125,85 @@ static bool ToricRotule(const BRepAdaptor_Surface&        fac,
   double r1 = sp1->Radius();
   double r2 = sp2->Radius();
   return std::abs(r1 - r2) < tolesp;
+}
+
+//=======================================================================
+// function : PieceOfArc
+// purpose  : <Arc>, an edge of <Vtx>, is not an edge of <F> but of a piece
+//           of the same plane beside it, across an edge of <Vtx> the two
+//           share -- a wall kept in coplanar pieces (a body without
+//           Refine), the split between two of them, <Split>, ending at
+//           <Vtx>: that piece, <Fn>, and <F> as the shell has it, <Fsh>.
+//=======================================================================
+
+static bool PieceOfArc(const TopoDS_Vertex& Vtx,
+                       const TopoDS_Face&   F,
+                       const TopoDS_Edge&   Arc,
+                       const ChFiDS_Map&    VEMap,
+                       const ChFiDS_Map&    EFMap,
+                       const double         Tol,
+                       TopoDS_Face&         Fsh,
+                       TopoDS_Face&         Fn,
+                       TopoDS_Edge&         Split)
+{
+  if (!VEMap.Contains(Vtx) || !EFMap.Contains(Arc) || EFMap(Arc).Extent() != 2)
+  {
+    return false;
+  }
+  bool isOfVtx = false;
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(VEMap(Vtx)); itE.More(); itE.Next())
+  {
+    if (Arc.IsSame(itE.Value()))
+    {
+      isOfVtx = true;
+    }
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(Arc)); itF.More(); itF.Next())
+  {
+    if (F.IsSame(itF.Value()))
+    {
+      return false;
+    }
+  }
+  if (!isOfVtx)
+  {
+    return false;
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(VEMap(Vtx)); itE.More(); itE.Next())
+  {
+    const TopoDS_Edge& aSplit = TopoDS::Edge(itE.Value());
+    if (aSplit.IsSame(Arc) || BRep_Tool::Degenerated(aSplit) || EFMap(aSplit).Extent() != 2)
+    {
+      continue;
+    }
+    TopoDS_Face aF1, aF2;
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(aSplit)); itF.More(); itF.Next())
+    {
+      if (F.IsSame(itF.Value()))
+      {
+        aF1 = TopoDS::Face(itF.Value());
+      }
+      else
+      {
+        aF2 = TopoDS::Face(itF.Value());
+      }
+    }
+    if (aF1.IsNull() || aF2.IsNull() || !ChFi3d_CoplanarPieces(aF1, aF2, Tol))
+    {
+      continue;
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(Arc)); itF.More(); itF.Next())
+    {
+      if (aF2.IsSame(itF.Value()))
+      {
+        Fsh   = aF1;
+        Fn    = aF2;
+        Split = aSplit;
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 static void RemoveSD(occ::handle<ChFiDS_Stripe>& Stripe, const int num1, const int num2)
@@ -1055,7 +1141,68 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
       occ::handle<GeomAdaptor_Curve> HC3d = new GeomAdaptor_Curve(C3d);
       ChFi3d_SameParameter(HC3d, pcFopsam, HBRFopsam, tolapp3d, tolr1);
       tolreached = std::max(tolreached, tolr1);
+      // The wall kept in coplanar pieces (a body without Refine), the split
+      // between two of them ending at Vtx: the arc the surface OnDiff ends
+      // on bounds the piece beside the one the surface OnSame runs on, and
+      // the corner's edge on the wall, drawn in the plane of both, ends on an
+      // edge its face does not have.
+      TopoDS_Face  aFopSh, aFarc;
+      TopoDS_Edge  aSplit;
+      const bool   isPiece = !cpopdif.IsVertex()
+                           && PieceOfArc(Vtx,
+                                         Fopsam,
+                                         Arcopdif,
+                                         myVEMap,
+                                         myEFMap,
+                                         10 * tolapp3d,
+                                         aFopSh,
+                                         aFarc,
+                                         aSplit);
+      // Where that edge crosses the split, inside both: it runs from the one
+      // piece into the other there.
+      bool   isCross = false;
+      double aWQ = 0., aParQ = 0.;
+      if (isPiece)
+      {
+        const double            aTolX = std::max(tolreached, BRep_Tool::Tolerance(aSplit));
+        const GeomAdaptor_Curve aGC(C3d, P1deb, P2deb);
+        const BRepAdaptor_Curve aSC(aSplit);
+        const double            aTolW = aGC.Resolution(aTolX), aTolS = aSC.Resolution(aTolX);
+        Extrema_ExtCC           anExt(aGC, aSC);
+        if (!anExt.IsDone() || anExt.IsParallel())
+        {
+          throw Standard_Failure("TwoCorner : the corner's edge and the split of its wall");
+        }
+        int aNbX = 0;
+        for (int i = 1; i <= anExt.NbExt(); i++)
+        {
+          if (anExt.SquareDistance(i) > aTolX * aTolX)
+          {
+            continue;
+          }
+          Extrema_POnCurv aP1, aP2;
+          anExt.Points(i, aP1, aP2);
+          if (aP1.Parameter() <= P1deb + aTolW || aP1.Parameter() >= P2deb - aTolW
+              || aP2.Parameter() <= aSC.FirstParameter() + aTolS
+              || aP2.Parameter() >= aSC.LastParameter() - aTolS)
+          {
+            throw Standard_Failure("TwoCorner : the corner's edge through an end of the split");
+          }
+          aNbX++;
+          aWQ   = aP1.Parameter();
+          aParQ = aP2.Parameter();
+        }
+        if (aNbX > 1)
+        {
+          throw Standard_Failure("TwoCorner : the corner's edge crosses the split twice");
+        }
+        isCross = aNbX == 1;
+      }
       TopOpeBRepDS_Curve Tcurv1(C3d, tolreached);
+      if (isCross)
+      {
+        Tcurv1.ChangeCurve() = new Geom_TrimmedCurve(C3d, P1deb, aWQ);
+      }
       Icf = DStr.AddCurve(Tcurv1);
       // place the pcurve on face in the DS
       TopAbs_Orientation OpcFopsam = sdsam->Interference(ifaopsam).Transition();
@@ -1067,6 +1214,151 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> interf =
         ChFi3d_FilCurveInDS(Icf, IFopsam, pcFopsam, OpcFopsam);
       DStr.ChangeShapeInterferences(IFopsam).Append(interf);
+
+      if (isCross)
+      {
+        // The edge is cut where it crosses the split, as the split would
+        // cut it: to there on the piece of the surface OnSame, from there on
+        // the piece beside, which the arc bounds; two edges of the corner.
+        // The split is cut there too, its piece from Vtx gone with Vtx.
+        const gp_Pnt aPQ   = C3d->Value(aWQ);
+        const double aTolQ = std::max(tolreached,
+                                      aPQ.Distance(BRepAdaptor_Curve(aSplit).Value(aParQ)));
+        const int    IQ    = DStr.AddPoint(TopOpeBRepDS_Point(aPQ, aTolQ));
+        DStr.ChangeCurveInterferences(Icf).Append(
+          ChFi3d_FilPointInDS(TopAbs_FORWARD, Icf, If1, P1deb));
+        DStr.ChangeCurveInterferences(Icf).Append(
+          ChFi3d_FilPointInDS(TopAbs_REVERSED, Icf, IQ, aWQ));
+        const int Icf2 =
+          DStr.AddCurve(TopOpeBRepDS_Curve(new Geom_TrimmedCurve(C3d, aWQ, P2deb), tolreached));
+        DStr.ChangeCurveInterferences(Icf2).Append(
+          ChFi3d_FilPointInDS(TopAbs_FORWARD, Icf2, IQ, aWQ));
+        DStr.ChangeCurveInterferences(Icf2).Append(
+          ChFi3d_FilPointInDS(TopAbs_REVERSED, Icf2, If2, P2deb));
+        // on the piece beside: the same way round or, that piece the other
+        // way up on its surface, the other
+        const occ::handle<Geom2d_Curve> aPc2 =
+          GeomProjLib::Curve2d(C3d, aWQ, P2deb, BRep_Tool::Surface(aFarc));
+        if (aPc2.IsNull())
+        {
+          throw Standard_Failure("TwoCorner : the corner's edge over a split has no pcurve");
+        }
+        const int IFarc = DStr.AddShape(aFarc);
+        DStr.ChangeShapeInterferences(IFarc).Append(
+          ChFi3d_FilCurveInDS(Icf2,
+                              IFarc,
+                              aPc2,
+                              aFarc.Orientation() == aFopSh.Orientation()
+                                ? OpcFopsam
+                                : TopAbs::Reverse(OpcFopsam)));
+        // on the corner, as FILDS puts its first edge
+        TopAbs_Orientation aTraCoin = TopAbs::Compose(sdsam->Orientation(), coin->Orientation());
+        aTraCoin =
+          TopAbs::Compose(TopAbs::Reverse(coin->InterferenceOnS1().Transition()), aTraCoin);
+        DStr.ChangeSurfaceInterferences(coin->Surf())
+          .Append(ChFi3d_FilCurveInDS(Icf2,
+                                      coin->Surf(),
+                                      corner->FirstPCurve(),
+                                      TopAbs::Compose(TopAbs::Reverse(aTraCoin),
+                                                      corner->FirstPCurveOrientation())));
+        ChFiDS_Regul aRegul;
+        aRegul.SetCurve(Icf2);
+        aRegul.SetS1(coin->Surf(), false);
+        aRegul.SetS2(IFarc, true);
+        myRegul.Append(aRegul);
+        const int IS = DStr.AddShape(aSplit);
+        DStr.ChangeShapeInterferences(IS).Append(
+          ChFi3d_FilPointInDS(BRep_Tool::Parameter(Vtx, aSplit) < aParQ ? TopAbs_FORWARD
+                                                                        : TopAbs_REVERSED,
+                              IS,
+                              IQ,
+                              aParQ));
+      }
+      else if (isPiece)
+      {
+        // It passes the split by, outside the two. On the wall in one face
+        // the arc is cut at its end and the piece of the arc from Vtx is
+        // gone, the face closing along the corner; in pieces that piece of
+        // the arc stays, an edge between the two: the face of the corner's
+        // edge closes along it to Vtx and the split, and the piece beside
+        // keeps its outline.
+        double                        aFirst, aLast;
+        const occ::handle<Geom_Curve> aCarc = BRep_Tool::Curve(Arcopdif, aFirst, aLast);
+        const double                  aParV = BRep_Tool::Parameter(Vtx, Arcopdif);
+        const double                  aParP = cpopdif.ParameterOnArc();
+        const double                  aWa = std::min(aParV, aParP), aWb = std::max(aParV, aParP);
+        if (!aCarc.IsNull() && aWb - aWa > Precision::PConfusion())
+        {
+          TopoDS_Face aFarcF = aFarc;
+          aFarcF.Orientation(TopAbs_FORWARD);
+          TopAbs_Orientation anOarc = TopAbs_FORWARD;
+          for (TopExp_Explorer exa(aFarcF, TopAbs_EDGE); exa.More(); exa.Next())
+          {
+            if (Arcopdif.IsSame(exa.Current()))
+            {
+              anOarc = exa.Current().Orientation();
+              break;
+            }
+          }
+          // on the piece beside as the arc lies in it; on the corner's, the
+          // other side of it, the other way -- the same, that one the other
+          // way up on its surface
+          const TopAbs_Orientation anOop =
+            aFarc.Orientation() == aFopSh.Orientation() ? TopAbs::Reverse(anOarc) : anOarc;
+          const occ::handle<Geom2d_Curve> aPcArc =
+            GeomProjLib::Curve2d(aCarc, aWa, aWb, BRep_Tool::Surface(aFarc));
+          const occ::handle<Geom2d_Curve> aPcOp =
+            GeomProjLib::Curve2d(aCarc, aWa, aWb, BRep_Tool::Surface(Fopsam));
+          if (aPcArc.IsNull() || aPcOp.IsNull())
+          {
+            throw Standard_Failure("TwoCorner : the arc between two pieces has no pcurve");
+          }
+          const int Iarcp = DStr.AddCurve(
+            TopOpeBRepDS_Curve(new Geom_TrimmedCurve(aCarc, aWa, aWb),
+                               std::max(BRep_Tool::Tolerance(Arcopdif), Precision::Confusion())));
+          const int IVtx  = DStr.AddShape(Vtx);
+          const int IFarc = DStr.AddShape(aFarc);
+          DStr.ChangeShapeInterferences(IFarc).Append(
+            ChFi3d_FilCurveInDS(Iarcp, IFarc, aPcArc, anOarc));
+          DStr.ChangeShapeInterferences(IFopsam).Append(
+            ChFi3d_FilCurveInDS(Iarcp, IFopsam, aPcOp, anOop));
+          if (aParV < aParP)
+          {
+            DStr.ChangeCurveInterferences(Iarcp).Append(
+              ChFi3d_FilVertexInDS(TopAbs_FORWARD, Iarcp, IVtx, aWa));
+            DStr.ChangeCurveInterferences(Iarcp).Append(
+              ChFi3d_FilPointInDS(TopAbs_REVERSED, Iarcp, If2, aWb));
+          }
+          else
+          {
+            DStr.ChangeCurveInterferences(Iarcp).Append(
+              ChFi3d_FilPointInDS(TopAbs_FORWARD, Iarcp, If2, aWa));
+            DStr.ChangeCurveInterferences(Iarcp).Append(
+              ChFi3d_FilVertexInDS(TopAbs_REVERSED, Iarcp, IVtx, aWb));
+          }
+          // Vtx stays, a vertex of that face, and the spine OnSame, an edge
+          // of it under its fillet, is removed from there
+          const TopoDS_Edge& aSpineE =
+            stsam->Spine()->Edges(isfirstsam ? 1 : stsam->Spine()->NbEdges());
+          TopAbs_Orientation anOV = TopAbs_FORWARD;
+          for (TopExp_Explorer exv(aSpineE.Oriented(TopAbs_FORWARD), TopAbs_VERTEX);
+               exv.More();
+               exv.Next())
+          {
+            if (Vtx.IsSame(exv.Current()))
+            {
+              anOV = exv.Current().Orientation();
+              break;
+            }
+          }
+          const int ISpineE = DStr.AddShape(aSpineE);
+          DStr.ChangeShapeInterferences(ISpineE).Append(
+            ChFi3d_FilVertexInDS(TopAbs::Reverse(anOV),
+                                 ISpineE,
+                                 IVtx,
+                                 BRep_Tool::Parameter(Vtx, aSpineE)));
+        }
+      }
 
       regdeb.SetCurve(Icf);
       regdeb.SetS1(coin->Surf(), false);
