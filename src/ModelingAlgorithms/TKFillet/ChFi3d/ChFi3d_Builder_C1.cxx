@@ -4484,6 +4484,47 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           oneintersection1 = true;
         }
       }
+      // The same two edges in line, with the face between them kept in
+      // coplanar pieces (a body without Refine): the pieces are one face
+      // of the four-edge case above, and the fillet does not cut them. The
+      // piece the line's own arc borders takes the edge from Vtx to the
+      // line's end; the pieces between, and the splits, stay as they are.
+      // Each piece cut for itself gave the section of the fillet in their
+      // plane twice, there and back.
+      if (!oneintersection1 && !oneintersection2 && nbface >= 3 && !couture && !bordlibre)
+      {
+        auto arePieces = [&](const int theFrom, const int theTo) {
+          for (int k = theFrom; k < theTo; k++)
+          {
+            if (!ChFi3d_CoplanarPieces(Face[k], Face[k + 1], 10 * tolapp3d))
+            {
+              return false;
+            }
+          }
+          return true;
+        };
+        auto inLine = [&](const TopoDS_Edge& theE1, const TopoDS_Edge& theE2) {
+          return hasVertex(theE1, Vtx) && hasVertex(theE2, Vtx)
+                 && std::abs(ChFi3d_AngleEdge(Vtx, theE1, theE2) - M_PI) < 0.01;
+        };
+        if (arePieces(1, nbface - 1) && inLine(Edge[1], Edge[nbface]))
+        {
+          oneintersection2 = true;
+          facesau          = Face[nbface - 1];
+          edgesau          = Edge[1];
+          Edge[1]          = Edge[nbface];
+          nbface           = 1;
+        }
+        else if (arePieces(0, nbface - 2) && inLine(Edge[0], Edge[nbface - 1]))
+        {
+          oneintersection1 = true;
+          facesau          = Face[0];
+          edgesau          = Edge[nbface - 1];
+          Face[0]          = Face[nbface - 1];
+          Edge[1]          = Edge[nbface];
+          nbface           = 1;
+        }
+      }
     }
   }
   else
