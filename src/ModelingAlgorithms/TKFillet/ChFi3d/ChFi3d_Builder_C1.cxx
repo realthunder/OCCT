@@ -1246,6 +1246,110 @@ static void StoreLineOverSplit(TopOpeBRepDS_DataStructure&             DStr,
 }
 
 //=======================================================================
+// function : ExtensionOverSplit
+// purpose  : The extension <C> of <Arcprol> from Vtx (at <First>) to the
+//           end of the fillet's line on <Fop> (at <Last>), <Arcprol> an
+//           edge of <Fprol>, a piece of the same plane beside <Fop>: it
+//           starts in <Fprol> and crosses into <Fop> over one edge of the
+//           two, <Esplit>, at <WQ> (<ParQ> on the edge), inside the edge,
+//           and meets no other edge of either on the way. A wall kept in
+//           coplanar pieces, the fillet wider than the piece beside its
+//           spine. <AtEnd> when it meets the split within <TolEnd> of its
+//           end -- the fillet as wide as the piece, its line along the
+//           split: <WQ> is then <Last>, and all of the extension lies in
+//           <Fprol>.
+//=======================================================================
+
+static bool ExtensionOverSplit(const occ::handle<Geom_Curve>& C,
+                               const double                   First,
+                               const double                   Last,
+                               const TopoDS_Face&             Fprol,
+                               const TopoDS_Face&             Fop,
+                               const TopoDS_Edge&             Arcprol,
+                               const TopoDS_Vertex&           Vtx,
+                               const double                   Tol,
+                               const double                   TolEnd,
+                               TopoDS_Edge&                   Esplit,
+                               double&                        WQ,
+                               double&                        ParQ,
+                               bool&                          AtEnd)
+{
+  // a crossing at the end is one: the curve a little past it
+  occ::handle<Geom_Curve>              aBasis = C;
+  const occ::handle<Geom_TrimmedCurve> aTrim  = occ::down_cast<Geom_TrimmedCurve>(C);
+  if (!aTrim.IsNull())
+  {
+    aBasis = aTrim->BasisCurve();
+  }
+  const double            aDw = GeomAdaptor_Curve(aBasis).Resolution(Tol);
+  const GeomAdaptor_Curve aSeg(aBasis, First, Last + aDw);
+  const gp_Pnt            aPF = C->Value(First), aPL = C->Value(Last);
+  AtEnd                       = false;
+  for (int k = 0; k < 2; k++)
+  {
+    const TopoDS_Face& aF = k == 0 ? Fprol : Fop;
+    for (TopExp_Explorer ex(aF, TopAbs_EDGE); ex.More(); ex.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(ex.Current());
+      if (BRep_Tool::Degenerated(anE) || anE.IsSame(Arcprol))
+      {
+        continue;
+      }
+      const bool isSplit = containE(k == 0 ? Fop : Fprol, anE);
+      if (isSplit && k == 1)
+      {
+        continue; // seen with Fprol
+      }
+      const double      aTol = std::max(Tol, BRep_Tool::Tolerance(anE));
+      BRepAdaptor_Curve aC(anE);
+      Extrema_ExtCC     anExt(aSeg, aC);
+      if (!anExt.IsDone())
+      {
+        return false;
+      }
+      if (anExt.IsParallel())
+      {
+        if (anExt.SquareDistance(1) <= aTol * aTol)
+        {
+          return false;
+        }
+        continue;
+      }
+      for (int i = 1; i <= anExt.NbExt(); i++)
+      {
+        if (anExt.SquareDistance(i) > aTol * aTol)
+        {
+          continue;
+        }
+        Extrema_POnCurv aP1, aP2;
+        anExt.Points(i, aP1, aP2);
+        // the extension leaves Vtx between the edges of Fprol there
+        if (k == 0 && hasVertex(anE, Vtx) && aP1.Value().Distance(aPF) <= 2. * aTol)
+        {
+          continue;
+        }
+        if (!isSplit || !Esplit.IsNull() || aP1.Value().Distance(aPF) <= 2. * aTol)
+        {
+          return false;
+        }
+        double f, l;
+        BRep_Tool::Range(anE, f, l);
+        const double aTolP = aC.Resolution(aTol);
+        if (aP2.Parameter() <= f + aTolP || aP2.Parameter() >= l - aTolP)
+        {
+          return false;
+        }
+        Esplit = anE;
+        ParQ   = aP2.Parameter();
+        AtEnd  = aP1.Parameter() >= Last || aP1.Value().Distance(aPL) <= TolEnd;
+        WQ     = AtEnd ? Last : aP1.Parameter();
+      }
+    }
+  }
+  return !Esplit.IsNull();
+}
+
+//=======================================================================
 // function : KeepCurveOnFace
 // purpose  : The corner's curve on <F> (<C>, from <First> to <Last>) can
 //           end tangent to an iso-line bounding <F> -- a fillet of the
@@ -3041,8 +3145,61 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
 
     Udeb = zob3d->FirstParameter();
     Ufin = zob3d->LastParameter();
+    // The extension over a split: Arcprol bounds a piece of Fop's plane
+    // beside Fop (a wall kept in coplanar pieces, the fillet wider than the
+    // piece beside its spine: its line lies on the next piece), and the
+    // extension, starting in that piece, crosses the edge between the two
+    // on its way to the line's end. It is stored in two, each part on its
+    // piece, and the edge crossed is cut there: what lies on the spine's
+    // side is under the fillet. All of it on Fop left that face with an open
+    // wire, and the piece beside the spine without its end.
+    TopoDS_Edge       EsplitZ;
+    double            wQZ = 0., parQZ = 0.;
+    bool              atEndZ = false;
+    const TopoDS_Face FopSh  = TopoDS::Face(DStr.Shape(Fd->Index(IFopArc)));
+    if (!zobOnEtan && Etan.IsNull() && !Fprol.IsNull() && !Fprol.IsSame(Fop)
+        && ChFi3d_CoplanarPieces(FopSh, Fprol, 10 * tolapp3d)
+        && !ExtensionOverSplit(zob3d,
+                               Udeb,
+                               Ufin,
+                               Fprol,
+                               Fop,
+                               Arcprol,
+                               Vtx,
+                               10 * tolapp3d,
+                               tolapp3d,
+                               EsplitZ,
+                               wQZ,
+                               parQZ,
+                               atEndZ))
+    {
+      EsplitZ.Nullify();
+    }
+    // The parts keep the tolerance the extension has, not the one it was
+    // asked for: the cut of the corner leaves the extension's end tangent
+    // to it (the fillet is tangent to the wall along its line), and between
+    // there and the split runs within that tolerance of the first part, an
+    // edge it shares no vertex with -- a self-intersection for BOP's check.
+    // Where the cut passes the crossing itself within the tolerance, the
+    // crossing is the line's end, as when the line runs along the split.
+    double tolZ = tolreached;
+    if (!EsplitZ.IsNull())
+    {
+      tolZ = std::min(tolreached,
+                      std::max(ChFi3d_EvalTolReached(HBop, zob2dop, HBs, zob2dv, zob3d),
+                               Precision::Confusion()));
+      if (!atEndZ && !Cc.IsNull())
+      {
+        GeomAPI_ProjectPointOnCurve aProj(zob3d->Value(wQZ), Cc);
+        if (aProj.NbPoints() > 0 && aProj.LowerDistance() <= 4. * tolZ)
+        {
+          atEndZ = true;
+          wQZ    = Ufin;
+        }
+      }
+    }
     TopOpeBRepDS_Curve Zob(zob3d, tolreached);
-    int                IZob = DStr.AddCurve(Zob);
+    int                IZob = EsplitZ.IsNull() ? DStr.AddCurve(Zob) : 0;
 
     // it is determined if Fop has an edge of sewing
     // it is determined if the curve has an intersection with the edge of sewing
@@ -3051,7 +3208,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     // bool couture;
     ChFi3d_Couture(Fop, couture, edgecouture);
 
-    if (couture && !BRep_Tool::Degenerated(edgecouture))
+    if (EsplitZ.IsNull() && couture && !BRep_Tool::Degenerated(edgecouture))
     {
       BRepLib_MakeEdge  Bedge(zob3d);
       TopoDS_Edge       edg = Bedge.Edge();
@@ -3078,7 +3235,105 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
         }
       }
     }
-    if (intcouture)
+    if (!EsplitZ.IsNull())
+    {
+      // the two parts, from Vtx to Q on the split and from Q to the line's
+      // end, both on Fv; with the line along the split (atEndZ), Q is the
+      // line's end and there is no second part
+      const int    icc   = stripe->IndexPoint(isfirst, IFopArc);
+      const gp_Pnt aPQ   = zob3d->Value(wQZ);
+      const gp_Pnt aPQe  = BRepAdaptor_Curve(EsplitZ).Value(parQZ);
+      const double aTolQ = std::max(tolZ, aPQ.Distance(aPQe));
+      const int    indQ  = atEndZ ? icc : DStr.AddPoint(TopOpeBRepDS_Point(aPQ, aTolQ));
+      const int    IZ1   = DStr.AddCurve(
+        TopOpeBRepDS_Curve(new Geom_TrimmedCurve(zob3d, Udeb, wQZ), tolZ));
+      Et = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolv));
+      DStr.ChangeShapeInterferences(IShape).Append(
+        ChFi3d_FilCurveInDS(IZ1, IShape, new Geom2d_TrimmedCurve(zob2dv, Udeb, wQZ), Et));
+      // the first on Arcprol's piece, as Arcprol lies in it; the second on
+      // Fop, the same way round or, Fop the other way up on its surface,
+      // the other
+      TopoDS_Face aFprolF = Fprol;
+      aFprolF.Orientation(TopAbs_FORWARD);
+      TopAbs_Orientation OArcprolp = TopAbs_FORWARD;
+      for (ex.Init(aFprolF, TopAbs_EDGE); ex.More(); ex.Next())
+      {
+        if (Arcprol.IsSame(ex.Current()))
+        {
+          OArcprolp = ex.Current().Orientation();
+          break;
+        }
+      }
+      const occ::handle<Geom2d_Curve> aPcProl =
+        GeomProjLib::Curve2d(zob3d, Udeb, wQZ, BRep_Tool::Surface(aFprolF));
+      if (aPcProl.IsNull())
+      {
+        throw Standard_Failure("OneCorner : the extension over a split has no pcurve");
+      }
+      const int Iprol = DStr.AddShape(Fprol);
+      DStr.ChangeShapeInterferences(Iprol).Append(
+        ChFi3d_FilCurveInDS(IZ1,
+                            Iprol,
+                            aPcProl,
+                            TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolp))));
+      DStr.ChangeCurveInterferences(IZ1).Append(
+        ChFi3d_FilVertexInDS(TopAbs_FORWARD, IZ1, IVtx, Udeb));
+      DStr.ChangeCurveInterferences(IZ1).Append(
+        ChFi3d_FilPointInDS(TopAbs_REVERSED, IZ1, indQ, wQZ));
+      if (!atEndZ)
+      {
+        const int IZ2 = DStr.AddCurve(
+          TopOpeBRepDS_Curve(new Geom_TrimmedCurve(zob3d, wQZ, Ufin), tolZ));
+        DStr.ChangeShapeInterferences(IShape).Append(
+          ChFi3d_FilCurveInDS(IZ2, IShape, new Geom2d_TrimmedCurve(zob2dv, wQZ, Ufin), Et));
+        if (Fprol.Orientation() != FopSh.Orientation())
+        {
+          OArcprolp = TopAbs::Reverse(OArcprolp);
+        }
+        const int Iop = DStr.AddShape(Fop);
+        DStr.ChangeShapeInterferences(Iop).Append(
+          ChFi3d_FilCurveInDS(IZ2,
+                              Iop,
+                              new Geom2d_TrimmedCurve(zob2dop, wQZ, Ufin),
+                              TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolp))));
+        DStr.ChangeCurveInterferences(IZ2).Append(
+          ChFi3d_FilPointInDS(TopAbs_FORWARD, IZ2, indQ, wQZ));
+        DStr.ChangeCurveInterferences(IZ2).Append(
+          ChFi3d_FilPointInDS(TopAbs_REVERSED, IZ2, icc, Ufin));
+      }
+      // the split is cut at Q: of its two sides there, the one the spine
+      // leaves Vtx toward, across the extension, is under the fillet
+      BRepAdaptor_Curve aCsp(EsplitZ), aCspine(Arcspine);
+      gp_Pnt            aPbid;
+      gp_Vec            aDsp, aDz, aDspine;
+      aCsp.D1(parQZ, aPbid, aDsp);
+      zob3d->D1(wQZ, aPbid, aDz);
+      const double aParV = BRep_Tool::Parameter(Vtx, Arcspine);
+      aCspine.D1(aParV, aPbid, aDspine);
+      if (std::abs(aParV - aCspine.LastParameter()) < std::abs(aParV - aCspine.FirstParameter()))
+      {
+        aDspine.Reverse();
+      }
+      const gp_Vec aNz = gp_Vec(BRepAdaptor_Surface(aFprolF, false).Plane().Axis().Direction())
+                           .Crossed(aDz);
+      const double aSideSp = aDsp.Dot(aNz), aSideSpine = aDspine.Dot(aNz);
+      if (std::abs(aSideSp) <= gp::Resolution() || std::abs(aSideSpine) <= gp::Resolution())
+      {
+        throw Standard_Failure("OneCorner : the extension runs along the split it crosses");
+      }
+      const int IEs = DStr.AddShape(EsplitZ);
+      DStr.ChangeShapeInterferences(IEs).Append(
+        ChFi3d_FilPointInDS(aSideSp * aSideSpine > 0. ? TopAbs_REVERSED : TopAbs_FORWARD,
+                            IEs,
+                            indQ,
+                            parQZ));
+      (IFopArc == 1 ? box1 : box2).Add(zob3d->Value(Ufin));
+      if (atEndZ)
+      {
+        (IFopArc == 1 ? box1 : box2).Add(aPQe);
+      }
+    }
+    else if (intcouture)
     {
 
       // interference of curv1 and curv2 on Ishape
