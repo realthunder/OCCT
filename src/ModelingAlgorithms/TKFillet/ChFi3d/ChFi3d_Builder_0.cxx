@@ -655,7 +655,10 @@ TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
   {
     return TopoDS_Face();
   }
-  TopoDS_Face Fo;
+  // <F> as the shell has it, like the face across: the callers have it
+  // FORWARD, and two faces REVERSED in the shell, one of them turned, do
+  // not pass for tangent
+  TopoDS_Face Fo, Fin;
   int         nbf = 0;
   for (NCollection_List<TopoDS_Shape>::Iterator itf(EFMap(E)); itf.More(); itf.Next())
   {
@@ -664,8 +667,12 @@ TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
     {
       Fo = TopoDS::Face(itf.Value());
     }
+    else
+    {
+      Fin = TopoDS::Face(itf.Value());
+    }
   }
-  if (nbf != 2 || Fo.IsNull())
+  if (nbf != 2 || Fo.IsNull() || Fin.IsNull())
   {
     return TopoDS_Face();
   }
@@ -687,7 +694,7 @@ TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
       hasSpine = exe.Current().IsSame(Es);
     }
   }
-  if (!hasSpine || !ChFi3d::IsTangentFaces(E, F, Fo))
+  if (!hasSpine || !ChFi3d::IsTangentFaces(E, Fin, Fo))
   {
     return TopoDS_Face();
   }
