@@ -2069,6 +2069,56 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   else
   {
     inters = FindFace(Vtx, CV1, CV2, Fv, Fop);
+    // A side ending on a vertex, by an edge that is not the corner's: its
+    // line ran along a split of its wall, the fillet as wide as the piece
+    // the spine is on, and the walk, on the piece beyond, ended on that
+    // piece's own edge at the vertex. The edge of Vtx to that vertex -- the
+    // near piece's, under the fillet whole -- is the corner's: the side
+    // ends at its far end, and the face at end is the one between the two
+    // edges of Vtx.
+    if (!inters && CV1.IsOnArc() && CV2.IsOnArc())
+    {
+      const ChFiDS_CommonPoint aSaved1 = CV1, aSaved2 = CV2;
+      for (int ons = 1; ons <= 2; ons++)
+      {
+        ChFiDS_CommonPoint&      aCP    = Fd->ChangeVertex(isfirst, ons);
+        const ChFiDS_CommonPoint aSaved = aCP;
+        if (!aCP.IsVertex() || hasVertex(aCP.Arc(), Vtx))
+        {
+          continue;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itE(myVEMap(Vtx)); itE.More(); itE.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+          if (anE.IsSame(Arcspine) || BRep_Tool::Degenerated(anE) || myEFMap(anE).Extent() != 2
+              || !hasVertex(anE, aSaved.Vertex()))
+          {
+            continue;
+          }
+          // nothing of the edge is kept: cut from its far end on
+          TopAbs_Orientation aOV = TopAbs_FORWARD;
+          for (ex.Init(anE.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
+          {
+            if (aSaved.Vertex().IsSame(ex.Current()))
+            {
+              aOV = ex.Current().Orientation();
+              break;
+            }
+          }
+          aCP.SetArc(aSaved.Tolerance(),
+                     anE,
+                     BRep_Tool::Parameter(aSaved.Vertex(), anE),
+                     TopAbs::Reverse(aOV));
+          break;
+        }
+      }
+      inters = FindFace(Vtx, CV1, CV2, Fv, Fop);
+      if (!inters)
+      {
+        CV1 = aSaved1;
+        CV2 = aSaved2;
+      }
+    }
     // The walk stopped at the spine's end with one side on an arc of Vtx
     // and the other in its face, a plane: the line there, carried on,
     // crosses into a coplanar piece of the same wall and meets the face at
