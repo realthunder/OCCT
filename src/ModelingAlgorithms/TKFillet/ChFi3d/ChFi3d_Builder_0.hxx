@@ -42,6 +42,7 @@
 #include <Geom_Surface.hxx>
 #include <Geom_BezierCurve.hxx>
 #include <Geom_Circle.hxx>
+#include <Geom_Line.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <Adaptor3d_Curve.hxx>
@@ -124,6 +125,23 @@ TopoDS_Edge ChFi3d_EdgeOnSplitToVertex(const TopoDS_Edge&   E,
                                        const ChFiDS_Map&    VEMap);
 
 bool ChFi3d_CoplanarPieces(const TopoDS_Face& F1, const TopoDS_Face& F2, const double Tol);
+
+void ChFi3d_StoreLineOverSplit(TopOpeBRepDS_DataStructure&             DStr,
+                               const occ::handle<ChFiDS_Stripe>&       Stripe,
+                               const occ::handle<ChFiDS_SurfData>&     Fd,
+                               const bool                              isFirst,
+                               const int                               Ons,
+                               const int                               Isurf,
+                               const occ::handle<GeomAdaptor_Surface>& HGs,
+                               const occ::handle<Geom_Line>&           L,
+                               const TopoDS_Edge&                      Esplit,
+                               const TopoDS_Face&                      Fn,
+                               const double                            WQ,
+                               const double                            WP,
+                               const double                            ParQ,
+                               const int                               IndP,
+                               const double                            Tol,
+                               NCollection_List<ChFiDS_Regul>&         Regul);
 
 TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
                                     const TopoDS_Face&               F,

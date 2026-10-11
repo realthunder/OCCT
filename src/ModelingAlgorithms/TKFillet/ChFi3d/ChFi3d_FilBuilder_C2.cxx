@@ -18,6 +18,7 @@
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBlend_Line.hxx>
+#include <BRepClass_FaceClassifier.hxx>
 #include <BRepLProp_CLProps.hxx>
 #include <BRepTopAdaptor_TopolTool.hxx>
 #include <BSplCLib.hxx>
@@ -38,6 +39,7 @@
 #include <Extrema_ExtCC.hxx>
 #include <Extrema_POnCurv.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <Geom_ElementarySurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
 #include <Geom2dAdaptor_Curve.hxx>
@@ -49,6 +51,7 @@
 #include <GeomProjLib.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Dir.hxx>
+#include <gp_Lin.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
@@ -338,6 +341,229 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
                                Okvisavis,
                                Vtx,
                                true);
+
+  // The two fillets on the two pieces of a wall kept in coplanar pieces (a
+  // body without Refine), the split between them ending at Vtx -- the
+  // reentrant corner of an L-shaped wall made of two faces: they have no
+  // face in common, and the corner was a plate. On the wall in one face the
+  // two lines on it meet past the split, on one of the pieces, and the
+  // fillets are cut by one another there. The same is done here: while they
+  // are intersected, the line that stops on the split has the other's piece
+  // for its face; it then ends on the split, and its piece from there to
+  // the meeting point is put on the other piece.
+  if (!Okvisavis && st1 != st2)
+  {
+    const bool                          isf[2] = {Sens1 == 1, Sens2 == 1};
+    const occ::handle<ChFiDS_Stripe>    aSt[2] = {st1, st2};
+    const occ::handle<ChFiDS_SurfData> aSd[2] = {st1->SetOfSurfData()->Value(Isd1),
+                                                  st2->SetOfSurfData()->Value(Isd2)};
+    int         aJ[2] = {0, 0};
+    TopoDS_Face aFsh[2];
+    TopoDS_Edge aSplit;
+    for (int j1 = 1; j1 <= 2 && aSplit.IsNull(); j1++)
+    {
+      for (int j2 = 1; j2 <= 2 && aSplit.IsNull(); j2++)
+      {
+        if (aSd[0]->Index(j1) <= 0 || aSd[1]->Index(j2) <= 0)
+        {
+          continue;
+        }
+        const TopoDS_Shape& aS1 = DStr.Shape(aSd[0]->Index(j1));
+        const TopoDS_Shape& aS2 = DStr.Shape(aSd[1]->Index(j2));
+        if (aS1.IsNull() || aS2.IsNull() || aS1.ShapeType() != TopAbs_FACE
+            || aS2.ShapeType() != TopAbs_FACE || aS1.IsSame(aS2))
+        {
+          continue;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itE(myVEMap(Vtx)); itE.More(); itE.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+          if (BRep_Tool::Degenerated(anE) || myEFMap(anE).Extent() != 2)
+          {
+            continue;
+          }
+          TopoDS_Face aFa, aFb;
+          for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(anE)); itF.More(); itF.Next())
+          {
+            if (aS1.IsSame(itF.Value()))
+            {
+              aFa = TopoDS::Face(itF.Value());
+            }
+            else if (aS2.IsSame(itF.Value()))
+            {
+              aFb = TopoDS::Face(itF.Value());
+            }
+          }
+          // the same way round on their surfaces as well: the two lines are
+          // compared in the parameters of one of them
+          if (aFa.IsNull() || aFb.IsNull() || aFa.Orientation() != aFb.Orientation()
+              || !ChFi3d_CoplanarPieces(aFa, aFb, 10 * tolapp3d))
+          {
+            continue;
+          }
+          aSplit  = anE;
+          aJ[0]   = j1;
+          aJ[1]   = j2;
+          aFsh[0] = aFa;
+          aFsh[1] = aFb;
+          break;
+        }
+      }
+    }
+    // the one line stops on the split, the other does not
+    int ic = -1;
+    if (!aSplit.IsNull())
+    {
+      for (int k = 0; k < 2; k++)
+      {
+        const ChFiDS_CommonPoint& aCP = aSd[k]->Vertex(isf[k], aJ[k]);
+        if (aCP.IsOnArc() && aCP.Arc().IsSame(aSplit))
+        {
+          ic = (ic == -1 ? k : -2);
+        }
+      }
+    }
+    if (ic >= 0 && st1->Spine()->Status(isf[0]) == ChFiDS_OnSame
+        && st2->Spine()->Status(isf[1]) == ChFiDS_OnSame)
+    {
+      const int io = 1 - ic;
+      // both fillets end at one point of one edge on their other sides
+      const ChFiDS_CommonPoint& aCPa1 = aSd[0]->Vertex(isf[0], 3 - aJ[0]);
+      const ChFiDS_CommonPoint& aCPa2 = aSd[1]->Vertex(isf[1], 3 - aJ[1]);
+      bool isOk = aCPa1.IsOnArc() && aCPa2.IsOnArc() && aCPa1.Arc().IsSame(aCPa2.Arc())
+                  && aCPa1.Point().Distance(aCPa2.Point()) < 10. * tolapp3d;
+      // two straight lines, meeting past the split on the other's piece
+      occ::handle<Geom_Line> aLc;
+      double                 aWX   = 0.;
+      const double           aWQ   = aSd[ic]->Interference(aJ[ic]).Parameter(isf[ic]);
+      const double           aParQ = aSd[ic]->Vertex(isf[ic], aJ[ic]).ParameterOnArc();
+      if (isOk)
+      {
+        const int aIc = aSd[ic]->Interference(aJ[ic]).LineIndex();
+        const int aIo = aSd[io]->Interference(aJ[io]).LineIndex();
+        isOk          = aIc > 0 && aIo > 0 && !DStr.Curve(aIc).Curve().IsNull()
+                        && !DStr.Curve(aIo).Curve().IsNull();
+        if (isOk)
+        {
+          const GeomAdaptor_Curve aGc(DStr.Curve(aIc).Curve()), aGo(DStr.Curve(aIo).Curve());
+          isOk = aGc.GetType() == GeomAbs_Line && aGo.GetType() == GeomAbs_Line;
+          if (isOk)
+          {
+            const gp_Lin aLinC = aGc.Line(), aLinO = aGo.Line();
+            const gp_Vec aDc(aLinC.Direction()), aDo(aLinO.Direction());
+            const gp_Vec aN  = aDc.Crossed(aDo);
+            const double aN2 = aN.SquareMagnitude();
+            isOk             = aN2 > 1.e-12;
+            if (isOk)
+            {
+              const gp_Vec aPP(aLinC.Location(), aLinO.Location());
+              const double aTc = aPP.Crossed(aDo).Dot(aN) / aN2;
+              const double aTo = aPP.Crossed(aDc).Dot(aN) / aN2;
+              const gp_Pnt aX  = aLinC.Location().Translated(aTc * aDc);
+              isOk = aX.Distance(aLinO.Location().Translated(aTo * aDo)) <= 10. * tolapp3d
+                     && (isf[ic] ? aTc < aWQ - tolapp3d : aTc > aWQ + tolapp3d);
+              if (isOk)
+              {
+                BRepClass_FaceClassifier aCls(aFsh[io], aX, tolapp3d);
+                // the fillet is carried on past its end to there: on a
+                // surface that goes on as it is
+                isOk = aCls.State() == TopAbs_IN
+                       && DStr.Surface(aSd[ic]->Surf()).Surface()->IsKind(
+                         STANDARD_TYPE(Geom_ElementarySurface));
+                aLc  = new Geom_Line(aLinC);
+                aWX  = aTc;
+              }
+            }
+          }
+        }
+      }
+      if (isOk)
+      {
+        ChFiDS_FaceInterference&        aFic     = aSd[ic]->ChangeInterference(aJ[ic]);
+        const int                       aIndSave = aSd[ic]->Index(aJ[ic]);
+        const occ::handle<Geom2d_Curve> aPcSave  = aFic.PCurveOnFace();
+        const occ::handle<Geom2d_Curve> aPcOn    = GeomProjLib::Curve2d(
+          aLc,
+          BRep_Tool::Surface(TopoDS::Face(DStr.Shape(aSd[io]->Index(aJ[io])))));
+        isOk = !aPcOn.IsNull();
+        if (isOk)
+        {
+          auto aSetFace = [&](const int                        theInd,
+                              const occ::handle<Geom2d_Curve>& thePc,
+                              const double                     theW) {
+            if (aJ[ic] == 1)
+            {
+              aSd[ic]->ChangeIndexOfS1(theInd);
+            }
+            else
+            {
+              aSd[ic]->ChangeIndexOfS2(theInd);
+            }
+            aFic.ChangePCurveOnFace() = thePc;
+            aFic.SetParameter(theW, isf[ic]);
+          };
+          // the line as long as to pass the meeting point, as it is on the
+          // wall in one face
+          aSetFace(aSd[io]->Index(aJ[io]), aPcOn, 2. * aWX - aWQ);
+          bool isDone = false;
+          try
+          {
+            OCC_CATCH_SIGNALS
+            isDone = PerformTwoCornerbyInter(Index);
+          }
+          catch (Standard_Failure const&)
+          {
+            aSetFace(aIndSave, aPcSave, aWQ);
+            throw;
+          }
+          // the line is cut where they meet, when they are
+          const double aWP = isDone ? aFic.Parameter(isf[ic]) : aWQ;
+          aSetFace(aIndSave, aPcSave, aWP);
+          if (isDone)
+          {
+            // The end of that fillet -- the curve the two are cut along --
+            // goes on its surface here, as FILDS would put it; its line
+            // ends on the split, and FILDS ends it there.
+            const int          Isurf = aSd[ic]->Surf();
+            const int          indP  = aSt[ic]->IndexPoint(isf[ic], aJ[ic]);
+            TopAbs_Orientation aTra  = TopAbs_FORWARD;
+            if (aSd[ic]->IndexOfS1() > 0)
+            {
+              aTra = DStr.Shape(aSd[ic]->IndexOfS1()).Orientation();
+            }
+            aTra = TopAbs::Compose(aTra, aSd[ic]->Orientation());
+            aTra =
+              TopAbs::Compose(TopAbs::Reverse(aSd[ic]->InterferenceOnS1().Transition()), aTra);
+            DStr.ChangeSurfaceInterferences(Isurf).Append(
+              ChFi3d_FilCurveInDS(aSt[ic]->Curve(isf[ic]),
+                                  Isurf,
+                                  aSt[ic]->PCurve(isf[ic]),
+                                  TopAbs::Compose(isf[ic] ? TopAbs::Reverse(aTra) : aTra,
+                                                  aSt[ic]->Orientation(isf[ic]))));
+            ChFi3d_StoreLineOverSplit(DStr,
+                                      aSt[ic],
+                                      aSd[ic],
+                                      isf[ic],
+                                      aJ[ic],
+                                      Isurf,
+                                      new GeomAdaptor_Surface(DStr.Surface(Isurf).Surface()),
+                                      aLc,
+                                      aSplit,
+                                      aFsh[io],
+                                      aWQ,
+                                      aWP,
+                                      aParQ,
+                                      indP,
+                                      10 * tolapp3d,
+                                      myRegul);
+            aSt[ic]->InDS(isf[ic]);
+            done = true;
+            return;
+          }
+        }
+      }
+    }
+  }
 
   bool trouve = false;
   if (!Okvisavis)

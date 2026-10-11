@@ -1246,6 +1246,32 @@ static void StoreLineOverSplit(TopOpeBRepDS_DataStructure&             DStr,
 }
 
 //=======================================================================
+// function : ChFi3d_StoreLineOverSplit
+// purpose  : StoreLineOverSplit, for the corners of two fillets.
+//=======================================================================
+
+void ChFi3d_StoreLineOverSplit(TopOpeBRepDS_DataStructure&             DStr,
+                               const occ::handle<ChFiDS_Stripe>&       Stripe,
+                               const occ::handle<ChFiDS_SurfData>&     Fd,
+                               const bool                              isFirst,
+                               const int                               Ons,
+                               const int                               Isurf,
+                               const occ::handle<GeomAdaptor_Surface>& HGs,
+                               const occ::handle<Geom_Line>&           L,
+                               const TopoDS_Edge&                      Esplit,
+                               const TopoDS_Face&                      Fn,
+                               const double                            WQ,
+                               const double                            WP,
+                               const double                            ParQ,
+                               const int                               IndP,
+                               const double                            Tol,
+                               NCollection_List<ChFiDS_Regul>&         Regul)
+{
+  StoreLineOverSplit(DStr, Stripe, Fd, isFirst, Ons, Isurf, HGs, L, Esplit, Fn, WQ, WP, ParQ, IndP,
+                     Tol, Regul);
+}
+
+//=======================================================================
 // function : ExtensionOverSplit
 // purpose  : The extension <C> of <Arcprol> from Vtx (at <First>) to the
 //           end of the fillet's line on <Fop> (at <Last>), <Arcprol> an
