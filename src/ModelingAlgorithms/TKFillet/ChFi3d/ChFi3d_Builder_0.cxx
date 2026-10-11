@@ -3943,6 +3943,14 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
   gp_Pnt Pbid;
   double Udeb = 0., Ufin = 0.;
   double tolr1, tolr2;
+  // A line of the general intersection found off the surfaces -- its pcurve
+  // on a closed surface a turn away at an end on the seam, and no line of
+  // the surface between -- is kept aside and the path is walked below, the
+  // closest of them kept.
+  bool                      hasLoose  = false;
+  double                    aLooseTol = 0.;
+  occ::handle<Geom_Curve>   aLooseC3d;
+  occ::handle<Geom2d_Curve> aLoosePc1, aLoosePc2;
   tolr1 = tolr2 = tolreached = tol3d;
   if ((S1->GetType() == GeomAbs_Cylinder && S2->GetType() == GeomAbs_Plane)
       || (S1->GetType() == GeomAbs_Plane && S2->GetType() == GeomAbs_Cylinder))
@@ -4263,6 +4271,18 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
                 Pc2->Translate(gp_Vec2d(x, y));
               }
               tolreached = ChFi3d_EvalTolReached(S1, Pc1, S2, Pc2, C3d);
+              if (tolreached > 10. * tol3d)
+              {
+                if (!hasLoose || tolreached < aLooseTol)
+                {
+                  hasLoose  = true;
+                  aLooseTol = tolreached;
+                  aLooseC3d = C3d;
+                  aLoosePc1 = Pc1;
+                  aLoosePc2 = Pc2;
+                }
+                continue;
+              }
               return true;
             }
           }
@@ -4280,10 +4300,10 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
   // times; the closest one is kept.
   double                    aFine     = 1.;
   int                       aNbRefine = 0;
-  bool                      hasBest   = false;
-  double                    aBestTol  = 0.;
-  occ::handle<Geom_Curve>   aBestC3d;
-  occ::handle<Geom2d_Curve> aBestPc1, aBestPc2;
+  bool                      hasBest   = hasLoose;
+  double                    aBestTol  = aLooseTol;
+  occ::handle<Geom_Curve>   aBestC3d  = aLooseC3d;
+  occ::handle<Geom2d_Curve> aBestPc1 = aLoosePc1, aBestPc2 = aLoosePc2;
   auto                      aFail = [&]() -> bool {
     if (!hasBest)
     {
