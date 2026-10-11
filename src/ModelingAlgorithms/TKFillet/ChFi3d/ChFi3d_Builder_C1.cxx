@@ -4755,6 +4755,24 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
       occ::handle<GeomAdaptor_Curve> HC  = new GeomAdaptor_Curve(C, Ubid, Vbid);
       GeomAdaptor_Curve&             Cad = *HC;
       inters.Perform(HC, HGs);
+      // A long curve -- the edge of a helical ramp, turn upon turn of it --
+      // is sampled too coarsely to show the fillet crossing it close to
+      // Vtx: once more on the piece of it about Vtx. Without the point the
+      // edge was taken for one the fillet misses, the faces beside it were
+      // intersected anew and the piece from Vtx added on top of the edge.
+      if ((!inters.IsDone() || inters.NbPoints() == 0) && hasVertex(E2, Vtx))
+      {
+        const double aLen  = 10. * CV1.Point().Distance(CV2.Point());
+        const double aDw   = Cad.Resolution(aLen);
+        const double aParV = BRep_Tool::Parameter(Vtx, E2);
+        const double aW1 = std::max(Ubid, aParV - aDw), aW2 = std::min(Vbid, aParV + aDw);
+        if (aLen > Precision::Confusion() && aW2 - aW1 > Precision::PConfusion()
+            && aW2 - aW1 < Vbid - Ubid)
+        {
+          occ::handle<GeomAdaptor_Curve> aHCloc = new GeomAdaptor_Curve(C, aW1, aW2);
+          inters.Perform(aHCloc, HGs);
+        }
+      }
       if (!prolface[nn] && (!inters.IsDone() || (inters.NbPoints() == 0)))
       {
         // extend surface of conge
@@ -5353,12 +5371,27 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           }
           cad.Load(csau);
         }
-        Extrema_ExtPC ext(pext, cad, tolpt);
-        double        par1, par2, par, ParVtx;
-        bool          vtx1 = false;
-        bool          vtx2 = false;
-        par1               = ext.Point(1).Parameter();
-        ParVtx             = par1;
+        // The nearest of the curve's points to pext, not the first found: a
+        // curve winding round an axis (the edge of a helical ramp) has one
+        // on every turn, and the first can be a turn away from Vtx -- the
+        // piece kept was then the rest of the curve.
+        auto nearestOn = [&](const gp_Pnt& theP) {
+          Extrema_ExtPC anExt(theP, cad, tolpt);
+          int           iMin = 1;
+          for (int i = 2; i <= anExt.NbExt(); i++)
+          {
+            if (anExt.SquareDistance(i) < anExt.SquareDistance(iMin))
+            {
+              iMin = i;
+            }
+          }
+          return anExt.Point(iMin).Parameter();
+        };
+        double par1, par2, par, ParVtx;
+        bool   vtx1 = false;
+        bool   vtx2 = false;
+        par1        = nearestOn(pext);
+        ParVtx      = par1;
         if (oneintersection1 || oneintersection2)
         {
           if (oneintersection2)
@@ -5371,8 +5404,7 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
             pext = CV1.Point();
             ind  = indpoint1;
           }
-          Extrema_ExtPC ext2(pext, cad, tolpt);
-          par2 = ext2.Point(1).Parameter();
+          par2 = nearestOn(pext);
         }
         else
         {
