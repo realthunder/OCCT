@@ -1105,6 +1105,32 @@ occ::handle<Geom_BezierCurve> ChFi3d_Spine(const gp_Pnt& pd,
 }
 
 //=======================================================================
+// function : VertexOnFace
+// purpose  : The parameters of <Vtx> on <F>; of its projection on the
+//           surface where <F> does not hold it -- the common face of two
+//           fillets a piece of a wall kept in coplanar pieces (a body
+//           without Refine), beside the piece the vertex is on.
+//=======================================================================
+static gp_Pnt2d VertexOnFace(const TopoDS_Vertex& Vtx, const TopoDS_Face& F)
+{
+  for (TopExp_Explorer ex(F, TopAbs_VERTEX); ex.More(); ex.Next())
+  {
+    if (ex.Current().IsSame(Vtx))
+    {
+      return BRep_Tool::Parameters(Vtx, F);
+    }
+  }
+  GeomAPI_ProjectPointOnSurf aProj(BRep_Tool::Pnt(Vtx), BRep_Tool::Surface(F));
+  if (aProj.NbPoints() == 0)
+  {
+    throw Standard_Failure("ChFi3d_IsInFront : the vertex is not on the common face");
+  }
+  double aU = 0., aV = 0.;
+  aProj.LowerDistanceParameters(aU, aV);
+  return gp_Pnt2d(aU, aV);
+}
+
+//=======================================================================
 // function : IsInFront
 // purpose  : Checks if surfdata i1 and i2 are face to face
 //=======================================================================
@@ -1163,7 +1189,7 @@ bool ChFi3d_IsInFront(TopOpeBRepDS_DataStructure&       DStr,
     gp_Pnt2d P2d;
     if (Check2dDistance)
     {
-      P2d = BRep_Tool::Parameters(Vtx, face);
+      P2d = VertexOnFace(Vtx, face);
     }
     if (ChFi3d_IntTraces(fd1,
                          pref1,
@@ -1215,7 +1241,7 @@ bool ChFi3d_IsInFront(TopOpeBRepDS_DataStructure&       DStr,
     gp_Pnt2d P2d;
     if (Check2dDistance)
     {
-      P2d = BRep_Tool::Parameters(Vtx, face);
+      P2d = VertexOnFace(Vtx, face);
     }
     if (ChFi3d_IntTraces(fd1,
                          pref1,
@@ -1291,7 +1317,7 @@ bool ChFi3d_IsInFront(TopOpeBRepDS_DataStructure&       DStr,
     gp_Pnt2d P2d;
     if (Check2dDistance)
     {
-      P2d = BRep_Tool::Parameters(Vtx, face);
+      P2d = VertexOnFace(Vtx, face);
     }
     if (ChFi3d_IntTraces(fd1,
                          pref1,
@@ -1367,7 +1393,7 @@ bool ChFi3d_IsInFront(TopOpeBRepDS_DataStructure&       DStr,
     gp_Pnt2d P2d;
     if (Check2dDistance)
     {
-      P2d = BRep_Tool::Parameters(Vtx, face);
+      P2d = VertexOnFace(Vtx, face);
     }
     if (ChFi3d_IntTraces(fd1,
                          pref1,

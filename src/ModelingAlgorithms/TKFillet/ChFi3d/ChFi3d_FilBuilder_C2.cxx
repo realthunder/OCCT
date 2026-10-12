@@ -351,6 +351,10 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
   // are intersected, the line that stops on the split has the other's piece
   // for its face; it then ends on the split, and its piece from there to
   // the meeting point is put on the other piece.
+  // The same where the split passes Vtx by, one fillet as wide as or wider
+  // than the piece its spine is on, its line on the piece beyond (a pocket's
+  // mouth beside a split): the other's line stops short of the split or on
+  // it, and crosses it to the meeting point.
   if (!Okvisavis && st1 != st2)
   {
     const bool                          isf[2] = {Sens1 == 1, Sens2 == 1};
@@ -375,10 +379,21 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
         {
           continue;
         }
+        // an edge of Vtx, or else one of the face
+        NCollection_List<TopoDS_Shape> aCand;
         for (NCollection_List<TopoDS_Shape>::Iterator itE(myVEMap(Vtx)); itE.More(); itE.Next())
         {
+          aCand.Append(itE.Value());
+        }
+        for (TopExp_Explorer exE(aS1, TopAbs_EDGE); exE.More(); exE.Next())
+        {
+          aCand.Append(exE.Current());
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itE(aCand); itE.More(); itE.Next())
+        {
           const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
-          if (BRep_Tool::Degenerated(anE) || myEFMap(anE).Extent() != 2)
+          if (BRep_Tool::Degenerated(anE) || !myEFMap.Contains(anE)
+              || myEFMap(anE).Extent() != 2)
           {
             continue;
           }
@@ -394,10 +409,7 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
               aFb = TopoDS::Face(itF.Value());
             }
           }
-          // the same way round on their surfaces as well: the two lines are
-          // compared in the parameters of one of them
-          if (aFa.IsNull() || aFb.IsNull() || aFa.Orientation() != aFb.Orientation()
-              || !ChFi3d_CoplanarPieces(aFa, aFb, 10 * tolapp3d))
+          if (aFa.IsNull() || aFb.IsNull() || !ChFi3d_CoplanarPieces(aFa, aFb, 10 * tolapp3d))
           {
             continue;
           }
@@ -423,58 +435,119 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
         }
       }
     }
-    if (ic >= 0 && st1->Spine()->Status(isf[0]) == ChFiDS_OnSame
+    if (!aSplit.IsNull() && ic != -2 && st1->Spine()->Status(isf[0]) == ChFiDS_OnSame
         && st2->Spine()->Status(isf[1]) == ChFiDS_OnSame)
     {
-      const int io = 1 - ic;
       // both fillets end at one point of one edge on their other sides
       const ChFiDS_CommonPoint& aCPa1 = aSd[0]->Vertex(isf[0], 3 - aJ[0]);
       const ChFiDS_CommonPoint& aCPa2 = aSd[1]->Vertex(isf[1], 3 - aJ[1]);
       bool isOk = aCPa1.IsOnArc() && aCPa2.IsOnArc() && aCPa1.Arc().IsSame(aCPa2.Arc())
                   && aCPa1.Point().Distance(aCPa2.Point()) < 10. * tolapp3d;
-      // two straight lines, meeting past the split on the other's piece
-      occ::handle<Geom_Line> aLc;
-      double                 aWX   = 0.;
-      const double           aWQ   = aSd[ic]->Interference(aJ[ic]).Parameter(isf[ic]);
-      const double           aParQ = aSd[ic]->Vertex(isf[ic], aJ[ic]).ParameterOnArc();
+      // two straight lines that meet; a walked fillet's is a B-spline, and
+      // straight all the same on a plane along a straight spine
+      occ::handle<Geom_Line> aLin[2];
+      double                 aT[2] = {0., 0.};
+      gp_Pnt                 aX;
       if (isOk)
       {
-        const int aIc = aSd[ic]->Interference(aJ[ic]).LineIndex();
-        const int aIo = aSd[io]->Interference(aJ[io]).LineIndex();
-        isOk          = aIc > 0 && aIo > 0 && !DStr.Curve(aIc).Curve().IsNull()
-                        && !DStr.Curve(aIo).Curve().IsNull();
-        if (isOk)
+        gp_Lin aL[2];
+        for (int k = 0; k < 2 && isOk; k++)
         {
-          const GeomAdaptor_Curve aGc(DStr.Curve(aIc).Curve()), aGo(DStr.Curve(aIo).Curve());
-          isOk = aGc.GetType() == GeomAbs_Line && aGo.GetType() == GeomAbs_Line;
+          const ChFiDS_FaceInterference& aFik = aSd[k]->Interference(aJ[k]);
+          isOk = aFik.LineIndex() > 0 && !DStr.Curve(aFik.LineIndex()).Curve().IsNull();
+          if (!isOk)
+          {
+            break;
+          }
+          const occ::handle<Geom_Curve>& aCk = DStr.Curve(aFik.LineIndex()).Curve();
+          const GeomAdaptor_Curve        aGk(aCk);
+          if (aGk.GetType() == GeomAbs_Line)
+          {
+            aL[k]   = aGk.Line();
+            aLin[k] = new Geom_Line(aL[k]);
+            continue;
+          }
+          const double aWa = aFik.FirstParameter(), aWb = aFik.LastParameter();
+          const gp_Pnt aPa = aCk->Value(aWa), aPb = aCk->Value(aWb);
+          isOk             = aPa.Distance(aPb) > 10. * tolapp3d;
           if (isOk)
           {
-            const gp_Lin aLinC = aGc.Line(), aLinO = aGo.Line();
-            const gp_Vec aDc(aLinC.Direction()), aDo(aLinO.Direction());
-            const gp_Vec aN  = aDc.Crossed(aDo);
-            const double aN2 = aN.SquareMagnitude();
-            isOk             = aN2 > 1.e-12;
-            if (isOk)
+            aL[k] = gp_Lin(aPa, gp_Dir(gp_Vec(aPa, aPb)));
+            for (int i = 1; i <= 7 && isOk; i++)
             {
-              const gp_Vec aPP(aLinC.Location(), aLinO.Location());
-              const double aTc = aPP.Crossed(aDo).Dot(aN) / aN2;
-              const double aTo = aPP.Crossed(aDc).Dot(aN) / aN2;
-              const gp_Pnt aX  = aLinC.Location().Translated(aTc * aDc);
-              isOk = aX.Distance(aLinO.Location().Translated(aTo * aDo)) <= 10. * tolapp3d
-                     && (isf[ic] ? aTc < aWQ - tolapp3d : aTc > aWQ + tolapp3d);
-              if (isOk)
-              {
-                BRepClass_FaceClassifier aCls(aFsh[io], aX, tolapp3d);
-                // the fillet is carried on past its end to there: on a
-                // surface that goes on as it is
-                isOk = aCls.State() == TopAbs_IN
-                       && DStr.Surface(aSd[ic]->Surf()).Surface()->IsKind(
-                         STANDARD_TYPE(Geom_ElementarySurface));
-                aLc  = new Geom_Line(aLinC);
-                aWX  = aTc;
-              }
+              isOk = aL[k].Distance(aCk->Value(aWa + i * (aWb - aWa) / 8.)) <= tolapp3d;
             }
           }
+        }
+        if (isOk)
+        {
+          const gp_Vec aD0(aL[0].Direction()), aD1(aL[1].Direction());
+          const gp_Vec aN  = aD0.Crossed(aD1);
+          const double aN2 = aN.SquareMagnitude();
+          isOk             = aN2 > 1.e-12;
+          if (isOk)
+          {
+            const gp_Vec aPP(aL[0].Location(), aL[1].Location());
+            aT[0] = aPP.Crossed(aD1).Dot(aN) / aN2;
+            aT[1] = aPP.Crossed(aD0).Dot(aN) / aN2;
+            aX    = aL[0].Location().Translated(aT[0] * aD0);
+            isOk  = aX.Distance(aL[1].Location().Translated(aT[1] * aD1)) <= 10. * tolapp3d;
+          }
+        }
+      }
+      // The line that stops on the split; or, neither on it, the one that
+      // is to cross it: the two meet on the other's piece.
+      double aWQ = 0., aParQ = 0.;
+      if (isOk && ic >= 0)
+      {
+        aWQ   = aSd[ic]->Interference(aJ[ic]).Parameter(isf[ic]);
+        aParQ = aSd[ic]->Vertex(isf[ic], aJ[ic]).ParameterOnArc();
+      }
+      else if (isOk)
+      {
+        for (int k = 0; k < 2 && ic < 0; k++)
+        {
+          BRepClass_FaceClassifier aCls(aFsh[k], aX, tolapp3d);
+          if (aCls.State() == TopAbs_IN)
+          {
+            ic = 1 - k;
+          }
+        }
+        isOk = false;
+        if (ic >= 0 && !aLin[ic].IsNull())
+        {
+          const GeomAdaptor_Curve aGL(aLin[ic]);
+          const BRepAdaptor_Curve aSC(aSplit);
+          const double            aRes = aSC.Resolution(10. * tolapp3d);
+          Extrema_ExtCC           anExt(aGL, aSC);
+          for (int i = 1; anExt.IsDone() && !anExt.IsParallel() && i <= anExt.NbExt() && !isOk;
+               i++)
+          {
+            Extrema_POnCurv aP1, aP2;
+            anExt.Points(i, aP1, aP2);
+            aWQ   = aP1.Parameter();
+            aParQ = aP2.Parameter();
+            isOk  = anExt.SquareDistance(i) <= 100. * tolapp3d * tolapp3d
+                    && aParQ > aSC.FirstParameter() + aRes && aParQ < aSC.LastParameter() - aRes;
+          }
+        }
+      }
+      // the line that is carried on is a line as the DS has it
+      isOk                       = isOk && !aLin[ic].IsNull();
+      const int              io  = isOk ? 1 - ic : 0;
+      occ::handle<Geom_Line> aLc = isOk ? aLin[ic] : occ::handle<Geom_Line>();
+      const double           aWX = isOk ? aT[ic] : 0.;
+      if (isOk)
+      {
+        // past the split, in the other's piece; the fillet is carried on
+        // past its end to there, on a surface that goes on as it is
+        isOk = isf[ic] ? aWX < aWQ - tolapp3d : aWX > aWQ + tolapp3d;
+        if (isOk)
+        {
+          BRepClass_FaceClassifier aCls(aFsh[io], aX, tolapp3d);
+          isOk = aCls.State() == TopAbs_IN
+                 && DStr.Surface(aSd[ic]->Surf()).Surface()->IsKind(
+                   STANDARD_TYPE(Geom_ElementarySurface));
         }
       }
       if (isOk)
@@ -482,6 +555,10 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
         ChFiDS_FaceInterference&        aFic     = aSd[ic]->ChangeInterference(aJ[ic]);
         const int                       aIndSave = aSd[ic]->Index(aJ[ic]);
         const occ::handle<Geom2d_Curve> aPcSave  = aFic.PCurveOnFace();
+        const double                    aWSave   = aFic.Parameter(isf[ic]);
+        // the two pieces the other way up on their surfaces: the line's
+        // transition, told by its face's surface, is the other one there
+        const bool                      isTurned = aFsh[0].Orientation() != aFsh[1].Orientation();
         const occ::handle<Geom2d_Curve> aPcOn    = GeomProjLib::Curve2d(
           aLc,
           BRep_Tool::Surface(TopoDS::Face(DStr.Shape(aSd[io]->Index(aJ[io])))));
@@ -501,6 +578,10 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
             }
             aFic.ChangePCurveOnFace() = thePc;
             aFic.SetParameter(theW, isf[ic]);
+            if (isTurned)
+            {
+              aFic.SetTransition(TopAbs::Reverse(aFic.Transition()));
+            }
           };
           // the line as long as to pass the meeting point, as it is on the
           // wall in one face
@@ -513,11 +594,11 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
           }
           catch (Standard_Failure const&)
           {
-            aSetFace(aIndSave, aPcSave, aWQ);
+            aSetFace(aIndSave, aPcSave, aWSave);
             throw;
           }
           // the line is cut where they meet, when they are
-          const double aWP = isDone ? aFic.Parameter(isf[ic]) : aWQ;
+          const double aWP = isDone ? aFic.Parameter(isf[ic]) : aWSave;
           aSetFace(aIndSave, aPcSave, aWP);
           if (isDone)
           {
@@ -628,6 +709,25 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
                                      Vtx,
                                      true);
         trouve    = Okvisavis;
+        // Face to face on a face the vertex is not on: the surface before
+        // the last of a fillet whose line crosses a split of its wall (a
+        // body without Refine) before its end, and the other fillet on the
+        // piece beyond. This corner is not made of a surface that does not
+        // come to the vertex -- it would be a plate from where that surface
+        // ends; it is refused, as it was while ChFi3d_IsInFront asked for
+        // the vertex's parameters on the face.
+        if (trouve)
+        {
+          bool isAtVtx = false;
+          for (TopExp_Explorer exV(FaCo, TopAbs_VERTEX); exV.More() && !isAtVtx; exV.Next())
+          {
+            isAtVtx = exV.Current().IsSame(Vtx);
+          }
+          if (!isAtVtx)
+          {
+            throw Standard_Failure("TwoCorner : fillets face to face on a face off the vertex");
+          }
+        }
       }
     }
     if (!trouve)
