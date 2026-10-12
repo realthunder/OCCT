@@ -2937,6 +2937,22 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
         }
         parE = aProjE.LowerDistanceParameter();
       }
+      else
+      {
+        // (a straight edge is carried on to the point itself: its end left
+        // at Vp, the faces' wires are open there by the distance between)
+        double                  f, l;
+        occ::handle<Geom_Curve> aCE = BRep_Tool::Curve(Etg, f, l);
+        if (!aCE.IsNull() && aCE->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
+        {
+          aCE = occ::down_cast<Geom_TrimmedCurve>(aCE)->BasisCurve();
+        }
+        const occ::handle<Geom_Line> aLE = occ::down_cast<Geom_Line>(aCE);
+        if (!aLE.IsNull())
+        {
+          parE = ElCLib::Parameter(aLE->Lin(), PTg);
+        }
+      }
       const int IEtg = DStr.AddShape(Etg);
       DStr.ChangeShapeInterferences(IEtg).Append(
         ChFi3d_FilPointInDS(sameDir ? TopAbs_REVERSED : TopAbs_FORWARD, IEtg, indpt, parE));
