@@ -60,6 +60,7 @@
 #include <sstream>
 #include <BRep_Builder.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -729,7 +730,12 @@ gp_Dir OutwardNormalAt(const TopoDS_Face& theF, const gp_Pnt& theP)
 // corner's computation could come out valid and be the input itself, the
 // fillet asked for dropped (radius 0.8 on a right angle, 0.33 when it is
 // made); on the near flat edges of #876's drafted walls a fillet moves it
-// by thousandths of a thousandth.
+// by thousandths of a thousandth. An edge of a spine of several that lies
+// whole within the setback of the spine's end it is at -- or within the
+// radius there, which is the least a set back corner takes -- is not
+// looked at: it is under the corner's patch, which passes nearer to it than
+// a fillet would (a fillet along a wall kept in pieces, the piece at the
+// corner shorter than the radius: refused for it, each time, valid).
 bool AreFilletsMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
                     const ChFiDS_Map&                                   theEFMap,
                     const TopoDS_Shape&                                 theResult)
@@ -749,8 +755,39 @@ bool AreFilletsMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStrip
     {
       continue;
     }
-    for (int j = 1; j <= aSp->NbEdges(); j++)
+    // the edges under a set back corner, from either end
+    const int                aNbE = aSp->NbEdges();
+    NCollection_Array1<bool> isUnder(1, std::max(aNbE, 1));
+    isUnder.Init(false);
+    for (int k = 0; k < 2 && aNbE > 1 && !aSp->IsClosed(); k++)
     {
+      const bool isFirst = k == 0;
+      if (aSp->Setback(isFirst) < 0.)
+      {
+        continue;
+      }
+      const int    aJ0   = isFirst ? 1 : aNbE;
+      const double aTake = std::max(aSp->Setback(isFirst),
+                                    aSp->IsConstant(aJ0) ? aSp->Radius(aJ0)
+                                                         : aSp->MaxRadFromSeqAndLaws());
+      double aLen = 0.;
+      for (int n = 0; n < aNbE - 1; n++)
+      {
+        const int aJ = isFirst ? 1 + n : aNbE - n;
+        aLen += GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(aSp->Edges(aJ)));
+        if (aLen > aTake)
+        {
+          break;
+        }
+        isUnder.SetValue(aJ, true);
+      }
+    }
+    for (int j = 1; j <= aNbE; j++)
+    {
+      if (isUnder.Value(j))
+      {
+        continue;
+      }
       const TopoDS_Edge& anE = aSp->Edges(j);
       BRepAdaptor_Curve  aC(anE);
       const gp_Pnt       aMid = aC.Value(0.5 * (aC.FirstParameter() + aC.LastParameter()));
