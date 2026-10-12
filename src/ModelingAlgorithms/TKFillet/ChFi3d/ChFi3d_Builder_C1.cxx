@@ -233,16 +233,26 @@ static bool Update(const occ::handle<Adaptor3d_Surface>& fb,
     // None on the curve: a point at an end of it, found a rounding error
     // past the end, is the end when the curve is tangent to the surface
     // there (the point is ill-conditioned along it). A crossing found past
-    // the end is past the end.
+    // the end is past the end -- but for one the last digits past it: the
+    // line of a wall kept in pieces ends on a split that lies on the
+    // surface (the face at end goes on up the split), and its end is the
+    // crossing.
     if (isol == 0 && !isperiodic)
     {
       const double tolw = Precision::PConfusion();
+      const double tolr = 1.e-12 * std::max(1., std::max(std::abs(uf), std::abs(ul)));
       for (i = 1; i <= nbp; i++)
       {
         const IntCurveSurface_IntersectionPoint& ip = Intersection.Point(i);
         w                                           = ip.W();
         if (uf - tolw > w || ul + tolw < w || std::abs(w - wop) >= dist)
         {
+          continue;
+        }
+        if (uf - tolr <= w && ul + tolr >= w)
+        {
+          isol = i;
+          dist = std::abs(w - wop);
           continue;
         }
         gp_Pnt P;
