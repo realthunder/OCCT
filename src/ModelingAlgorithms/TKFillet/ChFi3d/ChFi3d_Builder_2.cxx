@@ -3293,12 +3293,12 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
         // the split, wholly on a piece beyond: the fillet is that of the
         // piece its line is on, as it is of the wall in one face -- ending,
         // at the spine's ends, where that piece does. The fillet of a
-        // single edge only, neither end OnSame: at an end OnSame the corner
-        // carries the walk's line over the split itself (LineOverSplit),
-        // and in a chain the next edge's fillet starts from the walk's.
-        const bool isAlone = Spine->NbEdges() == 1 && !Spine->IsPeriodic()
-                             && Spine->FirstStatus() != ChFiDS_OnSame
-                             && Spine->LastStatus() != ChFiDS_OnSame;
+        // single edge only: in a chain the next edge's fillet starts from
+        // the walk's. And only when it holds the whole of the edge's
+        // fillet (below): a line that crosses the split on its way is the
+        // walk's, which the corner at an end OnSame carries over the split
+        // itself (LineOverSplit).
+        const bool isAlone = Spine->NbEdges() == 1 && !Spine->IsPeriodic();
         for (int ons = 1; ons <= 2 && LSD.IsEmpty() && isAlone; ons++)
         {
           const TopoDS_Face              aFs = (ons == 1 ? HS1 : HS2)->Face();
