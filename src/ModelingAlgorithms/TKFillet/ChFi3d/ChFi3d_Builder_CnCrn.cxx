@@ -47,6 +47,7 @@
 #include <BRepTools.hxx>
 #include <ChFi3d_Builder.hxx>
 #include <ChFi3d_Builder_0.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <ChFiDS_CommonPoint.hxx>
 #include <ChFiDS_FaceInterference.hxx>
 #include <ChFiDS_SurfData.hxx>
@@ -4007,6 +4008,28 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         if (Pf.Distance(BRep_Tool::Pnt(V1)) < Pl.Distance(BRep_Tool::Pnt(V1)))
         {
           orvt = TopAbs_FORWARD;
+        }
+        // An edge that does not come to V1 -- the split of a wall kept in
+        // coplanar pieces (a body without Refine), beside the vertex -- has
+        // no end at the corner: its part under the corner is the one V1 is
+        // beside, whichever of its ends is the nearer.
+        if (!Vf.IsSame(V1) && !Vl.IsSame(V1))
+        {
+          const BRepAdaptor_Curve aCcom(TopoDS::Edge(Ecom.Value(nb)));
+          Extrema_ExtPC           anExtV(BRep_Tool::Pnt(V1), aCcom);
+          double                  aD2 = Precision::Infinite(), aParV = para;
+          for (int k = 1; anExtV.IsDone() && k <= anExtV.NbExt(); k++)
+          {
+            if (anExtV.SquareDistance(k) < aD2)
+            {
+              aD2   = anExtV.SquareDistance(k);
+              aParV = anExtV.Point(k).Parameter();
+            }
+          }
+          if (std::abs(aParV - para) > Precision::PConfusion())
+          {
+            orvt = aParV < para ? TopAbs_FORWARD : TopAbs_REVERSED;
+          }
         }
         if (!Eproj.Value(nb).IsNull())
         {
