@@ -1612,6 +1612,91 @@ static bool EdgeParamAtSetback(const TopoDS_Edge&   theE,
   return true;
 }
 
+// The edge that carries <theE> on past its end away from <theV>, and that
+// end <theFoot>: <theE> stops there at the foot of a split -- a wall kept in
+// coplanar pieces (a body without Refine), the split coming down on the
+// edge -- and <theNext> runs on from it in the same direction, each of its
+// faces a face of <theE> or the piece of one beyond the split. False where
+// no edge does.
+static bool EdgeCarriedOn(const TopoDS_Edge&   theE,
+                          const TopoDS_Vertex& theV,
+                          const ChFiDS_Map&    theVEMap,
+                          const ChFiDS_Map&    theEFMap,
+                          const double         theTol,
+                          const double         theAng,
+                          TopoDS_Edge&         theNext,
+                          TopoDS_Vertex&       theFoot)
+{
+  TopoDS_Vertex aV1, aV2;
+  TopExp::Vertices(theE, aV1, aV2);
+  if (aV1.IsNull() || aV2.IsNull() || aV1.IsSame(aV2) || !theEFMap.Contains(theE))
+  {
+    return false;
+  }
+  theFoot = aV1.IsSame(theV) ? aV2 : aV1;
+  if (!theVEMap.Contains(theFoot))
+  {
+    return false;
+  }
+  // the direction an edge is run in at the foot: arriving there, or leaving
+  auto aDirAway = [&](const TopoDS_Edge& theEdge, const bool isTowardFoot, gp_Vec& theD) {
+    BRepAdaptor_Curve aC(theEdge);
+    const double      aUF = BRep_Tool::Parameter(theFoot, theEdge);
+    gp_Pnt            aP;
+    aC.D1(aUF, aP, theD);
+    if (theD.Magnitude() <= gp::Resolution())
+    {
+      return false;
+    }
+    const bool isAtFirst =
+      std::abs(aUF - aC.FirstParameter()) <= std::abs(aUF - aC.LastParameter());
+    // toward the foot the curve arrives at its last parameter
+    if (isAtFirst == isTowardFoot)
+    {
+      theD.Reverse();
+    }
+    return true;
+  };
+  gp_Vec aDE;
+  if (!aDirAway(theE, true, aDE))
+  {
+    return false;
+  }
+  const NCollection_List<TopoDS_Shape>& aFacesE = theEFMap(theE);
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(theVEMap(theFoot)); itE.More(); itE.Next())
+  {
+    const TopoDS_Edge& aCand = TopoDS::Edge(itE.Value());
+    if (aCand.IsSame(theE) || BRep_Tool::Degenerated(aCand) || !theEFMap.Contains(aCand))
+    {
+      continue;
+    }
+    gp_Vec aDC;
+    if (!aDirAway(aCand, false, aDC) || aDE.Angle(aDC) > theAng)
+    {
+      continue;
+    }
+    const NCollection_List<TopoDS_Shape>& aFacesC = theEFMap(aCand);
+    bool                                  isOn    = true;
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(aFacesE); itF.More() && isOn; itF.Next())
+    {
+      isOn = false;
+      for (NCollection_List<TopoDS_Shape>::Iterator itC(aFacesC); itC.More() && !isOn; itC.Next())
+      {
+        isOn = itC.Value().IsSame(itF.Value())
+               || ChFi3d_CoplanarPieces(TopoDS::Face(itF.Value()),
+                                        TopoDS::Face(itC.Value()),
+                                        theTol);
+      }
+    }
+    if (isOn)
+    {
+      theNext = aCand;
+      return true;
+    }
+  }
+  return false;
+}
+
 // The parameter of the contact of <theSD> on its face <theOnS> (1 or 2) at
 // <theDist> from <theV> along <theSpine>, from its edge <theE> on, between the
 // end of <theSD> at the corner (<isFirst>) and its other end. Where the
@@ -1746,6 +1831,12 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   NCollection_Array2<double>                     p(0, size, 0, size);
   NCollection_Array1<double>                     errapp(0, size);
   NCollection_Array1<TopoDS_Shape>               Evive(0, size);
+  // the end of each edge on the corner's side: V1, or the foot of the split
+  // a sharp edge was carried on past, for a setback longer than the edge
+  NCollection_Array1<TopoDS_Shape> Vvive(0, size);
+  Vvive.Init(V1);
+  // those short edges, each followed by its foot
+  NCollection_List<TopoDS_Shape> aCarried;
   NCollection_Array2<TopoDS_Shape>               Fvive(0, size, 0, size);
   NCollection_Array1<bool>                       ponctuel(0, size);
   NCollection_Array1<bool>                       samedge(0, size);
@@ -2622,13 +2713,100 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         {
           aD = std::max(aD, aDist.Value(icmoins));
         }
-        double aU = 0.;
-        if (!EdgeParamAtSetback(TopoDS::Edge(Evive.Value(ic)),
-                                V1,
-                                aD >= 0. ? aD : aLargest,
-                                aU))
+        double       aU        = 0.;
+        const double aCut      = aD >= 0. ? aD : aLargest;
+        bool         isCarried = false;
+        if (!EdgeParamAtSetback(TopoDS::Edge(Evive.Value(ic)), V1, aCut, aU))
         {
-          throw Standard_Failure("PerformMoreThreeCorner : a corner's setback exceeds an edge");
+          // The edge is shorter than the setback, and may be so only because
+          // a split comes down on it: the edge beyond the split's foot
+          // carries it on, the cut is made on that one and the short edge
+          // goes whole.
+          const TopoDS_Edge aShort = TopoDS::Edge(Evive.Value(ic));
+          TopoDS_Edge       aNextE;
+          TopoDS_Vertex     aFoot;
+          if (!EdgeCarriedOn(aShort, V1, myVEMap, myEFMap, 10 * tolapp3d, angular, aNextE, aFoot)
+              || !EdgeParamAtSetback(aNextE,
+                                     aFoot,
+                                     aCut - GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(aShort)),
+                                     aU))
+          {
+            throw Standard_Failure("PerformMoreThreeCorner : a corner's setback exceeds an edge");
+          }
+          Evive.SetValue(ic, aNextE);
+          Vvive.SetValue(ic, aFoot);
+          sens.SetValue(ic, TopExp::FirstVertex(aNextE).IsSame(aFoot) ? 1 : -1);
+          aCarried.Append(aShort);
+          aCarried.Append(aFoot);
+          isCarried = true;
+        }
+        // The face on each side of the edge is one that holds it. On a wall
+        // kept in coplanar pieces it may not be: the piece beyond the split
+        // was put there for the fillet beside the edge, which ended on that
+        // piece and is cut back onto this one now; or the edge was carried
+        // on past the split's foot, above. The piece that holds the edge is
+        // taken, and where the fillet or the sharp edge beside it is on the
+        // other the curve between the two cuts is one over two faces, below,
+        // which cuts the split where it crosses it.
+        for (int k = 0; k < 2; k++)
+        {
+          const int          iSide = k == 0 ? icplus : icmoins;
+          const TopoDS_Edge& anE   = TopoDS::Edge(Evive.Value(ic));
+          TopoDS_Face        aHolds, aPiece;
+          for (ItF.Initialize(myEFMap(anE)); ItF.More() && aHolds.IsNull(); ItF.Next())
+          {
+            if (ItF.Value().IsSame(Fvive.Value(ic, iSide)))
+            {
+              aHolds = TopoDS::Face(ItF.Value());
+            }
+          }
+          if (!aHolds.IsNull())
+          {
+            continue;
+          }
+          // the face as the shell has it, for the pieces' test: it need not
+          // be a face of V1
+          TopoDS_Face aSide   = TopoDS::Face(Fvive.Value(ic, iSide));
+          bool        isFound = false;
+          for (TopExp_Explorer aExpE(aSide, TopAbs_EDGE); aExpE.More() && !isFound; aExpE.Next())
+          {
+            if (!myEFMap.Contains(aExpE.Current()))
+            {
+              continue;
+            }
+            for (ItF.Initialize(myEFMap(aExpE.Current())); ItF.More() && !isFound; ItF.Next())
+            {
+              if (ItF.Value().IsSame(aSide))
+              {
+                aSide   = TopoDS::Face(ItF.Value());
+                isFound = true;
+              }
+            }
+          }
+          for (ItF.Initialize(myEFMap(anE)); ItF.More() && aPiece.IsNull(); ItF.Next())
+          {
+            if (ChFi3d_CoplanarPieces(aSide, TopoDS::Face(ItF.Value()), 10 * tolapp3d))
+            {
+              aPiece = TopoDS::Face(ItF.Value());
+            }
+          }
+          if (aPiece.IsNull())
+          {
+            if (isCarried)
+            {
+              throw Standard_Failure("PerformMoreThreeCorner : a corner's setback exceeds an edge");
+            }
+            continue;
+          }
+          Fvive.SetValue(ic, iSide, aPiece);
+          numfa.SetValue(ic, iSide, DStr.AddShape(aPiece));
+          // (beside another sharp edge each keeps the piece that holds it:
+          // two pieces, and the curve between the two edges is over both)
+          if (!sharp.Value(iSide))
+          {
+            Fvive.SetValue(iSide, ic, aPiece);
+            numfa.SetValue(iSide, ic, numfa.Value(ic, iSide));
+          }
         }
         p.SetValue(ic, icplus, aU);
         p.SetValue(ic, icmoins, aU);
@@ -3832,7 +4010,8 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
             bool inverseic, inverseicplus;
             if (sharp.Value(ic))
             {
-              inverseic = TopExp::FirstVertex(TopoDS::Edge(Evive.Value(ic))).IsSame(V1);
+              inverseic =
+                TopExp::FirstVertex(TopoDS::Edge(Evive.Value(ic))).IsSame(Vvive.Value(ic));
             }
             else
             {
@@ -3840,7 +4019,8 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
             }
             if (sharp.Value(icplus))
             {
-              inverseicplus = TopExp::FirstVertex(TopoDS::Edge(Evive.Value(icplus))).IsSame(V1);
+              inverseicplus = TopExp::FirstVertex(TopoDS::Edge(Evive.Value(icplus)))
+                                .IsSame(Vvive.Value(icplus));
             }
             else
             {
@@ -4110,7 +4290,10 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           }
           else
           {
-            OrientationAreteViveConsecutive(Fvive.Value(ic, icplus), Evive.Value(ic), V1, orinterf);
+            OrientationAreteViveConsecutive(Fvive.Value(ic, icplus),
+                                            Evive.Value(ic),
+                                            TopoDS::Vertex(Vvive.Value(ic)),
+                                            orinterf);
           }
           Interfc =
             ChFi3d_FilCurveInDS(indcurve3d.Value(n3d), numfa.Value(ic, icplus), pcurve, orinterf);
@@ -4953,5 +5136,27 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         }
       }
     }
+  }
+  // a short edge carried on past the foot of a split goes whole: cut away
+  // from the foot toward V1
+  for (NCollection_List<TopoDS_Shape>::Iterator itC(aCarried); itC.More(); itC.Next())
+  {
+    const TopoDS_Edge anE = TopoDS::Edge(itC.Value());
+    itC.Next();
+    const TopoDS_Vertex aV  = TopoDS::Vertex(itC.Value());
+    TopAbs_Orientation  aOV = TopAbs_FORWARD;
+    for (TopExp_Explorer ex(anE.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
+    {
+      if (aV.IsSame(ex.Current()))
+      {
+        aOV = ex.Current().Orientation();
+        break;
+      }
+    }
+    DStr.ChangeShapeInterferences(DStr.AddShape(anE))
+      .Append(ChFi3d_FilVertexInDS(TopAbs::Reverse(aOV),
+                                   DStr.AddShape(anE),
+                                   DStr.AddShape(aV),
+                                   BRep_Tool::Parameter(aV, anE)));
   }
 }
