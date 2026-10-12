@@ -2195,7 +2195,10 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
 
   // variable deuxconges is used in the special case when there are
   // two fillets and if two other living edges are tangent (cts60072)
-  if (nconges == 2 && nedge == 4)
+  // (not at a setback corner, which cuts every edge short of the top: the
+  // two edges in line are cut as any other -- one of them the split of a
+  // face kept in coplanar pieces, say, a body without Refine)
+  if (nconges == 2 && nedge == 4 && !isSetback)
   {
     TopoDS_Edge E1, E2;
     for (ic = 0; ic < nedge && !deuxconges; ic++)
