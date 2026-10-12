@@ -37,6 +37,7 @@
 #include <ChFiDS_Stripe.hxx>
 #include <ChFiKPart_ComputeData.hxx>
 #include <Extrema_ExtCC.hxx>
+#include <Extrema_ExtPC.hxx>
 #include <Extrema_POnCurv.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_ElementarySurface.hxx>
@@ -137,6 +138,8 @@ static bool ToricRotule(const BRepAdaptor_Surface&        fac,
 //           share -- a wall kept in coplanar pieces (a body without
 //           Refine), the split between two of them, <Split>, ending at
 //           <Vtx>: that piece, <Fn>, and <F> as the shell has it, <Fsh>.
+//           Or <F> is itself a piece beyond the one at <Vtx>, the split
+//           an edge of <F> away from <Vtx>: <AtVtx> is then false.
 //=======================================================================
 
 static bool PieceOfArc(const TopoDS_Vertex& Vtx,
@@ -147,8 +150,10 @@ static bool PieceOfArc(const TopoDS_Vertex& Vtx,
                        const double         Tol,
                        TopoDS_Face&         Fsh,
                        TopoDS_Face&         Fn,
-                       TopoDS_Edge&         Split)
+                       TopoDS_Edge&         Split,
+                       bool&                AtVtx)
 {
+  AtVtx = true;
   if (!VEMap.Contains(Vtx) || !EFMap.Contains(Arc) || EFMap(Arc).Extent() != 2)
   {
     return false;
@@ -202,6 +207,49 @@ static bool PieceOfArc(const TopoDS_Vertex& Vtx,
         Fsh   = aF1;
         Fn    = aF2;
         Split = aSplit;
+        return true;
+      }
+    }
+  }
+  // <F> does not come to <Vtx>
+  for (TopExp_Explorer exV(F, TopAbs_VERTEX); exV.More(); exV.Next())
+  {
+    if (exV.Current().IsSame(Vtx))
+    {
+      return false;
+    }
+  }
+  for (TopExp_Explorer exE(F, TopAbs_EDGE); exE.More(); exE.Next())
+  {
+    const TopoDS_Edge& aSplit = TopoDS::Edge(exE.Current());
+    if (BRep_Tool::Degenerated(aSplit) || !EFMap.Contains(aSplit) || EFMap(aSplit).Extent() != 2)
+    {
+      continue;
+    }
+    TopoDS_Face aF1, aF2;
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(aSplit)); itF.More(); itF.Next())
+    {
+      if (F.IsSame(itF.Value()))
+      {
+        aF1 = TopoDS::Face(itF.Value());
+      }
+      else
+      {
+        aF2 = TopoDS::Face(itF.Value());
+      }
+    }
+    if (aF1.IsNull() || aF2.IsNull() || !ChFi3d_CoplanarPieces(aF1, aF2, Tol))
+    {
+      continue;
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(Arc)); itF.More(); itF.Next())
+    {
+      if (aF2.IsSame(itF.Value()))
+      {
+        Fsh   = aF1;
+        Fn    = aF2;
+        Split = aSplit;
+        AtVtx = false;
         return true;
       }
     }
@@ -646,6 +694,67 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
     }
   }
 
+  // Two fillets of opposite concavity facing one another on their last
+  // surfaces, their lines on the common face not meeting there: one of
+  // them ends in two surfaces -- its line crosses a split of its wall (a
+  // body without Refine) a little before the spine's end -- and the lines
+  // meet on the surface before, where the wall in one face has them meet.
+  // The corner is made of that surface, the one past it gone as what the
+  // corner cuts off the fillet anyway.
+  if (Okvisavis && !OkinterCC && st1 != st2
+      && ((st1->Spine()->Status(Sens1 == 1) == ChFiDS_OnSame
+           && st2->Spine()->Status(Sens2 == 1) == ChFiDS_OnDiff)
+          || (st1->Spine()->Status(Sens1 == 1) == ChFiDS_OnDiff
+              && st2->Spine()->Status(Sens2 == 1) == ChFiDS_OnSame)))
+  {
+    for (int k = 1; k <= 2; k++)
+    {
+      occ::handle<ChFiDS_Stripe>& aSt   = k == 1 ? st1 : st2;
+      const int                   aSens = k == 1 ? Sens1 : Sens2;
+      const int                   aNb   = aSt->SetOfSurfData()->Length();
+      if (aNb < 2 || aSt->Spine()->Status(aSens == 1) != ChFiDS_OnSame)
+      {
+        continue;
+      }
+      const int   aPrev = aSens == 1 ? 2 : aNb - 1;
+      double      aU1 = 0., aU2 = 0.;
+      TopoDS_Face aFa;
+      bool        aSS = false, aVis = false;
+      int         aJ1 = 0, aJ2 = 0;
+      if (ChFi3d_IsInFront(DStr,
+                           st1,
+                           st2,
+                           k == 1 ? aPrev : Isd1,
+                           k == 2 ? aPrev : Isd2,
+                           Sens1,
+                           Sens2,
+                           aU1,
+                           aU2,
+                           aFa,
+                           aSS,
+                           aJ1,
+                           aJ2,
+                           aVis,
+                           Vtx,
+                           true)
+          && aVis)
+      {
+        RemoveSD(aSt, aSens == 1 ? 1 : aNb, aSens == 1 ? 1 : aNb);
+        Isd1      = ChFi3d_IndexOfSurfData(Vtx, st1, Sens1);
+        Isd2      = ChFi3d_IndexOfSurfData(Vtx, st2, Sens2);
+        OkinterCC = true;
+        Okvisavis = true;
+        UIntPC1   = aU1;
+        UIntPC2   = aU2;
+        FaCo      = aFa;
+        SameSide  = aSS;
+        IFaCo1    = aJ1;
+        IFaCo2    = aJ2;
+        break;
+      }
+    }
+  }
+
   bool trouve = false;
   if (!Okvisavis)
   {
@@ -795,9 +904,51 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
   }
   else
   {
-    PerformMoreThreeCorner(Index, 2);
-    done = true;
-    return;
+    // No pivot is needed by two fillets of opposite concavity: the corner
+    // is made of the surface OnSame cut where the lines meet on the common
+    // face, and of the arc the surface OnDiff ends on. Where the first
+    // surface is a line's that stops in its face (a walked fillet, or one
+    // stopped by a split of its wall), that corner is made as where the
+    // line reaches the face's edge.
+    bool isInv = false;
+    if (OkinterCC && !SameSide
+        && ((Stat1 == ChFiDS_OnSame && Stat2 == ChFiDS_OnDiff)
+            || (Stat1 == ChFiDS_OnDiff && Stat2 == ChFiDS_OnSame)))
+    {
+      const bool                is1Sam = Stat1 == ChFiDS_OnSame;
+      const ChFiDS_CommonPoint& aCPdif = is1Sam ? CP2 : CP1;
+      const int                 aIop   = is1Sam ? sd1->Index(IFaArc1) : sd2->Index(IFaArc2);
+      if (aCPdif.IsOnArc() && aIop > 0 && DStr.Shape(aIop).ShapeType() == TopAbs_FACE)
+      {
+        const TopoDS_Face aFop = TopoDS::Face(DStr.Shape(aIop));
+        for (TopExp_Explorer exF(aFop, TopAbs_EDGE); exF.More() && !isInv; exF.Next())
+        {
+          isInv = exF.Current().IsSame(aCPdif.Arc());
+        }
+        if (!isInv && !aCPdif.IsVertex())
+        {
+          TopoDS_Face aFa, aFb;
+          TopoDS_Edge aSp;
+          bool        isAt = true;
+          isInv = PieceOfArc(Vtx,
+                             aFop,
+                             aCPdif.Arc(),
+                             myVEMap,
+                             myEFMap,
+                             10 * tolapp3d,
+                             aFa,
+                             aFb,
+                             aSp,
+                             isAt);
+        }
+      }
+    }
+    if (!isInv)
+    {
+      PerformMoreThreeCorner(Index, 2);
+      done = true;
+      return;
+    }
   }
   if (CP1.IsOnArc() && CP2.IsOnArc())
   {
@@ -1472,8 +1623,12 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
       // on bounds the piece beside the one the surface OnSame runs on, and
       // the corner's edge on the wall, drawn in the plane of both, ends on an
       // edge its face does not have.
+      // Or the surface OnSame runs on the piece beyond the one at Vtx, its
+      // spine's piece under it whole, the split away from Vtx: the edge
+      // crosses it on its way to the arc.
       TopoDS_Face  aFopSh, aFarc;
       TopoDS_Edge  aSplit;
+      bool         isAtVtx = true;
       const bool   isPiece = !cpopdif.IsVertex()
                            && PieceOfArc(Vtx,
                                          Fopsam,
@@ -1483,7 +1638,8 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
                                          10 * tolapp3d,
                                          aFopSh,
                                          aFarc,
-                                         aSplit);
+                                         aSplit,
+                                         isAtVtx);
       // Where that edge crosses the split, inside both: it runs from the one
       // piece into the other there.
       bool   isCross = false;
@@ -1523,6 +1679,10 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
           throw Standard_Failure("TwoCorner : the corner's edge crosses the split twice");
         }
         isCross = aNbX == 1;
+        if (!isCross && !isAtVtx)
+        {
+          throw Standard_Failure("TwoCorner : the corner's edge does not cross the split");
+        }
       }
       TopOpeBRepDS_Curve Tcurv1(C3d, tolreached);
       if (isCross)
@@ -1592,13 +1752,37 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
         aRegul.SetS1(coin->Surf(), false);
         aRegul.SetS2(IFarc, true);
         myRegul.Append(aRegul);
+        // away from Vtx, its piece along the fillet OnSame gone under it
+        bool isFromQ = true;
+        if (isAtVtx)
+        {
+          isFromQ = BRep_Tool::Parameter(Vtx, aSplit) < aParQ;
+        }
+        else
+        {
+          const double  aWIn = uintpcsam
+                               + 0.25 * (sdsam->Interference(ifaopsam).Parameter(!isfirstsam)
+                                         - uintpcsam);
+          const BRepAdaptor_Curve aSCin(aSplit);
+          Extrema_ExtPC           anExtIn(curvopsam->Value(aWIn), aSCin);
+          double        aD2 = Precision::Infinite(), aParIn = aParQ;
+          for (int i = 1; anExtIn.IsDone() && i <= anExtIn.NbExt(); i++)
+          {
+            if (anExtIn.SquareDistance(i) < aD2)
+            {
+              aD2    = anExtIn.SquareDistance(i);
+              aParIn = anExtIn.Point(i).Parameter();
+            }
+          }
+          if (std::abs(aParIn - aParQ) < Precision::PConfusion())
+          {
+            throw Standard_Failure("TwoCorner : the side of the split under the fillet");
+          }
+          isFromQ = aParIn < aParQ;
+        }
         const int IS = DStr.AddShape(aSplit);
         DStr.ChangeShapeInterferences(IS).Append(
-          ChFi3d_FilPointInDS(BRep_Tool::Parameter(Vtx, aSplit) < aParQ ? TopAbs_FORWARD
-                                                                        : TopAbs_REVERSED,
-                              IS,
-                              IQ,
-                              aParQ));
+          ChFi3d_FilPointInDS(isFromQ ? TopAbs_FORWARD : TopAbs_REVERSED, IS, IQ, aParQ));
       }
       else if (isPiece)
       {
