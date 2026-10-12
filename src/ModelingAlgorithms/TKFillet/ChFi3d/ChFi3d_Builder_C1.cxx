@@ -2461,6 +2461,14 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     }
     if (!FvT.IsNull())
     {
+      // A face's surface where the face lies: the adaptor of a face that
+      // carries a location holds the surface without it.
+      auto aSurfOf = [](const occ::handle<BRepAdaptor_Surface>& theHB) {
+        const occ::handle<Geom_Surface>& aS = theHB->Surface().Surface();
+        return theHB->Trsf().Form() == gp_Identity
+                 ? aS
+                 : occ::down_cast<Geom_Surface>(aS->Transformed(theHB->Trsf()));
+      };
       // The point where the cut crosses from FvT to Fv: on Etg's line
       // carried on past Vp (or on Etg, at an end not OnSame), the nearest
       // of its intersections with the fillet's surface within the
@@ -2508,7 +2516,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
         // the point on each face's surface, on the period of Vp there
         for (int k = 0; k < 2; k++)
         {
-          occ::handle<Geom_Surface> aS = (k == 0 ? HBsT : HBs)->Surface().Surface();
+          occ::handle<Geom_Surface> aS = aSurfOf(k == 0 ? HBsT : HBs);
           const occ::handle<Geom_RectangularTrimmedSurface> aTr =
             occ::down_cast<Geom_RectangularTrimmedSurface>(aS);
           if (!aTr.IsNull())
@@ -2537,8 +2545,8 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       else
       {
         CTg  = new Geom_TrimmedCurve(new Geom_Line(LinTg), 0., wTg);
-        PTgT = CurveOnFacePeriod(CTg, HBsT->Surface().Surface(), FvT, Vp, 10 * tolapp3d);
-        PTgV = CurveOnFacePeriod(CTg, HBs->Surface().Surface(), Fv, Vp, 10 * tolapp3d);
+        PTgT = CurveOnFacePeriod(CTg, aSurfOf(HBsT), FvT, Vp, 10 * tolapp3d);
+        PTgV = CurveOnFacePeriod(CTg, aSurfOf(HBs), Fv, Vp, 10 * tolapp3d);
         if (PTgT.IsNull() || PTgV.IsNull())
         {
           throw Standard_Failure("OneCorner : the wall's tangent edge does not carry on");
@@ -2581,7 +2589,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       {
         const gp_Pnt2d&            pfilAd = IFadArc == 1 ? pfil1 : pfil2;
         GeomAPI_ProjectPointOnSurf aProj(HGs->Value(pfilAd.X(), pfilAd.Y()),
-                                         HBs->Surface().Surface());
+                                         aSurfOf(HBs));
         if (aProj.NbPoints() > 0)
         {
           double u, v;
@@ -2601,7 +2609,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       {
         const gp_Pnt2d&            pfilOp = IFopArc == 1 ? pfil1 : pfil2;
         GeomAPI_ProjectPointOnSurf aProj(HGs->Value(pfilOp.X(), pfilOp.Y()),
-                                         HBsT->Surface().Surface());
+                                         aSurfOf(HBsT));
         if (aProj.NbPoints() > 0 && aProj.LowerDistance() <= tolapp3d)
         {
           double u, v;
