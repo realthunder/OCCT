@@ -4738,6 +4738,26 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
   TopoDS_Vertex                            V1, V2, V, Vfin;
   bool                                     findonf1 = false, findonf2 = false;
   NCollection_List<TopoDS_Shape>::Iterator It3;
+  // the pieces of the wall F1 (F2) is a piece of, when it is away from Vtx
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aWall1, aWall2;
+  auto anOnWall = [&](const TopoDS_Face&                                            theF,
+                      const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theWall,
+                      const TopoDS_Vertex&                                          theV) {
+    if (containV(theF, theV))
+    {
+      return true;
+    }
+    for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itW(theWall);
+         itW.More();
+         itW.Next())
+    {
+      if (containV(TopoDS::Face(itW.Value()), theV))
+      {
+        return true;
+      }
+    }
+    return false;
+  };
   F1 = TopoDS::Face(DStr.Shape(Fd->IndexOfS1()));
   F2 = TopoDS::Face(DStr.Shape(Fd->IndexOfS2()));
   F3 = F1;
@@ -4963,6 +4983,124 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
       // to many faces at end
       // the faces at end and intersected edges are found
 
+      // The fillet's face away from Vtx, a piece of the wall the spine is
+      // on (a wall kept in coplanar pieces, the fillet wider than the piece
+      // beside its spine): the way from Vtx to the arc is the wall's
+      // outline, over its pieces, and the faces at end are those across it,
+      // as on the wall in one face.
+      auto aWallOf = [&](const TopoDS_Face&                                      theF,
+                         NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theWall) {
+        if (containV(theF, Vtx))
+        {
+          return;
+        }
+        NCollection_List<TopoDS_Shape> aList;
+        aList.Append(theF);
+        theWall.Add(theF);
+        bool hasSpine = false;
+        for (NCollection_List<TopoDS_Shape>::Iterator itL(aList); itL.More(); itL.Next())
+        {
+          const TopoDS_Face aP = TopoDS::Face(itL.Value());
+          hasSpine             = hasSpine || containE(aP, EdgeSpine);
+          for (TopExp_Explorer exE(aP, TopAbs_EDGE); exE.More(); exE.Next())
+          {
+            if (!myEFMap.Contains(exE.Current()) || myEFMap(exE.Current()).Extent() != 2)
+            {
+              continue;
+            }
+            for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(exE.Current())); itF.More();
+                 itF.Next())
+            {
+              const TopoDS_Face& aFn = TopoDS::Face(itF.Value());
+              if (!theWall.Contains(aFn) && ChFi3d_CoplanarPieces(aP, aFn, 10 * tolapp3d))
+              {
+                theWall.Add(aFn);
+                aList.Append(aFn);
+              }
+            }
+          }
+        }
+        if (!hasSpine)
+        {
+          theWall.Clear();
+        }
+      };
+      aWallOf(F1, aWall1);
+      aWallOf(F2, aWall2);
+      // the number of the wall's pieces an edge bounds
+      auto aNbIn = [&](const TopoDS_Shape&                                           theE,
+                       const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theWall) {
+        int n = 0;
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(theE)); itF.More(); itF.Next())
+        {
+          if (theWall.Contains(itF.Value()))
+          {
+            n++;
+          }
+        }
+        return n;
+      };
+      // the next edge of the face's outline (or the wall's) from theV, after
+      // theE, and its other vertex
+      auto aNext = [&](const TopoDS_Vertex&                                          theV,
+                       const TopoDS_Edge&                                            theE,
+                       const TopoDS_Face&                                            theF,
+                       const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theWall,
+                       TopoDS_Edge&                                                  theNext,
+                       TopoDS_Vertex&                                                theVNext) {
+        if (theWall.IsEmpty())
+        {
+          ChFi3d_cherche_element(theV, theE, theF, theNext, theVNext);
+          return;
+        }
+        TopoDS_Edge aFound;
+        for (NCollection_List<TopoDS_Shape>::Iterator itE(myVEMap(theV)); itE.More(); itE.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+          if (anE.IsSame(theE) || anE.IsSame(aFound) || BRep_Tool::Degenerated(anE)
+              || aNbIn(anE, theWall) != 1)
+          {
+            continue;
+          }
+          if (!aFound.IsNull())
+          {
+            throw Standard_Failure("IntersectionAtEnd : the wall's outline forks");
+          }
+          aFound = anE;
+        }
+        TopoDS_Vertex aVa, aVb;
+        if (!aFound.IsNull())
+        {
+          TopExp::Vertices(aFound, aVa, aVb);
+        }
+        if (aFound.IsNull() || aVa.IsSame(aVb))
+        {
+          throw Standard_Failure("IntersectionAtEnd : the wall's outline ends");
+        }
+        theNext  = aFound;
+        theVNext = theV.IsSame(aVa) ? aVb : aVa;
+      };
+      // the face across theE from the face (or from the wall)
+      auto anAcross = [&](const TopoDS_Edge&                                            theE,
+                          const TopoDS_Face&                                            theF,
+                          const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theWall,
+                          TopoDS_Face&                                                  theAcross) {
+        if (theWall.IsEmpty())
+        {
+          ChFi3d_cherche_face1(myEFMap(theE), theF, theAcross);
+          return;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(theE)); itF.More(); itF.Next())
+        {
+          if (!theWall.Contains(itF.Value()))
+          {
+            theAcross = TopoDS::Face(itF.Value());
+            return;
+          }
+        }
+        throw Standard_Failure("IntersectionAtEnd : no face across the wall's outline");
+      };
+
       if (findonf1 && !isOnSame1)
       {
         if (CV1.TransitionOnArc() == TopAbs_FORWARD)
@@ -4978,10 +5116,15 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         Ei = Edge[0];
         while (!V1.IsSame(Vtx))
         {
-          ChFi3d_cherche_element(V1, Ei, F1, E, V2);
+          aNext(V1, Ei, F1, aWall1, E, V2);
           V1 = V2;
           Ei = E;
-          ChFi3d_cherche_face1(myEFMap(E), F1, Face[nb]);
+          anAcross(E, F1, aWall1, Face[nb]);
+          // (two edges of the outline in line, a split's foot between them)
+          if (!aWall1.IsEmpty() && Face[nb].IsSame(Face[nb - 1]))
+          {
+            continue;
+          }
           cherche_edge1(Face[nb - 1], Face[nb], Edge[nb]);
           nb++;
           if (nb >= nn)
@@ -5013,15 +5156,19 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         {
           ChFi3d_cherche_face1(myEFMap(CV1.Arc()), F1, Face[nb - 1]);
         }
-        ChFi3d_cherche_element(V1, EdgeSpine, F2, E, V2);
+        aNext(V1, EdgeSpine, F2, aWall2, E, V2);
         Ei = E;
         V1 = V2;
         while (!V1.IsSame(Vfin))
         {
-          ChFi3d_cherche_element(V1, Ei, F2, E, V2);
+          aNext(V1, Ei, F2, aWall2, E, V2);
           Ei = E;
           V1 = V2;
-          ChFi3d_cherche_face1(myEFMap(E), F2, Face[nb]);
+          anAcross(E, F2, aWall2, Face[nb]);
+          if (!aWall2.IsEmpty() && Face[nb].IsSame(Face[nb - 1]))
+          {
+            continue;
+          }
           cherche_edge1(Face[nb - 1], Face[nb], Edge[nb]);
           nb++;
           if (nb >= nn)
@@ -6051,11 +6198,14 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
       {
         V1 = TopExp::FirstVertex(Edge[nb]);
         V2 = TopExp::LastVertex(Edge[nb]);
-        if (containV(F1, V1) || containV(F2, V1))
+        // (on F1 or F2, or on the outline of the wall it is a piece of)
+        const bool on1V1 = anOnWall(F1, aWall1, V1), on1V2 = anOnWall(F1, aWall1, V2);
+        const bool on2V1 = anOnWall(F2, aWall2, V1), on2V2 = anOnWall(F2, aWall2, V2);
+        if (on1V1 || on2V1)
         {
           ori = TopAbs_FORWARD;
         }
-        else if (containV(F1, V2) || containV(F2, V2))
+        else if (on1V2 || on2V2)
         {
           ori = TopAbs_REVERSED;
         }
@@ -6064,7 +6214,7 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           throw Standard_Failure("IntersectionAtEnd : pb orientation");
         }
 
-        if (containV(F1, V1) && containV(F1, V2))
+        if (on1V1 && on1V2)
         {
           dist1 = (BRep_Tool::Pnt(V1)).Distance(BRep_Tool::Pnt(Vtx));
           dist2 = (BRep_Tool::Pnt(V2)).Distance(BRep_Tool::Pnt(Vtx));
@@ -6077,7 +6227,7 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
             ori = TopAbs_REVERSED;
           }
         }
-        if (containV(F2, V1) && containV(F2, V2))
+        if (on2V1 && on2V2)
         {
           dist1 = (BRep_Tool::Pnt(V1)).Distance(BRep_Tool::Pnt(Vtx));
           dist2 = (BRep_Tool::Pnt(V2)).Distance(BRep_Tool::Pnt(Vtx));
