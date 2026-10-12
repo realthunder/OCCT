@@ -70,6 +70,9 @@
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Tool.hxx>
+#include <Extrema_ExtPC.hxx>
+#include <GeomProjLib.hxx>
+#include <TopOpeBRepDS_Point.hxx>
 #include <Geom_Curve.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <BRepTools_History.hxx>
@@ -1770,6 +1773,280 @@ void ChFi3d_Builder::PerformSingularCorner(const int Index)
   }
 }
 
+//=======================================================================
+// function : LineOnSplit
+// purpose  : A fillet as wide as the piece of a wall its spine is on (a wall
+//           kept in coplanar pieces, a body without Refine) has its line
+//           on the piece beyond, along the split: the spine's piece goes
+//           under the fillet there (ChFi3d_SplitPieceOfSpine). Where the
+//           fillet ends at a vertex with other fillets, the corner is made
+//           on the faces at the vertex, and the far piece is not one of
+//           them. The line is then shown on the spine's piece while the
+//           corner is made (Show), and put back on its own after it
+//           (Restore), the split cut where the line now ends (Cut).
+//=======================================================================
+
+namespace
+{
+struct LineOnSplit
+{
+  occ::handle<ChFiDS_Stripe>   Stripe;
+  occ::handle<ChFiDS_SurfData> SD;
+  bool                         IsFirst = false;
+  int                          Ons     = 0;
+  int                          IndFar  = 0;
+  occ::handle<Geom2d_Curve>    PcFar;
+  TopoDS_Edge                  Split;
+  bool                         IsTurned = false;
+
+  //! The parameter on the split of the point of the line at <theW>, when
+  //! the point is on the split, inside its ends.
+  bool OnSplit(const occ::handle<Geom_Curve>& theC,
+               const double                   theW,
+               const double                   theTol,
+               double&                        thePar,
+               double&                        theDist) const
+  {
+    const BRepAdaptor_Curve aSC(Split);
+    Extrema_ExtPC           anExt(theC->Value(theW), aSC);
+    double                  aD2 = Precision::Infinite();
+    for (int j = 1; anExt.IsDone() && j <= anExt.NbExt(); j++)
+    {
+      if (anExt.SquareDistance(j) < aD2)
+      {
+        aD2    = anExt.SquareDistance(j);
+        thePar = anExt.Point(j).Parameter();
+      }
+    }
+    if (aD2 > theTol * theTol)
+    {
+      return false;
+    }
+    theDist           = std::sqrt(aD2);
+    const double aRes = aSC.Resolution(theTol);
+    return thePar > aSC.FirstParameter() + aRes && thePar < aSC.LastParameter() - aRes;
+  }
+
+  void SetFace(const int theInd, const occ::handle<Geom2d_Curve>& thePc) const
+  {
+    if (Ons == 1)
+    {
+      SD->ChangeIndexOfS1(theInd);
+    }
+    else
+    {
+      SD->ChangeIndexOfS2(theInd);
+    }
+    SD->ChangeInterference(Ons).ChangePCurveOnFace() = thePc;
+    // the two pieces the other way up on their surfaces: the line's
+    // transition, told by its face's surface, is the other one (the
+    // stripe's own orientations are those of the spine's faces)
+    if (IsTurned)
+    {
+      ChFiDS_FaceInterference& aFi = SD->ChangeInterference(Ons);
+      aFi.SetTransition(TopAbs::Reverse(aFi.Transition()));
+    }
+  }
+
+  //! The end of <theStripe> at <theVtx>, when its line on a side is such a
+  //! line: it is put on the spine's piece.
+  bool Show(TopOpeBRepDS_DataStructure&       theDS,
+            const TopoDS_Vertex&              theVtx,
+            const occ::handle<ChFiDS_Stripe>& theStripe,
+            const ChFiDS_Map&                 theEFMap,
+            const double                      theTol)
+  {
+    if (theStripe->Spine().IsNull() || theStripe->SetOfSurfData().IsNull()
+        || theStripe->SetOfSurfData()->Length() == 0)
+    {
+      return false;
+    }
+    int       aSens = 0;
+    const int aNum  = ChFi3d_IndexOfSurfData(theVtx, theStripe, aSens);
+    Stripe          = theStripe;
+    SD              = theStripe->SetOfSurfData()->Value(aNum);
+    IsFirst         = aSens == 1;
+    const TopoDS_Edge& aSpineE =
+      theStripe->Spine()->Edges(IsFirst ? 1 : theStripe->Spine()->NbEdges());
+    if (!theEFMap.Contains(aSpineE))
+    {
+      return false;
+    }
+    for (Ons = 1; Ons <= 2; Ons++)
+    {
+      const ChFiDS_FaceInterference& aFi = SD->Interference(Ons);
+      IndFar                             = SD->Index(Ons);
+      if (IndFar <= 0 || aFi.LineIndex() <= 0 || aFi.PCurveOnFace().IsNull()
+          || theDS.Shape(IndFar).ShapeType() != TopAbs_FACE)
+      {
+        continue;
+      }
+      const occ::handle<Geom_Curve>& aC = theDS.Curve(aFi.LineIndex()).Curve();
+      if (aC.IsNull())
+      {
+        continue;
+      }
+      // not a face of the spine, nor one at the vertex
+      const TopoDS_Shape& aFar    = theDS.Shape(IndFar);
+      bool                isOther = true;
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(theEFMap(aSpineE)); itF.More(); itF.Next())
+      {
+        isOther = isOther && !itF.Value().IsSame(aFar);
+      }
+      for (TopExp_Explorer exV(aFar, TopAbs_VERTEX); exV.More() && isOther; exV.Next())
+      {
+        isOther = !exV.Current().IsSame(theVtx);
+      }
+      if (!isOther)
+      {
+        continue;
+      }
+      // the spine's piece across an edge of it, the same way up
+      for (TopExp_Explorer exE(aFar, TopAbs_EDGE); exE.More(); exE.Next())
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(exE.Current());
+        if (BRep_Tool::Degenerated(anE) || !theEFMap.Contains(anE)
+            || theEFMap(anE).Extent() != 2)
+        {
+          continue;
+        }
+        TopoDS_Face aFarSh, aNear;
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(theEFMap(anE)); itF.More(); itF.Next())
+        {
+          if (itF.Value().IsSame(aFar))
+          {
+            aFarSh = TopoDS::Face(itF.Value());
+            continue;
+          }
+          for (NCollection_List<TopoDS_Shape>::Iterator itS(theEFMap(aSpineE)); itS.More();
+               itS.Next())
+          {
+            if (itS.Value().IsSame(itF.Value()))
+            {
+              aNear = TopoDS::Face(itF.Value());
+            }
+          }
+        }
+        if (aFarSh.IsNull() || aNear.IsNull() || !ChFi3d_CoplanarPieces(aFarSh, aNear, theTol))
+        {
+          continue;
+        }
+        // the line along it, from its end here on
+        Split               = anE;
+        const double aW     = aFi.Parameter(IsFirst);
+        const double aWIn   = aW + 0.25 * (aFi.Parameter(!IsFirst) - aW);
+        double       aPar = 0., aDist = 0.;
+        if (!OnSplit(aC, aW, theTol, aPar, aDist) || !OnSplit(aC, aWIn, theTol, aPar, aDist))
+        {
+          continue;
+        }
+        const occ::handle<Geom2d_Curve> aPc = GeomProjLib::Curve2d(aC, BRep_Tool::Surface(aNear));
+        if (aPc.IsNull())
+        {
+          continue;
+        }
+        PcFar    = aFi.PCurveOnFace();
+        IsTurned = aFarSh.Orientation() != aNear.Orientation();
+        SetFace(theDS.AddShape(aNear), aPc);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  //! The line back on its piece.
+  void Restore() const { SetFace(IndFar, PcFar); }
+
+  //! The split cut at the line's end, its part under the line gone.
+  void Cut(TopOpeBRepDS_DataStructure& theDS, const double theTol) const
+  {
+    const ChFiDS_FaceInterference& aFi = SD->Interference(Ons);
+    const ChFiDS_CommonPoint&      aCP = SD->Vertex(IsFirst, Ons);
+    if (aCP.IsVertex() || aCP.IsOnArc())
+    {
+      return; // FILDS cuts the arc
+    }
+    const int                      anIndP = Stripe->IndexPoint(IsFirst, Ons);
+    const occ::handle<Geom_Curve>& aC     = theDS.Curve(aFi.LineIndex()).Curve();
+    const double                   aW     = aFi.Parameter(IsFirst);
+    const double                   aWIn   = aW + 0.25 * (aFi.Parameter(!IsFirst) - aW);
+    double                         aPar = 0., aParIn = 0., aDist = 0., aDistIn = 0.;
+    if (anIndP <= 0 || aC.IsNull() || !OnSplit(aC, aW, theTol, aPar, aDist)
+        || !OnSplit(aC, aWIn, theTol, aParIn, aDistIn))
+    {
+      throw Standard_Failure("A corner took a line along a split of its wall off the split");
+    }
+    const int IS = theDS.AddShape(Split);
+    for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator it(
+           theDS.ShapeInterferences(IS));
+         it.More();
+         it.Next())
+    {
+      if (it.Value()->GeometryType() == TopOpeBRepDS_POINT && it.Value()->Geometry() == anIndP)
+      {
+        return;
+      }
+    }
+    TopOpeBRepDS_Point& aP = theDS.ChangePoint(anIndP);
+    aP.Tolerance(std::max(aP.Tolerance(), aDist));
+    theDS.ChangeShapeInterferences(IS).Append(
+      ChFi3d_FilPointInDS(aParIn > aPar ? TopAbs_REVERSED : TopAbs_FORWARD, IS, anIndP, aPar));
+  }
+};
+
+//! The lines shown on the spine's piece at a vertex, put back when the
+//! corner is made or fails.
+class LinesOnSplit
+{
+public:
+  LinesOnSplit(TopOpeBRepDS_DataStructure& theDS, const double theTol)
+      : myDS(theDS),
+        myTol(theTol)
+  {
+  }
+
+  ~LinesOnSplit()
+  {
+    for (NCollection_List<LineOnSplit>::Iterator it(myLines); it.More(); it.Next())
+    {
+      it.Value().Restore();
+    }
+  }
+
+  void Show(const TopoDS_Vertex&              theVtx,
+            const occ::handle<ChFiDS_Stripe>& theStripe,
+            const ChFiDS_Map&                 theEFMap)
+  {
+    LineOnSplit aLine;
+    if (aLine.Show(myDS, theVtx, theStripe, theEFMap, myTol))
+    {
+      myLines.Append(aLine);
+    }
+  }
+
+  //! The corner is made.
+  void Finish()
+  {
+    NCollection_List<LineOnSplit> aLines;
+    aLines.Assign(myLines);
+    myLines.Clear();
+    for (NCollection_List<LineOnSplit>::Iterator it(aLines); it.More(); it.Next())
+    {
+      it.Value().Restore();
+    }
+    for (NCollection_List<LineOnSplit>::Iterator it(aLines); it.More(); it.Next())
+    {
+      it.Value().Cut(myDS, myTol);
+    }
+  }
+
+private:
+  TopOpeBRepDS_DataStructure&   myDS;
+  double                        myTol;
+  NCollection_List<LineOnSplit> myLines;
+};
+} // namespace
+
 //=================================================================================================
 
 void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
@@ -1837,6 +2114,15 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
 
   if (nondegenere)
   { // Normal processing
+    // the lines along a split of the wall, on the far piece (see LineOnSplit)
+    LinesOnSplit aLines(myDS->ChangeDS(), 10 * tolapp3d);
+    if (i >= 2)
+    {
+      for (It.Initialize(myVDataMap(Index)); It.More(); It.Next())
+      {
+        aLines.Show(Vtx, It.Value(), myEFMap);
+      }
+    }
     switch (i)
     {
       case 1: {
@@ -1946,6 +2232,7 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
 #endif
       }
     }
+    aLines.Finish();
   }
   else
   { // Single case processing
