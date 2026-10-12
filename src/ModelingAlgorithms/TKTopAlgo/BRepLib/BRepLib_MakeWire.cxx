@@ -18,6 +18,7 @@
 #include <BRep_Tool.hxx>
 #include <BRepLib_MakeWire.hxx>
 #include <gp_Pnt.hxx>
+#include <Precision.hxx>
 #include <StdFail_NotDone.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -29,6 +30,8 @@
 #include <TopoDS_Shape.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_Map.hxx>
+
+#include <algorithm>
 
 //=================================================================================================
 
@@ -406,11 +409,21 @@ void BRepLib_MakeWire::Add(const TopoDS_Edge& E, bool IsCheckGeometryProximity)
                         cW * PW.Z() + cE * PE.Z());
 
               // A frozen vertex is not moved or widened: the wire gets a
-              // copy that is (thawVertex), and the input keeps its own.
-              TopoDS_Vertex aVW = VW;
-              if (VW.Immutable() && (!PC.IsEqual(PW, 0.) || maxtol > tolW))
+              // copy that is (thawVertex), and the input keeps its own. A
+              // move or a growth that is rounding and no more is neither
+              // (BRepLib's UpdShTol has the same rule): the vertex stays as
+              // it is, where a copy would lie beside it in every shape that
+              // shares it.
+              const double  aSlack = 1.e-4 * Precision::Confusion();
+              const bool    isMoved = PC.Distance(PW) > aSlack;
+              const bool    isWider = maxtol - tolW > std::max(aSlack, 1.e-5 * tolW);
+              TopoDS_Vertex aVW     = VW;
+              if (VW.Immutable())
               {
-                aVW = thawVertex(i, PC, maxtol);
+                if (isMoved || isWider)
+                {
+                  aVW = thawVertex(i, PC, maxtol);
+                }
               }
               else
               {

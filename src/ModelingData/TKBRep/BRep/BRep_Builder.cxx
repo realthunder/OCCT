@@ -80,6 +80,17 @@
 // TShape's BRep_RepresentationLock, as the writers walk it under the same lock.
 //=================================================================================================
 
+//! Whether a tolerance of <theHeld> covers <theTol>: at or under it, or above
+//! it by rounding and no more. A tolerance that came through the root of a
+//! squared distance sits a few 1e-14 above the 1e-7 it stands for, and one
+//! compiler's rounding leaves 1e-7 an ulp above another's; a growth within
+//! what a tolerance can mean is no change to an Immutable shape, and is not
+//! made to it either.
+static bool covers(const double theHeld, const double theTol)
+{
+  return theTol <= theHeld + std::max(1.e-4 * Precision::Confusion(), 1.e-5 * theHeld);
+}
+
 //! For an Immutable target: true when the call changes nothing (the caller
 //! returns), a throw when it would change something.
 static bool unchangedOrRefused(const bool theUnchanged, const char* theWhere)
@@ -214,7 +225,7 @@ static bool immutableTakesPCurve(const occ::handle<BRep_TEdge>&   theTE,
                                  const TopLoc_Location&           theL,
                                  const double                     theTol)
 {
-  if (theTol > theTE->Tolerance())
+  if (!covers(theTE->Tolerance(), theTol))
   {
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
@@ -303,7 +314,7 @@ static void checkImmutableVertexOnEdge(const occ::handle<BRep_TVertex>& theTV,
 {
   if (theTV->Immutable())
   {
-    unchangedOrRefused(theTol <= theTV->Tolerance(), "BRep_Builder::UpdateVertex");
+    unchangedOrRefused(covers(theTV->Tolerance(), theTol), "BRep_Builder::UpdateVertex");
   }
   const bool isEnd = theOri == TopAbs_FORWARD || theOri == TopAbs_REVERSED;
   if (!isEnd || !theTE->Immutable())
@@ -913,7 +924,8 @@ void BRep_Builder::UpdateFace(const TopoDS_Face& F, const double Tol) const
     throw TopoDS_LockedShape("BRep_Builder::UpdateFace");
   }
   if (TF->Immutable()
-      && unchangedOrRefused(Tol == TF->Tolerance(), "BRep_Builder::UpdateFace"))
+      && unchangedOrRefused(covers(TF->Tolerance(), Tol) && covers(Tol, TF->Tolerance()),
+                            "BRep_Builder::UpdateFace"))
   {
     return;
   }
@@ -998,8 +1010,10 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
   {
     markPCurveCache(TE, S, l);
   }
-
-  TE->UpdateTolerance(Tol);
+  else
+  {
+    TE->UpdateTolerance(Tol);
+  }
   TE->Modified(true);
 }
 
@@ -1033,8 +1047,10 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
   {
     markPCurveCache(TE, S, l);
   }
-
-  TE->UpdateTolerance(Tol);
+  else
+  {
+    TE->UpdateTolerance(Tol);
+  }
   TE->Modified(true);
 }
 
@@ -1064,8 +1080,10 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
   {
     markPCurveCache(TE, S, l);
   }
-
-  TE->UpdateTolerance(Tol);
+  else
+  {
+    TE->UpdateTolerance(Tol);
+  }
   TE->Modified(true);
 }
 
@@ -1100,8 +1118,10 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
   {
     markPCurveCache(TE, S, l);
   }
-
-  TE->UpdateTolerance(Tol);
+  else
+  {
+    TE->UpdateTolerance(Tol);
+  }
   TE->Modified(true);
 }
 
@@ -1369,7 +1389,7 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge& E, const double Tol) const
     throw TopoDS_LockedShape("BRep_Builder::UpdateEdge");
   }
   if (TE->Immutable()
-      && unchangedOrRefused(Tol <= TE->Tolerance(), "BRep_Builder::UpdateEdge"))
+      && unchangedOrRefused(covers(TE->Tolerance(), Tol), "BRep_Builder::UpdateEdge"))
   {
     return;
   }
@@ -1648,7 +1668,8 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V, const gp_Pnt& P, const d
     std::max(std::abs(aHeld.X()), std::max(std::abs(aHeld.Y()), std::abs(aHeld.Z()))));
   const double aRoundTrip = 16. * std::numeric_limits<double>::epsilon() * aScale;
   if (TV->Immutable()
-      && unchangedOrRefused(aLocal.Distance(aHeld) <= aRoundTrip && Tol <= TV->Tolerance(),
+      && unchangedOrRefused(aLocal.Distance(aHeld) <= aRoundTrip
+                              && covers(TV->Tolerance(), Tol),
                             "BRep_Builder::UpdateVertex"))
   {
     return;
@@ -1758,7 +1779,10 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V,
   {
     TV->Modified(true);
   }
-  TV->UpdateTolerance(Tol);
+  if (!TV->Immutable()) // covered: nothing to grow to, or rounding
+  {
+    TV->UpdateTolerance(Tol);
+  }
   TE->Modified(true);
 }
 
@@ -1861,7 +1885,10 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex&             V,
     throw Standard_DomainError("BRep_Builder:: no pcurve");
   }
 
-  TV->UpdateTolerance(Tol);
+  if (!TV->Immutable()) // covered: nothing to grow to, or rounding
+  {
+    TV->UpdateTolerance(Tol);
+  }
   TE->Modified(true);
 }
 
@@ -1890,11 +1917,14 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& Ve,
   NCollection_List<occ::handle<BRep_PointRepresentation>>& lpr = TV->ChangePoints();
   if (TV->Immutable())
   {
-    unchangedOrRefused(Tol <= TV->Tolerance(), "BRep_Builder::UpdateVertex");
+    unchangedOrRefused(covers(TV->Tolerance(), Tol), "BRep_Builder::UpdateVertex");
   }
   UpdatePoints(lpr, U, V, S, L, TV->Immutable());
 
-  TV->UpdateTolerance(Tol);
+  if (!TV->Immutable()) // covered: nothing to grow to, or rounding
+  {
+    TV->UpdateTolerance(Tol);
+  }
   TV->Modified(true);
 }
 
@@ -1910,7 +1940,7 @@ void BRep_Builder::UpdateVertex(const TopoDS_Vertex& V, const double Tol) const
     throw TopoDS_LockedShape("BRep_Builder::UpdateVertex");
   }
   if (TV->Immutable()
-      && unchangedOrRefused(Tol <= TV->Tolerance(), "BRep_Builder::UpdateVertex"))
+      && unchangedOrRefused(covers(TV->Tolerance(), Tol), "BRep_Builder::UpdateVertex"))
   {
     return;
   }
