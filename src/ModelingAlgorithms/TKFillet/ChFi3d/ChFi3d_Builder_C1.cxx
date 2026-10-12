@@ -5660,6 +5660,17 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           gp_Pnt2d pt2d(inters.Point(nbp).U(), inters.Point(nbp).V());
           pfil2    = pt2d;
           paredge2 = inters.Point(nbp).W();
+          // On a closed curve the point comes on the curve's first turn,
+          // whatever the edge's range: an arc of a circle from 3.95 to 9.10
+          // cut at 9.097 was given the point at 2.814, off the edge, and the
+          // faces beside it lost the edge whole.
+          if (!extend && Cad.IsPeriodic())
+          {
+            double aFE, aLE;
+            BRep_Tool::Range(E2, aFE, aLE);
+            const double aPeriod = Cad.Period();
+            paredge2 += aPeriod * std::floor((0.5 * (aFE + aLE) - paredge2) / aPeriod + 0.5);
+          }
           if (!extend)
           {
             cfacemoins1 = BRep_Tool::CurveOnSurface(E2, F, u2, v2);
