@@ -1836,8 +1836,25 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
       Ecur = CD.Value(0)->Spine()->Edges(CD.Value(0)->Spine()->NbEdges());
     }
     Evive.SetValue(0, Ecur);
+    // a fillet wider than the piece of a wall its edge bounds ends on the
+    // next coplanar piece, a face that does not hold V1: the parsing cannot
+    // start there, another stripe is asked
+    bool isAtV1 = false;
+    for (TopExp_Explorer aExpV(Fcur, TopAbs_VERTEX); aExpV.More() && !isAtV1; aExpV.Next())
+    {
+      isAtV1 = aExpV.Current().IsSame(V1);
+    }
+    if (!isAtV1)
+    {
+      continue;
+    }
     ChFi3d_cherche_edge(V1, Evive, Fcur, Enext, VV);
     trouve = !Enext.IsNull();
+  }
+  if (!trouve)
+  {
+    // (as ChFi3d_cherche_edge said of the first stripe's face)
+    throw Standard_ConstructionError("Failed to find edge");
   }
   // find sum of all face normals at V1
   SummarizeNormal(V1, Fcur, Ecur, SumFaceNormalAtV1);
