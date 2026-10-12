@@ -17,15 +17,19 @@
 #include <Adaptor2d_Curve2d.hxx>
 #include <Blend_CurvPointFuncInv.hxx>
 #include <Blend_FuncInv.hxx>
+#include <BRep_Tool.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepBlend_Line.hxx>
 #include <BRepTopAdaptor_TopolTool.hxx>
 #include <ChFi3d_Builder.hxx>
 #include <ChFi3d_Builder_0.hxx>
 #include <ChFiDS_CommonPoint.hxx>
 #include <ChFiDS_Spine.hxx>
+#include <ChFiDS_Stripe.hxx>
 #include <ChFiDS_SurfData.hxx>
 #include <Standard_Integer.hxx>
 #include <NCollection_DataMap.hxx>
+#include <NCollection_List.hxx>
 #include <ElCLib.hxx>
 #include <ElSLib.hxx>
 #include <Geom2d_Curve.hxx>
@@ -38,6 +42,7 @@
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Lin.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
 #include <HatchGen_Domain.hxx>
@@ -48,6 +53,7 @@
 #include <NCollection_Array1.hxx>
 #include <NCollection_Sequence.hxx>
 #include <TopExp.hxx>
+#include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
@@ -806,6 +812,125 @@ static bool Near(TopOpeBRepDS_DataStructure&         DStr,
 }
 
 //=======================================================================
+// function : AloneAt
+// purpose  : True when no other fillet than <Spine>'s has an end at <V>,
+//           and that one a single end.
+//=======================================================================
+
+static bool AloneAt(const TopoDS_Vertex&                               V,
+                    const occ::handle<ChFiDS_Spine>&                   Spine,
+                    const NCollection_List<occ::handle<ChFiDS_Stripe>>& Stripes)
+{
+  if (Spine->FirstVertex().IsSame(Spine->LastVertex()))
+  {
+    return false;
+  }
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(Stripes); it.More(); it.Next())
+  {
+    const occ::handle<ChFiDS_Spine>& aSp = it.Value()->Spine();
+    if (aSp.IsNull() || aSp == Spine)
+    {
+      continue;
+    }
+    if (aSp->FirstVertex().IsSame(V) || aSp->LastVertex().IsSame(V))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//=======================================================================
+// function : CutBeforeSplit
+// purpose  : True when the end face cuts the line of <CD> on its side
+//           <ons>, on <F>, before the line's parameter <W>: the edge of <F>
+//           at the spine's end <V> that is not the spine's, <Support>,
+//           carried on from <V> over <F>, meets the line short of <W>, in
+//           the part of it <F> holds. Straight lines only.
+//=======================================================================
+
+static bool CutBeforeSplit(TopOpeBRepDS_DataStructure&         DStr,
+                           const occ::handle<ChFiDS_SurfData>& CD,
+                           const int                           ons,
+                           const TopoDS_Face&                  F,
+                           const TopoDS_Vertex&                V,
+                           const TopoDS_Edge&                  Support,
+                           const double                        W,
+                           const bool                          isFirst,
+                           const ChFiDS_Map&                   VEMap,
+                           const ChFiDS_Map&                   EFMap,
+                           const double                        Tol)
+{
+  const occ::handle<Geom_Surface>& aSurf = DStr.Surface(CD->Surf()).Surface();
+  const occ::handle<Geom2d_Curve>& aPC   = CD->Interference(ons).PCurveOnSurf();
+  if (aSurf.IsNull() || aPC.IsNull() || !VEMap.Contains(V))
+  {
+    return false;
+  }
+  // the line, straight and run at unit speed, from <W> inward
+  const double aSense = isFirst ? 1. : -1.;
+  auto         aPnt   = [&](const double theW) {
+    const gp_Pnt2d aP = aPC->Value(theW);
+    return aSurf->Value(aP.X(), aP.Y());
+  };
+  const gp_Pnt aP0 = aPnt(W), aP1 = aPnt(W + aSense), aPm = aPnt(W + 0.5 * aSense);
+  if (std::abs(aP0.Distance(aP1) - 1.) > Tol)
+  {
+    return false;
+  }
+  const gp_Lin aLk(aP0, gp_Dir(gp_Vec(aP0, aP1)));
+  if (aLk.Distance(aPm) > Tol)
+  {
+    return false;
+  }
+  // the edge of the face at the vertex, not the spine's
+  TopoDS_Edge aProl;
+  int         aNb = 0;
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(VEMap(V)); itE.More(); itE.Next())
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+    if (anE.IsSame(Support) || anE.IsSame(aProl) || BRep_Tool::Degenerated(anE)
+        || !EFMap.Contains(anE))
+    {
+      continue;
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(anE)); itF.More(); itF.Next())
+    {
+      if (itF.Value().IsSame(F))
+      {
+        aProl = anE;
+        aNb++;
+      }
+    }
+  }
+  if (aNb != 1)
+  {
+    return false;
+  }
+  const BRepAdaptor_Curve aCProl(aProl);
+  if (aCProl.GetType() != GeomAbs_Line)
+  {
+    return false;
+  }
+  // where it meets the line: past the vertex, and inward of <W>
+  const gp_Lin aLe = aCProl.Line();
+  const gp_Vec aDk(aLk.Direction()), aDe(aLe.Direction());
+  const gp_Vec aN  = aDk.Crossed(aDe);
+  const double aN2 = aN.SquareMagnitude();
+  if (aN2 < 1.e-12)
+  {
+    return false;
+  }
+  const gp_Vec aPP(aLk.Location(), aLe.Location());
+  const double aTk = aPP.Crossed(aDe).Dot(aN) / aN2;
+  const double aTe = aPP.Crossed(aDk).Dot(aN) / aN2;
+  const double aTv = BRep_Tool::Parameter(V, aProl);
+  const double aTm = 0.5 * (aCProl.FirstParameter() + aCProl.LastParameter());
+  return aLk.Location().Translated(aTk * aDk).Distance(aLe.Location().Translated(aTe * aDe)) <= Tol
+         && (aTe - aTv) * (aTm - aTv) < 0. && std::abs(aTe - aTv) > Tol && aTk > Tol;
+}
+
+//=======================================================================
 // function : RunOn
 // purpose  : The end of <CD>'s line on its side <ons> put at <W>, in the
 //           face, where its other side ends: the line runs on over a
@@ -1147,19 +1272,44 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
               // face. The line runs on over the coplanar piece instead, as
               // where the split is past the end, and is carried over the
               // split at the end (LineOverSplit).
+              // The same at an end OnSame no other fillet comes to, the
+              // split further from the end, where the end face cuts the line
+              // before the split: the walk does start in what is left then,
+              // and the fillet ends in two surfaces, the last all on the part
+              // cut off save for a corner the end's curve runs over -- a
+              // curve over two surfaces, which the corner of one fillet does
+              // not make. The line runs on here too; the corner cuts it
+              // before it leaves its piece, as on the wall in one face.
               const bool isFirstSD = intf && SetData.IsEmpty() && period1 == 0. && period2 == 0.;
               const bool isLastSD  = intl && i == Nb1 && j == Nb2 && period1 == 0. && period2 == 0.;
+              const bool isCutf    = isFirstSD && Spine->FirstStatus() == ChFiDS_OnSame
+                                  && AloneAt(bout1, Spine, myListStripe);
+              const bool isCutl    = isLastSD && Spine->LastStatus() == ChFiDS_OnSame
+                                  && AloneAt(bout2, Spine, myListStripe);
+              const double aTolS   = 10 * tolapp3d;
               const bool over1f    = isFirstSD && f1 > f2 + tol2d && Dom1.HasFirstPoint()
-                                  && Near(DStr, CD, 1, f1, f2, 10 * tolapp3d)
+                                  && (Near(DStr, CD, 1, f1, f2, aTolS)
+                                      || (isCutf
+                                          && CutBeforeSplit(DStr, CD, 1, F1, bout1, support, f1,
+                                                            true, myVEMap, myEFMap, aTolS)))
                                   && OnSplit(Dom1.FirstPoint(), M1, F1, myEFMap, tolapp3d);
               const bool over2f    = isFirstSD && f2 > f1 + tol2d && Dom2.HasFirstPoint()
-                                  && Near(DStr, CD, 2, f2, f1, 10 * tolapp3d)
+                                  && (Near(DStr, CD, 2, f2, f1, aTolS)
+                                      || (isCutf
+                                          && CutBeforeSplit(DStr, CD, 2, F2, bout1, support, f2,
+                                                            true, myVEMap, myEFMap, aTolS)))
                                   && OnSplit(Dom2.FirstPoint(), M2, F2, myEFMap, tolapp3d);
               const bool over1l    = isLastSD && l1 < l2 - tol2d && Dom1.HasSecondPoint()
-                                  && Near(DStr, CD, 1, l1, l2, 10 * tolapp3d)
+                                  && (Near(DStr, CD, 1, l1, l2, aTolS)
+                                      || (isCutl
+                                          && CutBeforeSplit(DStr, CD, 1, F1, bout2, support, l1,
+                                                            false, myVEMap, myEFMap, aTolS)))
                                   && OnSplit(Dom1.SecondPoint(), M1, F1, myEFMap, tolapp3d);
               const bool over2l    = isLastSD && l2 < l1 - tol2d && Dom2.HasSecondPoint()
-                                  && Near(DStr, CD, 2, l2, l1, 10 * tolapp3d)
+                                  && (Near(DStr, CD, 2, l2, l1, aTolS)
+                                      || (isCutl
+                                          && CutBeforeSplit(DStr, CD, 2, F2, bout2, support, l2,
+                                                            false, myVEMap, myEFMap, aTolS)))
                                   && OnSplit(Dom2.SecondPoint(), M2, F2, myEFMap, tolapp3d);
               if ((f1 >= f2 - tol2d || over2f) && !over1f)
               {
