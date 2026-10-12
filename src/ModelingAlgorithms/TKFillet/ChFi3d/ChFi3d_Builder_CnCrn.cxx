@@ -1263,6 +1263,22 @@ static void RemoveSurfData(const ChFiDS_StripeMap& myVDataMap,
       ChFi3d_edge_common_faces(myEFMap(Eadj2), Fg, Fd);
       bool compoint = false;
       isfirst       = (sense == 1);
+      // The surfaces looked at are those on the spine's edge at V1, and past
+      // it: the fillet run on beyond the vertex is there. A fillet along a
+      // chain of edges can come back to an edge beside V1 far from it --
+      // round a face whose edge at V1 is a long one, the split of a wall
+      // kept in coplanar pieces, say -- and its surface there, at the
+      // chain's other end, has a point on that edge too: it was the one
+      // kept, and all the others were removed.
+      const occ::handle<ChFiDS_Stripe>& aStripe = It.Value();
+      const occ::handle<ChFiDS_Spine>&  aSp     = aStripe->Spine();
+      auto isAtEnd = [&](const int theI) {
+        const occ::handle<ChFiDS_SurfData>& aSD = aStripe->SetOfSurfData()->Value(theI);
+        return isfirst
+                 ? aSD->FirstSpineParam() < aSp->LastParameter(1) - Precision::Confusion()
+                 : aSD->LastSpineParam()
+                     > aSp->FirstParameter(aSp->NbEdges()) + Precision::Confusion();
+      };
       int ind;
       if (sense == 1)
       {
@@ -1270,7 +1286,7 @@ static void RemoveSurfData(const ChFiDS_StripeMap& myVDataMap,
         // among surfdatas find the greatest indice ind so that
         // surfdata could have one of commonpoint on Eadj1 and Eadj2
         // remove surfdata from 1 to ind-1
-        for (int i = 1; i <= nbsurf; i++)
+        for (int i = 1; i <= nbsurf && isAtEnd(i); i++)
         {
           CpOnEdge(It.Value(), i, isfirst, Eadj1, Eadj2, compoint);
           if (compoint)
@@ -1289,7 +1305,7 @@ static void RemoveSurfData(const ChFiDS_StripeMap& myVDataMap,
         // among surfdatas find the smallest indice ind so that
         // surfdata could have one of commonpoint on Eadj1 and Eadj2
         // remove surfdata from ind+1 to num
-        for (int i = num; i >= 1; i--)
+        for (int i = num; i >= 1 && isAtEnd(i); i--)
         {
           CpOnEdge(It.Value(), i, isfirst, Eadj1, Eadj2, compoint);
           if (compoint)
