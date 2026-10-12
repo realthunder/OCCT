@@ -2175,9 +2175,36 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     // end beyond (a wall kept in pieces, the radius wider than the piece's
     // edge at Vtx). The line ends on that edge of the piece, as it would on
     // the wall in one face, and is carried over the split below.
-    if (!inters && CV1.IsOnArc() != CV2.IsOnArc())
+    // Or that side stopped on the split itself, which ends at Vtx: the
+    // piece the spine is on ends with the spine, and the line stands at the
+    // split as one stopped in its face a hair before it.
+    int onsOnSplit = 0;
+    for (int ons = 1; ons <= 2 && !inters && CV1.IsOnArc() && CV2.IsOnArc(); ons++)
     {
-      const int                 onsArc = CV1.IsOnArc() ? 1 : 2;
+      const TopoDS_Edge& anArc = Fd->Vertex(isfirst, ons).Arc();
+      const TopoDS_Edge& anOpp = Fd->Vertex(isfirst, 3 - ons).Arc();
+      const TopoDS_Face  aF    = TopoDS::Face(DStr.Shape(Fd->Index(ons)));
+      if (!hasVertex(anArc, Vtx) || !hasVertex(anOpp, Vtx) || myEFMap(anArc).Extent() != 2
+          || Fd->Vertex(isfirst, ons).IsVertex())
+      {
+        continue;
+      }
+      TopoDS_Face aFn;
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(anArc)); itF.More(); itF.Next())
+      {
+        if (!aF.IsSame(itF.Value()))
+        {
+          aFn = TopoDS::Face(itF.Value());
+        }
+      }
+      if (!aFn.IsNull() && containE(aF, anArc) && ChFi3d_CoplanarPieces(aF, aFn, 10 * tolapp3d))
+      {
+        onsOnSplit = onsOnSplit == 0 ? ons : -1;
+      }
+    }
+    if (!inters && (CV1.IsOnArc() != CV2.IsOnArc() || onsOnSplit > 0))
+    {
+      const int                 onsArc = onsOnSplit > 0 ? 3 - onsOnSplit : CV1.IsOnArc() ? 1 : 2;
       const int                 onsAir = 3 - onsArc;
       const ChFiDS_CommonPoint& aCPArc = Fd->Vertex(isfirst, onsArc);
       const TopoDS_Face         aFArc  = TopoDS::Face(DStr.Shape(Fd->Index(onsArc)));
