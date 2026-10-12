@@ -1707,8 +1707,12 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
         {
           continue;
         }
-        const TopoDS_Edge anEV =
-          ChFi3d_EdgeOnSplitToVertex(anArc, aF, anOther, Vtx, myEFMap, myVEMap);
+        // (the wall in pieces is the fillet's face, or the one the arc bounds)
+        TopoDS_Edge anEV = ChFi3d_EdgeOnSplitToVertex(anArc, aF, anOther, Vtx, myEFMap, myVEMap);
+        if (anEV.IsNull())
+        {
+          anEV = ChFi3d_EdgeOnSplitToVertex(anArc, anOther, aF, Vtx, myEFMap, myVEMap);
+        }
         if (!anEV.IsNull())
         {
           (ons == 1 ? EV1 : EV2)   = anEV;

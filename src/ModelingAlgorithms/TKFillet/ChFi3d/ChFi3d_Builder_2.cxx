@@ -1651,8 +1651,10 @@ bool ChFi3d_Builder::StartSol(
             break;
           }
         }
+        // (the face the fillet is on in pieces, or the one the arc bounds)
         if (c1obstacle
-            && !ChFi3d_EdgeOnSplitToVertex(anArcEdge, F, Fv, Vref, myEFMap, myVEMap).IsNull())
+            && (!ChFi3d_EdgeOnSplitToVertex(anArcEdge, F, Fv, Vref, myEFMap, myVEMap).IsNull()
+                || !ChFi3d_EdgeOnSplitToVertex(anArcEdge, Fv, F, Vref, myEFMap, myVEMap).IsNull()))
         {
           c1obstacle = false;
         }
