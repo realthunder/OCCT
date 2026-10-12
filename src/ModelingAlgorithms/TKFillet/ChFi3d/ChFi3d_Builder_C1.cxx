@@ -1525,9 +1525,26 @@ static double KeepCurveOnFace(occ::handle<Geom2d_Curve>& C,
 //           <thePrepareOnSame> means that only needed thing is redefinition
 //           of intersection pameter of OnSame-Stripe with <Arcprol>
 //           (eap, Arp 9 2002, occ266)
+//
+//           <theAtFourEdges>: the vertex has four sharp edges, one of them
+//           carrying the spine on past it, and the face at end is in two
+//           coplanar pieces, the fillet wider than the one at the vertex
+//           (see PerformIntersectionAtEnd). The corner is IntersectMoreCorner's
+//           -- the face at end extended to the fillet, as at an end OnSame --
+//           with the cut over the two pieces.
 //=======================================================================
 
-void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
+static bool ArcPastWallSplit(const TopoDS_Vertex& Vtx,
+                             const TopoDS_Edge&   Arc,
+                             const TopoDS_Face&   Fad,
+                             const ChFiDS_Map&    VEMap,
+                             const ChFiDS_Map&    EFMap,
+                             const double         Tol,
+                             TopoDS_Edge&         Eat);
+
+void ChFi3d_Builder::PerformOneCorner(const int  Index,
+                                      const bool thePrepareOnSame,
+                                      const bool theAtFourEdges)
 {
   TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
 
@@ -1588,9 +1605,14 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
   {
     stat = spine->LastStatus();
   }
-  bool        onsame = (stat == ChFiDS_OnSame);
+  bool        onsame = (stat == ChFiDS_OnSame) || theAtFourEdges;
   TopoDS_Face Fv, Fad, Fop;
   TopoDS_Edge Arcpiv, Arcprol, Arcspine;
+  // At four edges: the edge of Vtx on Fop that is not the spine's, which
+  // the extension carries on in Fop as it does Arcprol in Fv, and Vtx's
+  // orientation in it
+  TopoDS_Edge        Arcprolbis;
+  TopAbs_Orientation OVtxBis = TopAbs_FORWARD;
   // edges of Fv from Vtx to Arcpiv when Arcpiv is not an edge of Vtx
   NCollection_List<TopoDS_Shape> Swallowed;
   // Arcprol in a face tangent to Fop across an edge of Vtx (one wall in two
@@ -1687,7 +1709,23 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       // face through the pieces: it is on Vtx as the whole wall's would be,
       // and the edge of Vtx it continues as stands for it.
       TopoDS_Edge EV1 = CV1.Arc(), EV2 = CV2.Arc();
-      for (int ons = 1; ons <= 2 && sur1 != sur2; ons++)
+      // At four edges: the side on an edge past the foot of the split of
+      // the face at end is on Vtx as on that face in one piece.
+      for (int ons = 1; ons <= 2 && theAtFourEdges && !sur1 && !sur2; ons++)
+      {
+        TopoDS_Edge anEat;
+        if (ArcPastWallSplit(Vtx,
+                             ons == 1 ? CV1.Arc() : CV2.Arc(),
+                             TopoDS::Face(DStr.Shape(Fd->Index(ons))),
+                             myVEMap,
+                             myEFMap,
+                             10 * tolapp3d,
+                             anEat))
+        {
+          (ons == 1 ? sur1 : sur2) = true;
+        }
+      }
+      for (int ons = 1; ons <= 2 && sur1 != sur2 && !theAtFourEdges; ons++)
       {
         if (ons == 1 ? sur1 : sur2)
         {
@@ -1719,7 +1757,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
           (ons == 1 ? sur1 : sur2) = true;
         }
       }
-      if (sur1 && sur2)
+      if (sur1 && sur2 && !theAtFourEdges)
       {
         TopoDS_Edge E[3];
         E[0] = EV1;
@@ -1867,7 +1905,8 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
     {
       for (It.Initialize(myVEMap(Vtx)); It.More() && Arcprol.IsNull(); It.Next())
       {
-        if (Arcpiv.IsSame(It.Value()))
+        if (Arcpiv.IsSame(It.Value()) || Eunder.IsSame(It.Value())
+            || (theAtFourEdges && Arcspine.IsSame(It.Value())))
         {
           continue;
         }
@@ -1918,7 +1957,43 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       Swallowed.Append(Eunder);
       Swallowed.Append(Vtx);
     }
-    for (ex.Init(Fop, TopAbs_EDGE); ex.More(); ex.Next())
+    if (theAtFourEdges)
+    {
+      if (FvT.IsNull())
+      {
+        throw Standard_Failure("OneCorner : the face at end is not in two pieces");
+      }
+      for (It.Initialize(myVEMap(Vtx)); It.More() && Arcprolbis.IsNull(); It.Next())
+      {
+        if (Arcprol.IsSame(It.Value()) || Arcspine.IsSame(It.Value())
+            || Arcpiv.IsSame(It.Value()) || Eunder.IsSame(It.Value()))
+        {
+          continue;
+        }
+        for (ex.Init(Fop, TopAbs_EDGE); ex.More(); ex.Next())
+        {
+          if (It.Value().IsSame(ex.Current()))
+          {
+            Arcprolbis = TopoDS::Edge(It.Value());
+            OArcprolop = ex.Current().Orientation();
+            break;
+          }
+        }
+      }
+      if (Arcprolbis.IsNull())
+      {
+        throw Standard_Failure("OneCorner : no edge of the vertex carries the spine on");
+      }
+      for (ex.Init(Arcprolbis.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
+      {
+        if (Vtx.IsSame(ex.Current()))
+        {
+          OVtxBis = ex.Current().Orientation();
+          break;
+        }
+      }
+    }
+    for (ex.Init(Fop, TopAbs_EDGE); ex.More() && Arcprolbis.IsNull(); ex.Next())
     {
       if (Arcprol.IsSame(ex.Current()))
       {
@@ -1926,7 +2001,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
         break;
       }
     }
-    if (!ex.More())
+    if (!ex.More() && Arcprolbis.IsNull())
     {
       // Arcprol is an edge of a face tangent to Fop: its orientation there,
       // in the shell, stands for the one it would have in Fop.
@@ -3449,12 +3524,12 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
 #endif
     const ChFiDS_FaceInterference& Fiop = Fd->Interference(IFopArc);
     gp_Pnt2d                       pop1, pop2, pv1, pv2;
-    Hc = PCurveInFace(Arcprol, Fop, Ubid, Ubid);
+    Hc = PCurveInFace(Arcprolbis.IsNull() ? Arcprol : Arcprolbis, Fop, Ubid, Ubid);
     if (Hc.IsNull())
     {
       throw Standard_ConstructionError("Failed to get p-curve of edge");
     }
-    pop1 = Hc->Value(parVtx);
+    pop1 = Hc->Value(Arcprolbis.IsNull() ? parVtx : BRep_Tool::Parameter(Vtx, Arcprolbis));
     pop2 = Fiop.PCurveOnFace()->Value(Fiop.Parameter(isfirst));
     Hc   = PCurveInFace(Arcprol, Fv, Ubid, Ubid);
     if (Hc.IsNull())
@@ -3725,7 +3800,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
 
       //  interference of curv1 and curv2 on Iop
       int Iop = DStr.AddShape(Fop);
-      Et      = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolop));
+      Et      = TopAbs::Reverse(TopAbs::Compose(Arcprolbis.IsNull() ? OVtx : OVtxBis, OArcprolop));
       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> Interfop;
       ComputeCurve2d(curv1, Fop, c2d1);
       Interfop = ChFi3d_FilCurveInDS(Icurv1, Iop, c2d1, Et);
@@ -3750,7 +3825,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> InterFv =
         ChFi3d_FilCurveInDS(IZob, IShape, zob2dv, Et);
       DStr.ChangeShapeInterferences(IShape).Append(InterFv);
-      Et = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolop));
+      Et = TopAbs::Reverse(TopAbs::Compose(Arcprolbis.IsNull() ? OVtx : OVtxBis, OArcprolop));
       if (zobOnEtan)
       {
         // The extension runs along Etan, which the fillet cuts at its end:
@@ -4190,6 +4265,39 @@ static bool ArcPastSplit(const TopoDS_Vertex& Vtx,
     }
   }
   return false;
+}
+
+//=======================================================================
+// function : ArcPastWallSplit
+// purpose  : ArcPastSplit for the face at end in pieces: the side of the
+//           fillet on <Fad>, a face of <Vtx>, ends on <Arc>, the edge of
+//           <Fad> and the far piece of a wall kept in coplanar pieces, past
+//           the foot of the split between that piece and the one at <Vtx>;
+//           <Eat> is the edge of <Vtx> between <Fad> and the piece at
+//           <Vtx>, which <Arc> carries on.
+//=======================================================================
+
+static bool ArcPastWallSplit(const TopoDS_Vertex& Vtx,
+                             const TopoDS_Edge&   Arc,
+                             const TopoDS_Face&   Fad,
+                             const ChFiDS_Map&    VEMap,
+                             const ChFiDS_Map&    EFMap,
+                             const double         Tol,
+                             TopoDS_Edge&         Eat)
+{
+  if (EFMap(Arc).Extent() != 2 || !containE(Fad, Arc) || !containV(Fad, Vtx))
+  {
+    return false;
+  }
+  TopoDS_Face aFw;
+  for (NCollection_List<TopoDS_Shape>::Iterator It(EFMap(Arc)); It.More(); It.Next())
+  {
+    if (!Fad.IsSame(It.Value()))
+    {
+      aFw = TopoDS::Face(It.Value());
+    }
+  }
+  return !aFw.IsNull() && ArcPastSplit(Vtx, Arc, aFw, VEMap, EFMap, Tol, Eat);
 }
 
 //=================================================================================================
@@ -4961,6 +5069,50 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         {
           possible1 = possible2 = true;
           tabedg.SetValue(nn, EdgePast);
+        }
+      }
+      // Neither side on an edge of Vtx, one of them on an edge of its face
+      // past the foot of a split of the face at end -- a wall kept in
+      // coplanar pieces, the fillet wider than the piece at Vtx. On the wall
+      // in one face that side ends on an edge of Vtx and the other runs on
+      // in a face that goes on past Vtx (IntersectMoreCorner, below); here
+      // the cut runs over the two pieces, which PerformOneCorner makes.
+      if (!possible1 && !possible2 && nbarete == 4 && !couture && !bordlibre && onsOS == 0)
+      {
+        for (int ip = 1; ip <= 2; ip++)
+        {
+          const int                      io  = 3 - ip;
+          const ChFiDS_FaceInterference& Fio = Fd->Interference(io);
+          const double                   w   = Fd->Interference(ip).Parameter(isfirst);
+          TopoDS_Edge                    anEat;
+          if (!ArcPastWallSplit(Vtx,
+                                Fd->Vertex(isfirst, ip).Arc(),
+                                ip == 1 ? F1 : F2,
+                                myVEMap,
+                                myEFMap,
+                                10 * tolapp3d,
+                                anEat))
+          {
+            continue;
+          }
+          // (not where the section crosses the face at end, see below)
+          if (w >= Fio.FirstParameter() && w <= Fio.LastParameter())
+          {
+            const gp_Pnt2d uv = Fio.PCurveOnSurf()->Value(w);
+            const gp_Pnt   Po = DStr.Surface(Fd->Surf()).Surface()->Value(uv.X(), uv.Y());
+            if (SectionCrossesEndFace(Vtx,
+                                      anEat,
+                                      ip == 1 ? F1 : F2,
+                                      Fd->Vertex(isfirst, ip).Point(),
+                                      Po,
+                                      myVEMap,
+                                      myEFMap))
+            {
+              continue;
+            }
+          }
+          PerformOneCorner(Index, false, true);
+          return;
         }
       }
       if ((possible1 && possible2) || (!possible1 && !possible2) || (nbarete > 4))

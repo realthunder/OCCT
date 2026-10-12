@@ -834,7 +834,9 @@ private:
 
   Standard_EXPORT void PerformSingularCorner(const int Index);
 
-  Standard_EXPORT void PerformOneCorner(const int Index, const bool PrepareOnSame = false);
+  Standard_EXPORT void PerformOneCorner(const int  Index,
+                                        const bool PrepareOnSame = false,
+                                        const bool AtFourEdges   = false);
 
   Standard_EXPORT void IntersectMoreCorner(const int Index);
 
