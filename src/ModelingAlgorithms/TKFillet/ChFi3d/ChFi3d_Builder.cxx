@@ -2099,6 +2099,14 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
   bool                         nondegenere      = true;
   bool                         toujoursdegenere = true;
   bool                         isfirst          = false;
+  // A fillet's last surface can be one with a face on one side only: what
+  // is left of a line that runs on past the spine's end over the next piece
+  // of its face, kept in coplanar pieces (a body without Refine), the split
+  // ending at the vertex. The corner of one fillet removes that surplus
+  // before it starts (PerformOneCorner, PerformIntersectionAtEnd); the
+  // corners of several, and the set back one, took it for the fillet's end,
+  // a surface with no face in common with the next fillet.
+  const bool toRemoveSurplus = myVDataMap(Index).Extent() >= 2 || HasSetbackAt(Index);
   for (It.Initialize(myVDataMap(Index)), i = 0; It.More(); It.Next(), i++)
   {
     stripe = It.Value();
@@ -2107,6 +2115,29 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
     int sens                      = 0;
     int num                       = ChFi3d_IndexOfSurfData(Vtx, stripe, sens);
     isfirst                       = (sens == 1);
+    if (toRemoveSurplus)
+    {
+      NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeq =
+        stripe->ChangeSetOfSurfData()->ChangeSequence();
+      auto isSurplus = [&](const int theI) {
+        return aSeq.Value(theI)->IndexOfS1() == 0 || aSeq.Value(theI)->IndexOfS2() == 0;
+      };
+      if (isfirst)
+      {
+        for (; num < aSeq.Length() && isSurplus(num);)
+        {
+          aSeq.Remove(num);
+        }
+      }
+      else
+      {
+        for (; num > 1 && isSurplus(num);)
+        {
+          aSeq.Remove(num);
+          num--;
+        }
+      }
+    }
     Fd                            = stripe->SetOfSurfData()->Sequence().Value(num);
     const ChFiDS_CommonPoint& CV1 = Fd->Vertex(isfirst, 1);
     const ChFiDS_CommonPoint& CV2 = Fd->Vertex(isfirst, 2);
