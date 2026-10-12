@@ -5445,6 +5445,67 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           nbface           = 1;
         }
       }
+      // A side of the fillet that ends on a split of its own face, kept in
+      // coplanar pieces (a body without Refine), the split an edge of Vtx
+      // lying in the plane of the face at end beside the other side: the
+      // fillet's end is its section in that plane, from the one side's
+      // edge to the split, and that face alone is cut, as on the wall in
+      // one face (IntersectMoreCorner there, the line running on past Vtx
+      // in its face). The face grows over the fillet's end, up to the
+      // split from Vtx to the line's end, which it shares with the piece
+      // beyond from then on; the faces between are left as they are.
+      // Not where a wall stands on that face in the way of the section
+      // (SectionCrossesEndFace): the plate's, there as on the wall in one
+      // face.
+      if (!oneintersection1 && !oneintersection2 && nbface >= 2 && !couture && !bordlibre)
+      {
+        auto inPlaneOf = [&](const TopoDS_Edge& theE, const TopoDS_Face& theF) {
+          const BRepAdaptor_Surface aS(theF, false);
+          if (aS.GetType() != GeomAbs_Plane)
+          {
+            return false;
+          }
+          const BRepAdaptor_Curve aC(theE);
+          for (int k = 0; k <= 2; k++)
+          {
+            const double aW = aC.FirstParameter()
+                              + k * (aC.LastParameter() - aC.FirstParameter()) / 2.;
+            if (aS.Plane().Distance(aC.Value(aW)) > 10 * tolapp3d)
+            {
+              return false;
+            }
+          }
+          return true;
+        };
+        if (hasVertex(Edge[nbface], Vtx)
+            && ChFi3d_CoplanarPieces(F2, Face[nbface - 1], 10 * tolapp3d)
+            && inPlaneOf(Edge[nbface], Face[0])
+            && !SectionCrossesEndFace(Vtx, Edge[0], F1, CV1.Point(), CV2.Point(), myVEMap, myEFMap))
+        {
+          oneintersection2 = true;
+          facesau          = Face[nbface - 1];
+          edgesau          = Edge[nbface];
+          Edge[1]          = Edge[nbface];
+          nbface           = 1;
+        }
+        else if (hasVertex(Edge[0], Vtx) && ChFi3d_CoplanarPieces(F1, Face[0], 10 * tolapp3d)
+                 && inPlaneOf(Edge[0], Face[nbface - 1])
+                 && !SectionCrossesEndFace(Vtx,
+                                           Edge[nbface],
+                                           F2,
+                                           CV2.Point(),
+                                           CV1.Point(),
+                                           myVEMap,
+                                           myEFMap))
+        {
+          oneintersection1 = true;
+          facesau          = Face[0];
+          edgesau          = Edge[0];
+          Face[0]          = Face[nbface - 1];
+          Edge[1]          = Edge[nbface];
+          nbface           = 1;
+        }
+      }
     }
   }
   else
@@ -6390,6 +6451,11 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
               aLocalEdge.Reverse();
             }
             C2dint1 = BRep_Tool::CurveOnSurface(aLocalEdge, Face[0], ubid, vbid);
+            // (the split of the fillet's own face, in Face[0]'s plane)
+            if (C2dint1.IsNull())
+            {
+              ComputeCurve2d(Ct, Face[0], C2dint1);
+            }
           }
         }
         else
