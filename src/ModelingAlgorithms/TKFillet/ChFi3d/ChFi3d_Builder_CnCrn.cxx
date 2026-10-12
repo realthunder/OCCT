@@ -1516,7 +1516,8 @@ static double RadiusOf(const occ::handle<ChFiDS_Stripe>& theStripe, const bool i
 // where on its edge a stripe's contact point at a corner stands.
 static double AbscissaFromVertex(const TopoDS_Edge&   theE,
                                  const TopoDS_Vertex& theV,
-                                 const gp_Pnt&        theP)
+                                 const gp_Pnt&        theP,
+                                 double*              theDist2 = nullptr)
 {
   BRepAdaptor_Curve aC(theE);
   const double      aUV = BRep_Tool::Parameter(theV, theE);
@@ -1538,7 +1539,53 @@ static double AbscissaFromVertex(const TopoDS_Edge&   theE,
       }
     }
   }
+  if (theDist2 != nullptr)
+  {
+    *theDist2 = theP.SquareDistance(aC.Value(aU));
+  }
   return GCPnts_AbscissaPoint::Length(aC, std::min(aUV, aU), std::max(aUV, aU));
+}
+
+// The same along a stripe's spine, from its end <theV> on its edge <theE>:
+// the point of the spine nearest <theP>, on whichever of its edges. A
+// spine of several edges -- a fillet along a wall kept in pieces, its edge
+// at the corner the short one of the piece there -- carries the stripe on
+// past its first edge's end, and a contact point beside the second edge
+// stands farther from the corner than the first is long.
+static double AbscissaFromVertex(const occ::handle<ChFiDS_Spine>& theSpine,
+                                 const TopoDS_Edge&               theE,
+                                 const TopoDS_Vertex&             theV,
+                                 const gp_Pnt&                    theP)
+{
+  const int aNb = theSpine.IsNull() ? 0 : theSpine->NbEdges();
+  if (aNb < 2 || theSpine->IsClosed()
+      || !(theSpine->Edges(1).IsSame(theE) || theSpine->Edges(aNb).IsSame(theE)))
+  {
+    return AbscissaFromVertex(theE, theV, theP);
+  }
+  const bool    isFromFirst = theSpine->Edges(1).IsSame(theE);
+  TopoDS_Vertex aV          = theV;
+  double        aLen = 0., aBest = RealLast(), aRes = 0.;
+  for (int k = 0; k < aNb; k++)
+  {
+    const TopoDS_Edge& anE = theSpine->Edges(isFromFirst ? 1 + k : aNb - k);
+    TopoDS_Vertex      aV1, aV2;
+    TopExp::Vertices(anE, aV1, aV2);
+    if (!aV.IsSame(aV1) && !aV.IsSame(aV2))
+    {
+      break;
+    }
+    double       aDist2 = 0.;
+    const double anAbs  = AbscissaFromVertex(anE, aV, theP, &aDist2);
+    if (aDist2 < aBest - Precision::SquareConfusion())
+    {
+      aBest = aDist2;
+      aRes  = aLen + anAbs;
+    }
+    aLen += GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(anE));
+    aV = aV.IsSame(aV1) ? aV2 : aV1;
+  }
+  return aRes;
 }
 
 // The parameter on <theE> at <theDist> from <theV> along it. False where
@@ -1566,7 +1613,7 @@ static bool EdgeParamAtSetback(const TopoDS_Edge&   theE,
 }
 
 // The parameter of the contact of <theSD> on its face <theOnS> (1 or 2) at
-// <theDist> from <theV> along <theE>, the stripe's edge there, between the
+// <theDist> from <theV> along <theSpine>, from its edge <theE> on, between the
 // end of <theSD> at the corner (<isFirst>) and its other end. Where the
 // stripe ends farther from the corner than that already, its end. False
 // where the contact does not reach <theDist>.
@@ -1574,6 +1621,7 @@ static bool StripeParamAtSetback(const TopOpeBRepDS_DataStructure&   DStr,
                                  const occ::handle<ChFiDS_SurfData>& theSD,
                                  const int                           theOnS,
                                  const bool                          isFirst,
+                                 const occ::handle<ChFiDS_Spine>&    theSpine,
                                  const TopoDS_Edge&                  theE,
                                  const TopoDS_Vertex&                theV,
                                  const double                        theDist,
@@ -1583,7 +1631,7 @@ static bool StripeParamAtSetback(const TopOpeBRepDS_DataStructure&   DStr,
   const occ::handle<Geom_Surface>& aS  = DStr.Surface(theSD->Surf()).Surface();
   auto aBeyond = [&](const double theT) {
     const gp_Pnt2d aUV = aFi.PCurveOnSurf()->Value(theT);
-    return AbscissaFromVertex(theE, theV, aS->Value(aUV.X(), aUV.Y())) - theDist;
+    return AbscissaFromVertex(theSpine, theE, theV, aS->Value(aUV.X(), aUV.Y())) - theDist;
   };
   double aNear = aFi.Parameter(isFirst), aFar = aFi.Parameter(!isFirst);
   if (aBeyond(aNear) >= 0.)
@@ -2523,7 +2571,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         const int ick = k == 0 ? ic : icplus;
         aMeet.SetValue(
           ick,
-          std::max(aMeet.Value(ick), AbscissaFromVertex(TopoDS::Edge(Evive.Value(ick)), V1, pic)));
+          std::max(aMeet.Value(ick),
+                   AbscissaFromVertex(CD.Value(ick)->Spine(),
+                                      TopoDS::Edge(Evive.Value(ick)),
+                                      V1,
+                                      pic)));
       }
     }
     NCollection_Array1<double> aDist(0, size);
@@ -2582,6 +2634,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                                            aSD,
                                            k == 0 ? jf.Value(ic) : 3 - jf.Value(ic),
                                            isfirst,
+                                           CD.Value(ic)->Spine(),
                                            TopoDS::Edge(Evive.Value(ic)),
                                            V1,
                                            aDist.Value(ic),
