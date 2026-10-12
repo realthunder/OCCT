@@ -15,6 +15,8 @@
 // commercial license or contractual agreement.
 
 #include <Adaptor3d_CurveOnSurface.hxx>
+#include <BRep_Tool.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepBlend_ConstRad.hxx>
 #include <BRepBlend_ConstRadInv.hxx>
 #include <BRepBlend_EvolRad.hxx>
@@ -35,10 +37,15 @@
 #include <ChFiDS_Stripe.hxx>
 #include <ChFiKPart_ComputeData.hxx>
 #include <ElSLib.hxx>
+#include <Extrema_ExtCC.hxx>
+#include <Extrema_POnCurv.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <Geom_Curve.hxx>
+#include <GeomAdaptor_Curve.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomFill_ConstrainedFilling.hxx>
+#include <GeomProjLib.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
@@ -51,6 +58,8 @@
 #include <Standard_Integer.hxx>
 #include <NCollection_List.hxx>
 #include <TopAbs_Orientation.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
@@ -233,6 +242,159 @@ static bool ToricCorner(const TopoDS_Face& F, const double rd, const double rf, 
 }
 
 //=======================================================================
+// function : PieceShown
+// purpose  : Two of three fillets at a vertex on the two pieces of a wall
+//           kept in coplanar pieces (a body without Refine), the split
+//           between the pieces ending at the vertex: they have no face in
+//           common, and the corner of three fillets asks for one of every
+//           two. While the corner is made, the line of the one is shown on
+//           the other's piece (Show) -- the face, the line's curve on it
+//           and, the pieces the other way up on their surfaces, its
+//           transition -- and put back after (Restore).
+//=======================================================================
+
+namespace
+{
+struct PieceShown
+{
+  occ::handle<ChFiDS_SurfData> SD;
+  int                          Stripe = -1;
+  int                          Ons    = 0;
+  int                          Ind    = 0;
+  occ::handle<Geom2d_Curve>    Pc;
+  bool                         IsTurned = false;
+  TopoDS_Edge                  Split;
+  TopoDS_Face                  Piece; // its own, as the shell has it
+
+  ~PieceShown() { Restore(); }
+
+  void Set(const int theInd, const occ::handle<Geom2d_Curve>& thePc) const
+  {
+    if (Ons == 1)
+    {
+      SD->ChangeIndexOfS1(theInd);
+    }
+    else
+    {
+      SD->ChangeIndexOfS2(theInd);
+    }
+    ChFiDS_FaceInterference& aFi = SD->ChangeInterference(Ons);
+    aFi.ChangePCurveOnFace()     = thePc;
+    if (IsTurned)
+    {
+      aFi.SetTransition(TopAbs::Reverse(aFi.Transition()));
+    }
+  }
+
+  void Restore()
+  {
+    if (!SD.IsNull())
+    {
+      Set(Ind, Pc);
+      SD.Nullify();
+    }
+  }
+
+  bool Show(TopOpeBRepDS_DataStructure&       theDS,
+            const TopoDS_Vertex&              theVtx,
+            const occ::handle<ChFiDS_Stripe>* theCD,
+            const int*                        theIndex,
+            const ChFiDS_Map&                 theVEMap,
+            const ChFiDS_Map&                 theEFMap,
+            const double                      theTol)
+  {
+    for (int i = 0; i <= 1; i++)
+    {
+      for (int j = i + 1; j <= 2; j++)
+      {
+        if (theCD[i] == theCD[j])
+        {
+          continue;
+        }
+        const occ::handle<ChFiDS_SurfData>& aSi = theCD[i]->SetOfSurfData()->Value(theIndex[i]);
+        const occ::handle<ChFiDS_SurfData>& aSj = theCD[j]->SetOfSurfData()->Value(theIndex[j]);
+        bool                                hasCommon = false;
+        for (int a = 1; a <= 2; a++)
+        {
+          for (int b = 1; b <= 2; b++)
+          {
+            hasCommon = hasCommon || (aSi->Index(a) > 0 && aSi->Index(a) == aSj->Index(b));
+          }
+        }
+        if (hasCommon)
+        {
+          continue;
+        }
+        for (int a = 1; a <= 2; a++)
+        {
+          for (int b = 1; b <= 2; b++)
+          {
+            if (aSi->Index(a) <= 0 || aSj->Index(b) <= 0
+                || theDS.Shape(aSi->Index(a)).ShapeType() != TopAbs_FACE
+                || theDS.Shape(aSj->Index(b)).ShapeType() != TopAbs_FACE)
+            {
+              continue;
+            }
+            const ChFiDS_FaceInterference& aFj = aSj->Interference(b);
+            if (aFj.LineIndex() <= 0 || theDS.Curve(aFj.LineIndex()).Curve().IsNull()
+                || aFj.PCurveOnFace().IsNull())
+            {
+              continue;
+            }
+            for (NCollection_List<TopoDS_Shape>::Iterator itE(theVEMap(theVtx)); itE.More();
+                 itE.Next())
+            {
+              const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+              if (BRep_Tool::Degenerated(anE) || !theEFMap.Contains(anE)
+                  || theEFMap(anE).Extent() != 2)
+              {
+                continue;
+              }
+              TopoDS_Face aFa, aFb;
+              for (NCollection_List<TopoDS_Shape>::Iterator itF(theEFMap(anE)); itF.More();
+                   itF.Next())
+              {
+                if (itF.Value().IsSame(theDS.Shape(aSi->Index(a))))
+                {
+                  aFa = TopoDS::Face(itF.Value());
+                }
+                else if (itF.Value().IsSame(theDS.Shape(aSj->Index(b))))
+                {
+                  aFb = TopoDS::Face(itF.Value());
+                }
+              }
+              if (aFa.IsNull() || aFb.IsNull() || !ChFi3d_CoplanarPieces(aFa, aFb, theTol))
+              {
+                continue;
+              }
+              const occ::handle<Geom2d_Curve> aPc =
+                GeomProjLib::Curve2d(theDS.Curve(aFj.LineIndex()).Curve(),
+                                     BRep_Tool::Surface(aFa));
+              if (aPc.IsNull())
+              {
+                continue;
+              }
+              SD       = aSj;
+              Stripe   = j;
+              Ons      = b;
+              Ind      = aSj->Index(b);
+              Pc       = aFj.PCurveOnFace();
+              IsTurned = aFa.Orientation() != aFb.Orientation();
+              Split    = anE;
+              Piece    = aFb;
+              Set(aSi->Index(a), aPc);
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+};
+} // namespace
+
+//=======================================================================
 // function : PerformThreeCorner
 // purpose  : Calculate fillet on a top with three edges
 //           incident carrying each edge.
@@ -292,119 +454,138 @@ void ChFi3d_FilBuilder::PerformThreeCorner(const int Jndex)
     Index[2] = CD[2]->SetOfSurfData()->Length();
     sens[2]  = -1;
   }
-  oksea[2] = SearchFD(DStr,
-                      CD[0],
-                      CD[1],
-                      sens[0],
-                      sens[1],
-                      i[0][1],
-                      i[1][0],
-                      p[0][1],
-                      p[1][0],
-                      Index[0],
-                      Index[1],
-                      face[2],
-                      sameside[2],
-                      jf[0][1],
-                      jf[1][0]);
-  oksea[1] = SearchFD(DStr,
-                      CD[0],
-                      CD[2],
-                      sens[0],
-                      sens[2],
-                      i[0][2],
-                      i[2][0],
-                      p[0][2],
-                      p[2][0],
-                      Index[0],
-                      Index[2],
-                      face[1],
-                      sameside[1],
-                      jf[0][2],
-                      jf[2][0]);
-  oksea[0] = SearchFD(DStr,
-                      CD[1],
-                      CD[2],
-                      sens[1],
-                      sens[2],
-                      i[1][2],
-                      i[2][1],
-                      p[1][2],
-                      p[2][1],
-                      Index[1],
-                      Index[2],
-                      face[0],
-                      sameside[0],
-                      jf[1][2],
-                      jf[2][1]);
-  //
-  // Analyze concavities of 3 fillets :
-  //        - 2 concavities identic and 1 inverted.
-  //        - 3 concavities identic
-  //
-  if (oksea[2] && oksea[1] && !sameside[2] && !sameside[1])
-  {
-    pivot = 0;
-    deb   = 1;
-    fin   = 2;
-  }
-  else if (oksea[2] && oksea[0] && !sameside[2] && !sameside[0])
-  {
-    pivot = 1;
-    deb   = 2;
-    fin   = 0;
-  }
-  else if (oksea[1] && oksea[0] && !sameside[1] && !sameside[0])
-  {
-    pivot = 2;
-    deb   = 0;
-    fin   = 1;
-  }
-  else if (oksea[0] && oksea[1] && oksea[2])
-  {
-    // 3 concavities identic.
-    pivot = SearchPivot(sens, p, tol2d);
-    if (pivot < 0)
+  // The fillets are sorted out: which face every two have in common, which
+  // of the three is the pivot. False when the corner is a plate's.
+  int  ifacdeb = 0, ifacfin = 0;
+  auto aSort = [&]() -> bool {
+    pivdif   = true;
+    c1pointu = false;
+    oksea[2] = SearchFD(DStr,
+                        CD[0],
+                        CD[1],
+                        sens[0],
+                        sens[1],
+                        i[0][1],
+                        i[1][0],
+                        p[0][1],
+                        p[1][0],
+                        Index[0],
+                        Index[1],
+                        face[2],
+                        sameside[2],
+                        jf[0][1],
+                        jf[1][0]);
+    oksea[1] = SearchFD(DStr,
+                        CD[0],
+                        CD[2],
+                        sens[0],
+                        sens[2],
+                        i[0][2],
+                        i[2][0],
+                        p[0][2],
+                        p[2][0],
+                        Index[0],
+                        Index[2],
+                        face[1],
+                        sameside[1],
+                        jf[0][2],
+                        jf[2][0]);
+    oksea[0] = SearchFD(DStr,
+                        CD[1],
+                        CD[2],
+                        sens[1],
+                        sens[2],
+                        i[1][2],
+                        i[2][1],
+                        p[1][2],
+                        p[2][1],
+                        Index[1],
+                        Index[2],
+                        face[0],
+                        sameside[0],
+                        jf[1][2],
+                        jf[2][1]);
+    //
+    // Analyze concavities of 3 fillets :
+    //        - 2 concavities identic and 1 inverted.
+    //        - 3 concavities identic
+    //
+    if (oksea[2] && oksea[1] && !sameside[2] && !sameside[1])
     {
+      pivot = 0;
+      deb   = 1;
+      fin   = 2;
+    }
+    else if (oksea[2] && oksea[0] && !sameside[2] && !sameside[0])
+    {
+      pivot = 1;
+      deb   = 2;
+      fin   = 0;
+    }
+    else if (oksea[1] && oksea[0] && !sameside[1] && !sameside[0])
+    {
+      pivot = 2;
+      deb   = 0;
+      fin   = 1;
+    }
+    else if (oksea[0] && oksea[1] && oksea[2])
+    {
+      // 3 concavities identic.
+      pivot = SearchPivot(sens, p, tol2d);
+      if (pivot < 0)
+      {
 #ifdef OCCT_DEBUG
-      std::cout << "pivot not found, plate is called" << std::endl;
+        std::cout << "pivot not found, plate is called" << std::endl;
 #endif
-      PerformMoreThreeCorner(Jndex, 3);
-      return;
+        return false;
+      }
+      else
+      {
+        deb = (pivot + 1) % 3;
+        fin = (pivot + 2) % 3;
+      }
+      pivdif = false;
+      if (std::abs(p[0][1] - p[0][2]) <= tol2d && std::abs(p[1][0] - p[1][2]) <= tol2d
+          && std::abs(p[2][0] - p[2][1]) <= tol2d)
+      {
+        c1pointu = true;
+      }
     }
     else
     {
-      deb = (pivot + 1) % 3;
-      fin = (pivot + 2) % 3;
+      return false;
     }
-    pivdif = false;
-    if (std::abs(p[0][1] - p[0][2]) <= tol2d && std::abs(p[1][0] - p[1][2]) <= tol2d
-        && std::abs(p[2][0] - p[2][1]) <= tol2d)
+    ifacdeb = CD[deb]->ChangeSetOfSurfData()->Value(i[deb][pivot])->Index(3 - jf[deb][pivot]);
+    ifacfin = CD[fin]->ChangeSetOfSurfData()->Value(i[fin][pivot])->Index(3 - jf[fin][pivot]);
+    if (ifacfin != ifacdeb)
     {
-      c1pointu = true;
+#ifdef OCCT_DEBUG
+      std::cout << "several base faces, plate is called" << std::endl;
+#endif
+      return false;
     }
-  }
-  else
-  {
-    PerformMoreThreeCorner(Jndex, 3);
-    return;
-  }
-  int ifacdeb, ifacfin;
-  ifacdeb = CD[deb]->ChangeSetOfSurfData()->Value(i[deb][pivot])->Index(3 - jf[deb][pivot]);
-  ifacfin = CD[fin]->ChangeSetOfSurfData()->Value(i[fin][pivot])->Index(3 - jf[fin][pivot]);
-  if (ifacfin != ifacdeb)
-  {
+    if (i[pivot][deb] != i[pivot][fin])
+    {
 #ifdef OCCT_DEBUG
-    std::cout << "several base faces, plate is called" << std::endl;
+      std::cout << "load surfdata on the pivot, plate is called" << std::endl;
 #endif
-    PerformMoreThreeCorner(Jndex, 3);
-    return;
-  }
-  if (i[pivot][deb] != i[pivot][fin])
+      return false;
+    }
+    return true;
+  };
+  // Two of them on the two pieces of a wall (see PieceShown), where the
+  // corner would be a plate for it: sorted out again with the one shown on
+  // the other's piece, which is then one of the two the corner runs
+  // between on that wall.
+  PieceShown aShown;
+  bool       isSorted = aSort();
+  if (!isSorted && aShown.Show(DStr, Vtx, CD, Index, myVEMap, myEFMap, 10 * tolapp3d))
   {
-#ifdef OCCT_DEBUG
-    std::cout << "load surfdata on the pivot, plate is called" << std::endl;
-#endif
+    isSorted = aSort() && aShown.Stripe != pivot;
+  }
+  if (!isSorted)
+  {
+    aShown.Restore();
     PerformMoreThreeCorner(Jndex, 3);
     return;
   }
@@ -1280,7 +1461,70 @@ void ChFi3d_FilBuilder::PerformThreeCorner(const int Jndex)
     ChFi3d_SetPointTolerance(DStr, *pbf2, If2);
     ChFi3d_SetPointTolerance(DStr, *pbl1, Il1);
     ChFi3d_SetPointTolerance(DStr, *pbl2, Il2);
+
+    // The wall in two pieces: the corner's line on it runs from the one
+    // fillet's line to the other's, over the split. It is made to end on
+    // the split, where FILDS ends it and cuts the split, and its piece
+    // from there on is put on the piece of the fillet that was shown on
+    // the other's (StoreLineOverSplit, as a fillet's line over a split).
+    // The corner's curve at that end has its points from that fillet,
+    // whose stripe comes before the corner's in the list.
+    if (aShown.Stripe >= 0 && coin->IndexOfS1() > 0)
+    {
+      const bool                     isAtFirst = aShown.Stripe == deb;
+      const double                   aTolQ     = 10 * tolapp3d;
+      ChFiDS_FaceInterference&       aFi1      = coin->ChangeInterferenceOnS1();
+      const occ::handle<Geom_Curve>& aC1       = DStr.Curve(aFi1.LineIndex()).Curve();
+      const GeomAdaptor_Curve        aGC(aC1, aFi1.FirstParameter(), aFi1.LastParameter());
+      const BRepAdaptor_Curve        aSC(aShown.Split);
+      const double                   aResW = aGC.Resolution(aTolQ), aResS = aSC.Resolution(aTolQ);
+      Extrema_ExtCC                  anExt(aGC, aSC);
+      int                            aNbX = 0;
+      double                         aWQ = 0., aParQ = 0.;
+      for (int k = 1; anExt.IsDone() && !anExt.IsParallel() && k <= anExt.NbExt(); k++)
+      {
+        if (anExt.SquareDistance(k) > aTolQ * aTolQ)
+        {
+          continue;
+        }
+        Extrema_POnCurv aP1, aP2;
+        anExt.Points(k, aP1, aP2);
+        if (aP1.Parameter() > aFi1.FirstParameter() + aResW
+            && aP1.Parameter() < aFi1.LastParameter() - aResW
+            && aP2.Parameter() > aSC.FirstParameter() + aResS
+            && aP2.Parameter() < aSC.LastParameter() - aResS)
+        {
+          aNbX++;
+          aWQ   = aP1.Parameter();
+          aParQ = aP2.Parameter();
+        }
+      }
+      if (aNbX != 1)
+      {
+        throw Standard_Failure("ThreeCorner : the corner's line and the split of its wall");
+      }
+      const TopoDS_Face aPiece = aShown.Piece;
+      const TopoDS_Edge aSplit = aShown.Split;
+      aShown.Restore();
+      ChFi3d_StoreLineOverSplit(DStr,
+                                corner,
+                                coin,
+                                isAtFirst,
+                                1,
+                                coin->Surf(),
+                                new GeomAdaptor_Surface(DStr.Surface(coin->Surf()).Surface()),
+                                aC1,
+                                aSplit,
+                                aPiece,
+                                aWQ,
+                                aFi1.Parameter(isAtFirst),
+                                aParQ,
+                                isAtFirst ? If1 : Il1,
+                                aTolQ,
+                                myRegul);
+    }
   }
+  aShown.Restore();
 
   // The data corners are truncated and index is updated.
   //----------------------------------------------------
