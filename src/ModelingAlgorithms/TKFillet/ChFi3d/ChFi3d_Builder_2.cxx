@@ -4114,7 +4114,10 @@ void ChFi3d_Builder::PerformSetOfSurf(occ::handle<ChFiDS_Stripe>& Stripe, const 
   // and the corner at the spine's end took the surface that stops short for
   // the fillet's. Short: by more than ten times the surface's width at its
   // end, and more than half the spine's edge it stops on -- an end face on
-  // a slant stops a surface a width or two before its vertex.
+  // a slant stops a surface a width or two before its vertex. Or by more
+  // than three widths and three quarters of the edge: a walk that left its
+  // face for the next where the fillet is wider than the face, and made the
+  // edge's last seventh (#474's bar at a radius just over its side's width).
   if (!Simul && !sp->IsPeriodic() && !Stripe->SetOfSurfData().IsNull()
       && !Stripe->SetOfSurfData()->Sequence().IsEmpty())
   {
@@ -4135,7 +4138,8 @@ void ChFi3d_Builder::PerformSetOfSurf(occ::handle<ChFiDS_Stripe>& Stripe, const 
       const double anEdge = sp->LastParameter(iEd) - sp->FirstParameter(iEd);
       const double aWidth =
         aSD->Vertex(isFirst, 1).Point().Distance(aSD->Vertex(isFirst, 2).Point());
-      if (aGap > 10. * aWidth && aGap > 0.5 * anEdge)
+      if ((aGap > 10. * aWidth && aGap > 0.5 * anEdge)
+          || (aGap > 3. * aWidth && aGap > 0.75 * anEdge))
       {
         sp->SetErrorStatus(ChFiDS_WalkingFailure);
         throw Standard_Failure("PerformSetOfSurf : the stripe stops short of its spine's end");
