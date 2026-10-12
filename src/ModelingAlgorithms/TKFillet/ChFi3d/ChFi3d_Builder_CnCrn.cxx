@@ -3841,6 +3841,24 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         // (#876: onto the post's plane beside its round end) ends on another,
         // and its pcurve read in this face's parameters runs the curve off
         // the face -- a plate inside out, 1e11 in volume.
+        // Two fillets that end on one face, another than the one between
+        // their edges: both are wider than the piece of a wall kept in
+        // coplanar pieces (a body without Refine) their edges bound, and end
+        // on the piece beyond. The curve between their cuts is on that one.
+        if (isSetback && !sharp.Value(ic) && !sharp.Value(icplus))
+        {
+          const int iEnd1 =
+            SurfIndex(CD, ic, i.Value(ic, icplus), jf.Value(ic) == 1 ? FACE1 : FACE2);
+          const int iEnd2 =
+            SurfIndex(CD, icplus, i.Value(icplus, ic), jf.Value(icplus) == 2 ? FACE1 : FACE2);
+          if (iEnd1 == iEnd2 && iEnd1 > 0 && iEnd1 != numfa.Value(ic, icplus))
+          {
+            Fvive.SetValue(ic, icplus, DStr.Shape(iEnd1));
+            Fvive.SetValue(icplus, ic, DStr.Shape(iEnd1));
+            numfa.SetValue(ic, icplus, iEnd1);
+            numfa.SetValue(icplus, ic, iEnd1);
+          }
+        }
         for (int k = 0; k < 2; k++)
         {
           const int ick = k == 0 ? ic : icplus;
