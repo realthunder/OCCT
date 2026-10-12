@@ -2265,6 +2265,45 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
 
   //  calculate intersections between stripes and determine the parameters on each pcurve
   bool inters = true;
+  // The point of the stripe <theSt>'s line on its side <theSide>, on its
+  // surface <theSD>, at the parameter <thePar>
+  auto aPointOnLine = [&](const int    theSt,
+                          const int    theSide,
+                          const int    theSD,
+                          const double thePar) {
+    gp_Pnt2d aUV;
+    Calcul_P2dOnSurf(CD.Value(theSt), theSide, theSD, thePar, aUV);
+    const int aSurf = SurfIndex(CD, theSt, theSD, ChFiSURFACE);
+    return DStr.Surface(aSurf).Surface()->Value(aUV.X(), aUV.Y());
+  };
+  // Surfaces are removed from the end of a stripe that meets a neighbour
+  // farther along (below). Its meeting with its other neighbour, found
+  // before, was on the surface that ended the stripe then, by that
+  // surface's index and its line's parameter: where the stripe's new end
+  // does not hold the point -- a fillet along a wall kept in pieces, the
+  // piece at the vertex shorter than the radius, its surface on that piece
+  // removed and the next one's line starting where the piece ends -- the
+  // two no longer meet, and the corner's edge between them is one more of
+  // the plate's.
+  auto aStillMeets = [&](const int theSt, const int theOther, const int theSide,
+                         const gp_Pnt& theOld) {
+    const int aNum = Index.Value(theSt);
+    bool      isKept = false;
+    try
+    {
+      isKept = aPointOnLine(theSt, theSide, aNum, p.Value(theSt, theOther)).Distance(theOld)
+               <= tolapp3d;
+    }
+    catch (Standard_Failure const&)
+    {
+      isKept = false;
+    }
+    if (isKept)
+    {
+      i.SetValue(theSt, theOther, aNum);
+    }
+    return isKept;
+  };
   for (ic = 0; ic < nedge; ic++)
   {
     Indices(nedge, ic, icplus, icmoins);
@@ -2315,6 +2354,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         if (i1 != Index.Value(ic))
         {
           int ideb, ifin;
+          // (the stripe's meeting with the neighbour before, to be checked)
+          const bool   hasPrev = ic > 0 && oksea.Value(icmoins);
+          const gp_Pnt aPrev   = hasPrev ? aPointOnLine(ic, 3 - jf1, i.Value(ic, icmoins),
+                                                         p.Value(ic, icmoins))
+                                         : gp_Pnt();
           strip = CD.Value(ic);
           if (sens.Value(ic) == 1)
           {
@@ -2361,10 +2405,19 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           num = ChFi3d_IndexOfSurfData(V1, CD.Value(ic), sense);
           Index.SetValue(ic, num);
           i1 = num;
+          if (hasPrev && !aStillMeets(ic, icmoins, 3 - jf1, aPrev))
+          {
+            oksea.SetValue(icmoins, false);
+            inters = false;
+          }
         }
         if (i2 != Index.Value(icplus))
         {
           int ideb, ifin;
+          // (the first stripe, come round to: its meeting with the second)
+          const bool   hasNext = icplus == 0 && ic > 0 && oksea.Value(0);
+          const gp_Pnt aNext   =
+            hasNext ? aPointOnLine(0, jf.Value(0), i.Value(0, 1), p.Value(0, 1)) : gp_Pnt();
           strip = CD.Value(icplus);
           if (sens.Value(icplus) == 1)
           {
@@ -2411,6 +2464,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           num = ChFi3d_IndexOfSurfData(V1, CD.Value(icplus), sense);
           Index.SetValue(icplus, num);
           i2 = num;
+          if (hasNext && !aStillMeets(0, 1, jf.Value(0), aNext))
+          {
+            oksea.SetValue(0, false);
+            inters = false;
+          }
         }
         Calcul_P2dOnSurf(CD.Value(ic), jf1, i1, pa1, p2);
         indice = SurfIndex(CD, ic, i1, ChFiSURFACE);
@@ -3139,6 +3197,24 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         face2 = TopoDS::Face(myDS->Shape(iface2));
         if (!face1.IsSame(face2))
         {
+          // (the faces listed where surfaces were removed, above, are those
+          // of every removal, whichever stripes it was between: two faces
+          // that share an edge are the whole way from one to the other)
+          if (Fproj.Length() > 2)
+          {
+            bool isBeside = false;
+            for (TopExp_Explorer ex1(face1, TopAbs_EDGE); ex1.More() && !isBeside; ex1.Next())
+            {
+              for (TopExp_Explorer ex2(face2, TopAbs_EDGE); ex2.More() && !isBeside; ex2.Next())
+              {
+                isBeside = ex1.Current().IsSame(ex2.Current());
+              }
+            }
+            if (isBeside)
+            {
+              Fproj.Clear();
+            }
+          }
           if (Fproj.Length() == 0)
           {
             Fproj.Append(face1);
