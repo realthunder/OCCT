@@ -58,6 +58,7 @@
 #include <gp_XYZ.hxx>
 #include <math_Vector.hxx>
 #include <Precision.hxx>
+#include <Standard_ErrorHandler.hxx>
 #include <Standard_NotImplemented.hxx>
 #include <NCollection_Array1.hxx>
 #include <Standard_Integer.hxx>
@@ -3287,6 +3288,101 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
       else if (!SplitKPart(SD, LSD, Spine, iedge, HS1, It1, HS2, It2, intf, intl))
       {
         LSD.Clear();
+        // A wall kept in coplanar pieces (a body without Refine), the
+        // fillet wider than the piece the spine is on and its line along
+        // the split, wholly on a piece beyond: the fillet is that of the
+        // piece its line is on, as it is of the wall in one face -- ending,
+        // at the spine's ends, where that piece does. The fillet of a
+        // single edge only, neither end OnSame: at an end OnSame the corner
+        // carries the walk's line over the split itself (LineOverSplit),
+        // and in a chain the next edge's fillet starts from the walk's.
+        const bool isAlone = Spine->NbEdges() == 1 && !Spine->IsPeriodic()
+                             && Spine->FirstStatus() != ChFiDS_OnSame
+                             && Spine->LastStatus() != ChFiDS_OnSame;
+        for (int ons = 1; ons <= 2 && LSD.IsEmpty() && isAlone; ons++)
+        {
+          const TopoDS_Face              aFs = (ons == 1 ? HS1 : HS2)->Face();
+          NCollection_List<TopoDS_Shape> aPieces;
+          aPieces.Append(aFs);
+          for (NCollection_List<TopoDS_Shape>::Iterator itP(aPieces); itP.More() && LSD.IsEmpty();
+               itP.Next())
+          {
+            const TopoDS_Face aP = TopoDS::Face(itP.Value());
+            for (TopExp_Explorer exE(aP, TopAbs_EDGE); exE.More(); exE.Next())
+            {
+              if (!myEFMap.Contains(exE.Current()) || myEFMap(exE.Current()).Extent() != 2)
+              {
+                continue;
+              }
+              for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(exE.Current()));
+                   itF.More();
+                   itF.Next())
+              {
+                const TopoDS_Face& aFn = TopoDS::Face(itF.Value());
+                if (aPieces.Contains(aFn) || !ChFi3d_CoplanarPieces(aP, aFn, 10 * tolapp3d))
+                {
+                  continue;
+                }
+                aPieces.Append(aFn);
+              }
+            }
+            if (aP.IsSame(aFs))
+            {
+              continue;
+            }
+            occ::handle<BRepAdaptor_Surface> aHP = new BRepAdaptor_Surface(aP);
+            occ::handle<BRepAdaptor_Surface> aH1 = ons == 1 ? aHP : HS1;
+            occ::handle<BRepAdaptor_Surface> aH2 = ons == 2 ? aHP : HS2;
+            bool               anIntf = ((iedge == 1) && !Spine->IsPeriodic());
+            bool               anIntl = ((iedge == Spine->NbEdges()) && !Spine->IsPeriodic());
+            TopAbs_Orientation anOr1  = aH1->Face().Orientation();
+            TopAbs_Orientation anOr2  = aH2->Face().Orientation();
+            ChFi3d::NextSide(anOr1, anOr2, RefOr1, RefOr2, RefChoix);
+            const occ::handle<Adaptor3d_Surface>& aHon1 = aH1;
+            const occ::handle<Adaptor3d_Surface>& aHon2 = aH2;
+            It1->Initialize(aHon1);
+            It2->Initialize(aHon2);
+            occ::handle<ChFiDS_SurfData> aSDP = new ChFiDS_SurfData();
+            bool                         isOk = false;
+            // (the split moves the spine's ends to its surfaces')
+            const double aWFirst = Spine->FirstParameter(), aWLast = Spine->LastParameter();
+            try
+            {
+              OCC_CATCH_SIGNALS
+              isOk =
+                ChFiKPart_ComputeData::Compute(DStr, aSDP, aH1, aH2, anOr1, anOr2, Spine, iedge)
+                && SplitKPart(aSDP, LSD, Spine, iedge, aH1, It1, aH2, It2, anIntf, anIntl)
+                && !LSD.IsEmpty();
+            }
+            catch (Standard_Failure const&)
+            {
+              // (an end the piece is not at: the walk makes the fillet)
+              isOk = false;
+            }
+            // the whole of the edge's fillet in one surface: a line that
+            // crosses the split on its way is the walk's
+            isOk = isOk && LSD.Length() == 1
+                   && LSD.First()->FirstSpineParam() <= Spine->FirstParameter(iedge) + tolesp
+                   && LSD.First()->LastSpineParam() >= Spine->LastParameter(iedge) - tolesp;
+            if (isOk)
+            {
+              intf           = anIntf;
+              intl           = anIntl;
+              iedgelastkpart = iedge;
+            }
+            else
+            {
+              LSD.Clear();
+              Spine->SetFirstParameter(aWFirst);
+              Spine->SetLastParameter(aWLast);
+            }
+          }
+        }
+        if (LSD.IsEmpty())
+        {
+          It1->Initialize(HSon1);
+          It2->Initialize(HSon2);
+        }
       }
       else
       {
