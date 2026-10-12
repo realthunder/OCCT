@@ -3605,6 +3605,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
   NCollection_Sequence<occ::handle<Adaptor3d_Curve>> aBounds;
   NCollection_Sequence<int>                          aBoundPts;
   NCollection_Sequence<int>                          aBoundOrder;
+  // a setback corner's boundaries over several faces that end on a sharp
+  // edge -- their places in the sequences above and their curves' numbers --,
+  // held tangent to their faces as such curves are, and tried by their
+  // position alone as well, below
+  NCollection_Sequence<int> aLooseBounds, aLooseCurves;
   // calculation of curves on surface for each stripe
   for (ic = 0; ic < nedge; ic++)
   {
@@ -4464,6 +4469,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           aBounds.Append(HCons);
           aBoundPts.Append(10);
           aBoundOrder.Append(Order.Value(n3d));
+          if (isSetback && (sharp.Value(ic) || sharp.Value(icplus)))
+          {
+            aLooseBounds.Append(aBounds.Length());
+            aLooseCurves.Append(n3d);
+          }
           TopOpeBRepDS_Curve tcurv3d(cproj, error);
           indcurve3d.SetValue(n3d, DStr.AddCurve(tcurv3d));
           Interfp1 = ChFi3d_FilPointInDS(TopAbs_FORWARD, indcurve3d.Value(n3d), indpoint1, pardeb);
@@ -4620,15 +4630,54 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
 
   PSurfG1.Perform();
 
+  // A setback corner's curve from a fillet to a sharp edge is held by its
+  // position alone where it lies on one face, above, and tangent to its
+  // faces where it runs over several -- a wall kept in coplanar pieces (a
+  // body without Refine), the curve across the split. Which fits is the
+  // corner's: beside curves held tangent the plate is the nearer its
+  // boundary for it (6e-4 against 9e-3, a fin's wall in two), beside curves
+  // held by position it was 0.014 off at radius 0.8, loose on every edge
+  // and a self-intersection for the Boolean check (a slot's floor against a
+  // wall in two). The plate is built both ways, and the one nearer its
+  // boundary is kept.
+  GeomPlate_BuildPlateSurface  PSurfLoose(degree, nbcurvpnt, nbiter, tol2d, tolapp3d, angular);
+  GeomPlate_BuildPlateSurface* pG1 = &PSurfG1;
+  if (!aLooseBounds.IsEmpty() && PSurfG1.IsDone())
+  {
+    for (int k = 1; k <= aBounds.Length(); k++)
+    {
+      bool isLoose = false;
+      for (int j = 1; j <= aLooseBounds.Length() && !isLoose; j++)
+      {
+        isLoose = aLooseBounds.Value(j) == k;
+      }
+      PSurfLoose.Add(new GeomPlate_CurveConstraint(aBounds.Value(k),
+                                                   isLoose ? 0 : aBoundOrder.Value(k),
+                                                   aBoundPts.Value(k),
+                                                   tolapp3d,
+                                                   angular,
+                                                   0.1));
+    }
+    PSurfLoose.Perform();
+    if (PSurfLoose.IsDone() && PSurfLoose.G0Error() < PSurfG1.G0Error())
+    {
+      pG1 = &PSurfLoose;
+      for (int j = 1; j <= aLooseBounds.Length(); j++)
+      {
+        aBoundOrder.SetValue(aLooseBounds.Value(j), 0);
+        Order.SetValue(aLooseCurves.Value(j), 0);
+      }
+    }
+  }
+
   // A plate whose boundaries ask for tangent planes far apart -- here 90 deg,
   // at a corner of #962 where a stripe meets a rib and the base -- is pulled
   // between them the harder the more points each holds: at a setback
   // corner's twenty a short convex fillet's patch bulged out past the
   // input. Such a plate (G1 error past 30 deg; a box corner's stays under
   // 0.6) is built again at ten, as it was before the twenty.
-  GeomPlate_BuildPlateSurface  PSurfG1Few(degree, 10, nbiter, tol2d, tolapp3d, angular);
-  GeomPlate_BuildPlateSurface* pG1 = &PSurfG1;
-  if (isSetback && nbcurvpnt > 10 && PSurfG1.IsDone() && PSurfG1.G1Error() > M_PI / 6.)
+  GeomPlate_BuildPlateSurface PSurfG1Few(degree, 10, nbiter, tol2d, tolapp3d, angular);
+  if (isSetback && nbcurvpnt > 10 && pG1->IsDone() && pG1->G1Error() > M_PI / 6.)
   {
     for (int k = 1; k <= aBounds.Length(); k++)
     {
