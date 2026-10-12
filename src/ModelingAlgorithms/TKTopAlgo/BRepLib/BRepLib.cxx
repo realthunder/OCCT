@@ -1033,6 +1033,30 @@ static void putThawed(const TopoDS_Shape& theRoot, ThawedMap& theThawed)
 //=======================================================================
 // function : UpdShTol
 // purpose  : Update vertices/edges/faces according to ShToTol map (create copies of necessary)
+//! Whether raising the tolerance of <theS> to <theTol> is rounding and no more.
+//! A tolerance that came through the root of a squared distance sits a few
+//! 1e-14 above the 1e-7 it stands for; a growth within what a tolerance can
+//! mean is not one an Immutable shape (a fork flag) is copied for.
+static bool isRoundingGrowth(const TopoDS_Shape& theS, const double theTol)
+{
+  double aTol = 0.;
+  switch (theS.ShapeType())
+  {
+    case TopAbs_FACE:
+      aTol = BRep_Tool::Tolerance(TopoDS::Face(theS));
+      break;
+    case TopAbs_EDGE:
+      aTol = BRep_Tool::Tolerance(TopoDS::Edge(theS));
+      break;
+    case TopAbs_VERTEX:
+      aTol = BRep_Tool::Tolerance(TopoDS::Vertex(theS));
+      break;
+    default:
+      return false;
+  }
+  return theTol - aTol <= std::max(1.e-4 * Precision::Confusion(), 1.e-5 * aTol);
+}
+
 //=======================================================================
 static void UpdShTol(
   const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theShToTol,
@@ -1050,6 +1074,16 @@ static void UpdShTol(
     const TopoDS_Shape& aSh  = SHToTolit.Key();
     double              aTol = SHToTolit.Value();
     //
+    // A frozen shape is left as it is where the growth is rounding: a frozen
+    // edge at 1e-7 under a new face at 1.0000006e-7 was copied to grow by
+    // nothing, and the copy then lay beside the original in every shape that
+    // shares the edge -- a sewing merged the two into a new edge and rebuilt
+    // each face on it, where with nothing frozen the edge grew in place and
+    // stayed shared.
+    if (IsMutableInput && aSh.Immutable() && isRoundingGrowth(aSh, aTol))
+    {
+      continue;
+    }
     TopoDS_Shape        aNsh;
     const TopoDS_Shape& aVsh = theReshaper.Value(aSh);
     // An Immutable shape is copied even where the input is mutable, see putThawed.
