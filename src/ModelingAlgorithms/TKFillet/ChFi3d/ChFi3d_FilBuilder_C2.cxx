@@ -486,11 +486,12 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
     if (!aSplit.IsNull() && ic != -2 && st1->Spine()->Status(isf[0]) == ChFiDS_OnSame
         && st2->Spine()->Status(isf[1]) == ChFiDS_OnSame)
     {
-      // both fillets end at one point of one edge on their other sides
+      // both fillets end on one edge on their other sides: at one point of
+      // it, or at two (radii or faces that differ), as the fillets on a wall
+      // in one face that PerformTwoCornerbyInter takes
       const ChFiDS_CommonPoint& aCPa1 = aSd[0]->Vertex(isf[0], 3 - aJ[0]);
       const ChFiDS_CommonPoint& aCPa2 = aSd[1]->Vertex(isf[1], 3 - aJ[1]);
-      bool isOk = aCPa1.IsOnArc() && aCPa2.IsOnArc() && aCPa1.Arc().IsSame(aCPa2.Arc())
-                  && aCPa1.Point().Distance(aCPa2.Point()) < 10. * tolapp3d;
+      bool isOk = aCPa1.IsOnArc() && aCPa2.IsOnArc() && aCPa1.Arc().IsSame(aCPa2.Arc());
       // two straight lines that meet; a walked fillet's is a B-spline, and
       // straight all the same on a plane along a straight spine
       occ::handle<Geom_Line> aLin[2];
