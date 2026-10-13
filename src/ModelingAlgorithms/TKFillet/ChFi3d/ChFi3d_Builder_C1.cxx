@@ -39,6 +39,7 @@
 #include <ChFiDS_Map.hxx>
 #include <ChFiDS_Spine.hxx>
 #include <ElCLib.hxx>
+#include <ElSLib.hxx>
 #include <Extrema_ExtCC.hxx>
 #include <Extrema_ExtPC.hxx>
 #include <Extrema_ExtPS.hxx>
@@ -49,9 +50,11 @@
 #include <Geom2d_Line.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
 #include <Geom2dAdaptor_Curve.hxx>
+#include <Geom2dAPI_InterCurveCurve.hxx>
 #include <Geom2dInt_GInter.hxx>
 #include <Geom_BezierSurface.hxx>
 #include <Geom_Line.hxx>
+#include <Geom_Plane.hxx>
 #include <GeomAPI_IntCS.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Geom_BoundedCurve.hxx>
@@ -4429,6 +4432,510 @@ static bool ArcPastWallSplit(const TopoDS_Vertex& Vtx,
   return !aFw.IsNull() && ArcPastSplit(Vtx, Arc, aFw, VEMap, EFMap, Tol, Eat);
 }
 
+//=======================================================================
+// function : CeilingAtEnd
+// purpose  : The end of a fillet under a wall that stands on the face at
+//           end (SectionCrossesEndFace). Side <Ip> of <Fd> ends on an edge
+//           of <Vtx> between its face and the face at end, a plane; the
+//           other side's line crosses that plane at a point of its own
+//           face, which runs on past <Vtx> (or at a point of a split of
+//           that face in coplanar pieces, an edge of <Vtx>); and the face
+//           at end's other edge at <Vtx>, the wall's, runs between the two.
+//           The fillet ends in the plane. Its section there cuts the face
+//           at end from the one side's edge to X, where it crosses the
+//           wall's edge. From X to the other side it runs under the wall,
+//           and what closes the body there is a face in the same plane
+//           turned the other way, a ceiling under the wall: between the
+//           section, the piece of the wall's edge from <Vtx> to X, which
+//           the wall keeps, and the line from the other side's point to
+//           <Vtx> on that side's face. All of it is put in the DS here,
+//           and <EdgeSpine>, the edge filleted, ended at <Vtx>, which stays.
+//           False, and nothing done, where this is not the case.
+//=======================================================================
+
+static bool CeilingAtEnd(
+  TopOpeBRepDS_DataStructure&                                                        DStr,
+  const occ::handle<ChFiDS_Stripe>&                                                  Stripe,
+  const occ::handle<ChFiDS_SurfData>&                                                Fd,
+  const bool                                                                         isFirst,
+  const int                                                                          Ip,
+  const TopoDS_Vertex&                                                               Vtx,
+  const TopoDS_Edge&                                                                 EdgeSpine,
+  const occ::handle<GeomAdaptor_Surface>&                                            HGs,
+  const TopAbs_Orientation                                                           OrCurve,
+  const ChFiDS_Map&                                                                  VEMap,
+  const ChFiDS_Map&                                                                  EFMap,
+  const ChFiDS_Map&                                                                  VFMap,
+  const double                                                                       Tol3d,
+  const double                                                                       Tol2d,
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>& EVIMap)
+{
+  const int                 Io  = 3 - Ip;
+  const ChFiDS_CommonPoint& CVp = Fd->Vertex(isFirst, Ip);
+  ChFiDS_CommonPoint&       CVo = Fd->ChangeVertex(isFirst, Io);
+  if (Fd->Index(1) <= 0 || Fd->Index(2) <= 0 || !CVp.IsOnArc() || CVp.IsVertex()
+      || !hasVertex(CVp.Arc(), Vtx) || CVo.IsVertex()
+      || DStr.Shape(Fd->Index(1)).ShapeType() != TopAbs_FACE
+      || DStr.Shape(Fd->Index(2)).ShapeType() != TopAbs_FACE)
+  {
+    return false;
+  }
+  const TopoDS_Face              Fp   = TopoDS::Face(DStr.Shape(Fd->Index(Ip)));
+  const TopoDS_Face              Fo   = TopoDS::Face(DStr.Shape(Fd->Index(Io)));
+  const TopoDS_Edge              Epiv = CVp.Arc();
+  const ChFiDS_FaceInterference& Fip  = Fd->Interference(Ip);
+  const ChFiDS_FaceInterference& Fio  = Fd->Interference(Io);
+  if (Fip.LineIndex() == 0 || Fio.LineIndex() == 0 || Fip.PCurveOnSurf().IsNull()
+      || Fio.PCurveOnSurf().IsNull())
+  {
+    return false;
+  }
+  auto anAcross = [&](const TopoDS_Edge& theE, const TopoDS_Face& theF) {
+    TopoDS_Face aF;
+    if (EFMap(theE).Extent() != 2)
+    {
+      return aF;
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator It(EFMap(theE)); It.More(); It.Next())
+    {
+      if (!theF.IsSame(It.Value()))
+      {
+        aF = TopoDS::Face(It.Value());
+      }
+    }
+    return aF;
+  };
+  auto aPlaneOf = [](const TopoDS_Face& theF) {
+    occ::handle<Geom_Surface>                         aS = BRep_Tool::Surface(theF);
+    const occ::handle<Geom_RectangularTrimmedSurface> aRT =
+      occ::down_cast<Geom_RectangularTrimmedSurface>(aS);
+    if (!aRT.IsNull())
+    {
+      aS = aRT->BasisSurface();
+    }
+    return occ::down_cast<Geom_Plane>(aS);
+  };
+  // the edge as it lies in the face, whatever way up the face is
+  auto anOrIn = [](const TopoDS_Edge& theE, const TopoDS_Face& theF) {
+    for (TopExp_Explorer ex(theF.Oriented(TopAbs_FORWARD), TopAbs_EDGE); ex.More(); ex.Next())
+    {
+      if (theE.IsSame(ex.Current()))
+      {
+        return ex.Current().Orientation();
+      }
+    }
+    return theE.Orientation();
+  };
+
+  // the face at end, its other edge at Vtx, and the wall on that edge
+  const TopoDS_Face Fv = anAcross(Epiv, Fp);
+  if (Fv.IsNull())
+  {
+    return false;
+  }
+  TopoDS_Edge Arcprol;
+  for (NCollection_List<TopoDS_Shape>::Iterator It(VEMap(Vtx)); It.More(); It.Next())
+  {
+    const TopoDS_Edge& E = TopoDS::Edge(It.Value());
+    if (!E.IsSame(Epiv) && !BRep_Tool::Degenerated(E) && containE(Fv, E))
+    {
+      Arcprol = E;
+      break;
+    }
+  }
+  if (Arcprol.IsNull())
+  {
+    return false;
+  }
+  const TopoDS_Face Fwall = anAcross(Arcprol, Fv);
+  if (Fwall.IsNull() || Fwall.IsSame(Fp) || Fwall.IsSame(Fo))
+  {
+    return false;
+  }
+  const occ::handle<Geom_Plane> aGPv = aPlaneOf(Fv);
+  if (aGPv.IsNull())
+  {
+    return false;
+  }
+  const gp_Pln aPln = aGPv->Pln();
+  const gp_Pnt PV   = BRep_Tool::Pnt(Vtx);
+
+  // the other side: where its line crosses the plane
+  const bool  onSplit = CVo.IsOnArc() && hasVertex(CVo.Arc(), Vtx);
+  TopoDS_Edge Esplit;
+  TopoDS_Face Fup;
+  double      wo = Fio.Parameter(isFirst);
+  gp_Pnt      Po = CVo.Point();
+  if (onSplit)
+  {
+    Esplit = CVo.Arc();
+    Fup    = anAcross(Esplit, Fo);
+    if (Fup.IsNull() || Fup.IsSame(Fwall) || !ChFi3d_CoplanarPieces(Fo, Fup, 10 * Tol3d))
+    {
+      return false;
+    }
+  }
+  else
+  {
+    const occ::handle<Geom_Curve>& aLo = DStr.Curve(Fio.LineIndex()).Curve();
+    wo                                 = Fip.Parameter(isFirst);
+    if (aLo.IsNull() || wo < Fio.FirstParameter() || wo > Fio.LastParameter())
+    {
+      return false;
+    }
+    Po = aLo->Value(wo);
+    if (aPln.Distance(Po) > Tol3d)
+    {
+      // (the plane not square to the spine: next to the section through
+      // the first side's end)
+      const double  aWs = wo;
+      GeomAPI_IntCS anInt(new Geom_TrimmedCurve(aLo, Fio.FirstParameter(), Fio.LastParameter()),
+                          aGPv);
+      if (!anInt.IsDone() || anInt.NbPoints() == 0)
+      {
+        return false;
+      }
+      double aBest = RealLast();
+      for (int i = 1; i <= anInt.NbPoints(); i++)
+      {
+        double aU, aV, aW;
+        anInt.Parameters(i, aU, aV, aW);
+        if (std::abs(aW - aWs) < aBest)
+        {
+          aBest = std::abs(aW - aWs);
+          wo    = aW;
+        }
+      }
+      Po = aLo->Value(wo);
+    }
+  }
+  if (aPln.Distance(Po) > 10 * Tol3d)
+  {
+    return false;
+  }
+  // no faces at Vtx but these, the wall next to the other side's face
+  const TopoDS_Face& Fbeside = onSplit ? Fup : Fo;
+  bool               isNext  = false;
+  for (NCollection_List<TopoDS_Shape>::Iterator It(VEMap(Vtx)); It.More() && !isNext; It.Next())
+  {
+    const TopoDS_Edge& E = TopoDS::Edge(It.Value());
+    isNext               = containE(Fwall, E) && containE(Fbeside, E);
+  }
+  if (!isNext || ChFi3d_nbface(VFMap(Vtx)) != (onSplit ? 5 : 4)
+      || !SectionCrossesEndFace(Vtx, Epiv, Fp, CVp.Point(), Po, VEMap, EFMap))
+  {
+    return false;
+  }
+
+  // the section, from side 1 to side 2, as the corners put their curves
+  double                          aF, aL;
+  const occ::handle<Geom2d_Curve> aPCpiv = PCurveInFace(Epiv, Fv, aF, aL);
+  if (aPCpiv.IsNull())
+  {
+    return false;
+  }
+  const gp_Pnt2d aUVsp = Fip.PCurveOnSurf()->Value(Fip.Parameter(isFirst));
+  const gp_Pnt2d aUVso = Fio.PCurveOnSurf()->Value(wo);
+  const gp_Pnt2d aUVvp = aPCpiv->Value(CVp.ParameterOnArc());
+  double         aUo, aVo;
+  ElSLib::Parameters(aPln, Po, aUo, aVo);
+  const gp_Pnt2d             aUVvo(aUo, aVo);
+  const gp_Pnt2d&            aUVs1 = Ip == 1 ? aUVsp : aUVso;
+  const gp_Pnt2d&            aUVs2 = Ip == 1 ? aUVso : aUVsp;
+  const gp_Pnt2d&            aUVv1 = Ip == 1 ? aUVvp : aUVvo;
+  const gp_Pnt2d&            aUVv2 = Ip == 1 ? aUVvo : aUVvp;
+  NCollection_Array1<double> Pardeb(1, 4), Parfin(1, 4);
+  Pardeb(1) = aUVs1.X();
+  Pardeb(2) = aUVs1.Y();
+  Pardeb(3) = aUVv1.X();
+  Pardeb(4) = aUVv1.Y();
+  Parfin(1) = aUVs2.X();
+  Parfin(2) = aUVs2.Y();
+  Parfin(3) = aUVv2.X();
+  Parfin(4) = aUVv2.Y();
+  occ::handle<BRepAdaptor_Surface> aHBv = new BRepAdaptor_Surface(Fv);
+  double                           uu1, uu2, vv1, vv2;
+  ChFi3d_Boite(aUVv1, aUVv2, uu1, uu2, vv1, vv2);
+  ChFi3d_BoundFac(*aHBv, uu1, uu2, vv1, vv2);
+  occ::handle<Geom_Curve>   aCc;
+  occ::handle<Geom2d_Curve> aPs, aPc;
+  double                    aTolR = Tol3d;
+  if (!ChFi3d_ComputeCurves(HGs, aHBv, Pardeb, Parfin, aCc, aPs, aPc, Tol3d, Tol2d, aTolR, false)
+      || aCc.IsNull() || aPs.IsNull() || aPc.IsNull())
+  {
+    return false;
+  }
+  // (two planes are given no tolerance but the one asked for)
+  aTolR =
+    std::min(aTolR,
+             std::max(ChFi3d_EvalTolReached(HGs, aPs, aHBv, aPc, aCc), Precision::Confusion()));
+  const double p1 = aCc->FirstParameter(), p2 = aCc->LastParameter();
+  if (aCc->Value(p1).Distance(Ip == 1 ? CVp.Point() : Po) > 10 * Tol3d
+      || aCc->Value(p2).Distance(Ip == 1 ? Po : CVp.Point()) > 10 * Tol3d)
+  {
+    return false;
+  }
+
+  // X: the section across the wall's edge, once, between the two sides
+  double                          aFA, aLA;
+  const occ::handle<Geom2d_Curve> aPCprolV = PCurveInFace(Arcprol, Fv, aFA, aLA);
+  const occ::handle<Geom2d_Curve> aPCprolW = PCurveInFace(Arcprol, Fwall, aFA, aLA);
+  const occ::handle<Geom_Curve>   aCprol   = BRep_Tool::Curve(Arcprol, aFA, aLA);
+  if (aPCprolV.IsNull() || aPCprolW.IsNull() || aCprol.IsNull()
+      || p2 - p1 <= Precision::PConfusion() || aLA - aFA <= Precision::PConfusion())
+  {
+    return false;
+  }
+  Geom2dAPI_InterCurveCurve anInt2d(new Geom2d_TrimmedCurve(aPc, p1, p2),
+                                    new Geom2d_TrimmedCurve(aPCprolV, aFA, aLA),
+                                    Precision::Confusion());
+  if (anInt2d.NbPoints() != 1 || anInt2d.NbSegments() != 0)
+  {
+    return false;
+  }
+  const double tX   = anInt2d.Intersector().Point(1).ParamOnFirst();
+  const double parX = anInt2d.Intersector().Point(1).ParamOnSecond();
+  const double parV = BRep_Tool::Parameter(Vtx, Arcprol);
+  const gp_Pnt PX   = aCc->Value(tX);
+  const double aTolX =
+    std::max({aTolR, PX.Distance(aCprol->Value(parX)), Precision::Confusion()});
+  const double aLim =
+    4. * std::max({aTolX, CVp.Tolerance(), BRep_Tool::Tolerance(Vtx), Precision::Confusion()});
+  const double parFar = std::abs(parV - aFA) < std::abs(parV - aLA) ? aLA : aFA;
+  if (tX <= p1 || tX >= p2 || parX <= aFA || parX >= aLA || PX.Distance(CVp.Point()) <= aLim
+      || PX.Distance(Po) <= aLim || PX.Distance(PV) <= aLim || PV.Distance(Po) <= aLim
+      || PX.Distance(aCprol->Value(parFar)) <= aLim)
+  {
+    return false;
+  }
+
+  // the ceiling's side on the other face: the split from Vtx to the line's
+  // end, the face above keeping it; or, the face in one, the line from Vtx
+  // to the point on it
+  occ::handle<Geom_Curve>   aC4;
+  occ::handle<Geom2d_Curve> aPc4f;
+  occ::handle<Geom_Surface> aS4;
+  TopAbs_Orientation        anOr4f;
+  double                    a4 = 0., b4 = 0.;
+  bool                      isVtxFirst4 = true;
+  if (onSplit)
+  {
+    double                        aFS, aLS;
+    const occ::handle<Geom_Curve> aCs = BRep_Tool::Curve(Esplit, aFS, aLS);
+    aPc4f                             = PCurveInFace(Esplit, Fup, aFS, aLS);
+    if (aCs.IsNull() || aPc4f.IsNull())
+    {
+      return false;
+    }
+    const double parVs = BRep_Tool::Parameter(Vtx, Esplit), parO = CVo.ParameterOnArc();
+    a4          = std::min(parVs, parO);
+    b4          = std::max(parVs, parO);
+    isVtxFirst4 = parVs < parO;
+    if (b4 - a4 <= Precision::PConfusion())
+    {
+      return false;
+    }
+    aC4    = new Geom_TrimmedCurve(aCs, a4, b4);
+    aS4    = BRep_Tool::Surface(Fup);
+    anOr4f = anOrIn(Esplit, Fup);
+  }
+  else
+  {
+    const occ::handle<Geom_Plane> aGPo = aPlaneOf(Fo);
+    if (aGPo.IsNull())
+    {
+      return false;
+    }
+    b4           = PV.Distance(Po);
+    aC4          = new Geom_TrimmedCurve(new Geom_Line(PV, gp_Dir(gp_Vec(PV, Po))), a4, b4);
+    aS4          = aGPo;
+    double aTolP = Tol3d;
+    aPc4f        = GeomProjLib::Curve2d(aC4, a4, b4, aS4, aTolP);
+    // as the line of the fillet runs on that face, to its end and on to Vtx
+    anOr4f = isFirst ? Fio.Transition() : TopAbs::Reverse(Fio.Transition());
+  }
+  double                          aTolP4 = Tol3d;
+  const occ::handle<Geom2d_Curve> aPc4c  = GeomProjLib::Curve2d(aC4, a4, b4, aGPv, aTolP4);
+  if (aPc4f.IsNull() || aPc4c.IsNull())
+  {
+    return false;
+  }
+  const occ::handle<GeomAdaptor_Surface> aHSv = new GeomAdaptor_Surface(aGPv);
+  const double                           aTol4 =
+    std::max(ChFi3d_EvalTolReached(new GeomAdaptor_Surface(aS4), aPc4f, aHSv, aPc4c, aC4),
+             Precision::Confusion());
+  if (aTol4 > 10 * Tol3d)
+  {
+    return false;
+  }
+
+  // -- the DS, from here on --
+  // The ceiling lies in the plane of the face at end, turned the other
+  // way and on the other side of the section and of the wall's edge: its
+  // curves the other way round on the same surface.
+  const TopAbs_Orientation anOrC = TopAbs::Reverse(Fv.Orientation());
+  const TopAbs_Orientation anOrienV =
+    Fv.Orientation() == Fd->Orientation() ? TopAbs::Reverse(OrCurve) : OrCurve;
+  const TopAbs_Orientation anOrienC = TopAbs::Reverse(anOrienV);
+  const int                Isurf    = Fd->Surf();
+  const int                IsurfC   = DStr.AddSurface(
+    TopOpeBRepDS_Surface(occ::down_cast<Geom_Surface>(aGPv->Copy()), BRep_Tool::Tolerance(Fv)));
+  if (!EVIMap.IsBound(Vtx))
+  {
+    EVIMap.Bind(Vtx, NCollection_List<int>());
+  }
+  EVIMap.ChangeFind(Vtx).Append(IsurfC);
+  const int SolInd = Stripe->SolidIndex();
+  DStr.ChangeShapeInterferences(SolInd).Append(
+    new TopOpeBRepDS_SolidSurfaceInterference(TopOpeBRepDS_Transition(anOrC),
+                                              TopOpeBRepDS_SOLID,
+                                              SolInd,
+                                              TopOpeBRepDS_SURFACE,
+                                              IsurfC));
+
+  // the points
+  if (!onSplit)
+  {
+    // the line is cut where it crosses the plane, as an edge splitting
+    // its face there would cut it
+    Fd->ChangeInterference(Io).SetParameter(wo, isFirst);
+    CVo.Reset();
+    CVo.SetPoint(Po);
+    CVo.SetTolerance(std::max(aPln.Distance(Po), Precision::Confusion()));
+    Stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CVo, DStr), isFirst, Io);
+  }
+  const int IndP = Stripe->IndexPoint(isFirst, Ip);
+  const int IndO = Stripe->IndexPoint(isFirst, Io);
+  const int IndX = DStr.AddPoint(TopOpeBRepDS_Point(PX, aTolX));
+  const int IVtx = DStr.AddShape(Vtx);
+  for (int k = 0; k < 2; k++)
+  {
+    TopOpeBRepDS_Point& aTP = DStr.ChangePoint(k == 0 ? IndP : IndO);
+    aTP.Tolerance(std::max(aTP.Tolerance(), aTolR));
+  }
+
+  // the section in two: on the face at end up to X, on the ceiling beyond
+  const int IFv         = DStr.AddShape(Fv);
+  auto      aPutSection = [&](const double theA,
+                         const double theB,
+                         const int    theInd1,
+                         const int    theInd2,
+                         const bool   theOnCeiling) {
+    const int IC = DStr.AddCurve(TopOpeBRepDS_Curve(new Geom_TrimmedCurve(aCc, theA, theB), aTolR));
+    DStr.ChangeCurveInterferences(IC).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, IC, theInd1, theA));
+    DStr.ChangeCurveInterferences(IC).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IC, theInd2, theB));
+    DStr.ChangeSurfaceInterferences(Isurf).Append(
+      ChFi3d_FilCurveInDS(IC, Isurf, new Geom2d_TrimmedCurve(aPs, theA, theB), OrCurve));
+    const occ::handle<Geom2d_Curve> aPcAB = new Geom2d_TrimmedCurve(aPc, theA, theB);
+    if (theOnCeiling)
+    {
+      DStr.ChangeSurfaceInterferences(IsurfC).Append(
+        ChFi3d_FilCurveInDS(IC, IsurfC, aPcAB, anOrienC));
+    }
+    else
+    {
+      DStr.ChangeShapeInterferences(IFv).Append(ChFi3d_FilCurveInDS(IC, IFv, aPcAB, anOrienV));
+    }
+  };
+  if (Ip == 1)
+  {
+    aPutSection(p1, tX, IndP, IndX, false);
+    aPutSection(tX, p2, IndX, IndO, true);
+  }
+  else
+  {
+    aPutSection(p1, tX, IndO, IndX, true);
+    aPutSection(tX, p2, IndX, IndP, false);
+  }
+
+  // an edge from Vtx between a face of the body and the ceiling
+  auto aPutSide = [&](const occ::handle<Geom_Curve>&   theC,
+                      const double                     theA,
+                      const double                     theB,
+                      const double                     theTol,
+                      const bool                       theVtxFirst,
+                      const int                        theInd,
+                      const TopoDS_Face&               theF,
+                      const occ::handle<Geom2d_Curve>& thePcF,
+                      const TopAbs_Orientation         theOrF,
+                      const occ::handle<Geom2d_Curve>& thePcC,
+                      const TopAbs_Orientation         theOrC) {
+    const int IC = DStr.AddCurve(TopOpeBRepDS_Curve(theC, theTol));
+    DStr.ChangeCurveInterferences(IC).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, IC, theVtxFirst ? IVtx : theInd, theA, theVtxFirst));
+    DStr.ChangeCurveInterferences(IC).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IC, theVtxFirst ? theInd : IVtx, theB, !theVtxFirst));
+    const int IF = DStr.AddShape(theF);
+    DStr.ChangeShapeInterferences(IF).Append(ChFi3d_FilCurveInDS(IC, IF, thePcF, theOrF));
+    DStr.ChangeSurfaceInterferences(IsurfC).Append(ChFi3d_FilCurveInDS(IC, IsurfC, thePcC, theOrC));
+  };
+  // the wall's edge from Vtx to X: the face at end lay on its one side,
+  // the ceiling lies on the other
+  aPutSide(new Geom_TrimmedCurve(aCprol, std::min(parV, parX), std::max(parV, parX)),
+           std::min(parV, parX),
+           std::max(parV, parX),
+           std::max(BRep_Tool::Tolerance(Arcprol), Precision::Confusion()),
+           parV < parX,
+           IndX,
+           Fwall,
+           aPCprolW,
+           anOrIn(Arcprol, Fwall),
+           aPCprolV,
+           TopAbs::Reverse(anOrIn(Arcprol, Fv)));
+  // the other face's: the two faces as two faces of a shell meeting there
+  const TopoDS_Face& F4 = onSplit ? Fup : Fo;
+  aPutSide(aC4,
+           a4,
+           b4,
+           aTol4,
+           isVtxFirst4,
+           IndO,
+           F4,
+           aPc4f,
+           anOr4f,
+           aPc4c,
+           anOrC == F4.Orientation() ? TopAbs::Reverse(anOr4f) : anOr4f);
+
+  // the edges cut
+  const int IEpiv = DStr.AddShape(Epiv);
+  DStr.ChangeShapeInterferences(IEpiv).Append(
+    ChFi3d_FilPointInDS(CVp.TransitionOnArc(), IEpiv, IndP, CVp.ParameterOnArc()));
+  const int IArcprol = DStr.AddShape(Arcprol);
+  DStr.ChangeShapeInterferences(IArcprol).Append(
+    ChFi3d_FilPointInDS(TopExp::FirstVertex(Arcprol).IsSame(Vtx) ? TopAbs_FORWARD : TopAbs_REVERSED,
+                        IArcprol,
+                        IndX,
+                        parX));
+  if (onSplit)
+  {
+    const int IEsplit = DStr.AddShape(Esplit);
+    DStr.ChangeShapeInterferences(IEsplit).Append(
+      ChFi3d_FilPointInDS(CVo.TransitionOnArc(), IEsplit, IndO, CVo.ParameterOnArc()));
+  }
+  // Vtx stays, with the wall's edges and the ceiling's: the edge filleted
+  // ends there with nothing kept of it, or the faces beside it that keep
+  // Vtx would keep the edge
+  TopAbs_Orientation anOrV = TopAbs_FORWARD;
+  for (TopExp_Explorer ex(EdgeSpine.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
+  {
+    if (Vtx.IsSame(ex.Current()))
+    {
+      anOrV = ex.Current().Orientation();
+      break;
+    }
+  }
+  const int ISpine = DStr.AddShape(EdgeSpine);
+  DStr.ChangeShapeInterferences(ISpine).Append(
+    ChFi3d_FilVertexInDS(TopAbs::Reverse(anOrV),
+                         ISpine,
+                         IVtx,
+                         BRep_Tool::Parameter(Vtx, EdgeSpine)));
+  Stripe->InDS(isFirst);
+  return true;
+}
+
 //=================================================================================================
 
 void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
@@ -5395,6 +5902,35 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           possible2 = true;
         }
       }
+      // One side on an edge of Vtx, the other running on under a wall that
+      // stands on the face at end: the fillet ends in that face's plane,
+      // which it cuts as far as the wall, and under the wall the body is
+      // closed by a ceiling in the same plane (CeilingAtEnd).
+      if (!couture && !bordlibre && !isOnSame1 && !isOnSame2)
+      {
+        for (int ip = 1; ip <= 2; ip++)
+        {
+          if ((ip == 1 ? possible1 : possible2)
+              && CeilingAtEnd(DStr,
+                              stripe,
+                              Fd,
+                              isfirst,
+                              ip,
+                              Vtx,
+                              EdgeSpine,
+                              HGs,
+                              orcourbe,
+                              myVEMap,
+                              myEFMap,
+                              myVFMap,
+                              tolapp3d,
+                              tol2d,
+                              myEVIMap))
+          {
+            return;
+          }
+        }
+      }
       // A side ending on an edge away from Vtx past a split of its face in
       // coplanar pieces: the corner is that of the faces around Vtx, as on
       // the wall in one face, the edge of Vtx the arc carries on left out.
@@ -5511,9 +6047,9 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
                                     myVEMap,
                                     myEFMap))
           {
-            // The line is cut there, as an edge splitting its face there
-            // would cut it, and the corner is filled as that of the split
-            // face.
+            // (No ceiling was made, above.) The line is cut there, as an
+            // edge splitting its face there would cut it, and the corner is
+            // filled as that of the split face, with a plate.
             Fio.SetParameter(w, isfirst);
             ChFiDS_CommonPoint& CVo = Fd->ChangeVertex(isfirst, io);
             CVo.Reset();
@@ -5647,8 +6183,8 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
       // Vtx to the line's end, which it shares with the piece beyond from
       // then on; the faces between are left as they are.
       // Not where a wall stands on that face in the way of the section
-      // (SectionCrossesEndFace): the plate's, there as on the wall in one
-      // face.
+      // (SectionCrossesEndFace): the ceiling's above, or, where that was
+      // not made, the plate's, there as on the wall in one face.
       if (!oneintersection1 && !oneintersection2 && nbface >= 2 && !couture && !bordlibre)
       {
         auto onSurfaceOf = [&](const TopoDS_Edge& theE, const TopoDS_Face& theF) {
