@@ -60,4 +60,10 @@ private:
   Standard_EXPORT static unsigned int& raisedCounter();
 };
 
+//! TopoDS_LockedShape::Raised as a C function, for a client to look up by
+//! name at run time (dlsym, GetProcAddress) and do without where the library
+//! is upstream's, which counts nothing: Raised() is inline and reads a
+//! counter of the fork's library, a symbol upstream's does not have.
+extern "C" Standard_EXPORT unsigned int TopoDS_LockedShape_Raised();
+
 #endif // _TopoDS_LockedShape_HeaderFile

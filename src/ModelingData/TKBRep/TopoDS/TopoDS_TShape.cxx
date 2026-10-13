@@ -20,8 +20,7 @@
 
 #include <Standard_Dump.hxx>
 
-#include <mutex>
-#include <unordered_map>
+#include <NCollection_BaseAllocator.hxx>
 
 IMPLEMENT_STANDARD_RTTIEXT(TopoDS_TShape, Standard_Transient)
 
@@ -31,24 +30,33 @@ unsigned int& TopoDS_LockedShape::raisedCounter()
   return aCount;
 }
 
-namespace
+//=================================================================================================
+
+unsigned int TopoDS_LockedShape_Raised()
 {
-// Thawed copy -> its original (TopoDS_TShape::Thaw). A side table, so the flag
-// is all a TShape carries: copies are rare, and the layout stays as it is.
-// Both are never destroyed: a TShape can die during static destruction, held
-// by a static made before the table (FreeCAD's congruence index), and its
-// destructor still has to find the table at exit.
-std::mutex& thawedMutex()
-{
-  static std::mutex* aMutex = new std::mutex;
-  return *aMutex;
+  return TopoDS_LockedShape::Raised();
 }
 
-std::unordered_map<const TopoDS_TShape*, occ::handle<TopoDS_TShape>>& thawedOriginals()
+namespace
 {
-  static auto* aMap = new std::unordered_map<const TopoDS_TShape*, occ::handle<TopoDS_TShape>>;
-  return *aMap;
-}
+// A thawed copy's original (TopoDS_TShape::Thaw), held by the copy: the
+// allocator of its list of children. The flag and this are all a TShape
+// carries, and the layout stays upstream's. The list lets go of the allocator
+// with itself, whoever compiled the TShape's destructor -- upstream leaves it
+// implicit, so with MSVC a client that makes a wire has one of its own, and
+// the library is not told when the wire dies. A table beside the TShapes
+// needed a destructor here to forget a copy, which is a symbol upstream's
+// library does not have.
+class ThawedOriginal : public NCollection_BaseAllocator
+{
+public:
+  explicit ThawedOriginal(const occ::handle<TopoDS_TShape>& theOriginal)
+      : myOriginal(theOriginal)
+  {
+  }
+
+  occ::handle<TopoDS_TShape> myOriginal;
+};
 } // namespace
 
 //=================================================================================================
@@ -60,8 +68,19 @@ void TopoDS_TShape::Thaw(const occ::handle<TopoDS_TShape>& theCopy,
   {
     return;
   }
-  std::lock_guard<std::mutex> aLock(thawedMutex());
-  thawedOriginals()[theCopy.get()] = theOriginal;
+  // A list's nodes are freed by the allocator that made them: the children
+  // the copy has already are taken out and put back under the new one. The
+  // copy is the caller's alone until it hands it on, as any TShape it builds.
+  NCollection_List<TopoDS_Shape> aChildren;
+  for (NCollection_List<TopoDS_Shape>::Iterator anIt(theCopy->myShapes); anIt.More(); anIt.Next())
+  {
+    aChildren.Append(anIt.Value());
+  }
+  theCopy->myShapes.Clear(new ThawedOriginal(theOriginal));
+  for (NCollection_List<TopoDS_Shape>::Iterator anIt(aChildren); anIt.More(); anIt.Next())
+  {
+    theCopy->myShapes.Append(anIt.Value());
+  }
   theCopy->setBit(Bit_Thawed, true);
 }
 
@@ -73,26 +92,18 @@ occ::handle<TopoDS_TShape> TopoDS_TShape::ThawedFrom(const TopoDS_TShape* theCop
   {
     return occ::handle<TopoDS_TShape>();
   }
-  std::lock_guard<std::mutex> aLock(thawedMutex());
-  auto anIt = thawedOriginals().find(theCopy);
-  return anIt == thawedOriginals().end() ? occ::handle<TopoDS_TShape>() : anIt->second;
+  // The flag may be on a TShape that took it with another's state and was
+  // never thawed itself: no original then.
+  const ThawedOriginal* aState =
+    dynamic_cast<const ThawedOriginal*>(theCopy->myShapes.Allocator().get());
+  return aState != nullptr ? aState->myOriginal : occ::handle<TopoDS_TShape>();
 }
 
 //=================================================================================================
 
-TopoDS_TShape::~TopoDS_TShape()
+void TopoDS_TShape_ThawedFrom(const TopoDS_TShape* theCopy, occ::handle<TopoDS_TShape>& theOriginal)
 {
-  if (Thawed())
-  {
-    occ::handle<TopoDS_TShape> anOriginal; // released after the lock
-    std::lock_guard<std::mutex> aLock(thawedMutex());
-    auto anIt = thawedOriginals().find(this);
-    if (anIt != thawedOriginals().end())
-    {
-      anOriginal = anIt->second;
-      thawedOriginals().erase(anIt);
-    }
-  }
+  theOriginal = TopoDS_TShape::ThawedFrom(theCopy);
 }
 
 //=================================================================================================

@@ -53,4 +53,16 @@ private:
   void* myMutex; //!< the stripe held, or null
 };
 
+//! BRep_RepresentationLock as two C functions, for a client to look up by
+//! name at run time (dlsym, GetProcAddress) and do without where the library
+//! is upstream's, which freezes nothing and has nothing to guard: a client
+//! that makes a lock by the class's name does not load there. Acquire locks
+//! <theTShape>'s representations if it is Immutable and returns what Release
+//! is to be given, null where nothing was locked. On the thread that
+//! acquired, as the class.
+extern "C" Standard_EXPORT void* BRep_RepresentationLock_Acquire(const TopoDS_TShape* theTShape);
+
+//! Lets go of what BRep_RepresentationLock_Acquire returned; null is nothing.
+extern "C" Standard_EXPORT void BRep_RepresentationLock_Release(void* theLock);
+
 #endif // _BRep_RepresentationLock_HeaderFile
