@@ -4705,6 +4705,19 @@ void BRepOffset_Tool::ExtentFace(
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ToBuild,
   const TopAbs_State                                                        Side,
   const double                                                              TolConf,
+  TopoDS_Face&                                                              NF)
+{
+  ExtentFace(F, ConstShapes, ToBuild, Side, TolConf, NF, nullptr, nullptr);
+}
+
+//=================================================================================================
+
+void BRepOffset_Tool::ExtentFace(
+  const TopoDS_Face&                                                        F,
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ConstShapes,
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ToBuild,
+  const TopAbs_State                                                        Side,
+  const double                                                              TolConf,
   TopoDS_Face&                                                              NF,
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theSteps,
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theStepSides)

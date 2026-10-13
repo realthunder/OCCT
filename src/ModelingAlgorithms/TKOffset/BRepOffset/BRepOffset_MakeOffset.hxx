@@ -223,6 +223,11 @@ private:
                         NCollection_List<TopoDS_Shape>,
                         TopTools_ShapeMapHasher>& theCut);
 
+  //! The same, the cut edges not asked for. Upstream's signature, kept as
+  //! it is for the library's symbols to be upstream's.
+  Standard_EXPORT void ToContext(
+    NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF);
+
   //! Private method use to update the map face<->offset
   Standard_EXPORT void UpdateFaceOffset();
 

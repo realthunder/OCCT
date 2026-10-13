@@ -204,9 +204,18 @@ public:
     const TopAbs_State                                                        Side,
     const double                                                              TolConf,
     TopoDS_Face&                                                              NF,
-    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theSteps = nullptr,
-    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theStepSides =
-      nullptr);
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theSteps,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theStepSides);
+
+  //! The same with no steps asked for. Upstream's signature, kept as it is:
+  //! a client built against upstream's library links to this symbol.
+  Standard_EXPORT static void ExtentFace(
+    const TopoDS_Face&                                                        F,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ConstShapes,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ToBuild,
+    const TopAbs_State                                                        Side,
+    const double                                                              TolConf,
+    TopoDS_Face&                                                              NF);
 
   //! Via the wire explorer store in <NOnV1> for
   //! an Edge <E> of <W> his Edge neighbour on the first

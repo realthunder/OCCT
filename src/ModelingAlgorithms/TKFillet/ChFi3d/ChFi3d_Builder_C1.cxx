@@ -1628,6 +1628,11 @@ static bool ArcPastWallSplit(const TopoDS_Vertex& Vtx,
                              const double         Tol,
                              TopoDS_Edge&         Eat);
 
+void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
+{
+  PerformOneCorner(Index, thePrepareOnSame, false);
+}
+
 void ChFi3d_Builder::PerformOneCorner(const int  Index,
                                       const bool thePrepareOnSame,
                                       const bool theAtFourEdges)

@@ -834,9 +834,13 @@ private:
 
   Standard_EXPORT void PerformSingularCorner(const int Index);
 
+  //! Upstream's signature, kept as it is for the library's symbols to be
+  //! upstream's: the corner not at four edges.
+  Standard_EXPORT void PerformOneCorner(const int Index, const bool PrepareOnSame = false);
+
   Standard_EXPORT void PerformOneCorner(const int  Index,
-                                        const bool PrepareOnSame = false,
-                                        const bool AtFourEdges   = false);
+                                        const bool PrepareOnSame,
+                                        const bool AtFourEdges);
 
   Standard_EXPORT void IntersectMoreCorner(const int Index);
 

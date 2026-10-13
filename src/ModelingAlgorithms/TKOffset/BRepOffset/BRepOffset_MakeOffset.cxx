@@ -5452,6 +5452,15 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
 //=================================================================================================
 
 void BRepOffset_MakeOffset::ToContext(
+  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF)
+{
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> aCut;
+  ToContext(MapSF, aCut);
+}
+
+//=================================================================================================
+
+void BRepOffset_MakeOffset::ToContext(
   NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
     theCut)
