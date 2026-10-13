@@ -1055,6 +1055,30 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
   TopoDS_Vertex            bout1, bout2, boutemp;
   const BRepAdaptor_Curve& bc      = Spine->CurrentElementarySpine(Iedge);
   TopoDS_Edge              support = bc.Edge();
+  // A face of the fillet that is the far piece of a wall kept in coplanar
+  // pieces (PerformSetOfKPart) is not at the spine's end: the edge beside
+  // the spine there is the spine's own piece's.
+  auto aFaceAt = [&](const TopoDS_Face& theF, const TopoDS_Vertex& theV) {
+    for (TopExp_Explorer exV(theF, TopAbs_VERTEX); exV.More(); exV.Next())
+    {
+      if (exV.Current().IsSame(theV))
+      {
+        return theF;
+      }
+    }
+    if (myEFMap.Contains(support))
+    {
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(support)); itF.More(); itF.Next())
+      {
+        const TopoDS_Face& aF = TopoDS::Face(itF.Value());
+        if (!aF.IsSame(theF) && ChFi3d_CoplanarPieces(theF, aF, 10 * tolapp3d))
+        {
+          return aF;
+        }
+      }
+    }
+    return theF;
+  };
   TopExp::Vertices(support, bout1, bout2);
   if (support.Orientation() == TopAbs_REVERSED)
   {
@@ -1472,8 +1496,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
       if (intf && Spine->FirstStatus() == ChFiDS_OnSame)
       {
         TopoDS_Edge threeE[3];
-        ChFi3d_cherche_element(bout1, support, F1, threeE[0], boutemp);
-        ChFi3d_cherche_element(bout1, support, F2, threeE[1], boutemp);
+        ChFi3d_cherche_element(bout1, support, aFaceAt(F1, bout1), threeE[0], boutemp);
+        ChFi3d_cherche_element(bout1, support, aFaceAt(F2, bout1), threeE[1], boutemp);
         threeE[2] = support;
         if (ChFi3d_EdgeState(threeE, myEFMap) == ChFiDS_OnSame)
         {
@@ -1609,8 +1633,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
       if (intl && Spine->LastStatus() == ChFiDS_OnSame)
       {
         TopoDS_Edge threeE[3];
-        ChFi3d_cherche_element(bout2, support, F1, threeE[0], boutemp);
-        ChFi3d_cherche_element(bout2, support, F2, threeE[1], boutemp);
+        ChFi3d_cherche_element(bout2, support, aFaceAt(F1, bout2), threeE[0], boutemp);
+        ChFi3d_cherche_element(bout2, support, aFaceAt(F2, bout2), threeE[1], boutemp);
         threeE[2] = support;
         if (ChFi3d_EdgeState(threeE, myEFMap) == ChFiDS_OnSame)
         {
