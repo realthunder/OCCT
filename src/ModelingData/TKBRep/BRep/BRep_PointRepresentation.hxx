@@ -97,9 +97,10 @@ protected:
   Standard_EXPORT BRep_PointRepresentation(const double P, const TopLoc_Location& L);
 
 private:
+  // Before upstream's members on purpose, see BRep_CurveRepresentation.
+  bool            myIsCache = false;
   TopLoc_Location myLocation;
   double          myParameter;
-  bool            myIsCache = false;
 };
 
 #include <BRep_PointRepresentation.lxx>

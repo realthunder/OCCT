@@ -162,8 +162,16 @@ public:
 protected:
   Standard_EXPORT BRep_CurveRepresentation(const TopLoc_Location& L);
 
-  TopLoc_Location myLocation;
+  // The fork's flag, declared before upstream's member on purpose: with
+  // the Itanium C++ ABI (Linux, macOS) it lands in the four bytes
+  // Standard_Transient ends with unused, and this class and every class
+  // derived from it keep upstream's size and offsets -- which a client
+  // built against upstream's library reads a representation by (see
+  // GeomTools_Curve2dSet). With MSVC a base's unused bytes are not given
+  // to a derived class: there these classes are 8 bytes larger than
+  // upstream's, as they were with the flag declared last.
   bool            myIsCache = false;
+  TopLoc_Location myLocation;
 };
 
 #include <BRep_CurveRepresentation.lxx>
