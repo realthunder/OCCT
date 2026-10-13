@@ -65,3 +65,26 @@ BRep_RepresentationLock::~BRep_RepresentationLock()
     static_cast<std::recursive_mutex*>(myMutex)->unlock();
   }
 }
+
+//=================================================================================================
+
+void* BRep_RepresentationLock_Acquire(const TopoDS_TShape* theTShape)
+{
+  if (theTShape == nullptr || !theTShape->Immutable())
+  {
+    return nullptr;
+  }
+  std::recursive_mutex& aMutex = stripe(theTShape);
+  aMutex.lock();
+  return &aMutex;
+}
+
+//=================================================================================================
+
+void BRep_RepresentationLock_Release(void* theLock)
+{
+  if (theLock != nullptr)
+  {
+    static_cast<std::recursive_mutex*>(theLock)->unlock();
+  }
+}

@@ -104,6 +104,13 @@ void BinTools_ShapeSet_SetOmitPCurvesOnPlane(BinTools_ShapeSet& theSet, const bo
 
 //=================================================================================================
 
+void BinTools_ShapeSet_SetStableBytes(BinTools_ShapeSet& theSet, const bool theStable)
+{
+  theSet.SetStableBytes(theStable);
+}
+
+//=================================================================================================
+
 bool BinTools_ShapeSet::IsStableBytes() const
 {
   const ShapeSetState* aState = stateOf(myShapes);

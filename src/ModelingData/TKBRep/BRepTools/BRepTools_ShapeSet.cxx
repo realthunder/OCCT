@@ -2037,3 +2037,10 @@ void BRepTools_ShapeSet::ReadTriangulation(Standard_IStream&            IS,
     myTriangulations.Add(T, hasNormals);
   }
 }
+
+//=================================================================================================
+
+void BRepTools_ShapeSet_AddOwnSurfaces(BRepTools_ShapeSet& theSet, const TopoDS_Shape& theShape)
+{
+  theSet.AddOwnSurfaces(theShape);
+}

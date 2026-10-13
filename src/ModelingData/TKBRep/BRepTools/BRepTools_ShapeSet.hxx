@@ -302,4 +302,12 @@ private:
                  const Standard_Transient*                    theTV) const;
 };
 
+//! BRepTools_ShapeSet::AddOwnSurfaces as a C function, for a client to look
+//! up by name at run time (dlsym, GetProcAddress) and do without where the
+//! library is upstream's, which writes every representation and has nothing
+//! to name: a client that calls a function of the fork by its C++ name does
+//! not load there.
+extern "C" Standard_EXPORT void BRepTools_ShapeSet_AddOwnSurfaces(BRepTools_ShapeSet& theSet,
+                                                                  const TopoDS_Shape& theShape);
+
 #endif // _BRepTools_ShapeSet_HeaderFile

@@ -237,4 +237,8 @@ private:
 extern "C" Standard_EXPORT void BinTools_ShapeSet_SetOmitPCurvesOnPlane(BinTools_ShapeSet& theSet,
                                                                         const bool theOmit);
 
+//! BinTools_ShapeSet::SetStableBytes as a C function, as the one above.
+extern "C" Standard_EXPORT void BinTools_ShapeSet_SetStableBytes(BinTools_ShapeSet& theSet,
+                                                                 const bool         theStable);
+
 #endif // _BinTools_ShapeSet_HeaderFile

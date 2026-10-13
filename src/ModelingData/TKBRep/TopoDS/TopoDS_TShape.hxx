@@ -117,16 +117,18 @@ public:
   bool Thawed() const { return (myState & Bit_Thawed) != 0; }
 
   //! Marks <theCopy> a thawed copy of <theOriginal>, see Thawed(). The copy
-  //! holds the original until the copy is destroyed.
+  //! holds the original until the copy is destroyed: it is kept behind the
+  //! allocator of the copy's list of children, which goes with the list. So
+  //! this class has no destructor of its own, as upstream's has none: one
+  //! declared here is one every client that makes a wire, a shell or a
+  //! compound (their classes are all in headers) imports from the library
+  //! with MSVC, and upstream's library exports none.
   Standard_EXPORT static void Thaw(const occ::handle<TopoDS_TShape>& theCopy,
                                    const occ::handle<TopoDS_TShape>& theOriginal);
 
   //! The TShape <theCopy> is a thawed copy of, or null. The original may be a
   //! thawed copy itself.
   Standard_EXPORT static occ::handle<TopoDS_TShape> ThawedFrom(const TopoDS_TShape* theCopy);
-
-  //! Forgets a thawed copy's original.
-  Standard_EXPORT ~TopoDS_TShape() override;
 
   //! Returns the modification flag.
   bool Modified() const { return (myState & Bit_Modified) != 0; }
@@ -219,5 +221,12 @@ private:
   NCollection_List<TopoDS_Shape> myShapes; //!< Child shapes stored in a list
   uint16_t myState; //!< Compact state: shape type(bits 0-3)+flags(bits 4-11)+reserved(bits 12-15)
 };
+
+//! TopoDS_TShape::ThawedFrom as a C function, the original in an argument,
+//! for a client to look up by name at run time (dlsym, GetProcAddress) and do
+//! without where the library is upstream's, which thaws nothing: a client that
+//! calls a function of the fork by its C++ name does not load there.
+extern "C" Standard_EXPORT void TopoDS_TShape_ThawedFrom(const TopoDS_TShape*        theCopy,
+                                                         occ::handle<TopoDS_TShape>& theOriginal);
 
 #endif // _TopoDS_TShape_HeaderFile
