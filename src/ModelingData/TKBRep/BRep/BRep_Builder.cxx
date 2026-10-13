@@ -108,16 +108,9 @@ static bool isCache(const Standard_Transient* theRepresentation)
 
 //=================================================================================================
 
-bool BRep_Builder::IsCache(const occ::handle<BRep_CurveRepresentation>& theCR)
+bool BRep_Builder_IsCache(const Standard_Transient* theRepresentation)
 {
-  return isCache(theCR.get());
-}
-
-//=================================================================================================
-
-bool BRep_Builder::IsCache(const occ::handle<BRep_PointRepresentation>& thePR)
-{
-  return isCache(thePR.get());
+  return isCache(theRepresentation);
 }
 
 //! Whether a tolerance of <theHeld> covers <theTol>: at or under it, or above
