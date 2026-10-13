@@ -4114,6 +4114,44 @@ static bool IsShrink(const Geom2dAdaptor_Curve& PC,
 }
 
 //=======================================================================
+// function : PointOnSurfaceAsItIs
+// purpose  : The parameters on <S> of <P>, a point of an edge that lies on
+//           the surface and is not an edge of its face <BS> -- no pcurve
+//           to read them from: the nearest point of the surface, brought
+//           into the face's range on a periodic surface (<BS> restricted
+//           to the face). <UV> is left as it is when the projection fails.
+//=======================================================================
+
+static void PointOnSurfaceAsItIs(const gp_Pnt&                    P,
+                                 const occ::handle<Geom_Surface>& S,
+                                 const BRepAdaptor_Surface&       BS,
+                                 gp_Pnt2d&                        UV)
+{
+  if (S.IsNull())
+  {
+    return;
+  }
+  GeomAPI_ProjectPointOnSurf aProj(P, S);
+  if (!aProj.IsDone() || aProj.NbPoints() == 0)
+  {
+    return;
+  }
+  double aU = 0., aV = 0.;
+  aProj.LowerDistanceParameters(aU, aV);
+  if (S->IsUPeriodic())
+  {
+    const double aMid = 0.5 * (BS.FirstUParameter() + BS.LastUParameter());
+    aU                = ElCLib::InPeriod(aU, aMid - 0.5 * S->UPeriod(), aMid + 0.5 * S->UPeriod());
+  }
+  if (S->IsVPeriodic())
+  {
+    const double aMid = 0.5 * (BS.FirstVParameter() + BS.LastVParameter());
+    aV                = ElCLib::InPeriod(aV, aMid - 0.5 * S->VPeriod(), aMid + 0.5 * S->VPeriod());
+  }
+  UV.SetCoord(aU, aV);
+}
+
+//=======================================================================
 // function : SectionCrossesEndFace
 // purpose  : One side of the fillet ends at <P1> on <Arcpiv>, an edge of
 //           <Vtx> between <Fad> and the face at end <Fv>; the other side
@@ -5681,6 +5719,12 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
               }
             }
           }
+          else
+          {
+            // a surface that is not extended (a cylinder, a plane): the
+            // point is projected on it as it is
+            PointOnSurfaceAsItIs(CV1.Point(), Sfacemoins1, BRepAdaptor_Surface(F, true), pfac1);
+          }
         }
         else
         {
@@ -5967,6 +6011,11 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
             pfac2.SetX(uc2);
             pfac2.SetY(vc2);
           }
+        }
+        else
+        {
+          // (see above; pfac2 was left as it stood, (0,0) on the first face)
+          PointOnSurfaceAsItIs(CV2.Point(), Sfacemoins1, BRepAdaptor_Surface(F, true), pfac2);
         }
       }
       else
