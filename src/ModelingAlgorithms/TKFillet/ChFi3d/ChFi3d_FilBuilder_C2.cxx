@@ -902,7 +902,10 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
   // pivot for that, on the piece beyond; then it ends on the split again,
   // and its piece from there to the pivot is put on the piece beyond and
   // on its own fillet (StoreLineOverSplit), as a line over a split wall.
-  if (st1 != st2 && CP1.IsOnArc() && CP2.IsOnArc() && !CP1.Arc().IsSame(CP2.Arc()))
+  // The same for a line that ends in its face, short of the split, where
+  // the fillet's spine ends: straight on, it crosses the split.
+  if (st1 != st2 && (CP1.IsOnArc() || CP2.IsOnArc())
+      && !(CP1.IsOnArc() && CP2.IsOnArc() && CP1.Arc().IsSame(CP2.Arc())))
   {
     auto hasEdge = [](const TopoDS_Face& theF, const TopoDS_Edge& theE) {
       for (TopExp_Explorer exE(theF, TopAbs_EDGE); exE.More(); exE.Next())
@@ -924,7 +927,7 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
       const int                           jo   = k == 0 ? IFaArc2 : IFaArc1;
       ChFiDS_CommonPoint&                 aCPk = k == 0 ? CP1 : CP2;
       const ChFiDS_CommonPoint&           aCPo = k == 0 ? CP2 : CP1;
-      if (aSdk->Index(jk) <= 0 || aSdo->Index(jo) <= 0
+      if (!aCPo.IsOnArc() || aSdk->Index(jk) <= 0 || aSdo->Index(jo) <= 0
           || DStr.Shape(aSdk->Index(jk)).ShapeType() != TopAbs_FACE
           || DStr.Shape(aSdo->Index(jo)).ShapeType() != TopAbs_FACE)
       {
@@ -932,8 +935,76 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
       }
       const TopoDS_Face aFk = TopoDS::Face(DStr.Shape(aSdk->Index(jk)));
       const TopoDS_Face aFo = TopoDS::Face(DStr.Shape(aSdo->Index(jo)));
-      const TopoDS_Edge aEs = aCPk.Arc();
-      const TopoDS_Edge aEp = aCPo.Arc();
+      // a straight line, on a surface that goes on past its end as it is
+      ChFiDS_FaceInterference& aFik = aSdk->ChangeInterference(jk);
+      if (aFik.LineIndex() == 0 || DStr.Curve(aFik.LineIndex()).Curve().IsNull()
+          || !DStr.Surface(aSdk->Surf()).Surface()->IsKind(STANDARD_TYPE(Geom_ElementarySurface)))
+      {
+        continue;
+      }
+      const GeomAdaptor_Curve aGk(DStr.Curve(aFik.LineIndex()).Curve());
+      if (aGk.GetType() != GeomAbs_Line)
+      {
+        continue;
+      }
+      const occ::handle<Geom_Line> aLc = new Geom_Line(aGk.Line());
+      const GeomAdaptor_Curve      aGL(aLc);
+      // where the line ends now, and where it is on the split
+      const double aWEnd = aFik.Parameter(isfk);
+      double       aWQ   = aWEnd;
+      double       aParQ = 0.;
+      TopoDS_Edge  aEs;
+      if (aCPk.IsOnArc())
+      {
+        aEs   = aCPk.Arc();
+        aParQ = aCPk.ParameterOnArc();
+      }
+      else
+      {
+        // the split of its face the line crosses first, past its end
+        for (TopExp_Explorer exE(aFk, TopAbs_EDGE); exE.More(); exE.Next())
+        {
+          const TopoDS_Edge& aE = TopoDS::Edge(exE.Current());
+          if (!myEFMap.Contains(aE) || BRep_Tool::Degenerated(aE))
+          {
+            continue;
+          }
+          bool isSplit = false;
+          for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(aE)); itF.More() && !isSplit;
+               itF.Next())
+          {
+            const TopoDS_Face& aF = TopoDS::Face(itF.Value());
+            isSplit = !aF.IsSame(aFk) && ChFi3d_CoplanarPieces(aFk, aF, 10 * tolapp3d);
+          }
+          if (!isSplit)
+          {
+            continue;
+          }
+          const BRepAdaptor_Curve aCE(aE);
+          Extrema_ExtCC           anExtE(aGL, aCE);
+          for (int i = 1; anExtE.IsDone() && !anExtE.IsParallel() && i <= anExtE.NbExt(); i++)
+          {
+            Extrema_POnCurv aP1, aP2;
+            anExtE.Points(i, aP1, aP2);
+            const double aW = aP1.Parameter(), aPar = aP2.Parameter();
+            if (anExtE.SquareDistance(i) <= 100. * tolapp3d * tolapp3d
+                && aPar > aCE.FirstParameter() + aCE.Resolution(tolapp3d)
+                && aPar < aCE.LastParameter() - aCE.Resolution(tolapp3d)
+                && (isfk ? aW < aWEnd - tolapp3d : aW > aWEnd + tolapp3d)
+                && (aEs.IsNull() || std::abs(aW - aWEnd) < std::abs(aWQ - aWEnd)))
+            {
+              aEs   = aE;
+              aWQ   = aW;
+              aParQ = aPar;
+            }
+          }
+        }
+        if (aEs.IsNull())
+        {
+          continue;
+        }
+      }
+      TopoDS_Edge aEp = aCPo.Arc();
       // the piece beyond the split, with the pivot for an edge
       TopoDS_Face aFn;
       if (myEFMap.Contains(aEs) && hasEdge(aFk, aEs))
@@ -947,29 +1018,32 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
           }
         }
       }
+      // The pivot in two pieces itself, the split's foot between them: the
+      // other fillet ends on the piece at the vertex, an edge of this
+      // fillet's face, and the line carried over the split meets the piece
+      // beyond, an edge of the piece of the face there. Both are edges of
+      // the other fillet's face, one tangent to the other at the foot
+      // (ChFi3d_PivotInTwoPieces); PerformTwoCornerbyInter takes the two for
+      // one pivot.
+      if (!aFn.IsNull() && !hasEdge(aFn, aEp) && hasEdge(aFk, aEp) && hasEdge(aFo, aEp))
+      {
+        for (TopExp_Explorer exE(aFn, TopAbs_EDGE); exE.More(); exE.Next())
+        {
+          const TopoDS_Edge& aE = TopoDS::Edge(exE.Current());
+          if (hasEdge(aFo, aE) && ChFi3d_PivotInTwoPieces(Vtx, aEp, aE, aEs))
+          {
+            aEp = aE;
+            break;
+          }
+        }
+      }
       if (aFn.IsNull() || !hasEdge(aFn, aEp) || !hasEdge(aFo, aEp))
       {
         continue;
       }
-      // a straight line, on a surface that goes on past its end as it is
-      ChFiDS_FaceInterference& aFik = aSdk->ChangeInterference(jk);
-      if (aFik.LineIndex() == 0 || DStr.Curve(aFik.LineIndex()).Curve().IsNull()
-          || !DStr.Surface(aSdk->Surf()).Surface()->IsKind(STANDARD_TYPE(Geom_ElementarySurface)))
-      {
-        continue;
-      }
-      const GeomAdaptor_Curve aGk(DStr.Curve(aFik.LineIndex()).Curve());
-      if (aGk.GetType() != GeomAbs_Line)
-      {
-        continue;
-      }
-      const occ::handle<Geom_Line> aLc   = new Geom_Line(aGk.Line());
-      const double                 aWQ   = aFik.Parameter(isfk);
-      const double                 aParQ = aCPk.ParameterOnArc();
       // it meets the pivot past the split
       double                  aWP = 0., aParP = 0.;
       bool                    isMet = false;
-      const GeomAdaptor_Curve aGL(aLc);
       const BRepAdaptor_Curve aPC(aEp);
       Extrema_ExtCC           anExt(aGL, aPC);
       for (int i = 1; anExt.IsDone() && !anExt.IsParallel() && i <= anExt.NbExt() && !isMet; i++)
@@ -1023,13 +1097,13 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
       }
       catch (Standard_Failure const&)
       {
-        aSetFace(aIndSave, aPcSave, aWQ);
+        aSetFace(aIndSave, aPcSave, aWEnd);
         aCPk = aCPSave;
         throw;
       }
       if (!isDone)
       {
-        aSetFace(aIndSave, aPcSave, aWQ);
+        aSetFace(aIndSave, aPcSave, aWEnd);
         aCPk = aCPSave;
         break;
       }

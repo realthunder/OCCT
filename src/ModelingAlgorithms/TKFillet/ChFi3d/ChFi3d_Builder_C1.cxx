@@ -1295,6 +1295,69 @@ TopAbs_Orientation ChFi3d_TransitionOnEdge(const ChFiDS_FaceInterference& Fi,
 }
 
 //=======================================================================
+// function : ChFi3d_PivotInTwoPieces
+// purpose  : <Enear>, an edge of Vtx, and <Efar>, not one, are one edge in
+//           two pieces: they meet at a vertex, the other end of <Enear>,
+//           tangent to one another there and going on the same way. With
+//           <Esplit> given, that vertex is an end of it as well -- the foot
+//           of a split between two coplanar pieces of a face the edge
+//           bounds. The pivot of a corner of two fillets, one of them wider
+//           than the piece beside the vertex.
+//=======================================================================
+
+bool ChFi3d_PivotInTwoPieces(const TopoDS_Vertex& Vtx,
+                             const TopoDS_Edge&   Enear,
+                             const TopoDS_Edge&   Efar,
+                             const TopoDS_Edge&   Esplit)
+{
+  if (Enear.IsSame(Efar) || BRep_Tool::Degenerated(Enear) || BRep_Tool::Degenerated(Efar))
+  {
+    return false;
+  }
+  TopoDS_Vertex aVn1, aVn2, aVf1, aVf2;
+  TopExp::Vertices(Enear, aVn1, aVn2);
+  TopExp::Vertices(Efar, aVf1, aVf2);
+  if (aVn1.IsSame(aVn2) || aVf1.IsSame(aVf2) || aVf1.IsSame(Vtx) || aVf2.IsSame(Vtx)
+      || aVn1.IsSame(Vtx) == aVn2.IsSame(Vtx))
+  {
+    return false;
+  }
+  const TopoDS_Vertex& aFoot = aVn1.IsSame(Vtx) ? aVn2 : aVn1;
+  if (!aFoot.IsSame(aVf1) && !aFoot.IsSame(aVf2))
+  {
+    return false;
+  }
+  if (!Esplit.IsNull())
+  {
+    TopoDS_Vertex aVs1, aVs2;
+    TopExp::Vertices(Esplit, aVs1, aVs2);
+    if (!aFoot.IsSame(aVs1) && !aFoot.IsSame(aVs2))
+    {
+      return false;
+    }
+  }
+  const BRepAdaptor_Curve aCn(Enear), aCf(Efar);
+  gp_Pnt                  aP;
+  gp_Vec                  aDn, aDf;
+  aCn.D1(BRep_Tool::Parameter(aFoot, Enear), aP, aDn);
+  aCf.D1(BRep_Tool::Parameter(aFoot, Efar), aP, aDf);
+  if (aDn.Magnitude() < gp::Resolution() || aDf.Magnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  // away from Vtx on the near piece, away from the foot on the far one
+  if (aVn2.IsSame(Vtx))
+  {
+    aDn.Reverse();
+  }
+  if (aVf2.IsSame(aFoot))
+  {
+    aDf.Reverse();
+  }
+  return aDn.Angle(aDf) < 1.e-4;
+}
+
+//=======================================================================
 // function : ExtensionOverSplit
 // purpose  : The extension <C> of <Arcprol> from Vtx (at <First>) to the
 //           end of the fillet's line on <Fop> (at <Last>), <Arcprol> an

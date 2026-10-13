@@ -29,7 +29,9 @@
 #include <ChFiDS_Stripe.hxx>
 #include <NCollection_List.hxx>
 #include <ChFiDS_Spine.hxx>
+#include <ElCLib.hxx>
 #include <Extrema_ExtPC.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom2dAdaptor_Curve.hxx>
 #include <Geom_BoundedCurve.hxx>
@@ -235,7 +237,17 @@ bool ChFi3d_Builder::PerformTwoCornerbyInter(const int Index)
     done = false;
     return done;
   }
-  if (!CP1.Arc().IsSame(CP2.Arc()))
+  // The pivot in two pieces: one fillet ends on the piece at the vertex,
+  // the other, wider, on the piece beyond -- the edge goes on, tangent, past
+  // the foot of a split between two coplanar pieces of a face it bounds (a
+  // body without Refine). One pivot: the piece at the vertex, the other
+  // fillet's point at its parameter on that piece's curve, past its end.
+  const bool isPivotCP2 = !CP1.Arc().IsSame(CP2.Arc())
+                          && ChFi3d_PivotInTwoPieces(Vtx, CP2.Arc(), CP1.Arc(), TopoDS_Edge());
+  const bool isTwoPieces =
+    isPivotCP2 || (!CP1.Arc().IsSame(CP2.Arc())
+                   && ChFi3d_PivotInTwoPieces(Vtx, CP1.Arc(), CP2.Arc(), TopoDS_Edge()));
+  if (!CP1.Arc().IsSame(CP2.Arc()) && !isTwoPieces)
   {
     // look like OnSame + OnDiff case (eap, Arp 9 2002, occ266)
 #ifdef OCCT_DEBUG
@@ -247,23 +259,61 @@ bool ChFi3d_Builder::PerformTwoCornerbyInter(const int Index)
   }
 
   TopoDS_Edge pivot;
-  pivot                                 = CP1.Arc();
+  pivot                                 = isPivotCP2 ? CP2.Arc() : CP1.Arc();
   double                         parCP1 = CP1.ParameterOnArc();
   double                         parCP2 = CP2.ParameterOnArc();
   occ::handle<BRepAdaptor_Curve> Hpivot = new BRepAdaptor_Curve(pivot);
-  if (!pivot.IsSame(CP2.Arc()))
+  const TopoDS_Edge              aFarArc = isPivotCP2 ? CP1.Arc() : CP2.Arc();
+  if (isTwoPieces)
   {
-    occ::handle<Geom_Curve> csau;
-    double                  ubid, vbid;
-    csau                              = BRep_Tool::Curve(pivot, ubid, vbid);
-    occ::handle<Geom_BoundedCurve> C1 = occ::down_cast<Geom_BoundedCurve>(csau);
-    if (!C1.IsNull())
+    const gp_Pnt            aPfar = isPivotCP2 ? CP1.Point() : CP2.Point();
+    double&                 aParFar = isPivotCP2 ? parCP1 : parCP2;
+    double                  aF, aL;
+    occ::handle<Geom_Curve> aC = BRep_Tool::Curve(pivot, aF, aL);
+    while (!aC.IsNull() && aC->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
     {
-      GeomLib::ExtendCurveToPoint(C1, CP2.Point(), 1, false);
-      GeomAdaptor_Curve cad;
-      cad.Load(C1);
-      Extrema_ExtPC ext(CP2.Point(), cad, 1.e-4);
-      parCP2 = ext.Point(1).Parameter();
+      aC = occ::down_cast<Geom_TrimmedCurve>(aC)->BasisCurve();
+    }
+    bool isOn = false;
+    if (!aC.IsNull())
+    {
+      const GeomAdaptor_Curve aGC(aC);
+      if (aGC.GetType() == GeomAbs_Line || aGC.GetType() == GeomAbs_Circle
+          || aGC.GetType() == GeomAbs_Ellipse)
+      {
+        Extrema_ExtPC anExt(aPfar, aGC, 1.e-9);
+        for (int i = 1; anExt.IsDone() && i <= anExt.NbExt(); i++)
+        {
+          if (anExt.SquareDistance(i) <= 100. * tolapp3d * tolapp3d)
+          {
+            double aPar = anExt.Point(i).Parameter();
+            if (aGC.IsPeriodic())
+            {
+              // past the end the far piece starts at, the way the edge runs
+              const double aParVtx  = BRep_Tool::Parameter(Vtx, pivot);
+              const double aParFoot = std::abs(aParVtx - aF) < std::abs(aParVtx - aL) ? aL : aF;
+              const double aPeriod  = aGC.Period();
+              if (aParFoot > aParVtx)
+              {
+                aPar = ElCLib::InPeriod(aPar, aParFoot, aParFoot + aPeriod);
+              }
+              else
+              {
+                aPar = ElCLib::InPeriod(aPar, aParFoot - aPeriod, aParFoot);
+              }
+            }
+            aParFar = aPar;
+            isOn    = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!isOn)
+    {
+      done = true;
+      PerformMoreThreeCorner(Index, 2);
+      return done;
     }
   }
   gp_Pnt psp1      = Hpivot->Value(parCP1);
@@ -274,16 +324,19 @@ bool ChFi3d_Builder::PerformTwoCornerbyInter(const int Index)
   TopoDS_Face                              FF2 = TopoDS::Face(DStr.Shape(Fd2->Index(IFaArc2)));
   NCollection_List<TopoDS_Shape>::Iterator Kt;
   bool                                     ok1 = false, ok2 = false;
-  for (Kt.Initialize(myEFMap(pivot)); Kt.More(); Kt.Next())
+  for (int iP = 0; iP < (isTwoPieces ? 2 : 1); iP++)
   {
-    TopoDS_Face F = TopoDS::Face(Kt.Value());
-    if (!ok1 && FF1.IsSame(F))
+    for (Kt.Initialize(myEFMap(iP == 0 ? pivot : aFarArc)); Kt.More(); Kt.Next())
     {
-      ok1 = true;
-    }
-    if (!ok2 && FF2.IsSame(F))
-    {
-      ok2 = true;
+      TopoDS_Face F = TopoDS::Face(Kt.Value());
+      if (!ok1 && FF1.IsSame(F))
+      {
+        ok1 = true;
+      }
+      if (!ok2 && FF2.IsSame(F))
+      {
+        ok2 = true;
+      }
     }
   }
   if (!ok1 || !ok2)

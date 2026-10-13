@@ -148,6 +148,11 @@ TopAbs_Orientation ChFi3d_TransitionOnEdge(const ChFiDS_FaceInterference& Fi,
                                           const TopoDS_Edge&             E,
                                           const bool                     isFirst);
 
+bool ChFi3d_PivotInTwoPieces(const TopoDS_Vertex& Vtx,
+                             const TopoDS_Edge&   Enear,
+                             const TopoDS_Edge&   Efar,
+                             const TopoDS_Edge&   Esplit);
+
 TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
                                     const TopoDS_Face&               F,
                                     const occ::handle<ChFiDS_Spine>& Spine,
