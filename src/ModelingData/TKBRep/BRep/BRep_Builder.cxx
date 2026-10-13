@@ -106,6 +106,20 @@ static bool isCache(const Standard_Transient* theRepresentation)
   return dynamic_cast<const CacheMark*>(theRepresentation) != nullptr;
 }
 
+//=================================================================================================
+
+bool BRep_Builder::IsCache(const occ::handle<BRep_CurveRepresentation>& theCR)
+{
+  return isCache(theCR.get());
+}
+
+//=================================================================================================
+
+bool BRep_Builder::IsCache(const occ::handle<BRep_PointRepresentation>& thePR)
+{
+  return isCache(thePR.get());
+}
+
 //! Whether a tolerance of <theHeld> covers <theTol>: at or under it, or above
 //! it by rounding and no more. A tolerance that came through the root of a
 //! squared distance sits a few 1e-14 above the 1e-7 it stands for, and one

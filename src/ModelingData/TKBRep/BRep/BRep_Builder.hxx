@@ -37,6 +37,8 @@ class gp_Pnt2d;
 class Poly_Polygon2D;
 class TopoDS_Vertex;
 class gp_Pnt;
+class BRep_CurveRepresentation;
+class BRep_PointRepresentation;
 
 //! A framework providing advanced tolerance control.
 //! It is used to build Shapes.
@@ -367,6 +369,21 @@ public:
                                  const TopoDS_Edge&   Eout,
                                  const TopoDS_Vertex& Vin,
                                  const TopoDS_Vertex& Vout) const;
+
+  //! True for a representation an Immutable edge (a fork flag) was given
+  //! after it was frozen -- a pcurve for a face built on the edge elsewhere,
+  //! the regularity between two such faces. It is derived data like a
+  //! triangulation, not part of the edge's value, so the builder lets it be
+  //! replaced, removed or re-ranged where the value's own representations
+  //! may not be. The representation does not say so itself: its class is
+  //! upstream's, member for member (a cache is told by the class the
+  //! builder made it of), and this is the way to ask.
+  Standard_EXPORT static bool IsCache(const occ::handle<BRep_CurveRepresentation>& theCR);
+
+  //! True for a parameter an Immutable vertex was given after it was frozen
+  //! -- on the curve of an edge built on it elsewhere, or on a face's
+  //! surface or pcurve. Derived data, as a curve's cache.
+  Standard_EXPORT static bool IsCache(const occ::handle<BRep_PointRepresentation>& thePR);
 };
 
 #include <BRep_Builder.lxx>
