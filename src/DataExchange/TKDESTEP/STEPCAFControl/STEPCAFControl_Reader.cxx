@@ -427,6 +427,48 @@ bool STEPCAFControl_Reader::TransferOneRoot(const int                           
 
 //=================================================================================================
 
+bool STEPCAFControl_Reader_TransferRootRange(STEPCAFControl_Reader&               theReader,
+                                             const int                            num,
+                                             const int                            theLastNum,
+                                             const occ::handle<TDocStd_Document>& doc,
+                                             const Message_ProgressRange&         theProgress)
+{
+  return theReader.TransferRootRange(num, theLastNum, doc, theProgress);
+}
+
+//=================================================================================================
+
+int STEPCAFControl_Reader_RootAssemblyTree(
+  STEPCAFControl_Reader&                                      theReader,
+  const int                                                   num,
+  const occ::handle<TDocStd_Document>&                        doc,
+  NCollection_Sequence<STEPCAFControl_Reader::AssemblyNode>& theNodes)
+{
+  return theReader.RootAssemblyTree(num, doc, theNodes);
+}
+
+//=================================================================================================
+
+void STEPCAFControl_Reader_ComponentShape(const STEPCAFControl_Reader&           theReader,
+                                          const occ::handle<Standard_Transient>& theComponent,
+                                          TopoDS_Shape&                          theShape)
+{
+  theShape = theReader.ComponentShape(theComponent);
+}
+
+//=================================================================================================
+
+bool STEPCAFControl_Reader_TransferComponents(
+  STEPCAFControl_Reader&                                                     theReader,
+  const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theEntities,
+  const occ::handle<TDocStd_Document>&                                       doc,
+  const Message_ProgressRange&                                               theProgress)
+{
+  return theReader.TransferComponents(theEntities, doc, theProgress);
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Reader::TransferRootRange(const int                            num,
                                               const int                            theLastNum,
                                               const occ::handle<TDocStd_Document>& doc,

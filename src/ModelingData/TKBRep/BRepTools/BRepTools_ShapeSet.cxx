@@ -156,14 +156,6 @@ void BRepTools_ShapeSet::Clear()
 
 //=================================================================================================
 
-int BRepTools_ShapeSet::Add(const TopoDS_Shape& S)
-{
-  AddOwnSurfaces(S);
-  return TopTools_ShapeSet::Add(S);
-}
-
-//=================================================================================================
-
 void BRepTools_ShapeSet::AddOwnSurfaces(const TopoDS_Shape& S)
 {
   if (myStableBytes)
@@ -251,6 +243,12 @@ bool BRepTools_ShapeSet::OwnGeometry::HasPoint(const occ::handle<BRep_PointRepre
 
 void BRepTools_ShapeSet::AddGeometry(const TopoDS_Shape& S)
 {
+  // Before the lock below, which AddOwnSurfaces takes for an edge itself.
+  // A vertex has nothing of its own to name.
+  if (myStableBytes && S.ShapeType() != TopAbs_VERTEX)
+  {
+    AddOwnSurfaces(S);
+  }
   // An Immutable shape's caches may be edited on another thread while it is
   // written: its representations are walked under its lock.
   BRep_RepresentationLock aLock(S.TShape().get());

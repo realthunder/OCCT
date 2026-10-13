@@ -120,6 +120,13 @@ void GeomTools_Curve2dSet::SetMerging(const bool theMerging)
 
 //=================================================================================================
 
+void GeomTools_Curve2dSet_SetMerging(GeomTools_Curve2dSet& theSet, const bool theMerging)
+{
+  theSet.SetMerging(theMerging);
+}
+
+//=================================================================================================
+
 void GeomTools_Curve2dSet::Clear()
 {
   myMap.Clear();

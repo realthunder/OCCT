@@ -230,4 +230,11 @@ private:
   NCollection_IndexedMap<occ::handle<Poly_PolygonOnTriangulation>> myNodes;
 };
 
+//! BinTools_ShapeSet::SetOmitPCurvesOnPlane as a C function, for a client to
+//! look up by name at run time (dlsym, GetProcAddress) and do without where
+//! the library is upstream's, which has neither: a client that calls a
+//! function of the fork by its C++ name does not load there.
+extern "C" Standard_EXPORT void BinTools_ShapeSet_SetOmitPCurvesOnPlane(BinTools_ShapeSet& theSet,
+                                                                        const bool theOmit);
+
 #endif // _BinTools_ShapeSet_HeaderFile

@@ -107,14 +107,14 @@ public:
     myCanonicalFlags = theStable;
   }
 
-  //! Stores <S> and its sub-shapes, as TopTools_ShapeSet::Add, after
-  //! AddOwnSurfaces(S).
-  Standard_EXPORT int Add(const TopoDS_Shape& S);
-
   //! Under SetStableBytes, a representation is written only if the shapes
-  //! named here use it (OwnGeometry). Add() names its shape; a writer that
-  //! fills the tables another way -- a subclass calling AddGeometry itself --
-  //! names its roots here, before it does, and again after a Clear().
+  //! named here use it (OwnGeometry). AddGeometry() names the shape it is
+  //! given before it looks at it, and TopTools_ShapeSet::Add() gives it a
+  //! shape before that shape's sub-shapes: the faces of what is added are
+  //! known when its edges come. So the set has no Add() of its own -- a
+  //! client calls upstream's, and loads with upstream's library as well. A
+  //! writer that gives AddGeometry() an edge before the face it lies on names
+  //! its roots here first, and again after a Clear().
   Standard_EXPORT void AddOwnSurfaces(const TopoDS_Shape& S);
 
   //! What the written shapes use, for SetStableBytes (shared with

@@ -632,4 +632,34 @@ private:
   NCollection_DataMap<occ::handle<Standard_Transient>, TDF_Label> myGDTMap;
 };
 
+//! The reader's functions for a progressive import -- TransferRootRange,
+//! RootAssemblyTree, ComponentShape, TransferComponents -- as C functions, for
+//! a client to look up by name at run time (dlsym, GetProcAddress) and read
+//! the file in one go where the library is upstream's, which has none of
+//! them: a client that calls a function of the fork by its C++ name does not
+//! load there. ComponentShape gives its shape in <theShape>.
+extern "C" Standard_EXPORT bool STEPCAFControl_Reader_TransferRootRange(
+  STEPCAFControl_Reader&               theReader,
+  const int                            num,
+  const int                            theLastNum,
+  const occ::handle<TDocStd_Document>& doc,
+  const Message_ProgressRange&         theProgress);
+
+extern "C" Standard_EXPORT int STEPCAFControl_Reader_RootAssemblyTree(
+  STEPCAFControl_Reader&                                      theReader,
+  const int                                                   num,
+  const occ::handle<TDocStd_Document>&                        doc,
+  NCollection_Sequence<STEPCAFControl_Reader::AssemblyNode>& theNodes);
+
+extern "C" Standard_EXPORT void STEPCAFControl_Reader_ComponentShape(
+  const STEPCAFControl_Reader&           theReader,
+  const occ::handle<Standard_Transient>& theComponent,
+  TopoDS_Shape&                          theShape);
+
+extern "C" Standard_EXPORT bool STEPCAFControl_Reader_TransferComponents(
+  STEPCAFControl_Reader&                                                     theReader,
+  const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& theEntities,
+  const occ::handle<TDocStd_Document>&                                       doc,
+  const Message_ProgressRange&                                               theProgress);
+
 #endif // _STEPCAFControl_Reader_HeaderFile

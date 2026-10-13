@@ -117,4 +117,11 @@ private:
   NCollection_IndexedMap<occ::handle<Standard_Transient>> myMap;
 };
 
+//! GeomTools_Curve2dSet::SetMerging as a C function, for a client to look up
+//! by name at run time (dlsym, GetProcAddress) and do without where the
+//! library is upstream's, which merges nothing: a client that calls a
+//! function of the fork by its C++ name does not load there.
+extern "C" Standard_EXPORT void GeomTools_Curve2dSet_SetMerging(GeomTools_Curve2dSet& theSet,
+                                                                const bool theMerging);
+
 #endif // _GeomTools_Curve2dSet_HeaderFile
