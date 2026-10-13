@@ -67,10 +67,30 @@
 //                We simple check the next string if there are value that equal 2
 //               (It means a parameter for triangulation).
 
+namespace
+{
+//! What a set holds beyond upstream's members and the two flags that fit
+//! in its padding. It is the allocator of the set's first map of polygons:
+//! the set keeps upstream's layout that way, and the map lets go of it with
+//! itself. A set not made by the constructors below has none, and nothing
+//! of its own to tell foreign geometry by.
+class ShapeSetState : public NCollection_BaseAllocator
+{
+public:
+  BRepTools_ShapeSet::OwnGeometry myOwnGeometry;
+};
+
+ShapeSetState* stateOf(const NCollection_IndexedMap<occ::handle<Standard_Transient>>& theMap)
+{
+  return dynamic_cast<ShapeSetState*>(theMap.Allocator().get());
+}
+} // namespace
+
 //=================================================================================================
 
 BRepTools_ShapeSet::BRepTools_ShapeSet(const bool theWithTriangles, const bool theWithNormals)
-    : myWithTriangles(theWithTriangles),
+    : myPolygons2D(1, new ShapeSetState),
+      myWithTriangles(theWithTriangles),
       myWithNormals(theWithNormals)
 {
 }
@@ -81,9 +101,35 @@ BRepTools_ShapeSet::BRepTools_ShapeSet(const BRep_Builder& theBuilder,
                                        const bool          theWithTriangles,
                                        const bool          theWithNormals)
     : myBuilder(theBuilder),
+      myPolygons2D(1, new ShapeSetState),
       myWithTriangles(theWithTriangles),
       myWithNormals(theWithNormals)
 {
+}
+
+//=================================================================================================
+
+bool BRepTools_ShapeSet::isForeign(const occ::handle<Geom_Surface>& theS) const
+{
+  if (!myStableBytes)
+  {
+    return false;
+  }
+  const ShapeSetState* aState = stateOf(myPolygons2D);
+  return aState == nullptr || !aState->myOwnGeometry.HasSurface(theS);
+}
+
+//=================================================================================================
+
+bool BRepTools_ShapeSet::isForeign(const occ::handle<BRep_PointRepresentation>& thePR,
+                                   const Standard_Transient*                    theTV) const
+{
+  if (!myStableBytes)
+  {
+    return false;
+  }
+  const ShapeSetState* aState = stateOf(myPolygons2D);
+  return aState == nullptr || !aState->myOwnGeometry.HasPoint(thePR, theTV);
 }
 
 //=================================================================================================
@@ -101,7 +147,10 @@ void BRepTools_ShapeSet::Clear()
   myPolygons2D.Clear();
   myNodes.Clear();
   myTriangulations.Clear();
-  myOwnGeometry.Clear();
+  if (ShapeSetState* aState = stateOf(myPolygons2D))
+  {
+    aState->myOwnGeometry.Clear();
+  }
   TopTools_ShapeSet::Clear();
 }
 
@@ -119,7 +168,10 @@ void BRepTools_ShapeSet::AddOwnSurfaces(const TopoDS_Shape& S)
 {
   if (myStableBytes)
   {
-    myOwnGeometry.Add(S);
+    if (ShapeSetState* aState = stateOf(myPolygons2D))
+    {
+      aState->myOwnGeometry.Add(S);
+    }
   }
 }
 

@@ -184,11 +184,6 @@ public:
 public:
   static const char* const THE_ASCII_VERSIONS[TopTools_FormatVersion_VERSION_3 + 1];
 
-protected:
-  //! Write the Free, Modified and Checked flags as 1, 1 and 0 (a fork option,
-  //! see BRepTools_ShapeSet::SetStableBytes).
-  bool myCanonicalFlags = false;
-
 private:
   //! Reads from <IS> a shape and returns it in S.
   //! <NbShapes> is the number of tshapes in the set.
@@ -197,6 +192,14 @@ private:
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> myShapes;
   TopTools_LocationSet                                          myLocations;
   int                                                           myFormatNb;
+
+protected:
+  //! Write the Free, Modified and Checked flags as 1, 1 and 0 (a fork option,
+  //! see BRepTools_ShapeSet::SetStableBytes). After upstream's members, in
+  //! the four bytes the class ends with unused: the class and the ones
+  //! derived from it keep upstream's size and offsets, which a client built
+  //! against upstream's library relies on (see GeomTools_Curve2dSet).
+  bool myCanonicalFlags = false;
 };
 
 #endif // _TopTools_ShapeSet_HeaderFile

@@ -181,42 +181,38 @@ public:
     const Message_ProgressRange& theRange = Message_ProgressRange()) const;
 
   //! Return true if pcurves a plane can rebuild are left out of the file.
-  bool IsOmitPCurvesOnPlane() const { return myOmitPCurvesOnPlane; }
+  Standard_EXPORT bool IsOmitPCurvesOnPlane() const;
 
   //! Define whether to leave out the pcurves that reading the file back
   //! computes again anyway -- see BRepTools_ShapeSet::SetOmitPCurvesOnPlane,
   //! which this mirrors for the binary format. Off by default.
-  void SetOmitPCurvesOnPlane(const bool theOmit) { myOmitPCurvesOnPlane = theOmit; }
+  Standard_EXPORT void SetOmitPCurvesOnPlane(const bool theOmit);
 
   //! Return true if the written bytes are to depend on the shape alone.
-  bool IsStableBytes() const { return myStableBytes; }
+  Standard_EXPORT bool IsStableBytes() const;
 
   //! Define whether the written bytes depend on the shape alone -- see
   //! BRepTools_ShapeSet::SetStableBytes, which this mirrors for the binary
   //! format (a fork option, off by default). Set it before Add().
-  void SetStableBytes(const bool theStable) { myStableBytes = theStable; }
+  Standard_EXPORT void SetStableBytes(const bool theStable);
 
 private:
   //! Add() without the surface collection, recursively.
   int addShapes(const TopoDS_Shape& theShape);
 
   //! Under SetStableBytes, whether <theS> is carried by no face of the shapes added.
-  bool isForeign(const occ::handle<Geom_Surface>& theS) const
-  {
-    return myStableBytes && !myOwnGeometry.HasSurface(theS);
-  }
+  bool isForeign(const occ::handle<Geom_Surface>& theS) const;
 
   //! Under SetStableBytes, whether the parameter <thePR> of <theTV> is left
   //! out, see BRepTools_ShapeSet::OwnGeometry.
   bool isForeign(const occ::handle<BRep_PointRepresentation>& thePR,
-                 const Standard_Transient*                    theTV) const
-  {
-    return myStableBytes && !myOwnGeometry.HasPoint(thePR, theTV);
-  }
+                 const Standard_Transient*                    theTV) const;
 
-  bool                                 myOmitPCurvesOnPlane = false;
-  bool                                 myStableBytes        = false;
-  BRepTools_ShapeSet::OwnGeometry      myOwnGeometry;
+  // Upstream's members and no other: the class keeps upstream's size and
+  // offsets, which a client built against upstream's library relies on
+  // (see GeomTools_Curve2dSet). The fork's options -- the two flags and the
+  // OwnGeometry of SetStableBytes -- are kept behind the allocator of
+  // myShapes, see the source.
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>
                        myShapes; ///< index and its shape (started from 1)
   BinTools_LocationSet myLocations;

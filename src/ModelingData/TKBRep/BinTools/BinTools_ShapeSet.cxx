@@ -50,11 +50,86 @@
 
 #include <cstring>
 
+namespace
+{
+//! The fork's options of a set. It is the allocator of the set's map of
+//! shapes: the set keeps upstream's layout that way, and the map lets go of
+//! it with itself. A set not made by the constructor below has none, and
+//! writes as upstream's does.
+class ShapeSetState : public NCollection_BaseAllocator
+{
+public:
+  bool                            myOmitPCurvesOnPlane = false;
+  bool                            myStableBytes        = false;
+  BRepTools_ShapeSet::OwnGeometry myOwnGeometry;
+};
+
+ShapeSetState* stateOf(const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theMap)
+{
+  return dynamic_cast<ShapeSetState*>(theMap.Allocator().get());
+}
+} // namespace
+
 //=================================================================================================
 
 BinTools_ShapeSet::BinTools_ShapeSet()
+    : myShapes(1, new ShapeSetState)
+{
+}
 
-  = default;
+//=================================================================================================
+
+bool BinTools_ShapeSet::IsOmitPCurvesOnPlane() const
+{
+  const ShapeSetState* aState = stateOf(myShapes);
+  return aState != nullptr && aState->myOmitPCurvesOnPlane;
+}
+
+//=================================================================================================
+
+void BinTools_ShapeSet::SetOmitPCurvesOnPlane(const bool theOmit)
+{
+  if (ShapeSetState* aState = stateOf(myShapes))
+  {
+    aState->myOmitPCurvesOnPlane = theOmit;
+  }
+}
+
+//=================================================================================================
+
+bool BinTools_ShapeSet::IsStableBytes() const
+{
+  const ShapeSetState* aState = stateOf(myShapes);
+  return aState != nullptr && aState->myStableBytes;
+}
+
+//=================================================================================================
+
+void BinTools_ShapeSet::SetStableBytes(const bool theStable)
+{
+  if (ShapeSetState* aState = stateOf(myShapes))
+  {
+    aState->myStableBytes = theStable;
+  }
+}
+
+//=================================================================================================
+
+bool BinTools_ShapeSet::isForeign(const occ::handle<Geom_Surface>& theS) const
+{
+  const ShapeSetState* aState = stateOf(myShapes);
+  return aState != nullptr && aState->myStableBytes && !aState->myOwnGeometry.HasSurface(theS);
+}
+
+//=================================================================================================
+
+bool BinTools_ShapeSet::isForeign(const occ::handle<BRep_PointRepresentation>& thePR,
+                                  const Standard_Transient*                    theTV) const
+{
+  const ShapeSetState* aState = stateOf(myShapes);
+  return aState != nullptr && aState->myStableBytes
+         && !aState->myOwnGeometry.HasPoint(thePR, theTV);
+}
 
 //=================================================================================================
 
@@ -73,16 +148,22 @@ void BinTools_ShapeSet::Clear()
   myTriangulations.Clear();
   myShapes.Clear();
   myLocations.Clear();
-  myOwnGeometry.Clear();
+  if (ShapeSetState* aState = stateOf(myShapes))
+  {
+    aState->myOwnGeometry.Clear();
+  }
 }
 
 //=================================================================================================
 
 int BinTools_ShapeSet::Add(const TopoDS_Shape& theShape)
 {
-  if (myStableBytes)
+  if (ShapeSetState* aState = stateOf(myShapes))
   {
-    myOwnGeometry.Add(theShape);
+    if (aState->myStableBytes)
+    {
+      aState->myOwnGeometry.Add(theShape);
+    }
   }
   return addShapes(theShape);
 }
@@ -206,7 +287,7 @@ void BinTools_ShapeSet::AddShape(const TopoDS_Shape& S)
         // Left out of the tables under exactly the condition Write leaves the
         // record out under -- see BRepTools_ShapeSet::AddGeometry for why the
         // two must agree.
-        if (!(myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+        if (!(IsOmitPCurvesOnPlane() && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
             && !isForeign(CR->Surface()))
         {
           mySurfaces.Add(CR->Surface());
@@ -362,6 +443,7 @@ void BinTools_ShapeSet::Write(Standard_OStream& OS, const Message_ProgressRange&
   //-----------------------------------------
 
   int                   i, nbShapes = myShapes.Extent();
+  const bool            isStable = IsStableBytes();
   Message_ProgressScope aPSinner(aPS.Next(), "Writing shapes", nbShapes);
   OS << "\nTShapes " << nbShapes << "\n";
 
@@ -379,9 +461,9 @@ void BinTools_ShapeSet::Write(Standard_OStream& OS, const Message_ProgressRange&
 
     // Flags
     // Constant under SetStableBytes, see BRepTools_ShapeSet::SetStableBytes.
-    BinTools::PutBool(OS, myStableBytes || S.Free());
-    BinTools::PutBool(OS, myStableBytes || S.Modified());
-    BinTools::PutBool(OS, !myStableBytes && S.Checked());
+    BinTools::PutBool(OS, isStable || S.Free());
+    BinTools::PutBool(OS, isStable || S.Modified());
+    BinTools::PutBool(OS, !isStable && S.Checked());
     BinTools::PutBool(OS, S.Orientable());
     BinTools::PutBool(OS, S.Closed());
     BinTools::PutBool(OS, S.Infinite());
@@ -725,7 +807,7 @@ void BinTools_ShapeSet::WriteShape(const TopoDS_Shape& S, Standard_OStream& OS) 
         else if (CR->IsCurveOnSurface())
         {
           // See AddGeometry: the same test decides both.
-          if ((myOmitPCurvesOnPlane && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
+          if ((IsOmitPCurvesOnPlane() && BRepTools::IsPCurveOmittable(TopoDS::Edge(S), CR))
               || isForeign(CR->Surface()))
           {
             itrc.Next();

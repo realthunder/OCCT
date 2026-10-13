@@ -48,6 +48,9 @@
 #include <locale>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #define LINE 1
 #define CIRCLE 2
@@ -59,17 +62,72 @@
 #define TRIMMED 8
 #define OFFSET 9
 
+namespace
+{
+//! What a set holds beyond its map, for merging. It is the map's allocator:
+//! the set keeps upstream's layout that way, and the map lets go of it with
+//! itself, whoever compiled the set's destructor. A set that was not made by
+//! the constructor below -- copied by a client built against upstream --
+//! shares its original's, or has none and does not merge.
+class Curve2dSetState : public NCollection_BaseAllocator
+{
+public:
+  //! Hash of a curve's written form -> the indices in the map that hash to
+  //! it. Only Add() maintains this; Read() fills the map directly, so a file
+  //! whose table does hold equal entries still reads back with its indices
+  //! intact.
+  std::unordered_map<std::size_t, std::vector<int>> myByValue;
+  //! A curve Add() merged into an equal entry -> that entry's index. Index()
+  //! is how the shape records are written, and it looks up by handle, so a
+  //! merged curve has to be answerable even though the map holds its twin
+  //! instead. The handle is kept so the address remains this curve's for the
+  //! set's lifetime.
+  std::unordered_map<const Standard_Transient*, std::pair<occ::handle<Standard_Transient>, int>>
+    myAlias;
+  bool myMerging = true;
+};
+
+Curve2dSetState* stateOf(const NCollection_IndexedMap<occ::handle<Standard_Transient>>& theMap)
+{
+  return dynamic_cast<Curve2dSetState*>(theMap.Allocator().get());
+}
+} // namespace
+
 //=================================================================================================
 
-GeomTools_Curve2dSet::GeomTools_Curve2dSet() = default;
+GeomTools_Curve2dSet::GeomTools_Curve2dSet()
+    : myMap(1, new Curve2dSetState)
+{
+}
+
+//=================================================================================================
+
+bool GeomTools_Curve2dSet::IsMerging() const
+{
+  const Curve2dSetState* aState = stateOf(myMap);
+  return aState != nullptr && aState->myMerging;
+}
+
+//=================================================================================================
+
+void GeomTools_Curve2dSet::SetMerging(const bool theMerging)
+{
+  if (Curve2dSetState* aState = stateOf(myMap))
+  {
+    aState->myMerging = theMerging;
+  }
+}
 
 //=================================================================================================
 
 void GeomTools_Curve2dSet::Clear()
 {
   myMap.Clear();
-  myByValue.clear();
-  myAlias.clear();
+  if (Curve2dSetState* aState = stateOf(myMap))
+  {
+    aState->myByValue.clear();
+    aState->myAlias.clear();
+  }
 }
 
 //=================================================================================================
@@ -98,13 +156,14 @@ int GeomTools_Curve2dSet::Add(const occ::handle<Geom2d_Curve>& S)
   {
     return known;
   }
-  if (!myMerging)
+  Curve2dSetState* aState = stateOf(myMap);
+  if (aState == nullptr || !aState->myMerging)
   {
     return myMap.Add(S);
   }
 
   const std::string text = writtenForm(S);
-  std::vector<int>& bucket = myByValue[std::hash<std::string>{}(text)];
+  std::vector<int>& bucket = aState->myByValue[std::hash<std::string>{}(text)];
   for (const int candidate : bucket)
   {
     // The hash only proposes; equal text is what decides, so a collision costs
@@ -114,7 +173,8 @@ int GeomTools_Curve2dSet::Add(const occ::handle<Geom2d_Curve>& S)
       // Index() is what the shape records are written through, and it looks up
       // by handle. This curve is not in the map -- its twin is -- so without
       // this the record would be written with index 0.
-      myAlias.emplace(S.get(), std::make_pair(occ::handle<Standard_Transient>(S), candidate));
+      aState->myAlias.emplace(S.get(),
+                              std::make_pair(occ::handle<Standard_Transient>(S), candidate));
       return candidate;
     }
   }
@@ -145,8 +205,13 @@ int GeomTools_Curve2dSet::Index(const occ::handle<Geom2d_Curve>& S) const
     return index;
   }
   // A curve Add() merged into an equal entry answers with that entry's index.
-  const auto found = myAlias.find(S.get());
-  return found == myAlias.end() ? 0 : found->second.second;
+  const Curve2dSetState* aState = stateOf(myMap);
+  if (aState == nullptr)
+  {
+    return 0;
+  }
+  const auto found = aState->myAlias.find(S.get());
+  return found == aState->myAlias.end() ? 0 : found->second.second;
 }
 
 //=================================================================================================

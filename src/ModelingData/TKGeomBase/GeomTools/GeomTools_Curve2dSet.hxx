@@ -28,11 +28,6 @@
 #include <Standard_IStream.hxx>
 #include <Message_ProgressRange.hxx>
 
-#include <cstddef>
-#include <unordered_map>
-#include <utility>
-#include <vector>
-
 class Geom2d_Curve;
 
 //! Stores a set of Curves from Geom2d.
@@ -69,12 +64,12 @@ public:
 
   //! True if Add() merges a curve into an entry that would be written
   //! identically. On by default.
-  bool IsMerging() const { return myMerging; }
+  Standard_EXPORT bool IsMerging() const;
 
   //! Define whether Add() merges equal curves. Set it before anything is added:
   //! turning it off part way leaves already merged entries merged, and turning
   //! it on part way only merges what comes after.
-  void SetMerging(const bool theMerging) { myMerging = theMerging; }
+  Standard_EXPORT void SetMerging(const bool theMerging);
 
   //! Returns the Curve of index <I>.
   Standard_EXPORT occ::handle<Geom2d_Curve> Curve2d(const int I) const;
@@ -113,18 +108,13 @@ public:
   Standard_EXPORT static occ::handle<Geom2d_Curve> ReadCurve2d(Standard_IStream& IS);
 
 private:
+  //! The one member upstream's class has, and the class is to stay that
+  //! size: a client built against upstream's library holds a set, or a
+  //! BRepTools_ShapeSet with one in it, at upstream's size, and the
+  //! constructor here must not write past it (conda-forge's ifcopenshell
+  //! does, in ifcopenshell.geom.serialise; it crashed). What merging needs
+  //! beyond the map is kept behind the map's allocator, see the source.
   NCollection_IndexedMap<occ::handle<Standard_Transient>> myMap;
-  //! Hash of a curve's written form -> the indices in myMap that hash to it.
-  //! Only Add() maintains this; Read() fills myMap directly, so a file whose
-  //! table does hold equal entries still reads back with its indices intact.
-  std::unordered_map<std::size_t, std::vector<int>> myByValue;
-  //! A curve Add() merged into an equal entry -> that entry's index. Index() is
-  //! how the shape records are written, and it looks up by handle, so a merged
-  //! curve has to be answerable even though the map holds its twin instead. The
-  //! handle is kept so the address remains this curve's for the set's lifetime.
-  std::unordered_map<const Standard_Transient*, std::pair<occ::handle<Standard_Transient>, int>>
-    myAlias;
-  bool myMerging = true;
 };
 
 #endif // _GeomTools_Curve2dSet_HeaderFile

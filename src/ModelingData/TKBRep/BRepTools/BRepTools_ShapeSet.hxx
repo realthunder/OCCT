@@ -285,22 +285,21 @@ private:
   NCollection_IndexedMap<occ::handle<Standard_Transient>> myNodes;
   bool                                                    myWithTriangles;
   bool                                                    myWithNormals;
-  bool                                                    myOmitPCurvesOnPlane = false;
-  bool                                                    myStableBytes        = false;
-  OwnGeometry                                             myOwnGeometry;
+  // The fork's two flags, in the six bytes upstream's class ends with
+  // unused. The class keeps upstream's size and offsets: a client built
+  // against upstream's library holds one at that size (see
+  // GeomTools_Curve2dSet). What does not fit there -- the OwnGeometry of
+  // SetStableBytes -- is kept behind the allocator of myPolygons2D, see the
+  // source.
+  bool myOmitPCurvesOnPlane = false;
+  bool myStableBytes        = false;
 
   //! Under SetStableBytes, whether <theS> is carried by no face added so far.
-  bool isForeign(const occ::handle<Geom_Surface>& theS) const
-  {
-    return myStableBytes && !myOwnGeometry.HasSurface(theS);
-  }
+  bool isForeign(const occ::handle<Geom_Surface>& theS) const;
 
   //! Under SetStableBytes, whether the parameter <thePR> of <theTV> is left out.
   bool isForeign(const occ::handle<BRep_PointRepresentation>& thePR,
-                 const Standard_Transient*                    theTV) const
-  {
-    return myStableBytes && !myOwnGeometry.HasPoint(thePR, theTV);
-  }
+                 const Standard_Transient*                    theTV) const;
 };
 
 #endif // _BRepTools_ShapeSet_HeaderFile
