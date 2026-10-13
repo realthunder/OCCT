@@ -68,6 +68,7 @@
 #include <NCollection_DataMap.hxx>
 #include <NCollection_List.hxx>
 #include <NCollection_IndexedDataMap.hxx>
+#include <Standard_ProgramError.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_Map.hxx>
 #include <NCollection_Sequence.hxx>
@@ -109,22 +110,73 @@ NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_Shape
 
 //=================================================================================================
 
-BRepAlgo_Loop::BRepAlgo_Loop()
-    : myTolConf(0.001)
+namespace
 {
+//! What a loop builder holds beyond upstream's members. It is the
+//! allocator of the map upstream kept the cut edges in, which stays in the
+//! class, empty: the class keeps upstream's layout that way (a client built
+//! against upstream's library holds a builder at upstream's size, see
+//! GeomTools_Curve2dSet), and the map lets go of the state with itself,
+//! whoever compiled the builder's destructor.
+class LoopState : public NCollection_BaseAllocator
+{
+public:
+  //! The cut edges, in the order they were cut: upstream's map by key
+  //! alone gave the edges to the callers in an order that changed from run
+  //! to run.
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    myCutEdges;
+  //! Pieces of cut edges beyond the span the edge's own vertices gave it.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myOutsideEdges;
+  //! Edges whose unused pieces are not purged (KeepPieces).
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myKeptEdges;
+};
+
+LoopState& stateOf(
+  const NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+    theHook)
+{
+  LoopState* aState = dynamic_cast<LoopState*>(theHook.Allocator().get());
+  if (aState == nullptr)
+  {
+    throw Standard_ProgramError("BRepAlgo_Loop: not made by its constructor");
+  }
+  return *aState;
+}
+} // namespace
+
+//=================================================================================================
+
+BRepAlgo_Loop::BRepAlgo_Loop()
+    : myCutEdges(1, new LoopState),
+      myTolConf(0.001)
+{
+}
+
+//=================================================================================================
+
+const NCollection_IndexedDataMap<TopoDS_Shape,
+                                 NCollection_List<TopoDS_Shape>,
+                                 TopTools_ShapeMapHasher>&
+  BRepAlgo_Loop::CutEdges() const
+{
+  return stateOf(myCutEdges).myCutEdges;
 }
 
 //=================================================================================================
 
 void BRepAlgo_Loop::Init(const TopoDS_Face& F)
 {
+  LoopState& aState     = stateOf(myCutEdges);
+  auto&      aCutEdges  = aState.myCutEdges;
+  auto&      aKeptEdges = aState.myKeptEdges;
   myConstEdges.Clear();
   myEdges.Clear();
   myVerOnEdges.Clear();
   myNewWires.Clear();
   myNewFaces.Clear();
-  myCutEdges.Clear();
-  myKeptEdges.Clear();
+  aCutEdges.Clear();
+  aKeptEdges.Clear();
   myFace = F;
 }
 
@@ -198,7 +250,8 @@ void BRepAlgo_Loop::AddEdge(TopoDS_Edge& E, const NCollection_List<TopoDS_Shape>
 
 void BRepAlgo_Loop::KeepPieces(const TopoDS_Edge& E)
 {
-  myKeptEdges.Add(E);
+  auto& aKeptEdges = stateOf(myCutEdges).myKeptEdges;
+  aKeptEdges.Add(E);
 }
 
 //=================================================================================================
@@ -704,6 +757,9 @@ void BRepAlgo_Loop::Perform()
 void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
                             const occ::handle<BRepAlgo_AsDes>&    AsDes)
 {
+  LoopState& aState         = stateOf(myCutEdges);
+  auto&      aCutEdges      = aState.myCutEdges;
+  auto&      anOutsideEdges = aState.myOutsideEdges;
   NCollection_List<TopoDS_Shape>::Iterator itl, itl1, itl2, itl3;
   TopoDS_Vertex                            V1, V2, OV1, OV2;
   BRep_Builder                             B;
@@ -716,9 +772,9 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
   NCollection_List<TopoDS_Shape> ConstEdges;
   NCollection_List<TopoDS_Shape> IntersectingEdges;
   // The span each bounded edge's own vertices give it, before the vertices of
-  // the other edges are added (see myOutsideEdges).
+  // the other edges are added (see anOutsideEdges).
   NCollection_DataMap<TopoDS_Shape, std::pair<double, double>, TopTools_ShapeMapHasher> aSpans;
-  myOutsideEdges.Clear();
+  anOutsideEdges.Clear();
   const bool isPlanarFace = BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Plane;
   if (_CollectingEdges)
   {
@@ -1235,7 +1291,7 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
   for (itl.Initialize(theEdges); itl.More(); itl.Next())
   {
     const TopoDS_Edge& anEdge = TopoDS::Edge(itl.Value());
-    if (myCutEdges.Seek(anEdge))
+    if (aCutEdges.Seek(anEdge))
     {
       continue;
     }
@@ -1279,12 +1335,12 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
           if (aL <= pSpan->first + Precision::PConfusion()
               || aF >= pSpan->second - Precision::PConfusion())
           {
-            myOutsideEdges.Add(itl1.Value());
+            anOutsideEdges.Add(itl1.Value());
             SHOW_TOPO_SHAPE(itl1.Value(), "OutsidePiece");
           }
         }
       }
-      myCutEdges.Add(anEdge, LCE);
+      aCutEdges.Add(anEdge, LCE);
     }
   }
 
@@ -1295,7 +1351,7 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
 #if 1
     NCollection_IndexedDataMap<TopoDS_Shape,
                                NCollection_List<TopoDS_Shape>,
-                               TopTools_ShapeMapHasher>::Iterator itM(myCutEdges);
+                               TopTools_ShapeMapHasher>::Iterator itM(aCutEdges);
     for (; itM.More(); itM.Next())
     {
       SHOW_TOPO_SHAPE(itM.Key(), "InterNewEdge", itM.Value());
@@ -2457,6 +2513,10 @@ static void DropOutsideWires(MapOfWire& theWires, const TopoDS_Face& theFace)
 
 void BRepAlgo_Loop::FindLoop()
 {
+  LoopState& aState         = stateOf(myCutEdges);
+  auto&      aCutEdges      = aState.myCutEdges;
+  auto&      anOutsideEdges = aState.myOutsideEdges;
+  auto&      aKeptEdges     = aState.myKeptEdges;
   NCollection_List<TopoDS_Shape>::Iterator itl, itl1, itl2;
   bool                                     YaCouture = false;
 
@@ -2497,7 +2557,7 @@ void BRepAlgo_Loop::FindLoop()
     NCollection_List<TopoDS_Shape> aFromExtended, aOthers;
     NCollection_IndexedDataMap<TopoDS_Shape,
                                NCollection_List<TopoDS_Shape>,
-                               TopTools_ShapeMapHasher>::Iterator itC(myCutEdges);
+                               TopTools_ShapeMapHasher>::Iterator itC(aCutEdges);
     for (; itC.More(); itC.Next())
     {
       NCollection_List<TopoDS_Shape>& aTarget = isExtended(itC.Key()) ? aFromExtended : aOthers;
@@ -2565,7 +2625,7 @@ void BRepAlgo_Loop::FindLoop()
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> Emap;
   NCollection_IndexedDataMap<TopoDS_Shape,
                              NCollection_List<TopoDS_Shape>,
-                             TopTools_ShapeMapHasher>::Iterator itM(myCutEdges);
+                             TopTools_ShapeMapHasher>::Iterator itM(aCutEdges);
   for (; itM.More(); itM.Next())
   {
     for (itl1.Initialize(itM.Value()); itl1.More(); itl1.Next())
@@ -2638,7 +2698,7 @@ void BRepAlgo_Loop::FindLoop()
   const int aWalkMode = IsPeriodic ? 0 : LoopWalkMode();
   MapOfWire aWalked;
   const bool isWalked =
-    aWalkMode != 0 && FindLoopsByAngle(MVE, myFace, aWalked, myOutsideEdges);
+    aWalkMode != 0 && FindLoopsByAngle(MVE, myFace, aWalked, anOutsideEdges);
   if (isWalked && aWalkMode == 1)
   {
     NewWires = aWalked;
@@ -2668,7 +2728,7 @@ void BRepAlgo_Loop::FindLoop()
                    NewWires,
                    myFace,
                    myTolConf,
-                   myOutsideEdges);
+                   anOutsideEdges);
       if (theLoopSearchSteps < 0)
       {
         // Out of steps: what it found so far is no answer.
@@ -2747,11 +2807,11 @@ void BRepAlgo_Loop::FindLoop()
             // seam -- but not two sharing an edge: a seam wire already built
             // on one of these edges is this one, or one it cannot sit beside.
             // Except that a band on the seam's own span beats one on a piece
-            // beyond it (myOutsideEdges): the holed cone's inner offsets cross
+            // beyond it (anOutsideEdges): the holed cone's inner offsets cross
             // below a removed top, and the band from the top circle down to
             // the crossing, found first, took the crossing circle from the
             // band below it -- the cavity -- which was never built.
-            const bool isOutside = myOutsideEdges.Contains(NE);
+            const bool isOutside = anOutsideEdges.Contains(NE);
             bool       isTaken   = false;
             for (itW = MapIteratorOfMapOfWire(NewWires); itW.More() && !isTaken; itW.Next())
             {
@@ -2846,7 +2906,7 @@ void BRepAlgo_Loop::FindLoop()
                  && RunsRoundPeriod(itW.Value().aWire, myFace);
     }
     MapOfWire aUVWires;
-    if (hasRound && FindLoopsInUV(MVE, DegenEdges, myFace, aUVWires, myOutsideEdges))
+    if (hasRound && FindLoopsInUV(MVE, DegenEdges, myFace, aUVWires, anOutsideEdges))
     {
       SHOW_TOPO_SHAPE(myFace, "LoopWalkedInUV");
       NewWires = aUVWires;
@@ -2991,18 +3051,18 @@ void BRepAlgo_Loop::FindLoop()
     // over the pole is cut by a neighbour's offset on the far side, and the
     // search finds the wire that turns there and the one that runs on down
     // the meridian, through the middle of the face.
-    if (!myOutsideEdges.IsEmpty())
+    if (!anOutsideEdges.IsEmpty())
     {
       auto isBeyond = [&](const WireInfo& theInfo, const WireInfo& theOther) {
         // every outside piece of theOther is in theInfo, and theInfo has more
         int aNbInfo = 0, aNbOther = 0;
         for (const auto& v : theInfo.Edges)
         {
-          aNbInfo += myOutsideEdges.Contains(v.first) ? 1 : 0;
+          aNbInfo += anOutsideEdges.Contains(v.first) ? 1 : 0;
         }
         for (const auto& v : theOther.Edges)
         {
-          if (myOutsideEdges.Contains(v.first))
+          if (anOutsideEdges.Contains(v.first))
           {
             ++aNbOther;
             if (!theInfo.Contains(TopoDS::Edge(v.first)))
@@ -3243,7 +3303,7 @@ void BRepAlgo_Loop::FindLoop()
     }
   }
 
-  PurgeNewEdges(myCutEdges, UsedEdges, myKeptEdges);
+  PurgeNewEdges(aCutEdges, UsedEdges, aKeptEdges);
 }
 
 //=================================================================================================
@@ -3529,7 +3589,8 @@ void BRepAlgo_Loop::WiresToFaces()
 
 const NCollection_List<TopoDS_Shape>& BRepAlgo_Loop::NewEdges(const TopoDS_Edge& E) const
 {
-  return myCutEdges.FindFromKey(E);
+  const auto& aCutEdges = stateOf(myCutEdges).myCutEdges;
+  return aCutEdges.FindFromKey(E);
 }
 
 //=================================================================================================

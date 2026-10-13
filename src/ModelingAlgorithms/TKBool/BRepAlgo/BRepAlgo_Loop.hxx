@@ -100,13 +100,10 @@ public:
   //! Returns the map edge => list of cut edges.
   //! Indexed so that iteration follows the order in which edges were cut -
   //! consumers must not depend on hash order.
-  const NCollection_IndexedDataMap<TopoDS_Shape,
-                                   NCollection_List<TopoDS_Shape>,
-                                   TopTools_ShapeMapHasher>&
-    CutEdges() const
-  {
-    return myCutEdges;
-  }
+  Standard_EXPORT const NCollection_IndexedDataMap<TopoDS_Shape,
+                                                   NCollection_List<TopoDS_Shape>,
+                                                   TopTools_ShapeMapHasher>&
+    CutEdges() const;
 
   //! Returns the datamap of vertices with their substitutes.
   Standard_EXPORT void GetVerticesForSubstitute(
@@ -136,13 +133,12 @@ private:
                                  myVerOnEdges;
   NCollection_List<TopoDS_Shape> myNewWires;
   NCollection_List<TopoDS_Shape> myNewFaces;
-  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+  // Upstream's member, kept for the class to keep upstream's layout, and
+  // left empty: the cut edges are in an indexed map behind its allocator,
+  // with what else the fork's builder holds (see the source).
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
                                                                            myCutEdges;
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> myVerticesForSubstitute;
-  //! Pieces of cut edges beyond the span the edge's own vertices gave it.
-  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myOutsideEdges;
-  //! Edges whose unused pieces are not purged (KeepPieces).
-  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myKeptEdges;
   BRepAlgo_Image                                                           myImageVV;
   double                                                                   myTolConf;
 };
