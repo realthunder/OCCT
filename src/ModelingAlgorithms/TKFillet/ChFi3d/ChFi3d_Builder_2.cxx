@@ -3292,14 +3292,13 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
         // fillet wider than the piece the spine is on and its line along
         // the split, wholly on a piece beyond: the fillet is that of the
         // piece its line is on, as it is of the wall in one face -- ending,
-        // at the spine's ends, where that piece does. The fillet of a
-        // single edge only: in a chain the next edge's fillet starts from
-        // the walk's. And only when it holds the whole of the edge's
-        // fillet (below): a line that crosses the split on its way is the
-        // walk's, which the corner at an end OnSame carries over the split
-        // itself (LineOverSplit).
-        const bool isAlone = Spine->NbEdges() == 1 && !Spine->IsPeriodic();
-        for (int ons = 1; ons <= 2 && LSD.IsEmpty() && isAlone; ons++)
+        // at the spine's ends, where that piece does. Only when it holds
+        // the whole of the edge's fillet (below): a line that crosses the
+        // split on its way is the walk's, which the corner at an end OnSame
+        // carries over the split itself (LineOverSplit). And, for an edge
+        // of a chain, only when it holds no more than that edge's.
+        const bool isOpen = !Spine->IsPeriodic();
+        for (int ons = 1; ons <= 2 && LSD.IsEmpty() && isOpen; ons++)
         {
           const TopoDS_Face              aFs = (ons == 1 ? HS1 : HS2)->Face();
           NCollection_List<TopoDS_Shape> aPieces;
@@ -3364,6 +3363,13 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
             isOk = isOk && LSD.Length() == 1
                    && LSD.First()->FirstSpineParam() <= Spine->FirstParameter(iedge) + tolesp
                    && LSD.First()->LastSpineParam() >= Spine->LastParameter(iedge) - tolesp;
+            // and, in a chain, no more than this edge's: what runs on over
+            // the next edge is that edge's fillet, which it makes itself
+            isOk = isOk
+                   && (iedge == 1
+                       || LSD.First()->FirstSpineParam() >= Spine->FirstParameter(iedge) - tolesp)
+                   && (iedge == Spine->NbEdges()
+                       || LSD.First()->LastSpineParam() <= Spine->LastParameter(iedge) + tolesp);
             if (isOk)
             {
               intf           = anIntf;
