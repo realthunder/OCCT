@@ -69,8 +69,8 @@
 // written without them -- and an edge shared with a new face gains one for
 // that face; so does the regularity between two faces, and a vertex's
 // parameter on a new edge's curve or pcurve or on a new face. Such a
-// representation is marked IsCache (BRep_CurveRepresentation,
-// BRep_PointRepresentation) and may be replaced, removed or re-ranged
+// representation is a cache (of the class Cache below, not marked in the
+// representation itself) and may be replaced, removed or re-ranged
 // afterwards. A pcurve's cache for a face that is gone is removed when the
 // next one is added: its surface is then held by caches alone. The value's own may not, and nothing may take a tolerance the
 // edge or vertex would have to grow to: those change the value, and throw.
@@ -79,6 +79,32 @@
 // every method below that edits an Immutable TShape does it under that
 // TShape's BRep_RepresentationLock, as the writers walk it under the same lock.
 //=================================================================================================
+
+//! A cache is told by its class: Cache<BRep_CurveOnSurface> is a
+//! BRep_CurveOnSurface in everything, its dynamic type included, and a
+//! CacheMark besides. Not by a member of the representation:
+//! BRep_CurveRepresentation and BRep_PointRepresentation have upstream's
+//! members and no other, and they and the 14 classes derived from them keep
+//! upstream's size and offsets, by which a client built against upstream's
+//! library reads a range or a parameter (the tests repository's abi/README.md).
+//! A copy of a cache (Copy()) is of the plain class: not a cache, as a
+//! representation's copy never was.
+struct CacheMark
+{
+  virtual ~CacheMark() = default;
+};
+
+template <class TheRepresentation>
+class Cache : public TheRepresentation, public CacheMark
+{
+public:
+  using TheRepresentation::TheRepresentation;
+};
+
+static bool isCache(const Standard_Transient* theRepresentation)
+{
+  return dynamic_cast<const CacheMark*>(theRepresentation) != nullptr;
+}
 
 //! Whether a tolerance of <theHeld> covers <theTol>: at or under it, or above
 //! it by rounding and no more. A tolerance that came through the root of a
@@ -127,11 +153,11 @@ static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
   };
   for (const occ::handle<BRep_CurveRepresentation>& aCR : theTE->Curves())
   {
-    if (aCR->IsCache() && aCR->IsCurveOnSurface())
+    if (isCache(aCR.get()) && aCR->IsCurveOnSurface())
     {
       hold(aCR->Surface());
     }
-    else if (aCR->IsCache() && aCR->IsRegularity())
+    else if (isCache(aCR.get()) && aCR->IsRegularity())
     {
       hold(aCR->Surface());
       hold(aCR->Surface2());
@@ -155,7 +181,7 @@ static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
     BRep_RepresentationLock aVLock(aTV.get()); // the edge's, then its vertices'
     for (const occ::handle<BRep_PointRepresentation>& aPR : aTV->Points())
     {
-      if (aPR->IsCache() && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface()))
+      if (isCache(aPR.get()) && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface()))
       {
         if (aHeld.IsBound(aPR->Surface().get()))
         {
@@ -175,11 +201,11 @@ static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
   {
     const occ::handle<BRep_CurveRepresentation>& aCR = anIt.Value();
     bool aDrop = false;
-    if (aCR->IsCache() && aCR->IsCurveOnSurface())
+    if (isCache(aCR.get()) && aCR->IsCurveOnSurface())
     {
       aDrop = isDead(aCR->Surface());
     }
-    else if (aCR->IsCache() && aCR->IsRegularity())
+    else if (isCache(aCR.get()) && aCR->IsRegularity())
     {
       aDrop = isDead(aCR->Surface()) || isDead(aCR->Surface2());
     }
@@ -203,7 +229,7 @@ static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
     while (aPIt.More())
     {
       const occ::handle<BRep_PointRepresentation>& aPR = aPIt.Value();
-      if (aPR->IsCache() && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface())
+      if (isCache(aPR.get()) && (aPR->IsPointOnSurface() || aPR->IsPointOnCurveOnSurface())
           && std::find(aDead.begin(), aDead.end(), aPR->Surface()) != aDead.end())
       {
         aPoints.Remove(aPIt);
@@ -215,8 +241,8 @@ static void sweepDeadPCurveCaches(const occ::handle<BRep_TEdge>& theTE)
 }
 
 //! For an Immutable edge: true when the pcurve(s) on <theS> are to be written
-//! -- added, or replacing or removing a cache (BRep_CurveRepresentation::
-//! IsCache) -- false when there is nothing to do; a throw for a change to one
+//! -- added, or replacing or removing a cache (isCache) -- false when there
+//! is nothing to do; a throw for a change to one
 //! of the value's own pcurves, or a tolerance the edge would have to grow to.
 static bool immutableTakesPCurve(const occ::handle<BRep_TEdge>&   theTE,
                                  const occ::handle<Geom2d_Curve>& theC1,
@@ -244,7 +270,7 @@ static bool immutableTakesPCurve(const occ::handle<BRep_TEdge>&   theTE,
     {
       return false;
     }
-    return unchangedOrRefused(aCR->IsCache(), "BRep_Builder::UpdateEdge");
+    return unchangedOrRefused(isCache(aCR.get()), "BRep_Builder::UpdateEdge");
   }
   // Removing what is not there changes nothing.
   if (theC1.IsNull())
@@ -255,21 +281,6 @@ static bool immutableTakesPCurve(const occ::handle<BRep_TEdge>&   theTE,
   // edge adds one for good (FreeCAD docs/TransactionLog.md sec 27.81-27.82).
   sweepDeadPCurveCaches(theTE);
   return true;
-}
-
-//! Marks what an Immutable edge now holds on <theS> as a cache.
-static void markPCurveCache(const occ::handle<BRep_TEdge>&   theTE,
-                            const occ::handle<Geom_Surface>& theS,
-                            const TopLoc_Location&           theL)
-{
-  NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(theTE->Curves());
-  for (; anIt.More(); anIt.Next())
-  {
-    if (anIt.Value()->IsCurveOnSurface(theS, theL))
-    {
-      anIt.Value()->SetCache(true);
-    }
-  }
 }
 
 //! Whether every range Range() would set on <theTE> is already [theFirst, theLast],
@@ -285,7 +296,7 @@ static bool rangesAre(const occ::handle<BRep_TEdge>&   theTE,
   for (; anIt.More(); anIt.Next())
   {
     occ::handle<BRep_GCurve> aGC = occ::down_cast<BRep_GCurve>(anIt.Value());
-    if (aGC.IsNull() || aGC->IsCache())
+    if (aGC.IsNull() || isCache(aGC.get()))
     {
       continue;
     }
@@ -325,7 +336,7 @@ static void checkImmutableVertexOnEdge(const occ::handle<BRep_TVertex>& theTV,
   for (; anIt.More(); anIt.Next())
   {
     occ::handle<BRep_GCurve> aGC = occ::down_cast<BRep_GCurve>(anIt.Value());
-    if (aGC.IsNull() || aGC->IsCache()
+    if (aGC.IsNull() || isCache(aGC.get())
         || (!theS.IsNull() && !aGC->IsCurveOnSurface(theS, theEdgeL)))
     {
       continue;
@@ -389,7 +400,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
 static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>& lcr,
                          const occ::handle<Geom2d_Curve>&                         C,
                          const occ::handle<Geom_Surface>&                         S,
-                         const TopLoc_Location&                                   L)
+                         const TopLoc_Location&                                   L,
+                         const bool theAsCache = false)
 {
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
   occ::handle<BRep_CurveRepresentation>                             cr;
@@ -433,7 +445,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
 
   if (!C.IsNull())
   {
-    occ::handle<BRep_CurveOnSurface> COS   = new BRep_CurveOnSurface(C, S, L);
+    occ::handle<BRep_CurveOnSurface> COS =
+      theAsCache ? new Cache<BRep_CurveOnSurface>(C, S, L) : new BRep_CurveOnSurface(C, S, L);
     double                           aFCur = 0.0, aLCur = 0.0;
     COS->Range(aFCur, aLCur);
     if (!Precision::IsInfinite(f))
@@ -462,7 +475,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
                          const occ::handle<Geom_Surface>&                         S,
                          const TopLoc_Location&                                   L,
                          const gp_Pnt2d&                                          Pf,
-                         const gp_Pnt2d&                                          Pl)
+                         const gp_Pnt2d&                                          Pl,
+                         const bool theAsCache = false)
 {
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
   occ::handle<BRep_CurveRepresentation>                             cr;
@@ -507,7 +521,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
 
   if (!C.IsNull())
   {
-    occ::handle<BRep_CurveOnSurface> COS   = new BRep_CurveOnSurface(C, S, L);
+    occ::handle<BRep_CurveOnSurface> COS =
+      theAsCache ? new Cache<BRep_CurveOnSurface>(C, S, L) : new BRep_CurveOnSurface(C, S, L);
     double                           aFCur = 0.0, aLCur = 0.0;
     COS->Range(aFCur, aLCur);
     if (!Precision::IsInfinite(f))
@@ -537,7 +552,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
                          const occ::handle<Geom2d_Curve>&                         C1,
                          const occ::handle<Geom2d_Curve>&                         C2,
                          const occ::handle<Geom_Surface>&                         S,
-                         const TopLoc_Location&                                   L)
+                         const TopLoc_Location&                                   L,
+                         const bool theAsCache = false)
 {
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
   occ::handle<BRep_CurveRepresentation>                             cr;
@@ -573,7 +589,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
   if (!C1.IsNull() && !C2.IsNull())
   {
     occ::handle<BRep_CurveOnClosedSurface> COS =
-      new BRep_CurveOnClosedSurface(C1, C2, S, L, GeomAbs_C0);
+      theAsCache ? new Cache<BRep_CurveOnClosedSurface>(C1, C2, S, L, GeomAbs_C0)
+                 : new BRep_CurveOnClosedSurface(C1, C2, S, L, GeomAbs_C0);
     double aFCur = 0.0, aLCur = 0.0;
     COS->Range(aFCur, aLCur);
     if (!Precision::IsInfinite(f))
@@ -603,7 +620,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
                          const occ::handle<Geom_Surface>&                         S,
                          const TopLoc_Location&                                   L,
                          const gp_Pnt2d&                                          Pf,
-                         const gp_Pnt2d&                                          Pl)
+                         const gp_Pnt2d&                                          Pl,
+                         const bool theAsCache = false)
 {
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
   occ::handle<BRep_CurveRepresentation>                             cr;
@@ -639,7 +657,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
   if (!C1.IsNull() && !C2.IsNull())
   {
     occ::handle<BRep_CurveOnClosedSurface> COS =
-      new BRep_CurveOnClosedSurface(C1, C2, S, L, GeomAbs_C0);
+      theAsCache ? new Cache<BRep_CurveOnClosedSurface>(C1, C2, S, L, GeomAbs_C0)
+                 : new BRep_CurveOnClosedSurface(C1, C2, S, L, GeomAbs_C0);
     double aFCur = 0.0, aLCur = 0.0;
     COS->Range(aFCur, aLCur);
     if (!Precision::IsInfinite(f))
@@ -663,7 +682,8 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
                          const occ::handle<Geom_Surface>&                         S2,
                          const TopLoc_Location&                                   L1,
                          const TopLoc_Location&                                   L2,
-                         const GeomAbs_Shape                                      C)
+                         const GeomAbs_Shape                                      C,
+                         const bool theAsCache = false)
 {
   NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itcr(lcr);
   while (itcr.More())
@@ -684,7 +704,9 @@ static void UpdateCurves(NCollection_List<occ::handle<BRep_CurveRepresentation>>
   }
   else
   {
-    occ::handle<BRep_CurveOn2Surfaces> COS = new BRep_CurveOn2Surfaces(S1, S2, L1, L2, C);
+    occ::handle<BRep_CurveOn2Surfaces> COS =
+      theAsCache ? new Cache<BRep_CurveOn2Surfaces>(S1, S2, L1, L2, C)
+                 : new BRep_CurveOn2Surfaces(S1, S2, L1, L2, C);
     lcr.Append(COS);
   }
 }
@@ -699,7 +721,7 @@ static bool frozenPointHeld(const bool                                   theFroz
                             const double                                 theP2,
                             const bool                                   theHasP2)
 {
-  if (!theFrozen || thePR->IsCache())
+  if (!theFrozen || isCache(thePR.get()))
   {
     return false;
   }
@@ -736,8 +758,8 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   }
   else
   {
-    occ::handle<BRep_PointOnCurve> POC = new BRep_PointOnCurve(p, C, L);
-    POC->SetCache(theFrozen);
+    occ::handle<BRep_PointOnCurve> POC =
+      theFrozen ? new Cache<BRep_PointOnCurve>(p, C, L) : new BRep_PointOnCurve(p, C, L);
     lpr.Append(POC);
   }
 }
@@ -771,8 +793,9 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   }
   else
   {
-    occ::handle<BRep_PointOnCurveOnSurface> POCS = new BRep_PointOnCurveOnSurface(p, PC, S, L);
-    POCS->SetCache(theFrozen);
+    occ::handle<BRep_PointOnCurveOnSurface> POCS =
+      theFrozen ? new Cache<BRep_PointOnCurveOnSurface>(p, PC, S, L)
+                : new BRep_PointOnCurveOnSurface(p, PC, S, L);
     lpr.Append(POCS);
   }
 }
@@ -808,8 +831,9 @@ static void UpdatePoints(NCollection_List<occ::handle<BRep_PointRepresentation>>
   }
   else
   {
-    occ::handle<BRep_PointOnSurface> POS = new BRep_PointOnSurface(p1, p2, S, L);
-    POS->SetCache(theFrozen);
+    occ::handle<BRep_PointOnSurface> POS =
+      theFrozen ? new Cache<BRep_PointOnSurface>(p1, p2, S, L)
+                : new BRep_PointOnSurface(p1, p2, S, L);
     lpr.Append(POS);
   }
 }
@@ -1005,12 +1029,8 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
     return;
   }
 
-  UpdateCurves(TE->ChangeCurves(), C, S, l);
-  if (TE->Immutable())
-  {
-    markPCurveCache(TE, S, l);
-  }
-  else
+  UpdateCurves(TE->ChangeCurves(), C, S, l, TE->Immutable());
+  if (!TE->Immutable())
   {
     TE->UpdateTolerance(Tol);
   }
@@ -1042,12 +1062,8 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
     return;
   }
 
-  UpdateCurves(TE->ChangeCurves(), C, S, l, Pf, Pl);
-  if (TE->Immutable())
-  {
-    markPCurveCache(TE, S, l);
-  }
-  else
+  UpdateCurves(TE->ChangeCurves(), C, S, l, Pf, Pl, TE->Immutable());
+  if (!TE->Immutable())
   {
     TE->UpdateTolerance(Tol);
   }
@@ -1075,12 +1091,8 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
     return;
   }
 
-  UpdateCurves(TE->ChangeCurves(), C1, C2, S, l);
-  if (TE->Immutable())
-  {
-    markPCurveCache(TE, S, l);
-  }
-  else
+  UpdateCurves(TE->ChangeCurves(), C1, C2, S, l, TE->Immutable());
+  if (!TE->Immutable())
   {
     TE->UpdateTolerance(Tol);
   }
@@ -1113,12 +1125,8 @@ void BRep_Builder::UpdateEdge(const TopoDS_Edge&               E,
     return;
   }
 
-  UpdateCurves(TE->ChangeCurves(), C1, C2, S, l, Pf, Pl);
-  if (TE->Immutable())
-  {
-    markPCurveCache(TE, S, l);
-  }
-  else
+  UpdateCurves(TE->ChangeCurves(), C1, C2, S, l, Pf, Pl, TE->Immutable());
+  if (!TE->Immutable())
   {
     TE->UpdateTolerance(Tol);
   }
@@ -1442,24 +1450,13 @@ void BRep_Builder::Continuity(const TopoDS_Edge&               E,
         {
           return;
         }
-        unchangedOrRefused(aCR->IsCache(), "BRep_Builder::Continuity");
+        unchangedOrRefused(isCache(aCR.get()), "BRep_Builder::Continuity");
         break;
       }
     }
   }
 
-  UpdateCurves(TE->ChangeCurves(), S1, S2, l1, l2, C);
-  if (TE->Immutable())
-  {
-    NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(TE->Curves());
-    for (; anIt.More(); anIt.Next())
-    {
-      if (anIt.Value()->IsRegularity(S1, S2, l1, l2))
-      {
-        anIt.Value()->SetCache(true);
-      }
-    }
-  }
+  UpdateCurves(TE->ChangeCurves(), S1, S2, l1, l2, C, TE->Immutable());
 
   TE->Modified(true);
 }
