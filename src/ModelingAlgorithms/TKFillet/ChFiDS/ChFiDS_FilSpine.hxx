@@ -128,12 +128,12 @@ private:
 
   Standard_EXPORT void AppendLaw(const occ::handle<ChFiDS_ElSpine>& Els);
 
+  // Upstream's two members and no other: the class keeps upstream's size,
+  // which a client built against upstream's library allocates a spine at
+  // (see GeomTools_Curve2dSet). The setbacks and the faces' depths are kept
+  // behind the allocator of <laws>, see the source.
   NCollection_Sequence<gp_XY>                 parandrad;
   NCollection_List<occ::handle<Law_Function>> laws;
-  double                                      mySetbackFirst = -1.;
-  double                                      mySetbackLast  = -1.;
-  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> myFaceDepthFirst;
-  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> myFaceDepthLast;
 };
 
 #endif // _ChFiDS_FilSpine_HeaderFile

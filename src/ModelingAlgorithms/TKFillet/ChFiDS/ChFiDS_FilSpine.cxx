@@ -38,10 +38,37 @@ IMPLEMENT_STANDARD_RTTIEXT(ChFiDS_FilSpine, ChFiDS_Spine)
 
 //=================================================================================================
 
-ChFiDS_FilSpine::ChFiDS_FilSpine() = default;
+namespace
+{
+//! What a spine holds beyond upstream's members, for a setback corner. It
+//! is the allocator of the spine's list of laws: the spine keeps upstream's
+//! size that way, and the list lets go of it with itself. A spine not made
+//! by the constructors below has none: no setback, no depth.
+class FilSpineState : public NCollection_BaseAllocator
+{
+public:
+  double                                                             mySetbackFirst = -1.;
+  double                                                             mySetbackLast  = -1.;
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> myFaceDepthFirst;
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> myFaceDepthLast;
+};
+
+FilSpineState* stateOf(const NCollection_List<occ::handle<Law_Function>>& theLaws)
+{
+  return dynamic_cast<FilSpineState*>(theLaws.Allocator().get());
+}
+} // namespace
+
+//=================================================================================================
+
+ChFiDS_FilSpine::ChFiDS_FilSpine()
+    : laws(new FilSpineState)
+{
+}
 
 ChFiDS_FilSpine::ChFiDS_FilSpine(const double Tol)
-    : ChFiDS_Spine(Tol)
+    : ChFiDS_Spine(Tol),
+      laws(new FilSpineState)
 {
 }
 
@@ -49,14 +76,18 @@ ChFiDS_FilSpine::ChFiDS_FilSpine(const double Tol)
 
 void ChFiDS_FilSpine::SetSetback(const bool isFirst, const double theDist)
 {
-  (isFirst ? mySetbackFirst : mySetbackLast) = theDist < 0. ? -1. : theDist;
+  if (FilSpineState* aState = stateOf(laws))
+  {
+    (isFirst ? aState->mySetbackFirst : aState->mySetbackLast) = theDist < 0. ? -1. : theDist;
+  }
 }
 
 //=================================================================================================
 
 double ChFiDS_FilSpine::Setback(const bool isFirst) const
 {
-  return isFirst ? mySetbackFirst : mySetbackLast;
+  const FilSpineState* aState = stateOf(laws);
+  return aState == nullptr ? -1. : (isFirst ? aState->mySetbackFirst : aState->mySetbackLast);
 }
 
 //=================================================================================================
@@ -65,8 +96,13 @@ void ChFiDS_FilSpine::SetFaceDepth(const bool          isFirst,
                                    const TopoDS_Shape& theFace,
                                    const double        theDepth)
 {
+  FilSpineState* aState = stateOf(laws);
+  if (aState == nullptr)
+  {
+    return;
+  }
   NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& aMap =
-    isFirst ? myFaceDepthFirst : myFaceDepthLast;
+    isFirst ? aState->myFaceDepthFirst : aState->myFaceDepthLast;
   if (theDepth > 0.)
   {
     aMap.Bind(theFace, theDepth);
@@ -81,7 +117,12 @@ void ChFiDS_FilSpine::SetFaceDepth(const bool          isFirst,
 
 double ChFiDS_FilSpine::FaceDepth(const bool isFirst, const TopoDS_Shape& theFace) const
 {
-  const double* aD = (isFirst ? myFaceDepthFirst : myFaceDepthLast).Seek(theFace);
+  const FilSpineState* aState = stateOf(laws);
+  if (aState == nullptr)
+  {
+    return 0.;
+  }
+  const double* aD = (isFirst ? aState->myFaceDepthFirst : aState->myFaceDepthLast).Seek(theFace);
   return aD != nullptr ? *aD : 0.;
 }
 
