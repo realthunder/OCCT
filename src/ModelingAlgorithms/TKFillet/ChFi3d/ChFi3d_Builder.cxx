@@ -18,6 +18,7 @@
 #include <Blend_FuncInv.hxx>
 #include <BRepBlend_Line.hxx>
 #include <BRepLib.hxx>
+#include <BRepLib_CheckCurveOnSurface.hxx>
 #include <BRepTopAdaptor_TopolTool.hxx>
 #include <ChFi3d_Builder.hxx>
 #include <ChFi3d_Builder_0.hxx>
@@ -75,6 +76,12 @@
 #include <GeomProjLib.hxx>
 #include <TopOpeBRepDS_Point.hxx>
 #include <Geom_Curve.hxx>
+#include <Geom_Conic.hxx>
+#include <Geom_Line.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <Geom2d_Conic.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <BRepTools_History.hxx>
 #include <BRepTools_ReShape.hxx>
@@ -316,6 +323,151 @@ static void ChFi3d_EdgesCoverTheirEnds(const TopoDS_Shape& theResult, const Topo
   }
 }
 
+//=================================================================================================
+// An edge the fillet made covers its curves on the faces of the result. The
+// tolerance the last pass leaves (BRepLib::SameParameter) is the largest
+// distance at its samples and a twentieth more; a curve between two fillets
+// has its ends put on the points known on each, and is farthest off its
+// surface a little inside the end, between two samples (#962's pocket,
+// edges 10 and 14 at radius 1: 2.51e-6 at 0.003 of the curve for 2.18e-6 at
+// its start, tolerance 2.29e-6 -- BOP's check, which looks for the largest
+// distance, calls the curve invalid). Here the distance is taken at ten
+// times the samples and followed to its peak from the largest; only an edge
+// that comes out within a fiftieth of its tolerance, or over it, is looked
+// at the way the check does (BRepLib_CheckCurveOnSurface, a search too
+// long for every edge). For a curve or a curve on the surface that is not
+// a line or a conic: those are as far off between the samples as at them.
+// Edges of the input are left alone, and an edge at a vertex that cannot
+// grow.
+
+static double ChFi3d_DistanceToCurveOnSurface(const TopoDS_Edge& theE, const TopoDS_Face& theF)
+{
+  const BRepAdaptor_Curve aC(theE), aCS(theE, theF);
+  const double            aF = aC.FirstParameter(), aL = aC.LastParameter();
+  auto                    aDist2 = [&](const double theT) {
+    return aC.Value(theT).SquareDistance(aCS.Value(theT));
+  };
+  const int aNb   = 220;
+  const double aStep = (aL - aF) / aNb;
+  int       iMax  = 0;
+  double    aMax  = -1.;
+  for (int i = 0; i <= aNb; i++)
+  {
+    const double aD = aDist2(aF + i * aStep);
+    if (aD > aMax)
+    {
+      aMax = aD;
+      iMax = i;
+    }
+  }
+  // to the peak beside the largest sample
+  double a = aF + std::max(0, iMax - 1) * aStep, b = aF + std::min(aNb, iMax + 1) * aStep;
+  for (int it = 0; it < 30; it++)
+  {
+    const double m1 = a + (b - a) / 3., m2 = b - (b - a) / 3.;
+    const double d1 = aDist2(m1), d2 = aDist2(m2);
+    aMax = std::max(aMax, std::max(d1, d2));
+    if (d1 < d2)
+    {
+      a = m1;
+    }
+    else
+    {
+      b = m2;
+    }
+  }
+  return sqrt(aMax);
+}
+
+static void ChFi3d_EdgesCoverTheirPCurves(const TopoDS_Shape& theResult,
+                                          const TopoDS_Shape& theInput)
+{
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anOld;
+  for (TopExp_Explorer ex(theInput, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    anOld.Add(ex.Current());
+  }
+  BRep_Builder aB;
+  for (TopExp_Explorer exf(theResult, TopAbs_FACE); exf.More(); exf.Next())
+  {
+    const TopoDS_Face& aFace = TopoDS::Face(exf.Current());
+    for (TopExp_Explorer ex(aFace, TopAbs_EDGE); ex.More(); ex.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(ex.Current());
+      if (anOld.Contains(anE) || BRep_Tool::Degenerated(anE) || anE.Immutable())
+      {
+        continue;
+      }
+      double                      aF, aL;
+      occ::handle<Geom_Curve>     aC  = BRep_Tool::Curve(anE, aF, aL);
+      occ::handle<Geom2d_Curve>   aPC = BRep_Tool::CurveOnSurface(anE, aFace, aF, aL);
+      if (aC.IsNull() || aPC.IsNull())
+      {
+        continue;
+      }
+      if (aC->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
+      {
+        aC = occ::down_cast<Geom_TrimmedCurve>(aC)->BasisCurve();
+      }
+      if (aPC->IsKind(STANDARD_TYPE(Geom2d_TrimmedCurve)))
+      {
+        aPC = occ::down_cast<Geom2d_TrimmedCurve>(aPC)->BasisCurve();
+      }
+      const bool isPlain3d =
+        aC->IsKind(STANDARD_TYPE(Geom_Line)) || aC->IsKind(STANDARD_TYPE(Geom_Conic));
+      const bool isPlain2d =
+        aPC->IsKind(STANDARD_TYPE(Geom2d_Line)) || aPC->IsKind(STANDARD_TYPE(Geom2d_Conic));
+      if (isPlain3d && isPlain2d)
+      {
+        continue;
+      }
+      double aDist = 0.;
+      try
+      {
+        OCC_CATCH_SIGNALS
+        if (!BRep_Tool::SameParameter(anE)
+            || 1.02 * ChFi3d_DistanceToCurveOnSurface(anE, aFace) <= BRep_Tool::Tolerance(anE))
+        {
+          continue;
+        }
+        BRepLib_CheckCurveOnSurface aCheck(anE, aFace);
+        aCheck.Perform();
+        if (!aCheck.IsDone())
+        {
+          continue;
+        }
+        aDist = aCheck.MaxDistance() * (1. + 1.e-6);
+      }
+      catch (const Standard_Failure&)
+      {
+        continue;
+      }
+      if (aDist <= BRep_Tool::Tolerance(anE))
+      {
+        continue;
+      }
+      bool isFree = true;
+      for (TopExp_Explorer exv(anE, TopAbs_VERTEX); exv.More() && isFree; exv.Next())
+      {
+        const TopoDS_Vertex& aV = TopoDS::Vertex(exv.Current());
+        isFree                  = !aV.Immutable() || BRep_Tool::Tolerance(aV) >= aDist;
+      }
+      if (!isFree)
+      {
+        continue;
+      }
+      aB.UpdateEdge(anE, aDist);
+      for (TopExp_Explorer exv(anE, TopAbs_VERTEX); exv.More(); exv.Next())
+      {
+        const TopoDS_Vertex& aV = TopoDS::Vertex(exv.Current());
+        if (BRep_Tool::Tolerance(aV) < aDist)
+        {
+          aB.UpdateVertex(aV, aDist);
+        }
+      }
+    }
+  }
+}
 
 //=================================================================================================
 // A face of the result whose one wire runs through a point twice, at two
@@ -1727,6 +1879,7 @@ void ChFi3d_Builder::Compute()
         ShapeFix::SameParameter(aF, false, SameParTol);
       }
     }
+    ChFi3d_EdgesCoverTheirPCurves(myShapeResult, myShape);
   }
 }
 
