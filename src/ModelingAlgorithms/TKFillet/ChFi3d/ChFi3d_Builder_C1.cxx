@@ -1282,6 +1282,19 @@ void ChFi3d_StoreLineOverSplit(TopOpeBRepDS_DataStructure&             DStr,
 }
 
 //=======================================================================
+// function : ChFi3d_TransitionOnEdge
+// purpose  : TransitionOnEdge, for the corners of two fillets.
+//=======================================================================
+
+TopAbs_Orientation ChFi3d_TransitionOnEdge(const ChFiDS_FaceInterference& Fi,
+                                          const TopoDS_Face&             F,
+                                          const TopoDS_Edge&             E,
+                                          const bool                     isFirst)
+{
+  return TransitionOnEdge(Fi, F, E, isFirst);
+}
+
+//=======================================================================
 // function : ExtensionOverSplit
 // purpose  : The extension <C> of <Arcprol> from Vtx (at <First>) to the
 //           end of the fillet's line on <Fop> (at <Last>), <Arcprol> an

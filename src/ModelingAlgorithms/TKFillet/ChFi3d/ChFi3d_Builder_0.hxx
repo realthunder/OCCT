@@ -143,6 +143,11 @@ void ChFi3d_StoreLineOverSplit(TopOpeBRepDS_DataStructure&             DStr,
                                const double                            Tol,
                                NCollection_List<ChFiDS_Regul>&         Regul);
 
+TopAbs_Orientation ChFi3d_TransitionOnEdge(const ChFiDS_FaceInterference& Fi,
+                                          const TopoDS_Face&             F,
+                                          const TopoDS_Edge&             E,
+                                          const bool                     isFirst);
+
 TopoDS_Face ChFi3d_SplitPieceOfSpine(const TopoDS_Edge&               E,
                                     const TopoDS_Face&               F,
                                     const occ::handle<ChFiDS_Spine>& Spine,

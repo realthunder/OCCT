@@ -894,6 +894,190 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
   ChFiDS_CommonPoint& CP1 = sd1->ChangeVertex(isfirst1, IFaArc1);
   ChFiDS_CommonPoint& CP2 = sd2->ChangeVertex(isfirst2, IFaArc2);
 
+  // The line of one fillet on the arc's side stopped on a split of its
+  // face, kept in coplanar pieces (a body without Refine), the other's on
+  // an edge of the piece beyond: on the face in one piece both end on that
+  // edge, the pivot, and the fillets are cut by one another
+  // (PerformTwoCornerbyInter). The line is carried over the split to the
+  // pivot for that, on the piece beyond; then it ends on the split again,
+  // and its piece from there to the pivot is put on the piece beyond and
+  // on its own fillet (StoreLineOverSplit), as a line over a split wall.
+  if (st1 != st2 && CP1.IsOnArc() && CP2.IsOnArc() && !CP1.Arc().IsSame(CP2.Arc()))
+  {
+    auto hasEdge = [](const TopoDS_Face& theF, const TopoDS_Edge& theE) {
+      for (TopExp_Explorer exE(theF, TopAbs_EDGE); exE.More(); exE.Next())
+      {
+        if (exE.Current().IsSame(theE))
+        {
+          return true;
+        }
+      }
+      return false;
+    };
+    for (int k = 0; k < 2; k++)
+    {
+      const occ::handle<ChFiDS_SurfData>& aSdk = k == 0 ? sd1 : sd2;
+      const occ::handle<ChFiDS_SurfData>& aSdo = k == 0 ? sd2 : sd1;
+      const occ::handle<ChFiDS_Stripe>&   aStk = k == 0 ? st1 : st2;
+      const bool                          isfk = k == 0 ? isfirst1 : isfirst2;
+      const int                           jk   = k == 0 ? IFaArc1 : IFaArc2;
+      const int                           jo   = k == 0 ? IFaArc2 : IFaArc1;
+      ChFiDS_CommonPoint&                 aCPk = k == 0 ? CP1 : CP2;
+      const ChFiDS_CommonPoint&           aCPo = k == 0 ? CP2 : CP1;
+      if (aSdk->Index(jk) <= 0 || aSdo->Index(jo) <= 0
+          || DStr.Shape(aSdk->Index(jk)).ShapeType() != TopAbs_FACE
+          || DStr.Shape(aSdo->Index(jo)).ShapeType() != TopAbs_FACE)
+      {
+        continue;
+      }
+      const TopoDS_Face aFk = TopoDS::Face(DStr.Shape(aSdk->Index(jk)));
+      const TopoDS_Face aFo = TopoDS::Face(DStr.Shape(aSdo->Index(jo)));
+      const TopoDS_Edge aEs = aCPk.Arc();
+      const TopoDS_Edge aEp = aCPo.Arc();
+      // the piece beyond the split, with the pivot for an edge
+      TopoDS_Face aFn;
+      if (myEFMap.Contains(aEs) && hasEdge(aFk, aEs))
+      {
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(aEs)); itF.More(); itF.Next())
+        {
+          const TopoDS_Face& aF = TopoDS::Face(itF.Value());
+          if (!aF.IsSame(aFk) && ChFi3d_CoplanarPieces(aFk, aF, 10 * tolapp3d))
+          {
+            aFn = aF;
+          }
+        }
+      }
+      if (aFn.IsNull() || !hasEdge(aFn, aEp) || !hasEdge(aFo, aEp))
+      {
+        continue;
+      }
+      // a straight line, on a surface that goes on past its end as it is
+      ChFiDS_FaceInterference& aFik = aSdk->ChangeInterference(jk);
+      if (aFik.LineIndex() == 0 || DStr.Curve(aFik.LineIndex()).Curve().IsNull()
+          || !DStr.Surface(aSdk->Surf()).Surface()->IsKind(STANDARD_TYPE(Geom_ElementarySurface)))
+      {
+        continue;
+      }
+      const GeomAdaptor_Curve aGk(DStr.Curve(aFik.LineIndex()).Curve());
+      if (aGk.GetType() != GeomAbs_Line)
+      {
+        continue;
+      }
+      const occ::handle<Geom_Line> aLc   = new Geom_Line(aGk.Line());
+      const double                 aWQ   = aFik.Parameter(isfk);
+      const double                 aParQ = aCPk.ParameterOnArc();
+      // it meets the pivot past the split
+      double                  aWP = 0., aParP = 0.;
+      bool                    isMet = false;
+      const GeomAdaptor_Curve aGL(aLc);
+      const BRepAdaptor_Curve aPC(aEp);
+      Extrema_ExtCC           anExt(aGL, aPC);
+      for (int i = 1; anExt.IsDone() && !anExt.IsParallel() && i <= anExt.NbExt() && !isMet; i++)
+      {
+        Extrema_POnCurv aP1, aP2;
+        anExt.Points(i, aP1, aP2);
+        aWP   = aP1.Parameter();
+        aParP = aP2.Parameter();
+        isMet = anExt.SquareDistance(i) <= 100. * tolapp3d * tolapp3d
+                && aParP >= aPC.FirstParameter() && aParP <= aPC.LastParameter()
+                && (isfk ? aWP < aWQ - tolapp3d : aWP > aWQ + tolapp3d);
+      }
+      const occ::handle<Geom2d_Curve> aPcOn =
+        isMet ? GeomProjLib::Curve2d(aLc, BRep_Tool::Surface(aFn)) : occ::handle<Geom2d_Curve>();
+      if (aPcOn.IsNull())
+      {
+        continue;
+      }
+      const int                       aIndSave = aSdk->Index(jk);
+      const occ::handle<Geom2d_Curve> aPcSave  = aFik.PCurveOnFace();
+      const ChFiDS_CommonPoint        aCPSave  = aCPk;
+      const bool                      isTurned = aFn.Orientation() != aFk.Orientation();
+      auto aSetFace = [&](const int theInd, const occ::handle<Geom2d_Curve>& thePc, const double theW) {
+        if (jk == 1)
+        {
+          aSdk->ChangeIndexOfS1(theInd);
+        }
+        else
+        {
+          aSdk->ChangeIndexOfS2(theInd);
+        }
+        aFik.ChangePCurveOnFace() = thePc;
+        aFik.SetParameter(theW, isfk);
+        if (isTurned)
+        {
+          aFik.SetTransition(TopAbs::Reverse(aFik.Transition()));
+        }
+      };
+      aSetFace(DStr.AddShape(aFn), aPcOn, aWP);
+      aCPk.Reset();
+      aCPk.SetPoint(aLc->Value(aWP));
+      aCPk.SetArc(std::max(aCPSave.Tolerance(), tolapp3d),
+                  aEp,
+                  aParP,
+                  ChFi3d_TransitionOnEdge(aFik, aFn, aEp, isfk));
+      bool isDone = false;
+      try
+      {
+        OCC_CATCH_SIGNALS
+        isDone = PerformTwoCornerbyInter(Index);
+      }
+      catch (Standard_Failure const&)
+      {
+        aSetFace(aIndSave, aPcSave, aWQ);
+        aCPk = aCPSave;
+        throw;
+      }
+      if (!isDone)
+      {
+        aSetFace(aIndSave, aPcSave, aWQ);
+        aCPk = aCPSave;
+        break;
+      }
+      const double aWPn = aFik.Parameter(isfk);
+      // (the pivot is cut where the line ends on it: the line's end is the
+      // split's from here on, and FILDS cuts that)
+      const TopAbs_Orientation aTraP = aCPk.TransitionOnArc();
+      aSetFace(aIndSave, aPcSave, aWPn);
+      const int          Isurf = aSdk->Surf();
+      const int          indP  = aStk->IndexPoint(isfk, jk);
+      const int          IarcP = DStr.AddShape(aEp);
+      DStr.ChangeShapeInterferences(IarcP).Append(
+        ChFi3d_FilPointInDS(aTraP, IarcP, indP, aParP));
+      TopAbs_Orientation aTra  = TopAbs_FORWARD;
+      if (aSdk->IndexOfS1() > 0)
+      {
+        aTra = DStr.Shape(aSdk->IndexOfS1()).Orientation();
+      }
+      aTra = TopAbs::Compose(aTra, aSdk->Orientation());
+      aTra = TopAbs::Compose(TopAbs::Reverse(aSdk->InterferenceOnS1().Transition()), aTra);
+      DStr.ChangeSurfaceInterferences(Isurf).Append(
+        ChFi3d_FilCurveInDS(aStk->Curve(isfk),
+                            Isurf,
+                            aStk->PCurve(isfk),
+                            TopAbs::Compose(isfk ? TopAbs::Reverse(aTra) : aTra,
+                                            aStk->Orientation(isfk))));
+      ChFi3d_StoreLineOverSplit(DStr,
+                                aStk,
+                                aSdk,
+                                isfk,
+                                jk,
+                                Isurf,
+                                new GeomAdaptor_Surface(DStr.Surface(Isurf).Surface()),
+                                aLc,
+                                aEs,
+                                aFn,
+                                aWQ,
+                                aWPn,
+                                aParQ,
+                                indP,
+                                10 * tolapp3d,
+                                myRegul);
+      aStk->InDS(isfk);
+      done = true;
+      return;
+    }
+  }
+
   bool resetcp1 = false;
   bool resetcp2 = false;
 
