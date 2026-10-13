@@ -36,11 +36,13 @@
 #include <ChFiDS_State.hxx>
 #include <ChFiDS_Stripe.hxx>
 #include <ChFiKPart_ComputeData.hxx>
+#include <ElCLib.hxx>
 #include <Extrema_ExtCC.hxx>
 #include <Extrema_ExtPC.hxx>
 #include <Extrema_POnCurv.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_ElementarySurface.hxx>
+#include <Geom_Line.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
 #include <Geom2dAdaptor_Curve.hxx>
@@ -74,6 +76,8 @@
 #include <TopoDS_Vertex.hxx>
 #include <TopOpeBRepDS_DataStructure.hxx>
 #include <TopOpeBRepDS_HDataStructure.hxx>
+
+#include <exception>
 
 #ifdef OCCT_DEBUG
   #include <Geom_TrimmedCurve.hxx>
@@ -752,6 +756,301 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
         IFaCo1    = aJ1;
         IFaCo2    = aJ2;
         break;
+      }
+    }
+  }
+
+  // The fillet OnDiff in two surfaces at its end, for the two pieces of its
+  // edge: the wall beside it is kept in coplanar pieces (a body without
+  // Refine), and the split's foot is on the edge, nearer the vertex than the
+  // fillet is wide. The lines meet on the common face past that foot, on
+  // the surface before the last, and the corner runs from there to the last
+  // one's end on an edge of the vertex: over both. On the wall in one face
+  // they are one surface. They are made one here: the surface before the
+  // last carries on to the vertex -- its line on the common face to the
+  // last one's end, its line on the wall over the split to the last one's
+  // end on the piece at the vertex -- and the last goes. While the corner
+  // is made the line is shown on that piece; then it ends on the split
+  // again and its piece beyond is put on the piece at the vertex and on the
+  // fillet (StoreLineOverSplit), as a line over a split wall.
+  struct MergedEnd
+  {
+    occ::handle<ChFiDS_Stripe>   Stripe;
+    occ::handle<ChFiDS_SurfData> Sd, SdSave, SdGone;
+    occ::handle<Geom_Line>       Line;
+    occ::handle<Geom2d_Curve>    PcSave;
+    TopoDS_Edge                  Split;
+    TopoDS_Face                  Fn;
+    double                       WQ = 0., ParQ = 0.;
+    int                          Side = 0, IndSave = 0;
+    bool                         isFirst = false, isTurned = false, isShown = false;
+    int                          Uncaught = std::uncaught_exceptions();
+    //! the two surfaces again, as they were
+    void Undo()
+    {
+      if (Sd.IsNull())
+      {
+        return;
+      }
+      Sd->Copy(SdSave);
+      NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeq =
+        Stripe->ChangeSetOfSurfData()->ChangeSequence();
+      if (isFirst)
+      {
+        aSeq.Prepend(SdGone);
+      }
+      else
+      {
+        aSeq.Append(SdGone);
+      }
+      Sd.Nullify();
+    }
+    //! a corner that fails leaves the fillet as it found it
+    ~MergedEnd()
+    {
+      if (std::uncaught_exceptions() > Uncaught)
+      {
+        Undo();
+      }
+    }
+  } aMerged;
+  if ((!Okvisavis || !OkinterCC) && st1 != st2
+      && ((st1->Spine()->Status(Sens1 == 1) == ChFiDS_OnSame
+           && st2->Spine()->Status(Sens2 == 1) == ChFiDS_OnDiff)
+          || (st1->Spine()->Status(Sens1 == 1) == ChFiDS_OnDiff
+              && st2->Spine()->Status(Sens2 == 1) == ChFiDS_OnSame)))
+  {
+    for (int k = 1; k <= 2 && aMerged.Sd.IsNull(); k++)
+    {
+      occ::handle<ChFiDS_Stripe>& aSt = k == 1 ? st1 : st2;
+      const bool                  isf = (k == 1 ? Sens1 : Sens2) == 1;
+      NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeq =
+        aSt->ChangeSetOfSurfData()->ChangeSequence();
+      const int aNb = aSeq.Length();
+      if (aNb < 2 || aSt->Spine()->Status(isf) != ChFiDS_OnDiff)
+      {
+        continue;
+      }
+      const occ::handle<ChFiDS_SurfData> aSdE = aSeq(isf ? 1 : aNb);
+      const occ::handle<ChFiDS_SurfData> aSdM = aSeq(isf ? 2 : aNb - 1);
+      // one face on the one side, two coplanar pieces on the other
+      int jc = 0;
+      for (int j = 1; j <= 2; j++)
+      {
+        if (aSdE->Index(j) > 0 && aSdE->Index(j) == aSdM->Index(j))
+        {
+          jc = jc == 0 ? j : -1;
+        }
+      }
+      if (jc <= 0)
+      {
+        continue;
+      }
+      const int jo = 3 - jc;
+      if (aSdE->Index(jo) <= 0 || aSdM->Index(jo) <= 0
+          || DStr.Shape(aSdE->Index(jo)).ShapeType() != TopAbs_FACE
+          || DStr.Shape(aSdM->Index(jo)).ShapeType() != TopAbs_FACE
+          || DStr.Shape(aSdM->Index(jc)).ShapeType() != TopAbs_FACE)
+      {
+        continue;
+      }
+      const TopoDS_Face aFm = TopoDS::Face(DStr.Shape(aSdM->Index(jo)));
+      const TopoDS_Face aFe = TopoDS::Face(DStr.Shape(aSdE->Index(jo)));
+      const TopoDS_Face aFc = TopoDS::Face(DStr.Shape(aSdM->Index(jc)));
+      if (!ChFi3d_CoplanarPieces(aFm, aFe, 10 * tolapp3d))
+      {
+        continue;
+      }
+      // two straight lines, on a surface that goes on past its end as it is
+      ChFiDS_FaceInterference&        aFimO = aSdM->ChangeInterference(jo);
+      ChFiDS_FaceInterference&        aFimC = aSdM->ChangeInterference(jc);
+      const ChFiDS_CommonPoint&       aCPp  = aSdE->Vertex(isf, jo);
+      const ChFiDS_CommonPoint&       aCPc  = aSdE->Vertex(isf, jc);
+      const occ::handle<Geom_Surface> aSm   = DStr.Surface(aSdM->Surf()).Surface();
+      if (aFimO.LineIndex() == 0 || aFimC.LineIndex() == 0
+          || DStr.Curve(aFimO.LineIndex()).Curve().IsNull()
+          || DStr.Curve(aFimC.LineIndex()).Curve().IsNull() || aFimO.PCurveOnSurf().IsNull()
+          || aFimC.PCurveOnSurf().IsNull() || aFimC.PCurveOnFace().IsNull() || aSm.IsNull()
+          || !aSm->IsKind(STANDARD_TYPE(Geom_ElementarySurface)) || !aCPp.IsOnArc()
+          || aCPp.IsVertex())
+      {
+        continue;
+      }
+      const GeomAdaptor_Curve aGO(DStr.Curve(aFimO.LineIndex()).Curve());
+      const GeomAdaptor_Curve aGC(DStr.Curve(aFimC.LineIndex()).Curve());
+      if (aGO.GetType() != GeomAbs_Line || aGC.GetType() != GeomAbs_Line)
+      {
+        continue;
+      }
+      // the last surface's two ends, on the lines of the one before
+      const double aWQ = aFimO.Parameter(isf);
+      const double aWP = ElCLib::Parameter(aGO.Line(), aCPp.Point());
+      const double aWC = ElCLib::Parameter(aGC.Line(), aCPc.Point());
+      const double aWM = aFimC.Parameter(isf);
+      if (aGO.Value(aWP).Distance(aCPp.Point()) > tolapp3d
+          || aGC.Value(aWC).Distance(aCPc.Point()) > tolapp3d
+          || (isf ? aWP > aWQ - tolapp3d : aWP < aWQ + tolapp3d)
+          || (isf ? aWC > aWM - tolapp3d : aWC < aWM + tolapp3d))
+      {
+        continue;
+      }
+      // and on its surface, and on the common face, carried on
+      const gp_Pnt2d            aUVsO = aFimO.PCurveOnSurf()->Value(aWP);
+      const gp_Pnt2d            aUVsC = aFimC.PCurveOnSurf()->Value(aWC);
+      const gp_Pnt2d            aUVfC = aFimC.PCurveOnFace()->Value(aWC);
+      const BRepAdaptor_Surface aBSc(aFc, false);
+      if (aSm->Value(aUVsO.X(), aUVsO.Y()).Distance(aCPp.Point()) > tolapp3d
+          || aSm->Value(aUVsC.X(), aUVsC.Y()).Distance(aCPc.Point()) > tolapp3d
+          || aBSc.Value(aUVfC.X(), aUVfC.Y()).Distance(aCPc.Point()) > tolapp3d)
+      {
+        continue;
+      }
+      // the split the line stops on, between the two pieces
+      const occ::handle<Geom_Line> aLc = new Geom_Line(aGO.Line());
+      const gp_Pnt                 aPQ = aLc->Value(aWQ);
+      TopoDS_Edge                  aEs;
+      double                       aParQ = 0.;
+      for (TopExp_Explorer exE(aFm, TopAbs_EDGE); exE.More() && aEs.IsNull(); exE.Next())
+      {
+        const TopoDS_Edge& aE = TopoDS::Edge(exE.Current());
+        if (BRep_Tool::Degenerated(aE))
+        {
+          continue;
+        }
+        bool isBoth = false;
+        for (TopExp_Explorer exN(aFe, TopAbs_EDGE); exN.More() && !isBoth; exN.Next())
+        {
+          isBoth = exN.Current().IsSame(aE);
+        }
+        if (!isBoth)
+        {
+          continue;
+        }
+        const BRepAdaptor_Curve aCE(aE);
+        Extrema_ExtPC           anExt(aPQ, aCE);
+        for (int i = 1; anExt.IsDone() && i <= anExt.NbExt() && aEs.IsNull(); i++)
+        {
+          if (anExt.SquareDistance(i) <= 100. * tolapp3d * tolapp3d)
+          {
+            aEs   = aE;
+            aParQ = anExt.Point(i).Parameter();
+          }
+        }
+      }
+      const occ::handle<Geom2d_Curve> aPcOn =
+        aEs.IsNull() ? occ::handle<Geom2d_Curve>()
+                     : GeomProjLib::Curve2d(aLc, BRep_Tool::Surface(aFe));
+      if (aPcOn.IsNull())
+      {
+        continue;
+      }
+
+      // made one
+      aMerged.Stripe = aSt;
+      aMerged.SdSave = new ChFiDS_SurfData();
+      aMerged.SdSave->Copy(aSdM);
+      aMerged.SdGone   = aSdE;
+      aMerged.Sd       = aSdM;
+      aMerged.Line     = aLc;
+      aMerged.PcSave   = aFimO.PCurveOnFace();
+      aMerged.Split    = aEs;
+      aMerged.Fn       = aFe;
+      aMerged.WQ       = aWQ;
+      aMerged.ParQ     = aParQ;
+      aMerged.Side     = jo;
+      aMerged.IndSave  = aSdM->Index(jo);
+      aMerged.isFirst  = isf;
+      aMerged.isTurned = aFe.Orientation() != aFm.Orientation();
+      aSeq.Remove(isf ? 1 : aNb);
+      // Twice. The line shown on the piece at the vertex, to the last
+      // surface's end there, for fillets that meet on the face they both
+      // lie on whole. Or left on its own piece, to the split: the other
+      // fillet, wider than the piece at the vertex, lies on that piece too,
+      // the lines meet on it before the split, and the corner cuts the
+      // line there.
+      for (int iShow = 1; iShow >= 0 && !aMerged.Sd.IsNull(); iShow--)
+      {
+        aSdM->Copy(aMerged.SdSave);
+        gp_Pnt2d a2d[4];
+        aSdM->Get2dPoints(a2d[0], a2d[1], a2d[2], a2d[3]);
+        aFimC.SetParameter(aWC, isf);
+        aSdM->ChangeVertex(isf, jc)       = aCPc;
+        a2d[2 * (jc - 1) + (isf ? 0 : 1)] = aUVsC;
+        if (iShow == 1)
+        {
+          if (jo == 1)
+          {
+            aSdM->ChangeIndexOfS1(aSdE->Index(jo));
+          }
+          else
+          {
+            aSdM->ChangeIndexOfS2(aSdE->Index(jo));
+          }
+          aFimO.ChangePCurveOnFace() = aPcOn;
+          aFimO.SetParameter(aWP, isf);
+          if (aMerged.isTurned)
+          {
+            aFimO.SetTransition(TopAbs::Reverse(aFimO.Transition()));
+          }
+          aSdM->ChangeVertex(isf, jo)       = aCPp;
+          a2d[2 * (jo - 1) + (isf ? 0 : 1)] = aUVsO;
+        }
+        aSdM->Set2dPoints(a2d[0], a2d[1], a2d[2], a2d[3]);
+        if (isf)
+        {
+          aSdM->FirstSpineParam(aSdE->FirstSpineParam());
+        }
+        else
+        {
+          aSdM->LastSpineParam(aSdE->LastSpineParam());
+        }
+        // do the lines meet now, on the face they should?
+        double      aU1 = 0., aU2 = 0.;
+        TopoDS_Face aFa;
+        bool        aSS = false, aVis = false;
+        int         aJ1 = 0, aJ2 = 0;
+        const int   aI1 = ChFi3d_IndexOfSurfData(Vtx, st1, Sens1);
+        const int   aI2 = ChFi3d_IndexOfSurfData(Vtx, st2, Sens2);
+        if (ChFi3d_IsInFront(DStr,
+                             st1,
+                             st2,
+                             aI1,
+                             aI2,
+                             Sens1,
+                             Sens2,
+                             aU1,
+                             aU2,
+                             aFa,
+                             aSS,
+                             aJ1,
+                             aJ2,
+                             aVis,
+                             Vtx,
+                             true)
+            && aVis && (k == 1 ? aJ1 : aJ2) == (iShow == 1 ? jc : jo)
+            // (on its own piece: short of the split, not on it -- a fillet as
+            // wide as the piece at the vertex has its line along the split)
+            && (iShow == 1
+                || (isf ? (k == 1 ? aU1 : aU2) > aWQ + 10 * tolapp3d
+                        : (k == 1 ? aU1 : aU2) < aWQ - 10 * tolapp3d)))
+        {
+          aMerged.isShown = iShow == 1;
+          Isd1            = aI1;
+          Isd2            = aI2;
+          OkinterCC       = true;
+          Okvisavis       = true;
+          UIntPC1         = aU1;
+          UIntPC2         = aU2;
+          FaCo            = aFa;
+          SameSide        = aSS;
+          IFaCo1          = aJ1;
+          IFaCo2          = aJ2;
+          break;
+        }
+        if (iShow == 0)
+        {
+          aMerged.Undo();
+        }
       }
     }
   }
@@ -2206,6 +2505,67 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
       if (ifaopdif == 1)
       {
         stdif->SetOrientation(TopAbs_REVERSED, isfirstdif);
+      }
+      // The fillet OnDiff made of its last two surfaces, above: its line on
+      // the wall ends on the split again, and its piece beyond, to the
+      // corner's point, is put on the piece at the vertex and on the fillet.
+      // The arc it ended on is cut here, the line's end being the split's
+      // from now on, and the fillet's end is put in the DS with it.
+      if (!aMerged.Sd.IsNull() && aMerged.isShown && aMerged.Sd == sddif
+          && aMerged.Side == ifaopdif)
+      {
+        ChFiDS_FaceInterference& aFik = sddif->ChangeInterference(ifaopdif);
+        const ChFiDS_CommonPoint aCPp = sddif->Vertex(isfirstdif, ifaopdif);
+        const double             aWPn = aFik.Parameter(isfirstdif);
+        if (ifaopdif == 1)
+        {
+          sddif->ChangeIndexOfS1(aMerged.IndSave);
+        }
+        else
+        {
+          sddif->ChangeIndexOfS2(aMerged.IndSave);
+        }
+        aFik.ChangePCurveOnFace() = aMerged.PcSave;
+        if (aMerged.isTurned)
+        {
+          aFik.SetTransition(TopAbs::Reverse(aFik.Transition()));
+        }
+        const int Isurf = sddif->Surf();
+        const int indP  = stdif->IndexPoint(isfirstdif, ifaopdif);
+        const int IarcP = DStr.AddShape(aCPp.Arc());
+        DStr.ChangeShapeInterferences(IarcP).Append(
+          ChFi3d_FilPointInDS(aCPp.TransitionOnArc(), IarcP, indP, aCPp.ParameterOnArc()));
+        TopAbs_Orientation aTra = TopAbs_FORWARD;
+        if (sddif->IndexOfS1() > 0)
+        {
+          aTra = DStr.Shape(sddif->IndexOfS1()).Orientation();
+        }
+        aTra = TopAbs::Compose(aTra, sddif->Orientation());
+        aTra = TopAbs::Compose(TopAbs::Reverse(sddif->InterferenceOnS1().Transition()), aTra);
+        DStr.ChangeSurfaceInterferences(Isurf).Append(
+          ChFi3d_FilCurveInDS(stdif->Curve(isfirstdif),
+                              Isurf,
+                              stdif->PCurve(isfirstdif),
+                              TopAbs::Compose(isfirstdif ? TopAbs::Reverse(aTra) : aTra,
+                                              stdif->Orientation(isfirstdif))));
+        ChFi3d_StoreLineOverSplit(DStr,
+                                  stdif,
+                                  sddif,
+                                  isfirstdif,
+                                  ifaopdif,
+                                  Isurf,
+                                  new GeomAdaptor_Surface(DStr.Surface(Isurf).Surface()),
+                                  aMerged.Line,
+                                  aMerged.Split,
+                                  aMerged.Fn,
+                                  aMerged.WQ,
+                                  aWPn,
+                                  aMerged.ParQ,
+                                  indP,
+                                  10 * tolapp3d,
+                                  myRegul);
+        stdif->InDS(isfirstdif);
+        aMerged.Sd.Nullify();
       }
 #ifdef OCCT_DEBUG
       ChFi3d_ResultChron(ch, t_t2cornerDS); // result perf update DS
