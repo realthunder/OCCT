@@ -5423,9 +5423,15 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
       {
         // pro15368
         //  Modified by Sergey KHROMOV - Fri Dec 21 18:07:43 2001 End
-        bool isTangent0 = ChFi3d::IsTangentFaces(Edge[0], F1, Face[0]);
-        bool isTangent1 = ChFi3d::IsTangentFaces(Edge[1], Face[0], Face[1]);
-        bool isTangent2 = ChFi3d::IsTangentFaces(Edge[2], Face[1], Face[2]);
+        // (tangent faces, not the pieces of one: a split of a face kept in
+        // coplanar pieces is no edge, and the vertex one of four edges --
+        // the case of the pieces, below)
+        bool isTangent0 = ChFi3d::IsTangentFaces(Edge[0], F1, Face[0])
+                          && !ChFi3d_CoplanarPieces(F1, Face[0], 10 * tolapp3d);
+        bool isTangent1 = ChFi3d::IsTangentFaces(Edge[1], Face[0], Face[1])
+                          && !ChFi3d_CoplanarPieces(Face[0], Face[1], 10 * tolapp3d);
+        bool isTangent2 = ChFi3d::IsTangentFaces(Edge[2], Face[1], Face[2])
+                          && !ChFi3d_CoplanarPieces(Face[1], Face[2], 10 * tolapp3d);
         if ((isTangent0 || isTangent2) && isTangent1)
         {
           //         GeomAbs_Shape cont0,cont1,cont2;
