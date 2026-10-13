@@ -24,12 +24,6 @@
 
 IMPLEMENT_STANDARD_RTTIEXT(TopoDS_TShape, Standard_Transient)
 
-unsigned int& TopoDS_LockedShape::raisedCounter()
-{
-  thread_local unsigned int aCount = 0;
-  return aCount;
-}
-
 //=================================================================================================
 
 unsigned int TopoDS_LockedShape_Raised()

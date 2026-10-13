@@ -17,6 +17,7 @@
 #ifndef _TopoDS_LockedShape_HeaderFile
 #define _TopoDS_LockedShape_HeaderFile
 
+#include <NCollection_ForkState.hxx>
 #include <Standard_DefineException.hxx>
 #include <Standard_SStream.hxx>
 #include <Standard_DomainError.hxx>
@@ -36,34 +37,52 @@
 //! the refusal turned into an error message by the algorithm it called -- as
 //! FreeCAD's features do -- can still tell a frozen input was refused, and
 //! run again on a copy.
+//!
+//! The count is the fork's library's, reached through NCollection_ForkState
+//! and not through a function of this class: the tolerance setters of
+//! BRep_TVertex, BRep_TEdge and BRep_TFace are inline and raise one, so a
+//! client that calls a setter constructs it, and a counter this class
+//! exported would be a symbol upstream's library does not have in every
+//! such client. With upstream's library nothing is counted, and nothing is
+//! frozen to be refused.
 class TopoDS_LockedShape : public Standard_DomainError
 {
 public:
   TopoDS_LockedShape(const char* theMessage = "")
       : Standard_DomainError(theMessage)
   {
-    ++raisedCounter();
+    count();
   }
 
   TopoDS_LockedShape(const char* theMessage, const char* theStackTrace)
       : Standard_DomainError(theMessage, theStackTrace)
   {
-    ++raisedCounter();
+    count();
   }
 
   const char* ExceptionType() const noexcept override { return "TopoDS_LockedShape"; }
 
-  //! How many have been raised on this thread.
-  static unsigned int Raised() { return raisedCounter(); }
+  //! How many have been raised on this thread; 0 where the library is
+  //! upstream's.
+  static unsigned int Raised()
+  {
+    NCollection_ForkState* aFork = NCollection_ForkState::Get();
+    return aFork != nullptr ? aFork->LockedShapesRaised() : 0;
+  }
 
 private:
-  Standard_EXPORT static unsigned int& raisedCounter();
+  static void count()
+  {
+    if (NCollection_ForkState* aFork = NCollection_ForkState::Get())
+    {
+      ++aFork->LockedShapesRaised();
+    }
+  }
 };
 
 //! TopoDS_LockedShape::Raised as a C function, for a client to look up by
-//! name at run time (dlsym, GetProcAddress) and do without where the library
-//! is upstream's, which counts nothing: Raised() is inline and reads a
-//! counter of the fork's library, a symbol upstream's does not have.
+//! name at run time (dlsym, GetProcAddress): found, the library is the
+//! fork's and counts.
 extern "C" Standard_EXPORT unsigned int TopoDS_LockedShape_Raised();
 
 #endif // _TopoDS_LockedShape_HeaderFile

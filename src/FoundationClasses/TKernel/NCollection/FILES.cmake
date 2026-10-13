@@ -28,6 +28,7 @@ set(OCCT_NCollection_FILES
   NCollection_DoubleMap.hxx
   NCollection_DynamicArray.hxx
   NCollection_EBTree.hxx
+  NCollection_ForkState.hxx
   NCollection_FlatDataMap.hxx
   NCollection_FlatMap.hxx
   NCollection_ForwardRange.hxx

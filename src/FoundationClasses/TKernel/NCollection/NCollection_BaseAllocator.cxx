@@ -13,7 +13,26 @@
 
 #include <NCollection_BaseAllocator.hxx>
 
+#include <NCollection_ForkState.hxx>
+
 IMPLEMENT_STANDARD_RTTIEXT(NCollection_BaseAllocator, Standard_Transient)
+
+namespace
+{
+//! The common allocator of the fork's library: NCollection_BaseAllocator, as
+//! it allocates, and the state the fork keeps for the process
+//! (NCollection_ForkState), which an inline function of a header asks for
+//! through CommonBaseAllocator().
+class CommonAllocator : public NCollection_ForkState
+{
+public:
+  unsigned int& LockedShapesRaised() override
+  {
+    thread_local unsigned int aCount = 0;
+    return aCount;
+  }
+};
+} // namespace
 
 //=================================================================================================
 
@@ -45,6 +64,6 @@ const occ::handle<NCollection_BaseAllocator>& NCollection_BaseAllocator::CommonB
   // Intentionally never destroyed: collection statics in other toolkits may
   // free their nodes through this allocator during process finalization.
   static occ::handle<NCollection_BaseAllocator>* THE_SINGLETON_ALLOC =
-    new occ::handle<NCollection_BaseAllocator>(new NCollection_BaseAllocator);
+    new occ::handle<NCollection_BaseAllocator>(new CommonAllocator);
   return *THE_SINGLETON_ALLOC;
 }
