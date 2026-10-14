@@ -93,6 +93,8 @@
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Wire.hxx>
 #include <NCollection_IndexedMap.hxx>
+#include <BOPTools_AlgoTools.hxx>
+#include <IntTools_Context.hxx>
 
 #ifdef OCCT_DEBUG
   #include <OSD_Chronometer.hxx>
@@ -737,6 +739,123 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
   occ::handle<BRepTools_History> aHistory = aMerge->History();
   aHistory->Merge(aSplit->History());
   return aHistory;
+}
+
+//=================================================================================================
+// An edge the fillet made that is no longer than twice <theTol>, the
+// tolerance the fillet's surfaces are made to -- its ends, each known to
+// that, are one point -- and that its two vertices cover: nothing of it
+// lies between them (BOPTools_AlgoTools::IsMicroEdge, the question BOP's
+// argument check asks). A cut across a face of no width makes one -- #474's
+// Fillet003 keeps a face 1.4e-7 wide beside a corner of its hexagon, and
+// every fillet ending there crossed it with an edge of that length -- and
+// so does a fillet thinner at its end than its own tolerance (#876's post
+// drafted by a degree, the edge at its foot: 1.1e-6 long, and at a larger
+// radius 1.0e-4 between ends 5.1e-5 apart; #273's handle, two degrees from
+// the wall it stands on: 1.5e-5, closed on one vertex). BRepCheck lets such
+// an edge be; BOP's check reports it too small and its vertices
+// self-intersecting, and the next boolean is refused its argument. The edge
+// is dropped and its vertices made one, the input's when one of them is. An
+// edge between two vertices of the input is left alone, and nothing is done
+// where a wire would be left without an edge. A longer edge that its
+// vertices cover all the same is the mark of a loose result, not of an edge
+// of no length: left as it is (#273's fillets at a tolerance of 0.045, an
+// edge of 0.029 -- dropping it moved the volume by 1.9). Returns the
+// history of the change, null when there was none.
+
+static occ::handle<BRepTools_History> ChFi3d_DropMicroEdges(TopoDS_Shape&       theResult,
+                                                           const TopoDS_Shape& theInput,
+                                                           const double        theTol)
+{
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputE, anInputV, anEdges;
+  TopExp::MapShapes(theInput, TopAbs_EDGE, anInputE);
+  TopExp::MapShapes(theInput, TopAbs_VERTEX, anInputV);
+  TopExp::MapShapes(theResult, TopAbs_EDGE, anEdges);
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aDropToKeep;
+  // the vertex a vertex has become
+  auto aKept = [&aDropToKeep](TopoDS_Shape theV) {
+    while (aDropToKeep.IsBound(theV))
+    {
+      theV = aDropToKeep(theV);
+    }
+    return theV;
+  };
+  occ::handle<IntTools_Context>                          aCtx = new IntTools_Context;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMicro;
+  for (int i = 1; i <= anEdges.Extent(); i++)
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(anEdges(i));
+    if (anInputE.Contains(anE) || BRep_Tool::Degenerated(anE))
+    {
+      continue;
+    }
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(anE, aV1, aV2);
+    if (aV1.IsNull() || aV2.IsNull() || !BRep_Tool::IsGeometric(anE)
+        || BRep_Tool::Pnt(aV1).Distance(BRep_Tool::Pnt(aV2)) > 2. * theTol
+        || GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(anE)) > 2. * theTol
+        || !BOPTools_AlgoTools::IsMicroEdge(anE, aCtx))
+    {
+      continue;
+    }
+    // closed on one vertex already: the edge alone goes
+    TopoDS_Shape aKeep = aKept(aV1.Oriented(TopAbs_FORWARD));
+    TopoDS_Shape aDrop = aKept(aV2.Oriented(TopAbs_FORWARD));
+    if (!aKeep.IsSame(aDrop))
+    {
+      if (anInputV.Contains(aDrop))
+      {
+        if (anInputV.Contains(aKeep))
+        {
+          continue;
+        }
+        std::swap(aKeep, aDrop);
+      }
+      aDropToKeep.Bind(aDrop, aKeep);
+    }
+    aMicro.Add(anE);
+  }
+  if (aMicro.IsEmpty())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  for (TopExp_Explorer exW(theResult, TopAbs_WIRE); exW.More(); exW.Next())
+  {
+    bool isLeft = false;
+    for (TopoDS_Iterator itE(exW.Current()); itE.More() && !isLeft; itE.Next())
+    {
+      isLeft = !aMicro.Contains(itE.Value());
+    }
+    if (!isLeft)
+    {
+      return occ::handle<BRepTools_History>();
+    }
+  }
+
+  BRep_Builder                   aB;
+  occ::handle<BRepTools_ReShape> aReShape = new BRepTools_ReShape;
+  for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(
+         aDropToKeep);
+       it.More();
+       it.Next())
+  {
+    const TopoDS_Vertex& aDrop = TopoDS::Vertex(it.Key());
+    const TopoDS_Vertex  aKeep = TopoDS::Vertex(aKept(it.Value()));
+    const double         aTol =
+      BRep_Tool::Pnt(aDrop).Distance(BRep_Tool::Pnt(aKeep)) + BRep_Tool::Tolerance(aDrop);
+    if (aTol > BRep_Tool::Tolerance(aKeep))
+    {
+      aB.UpdateVertex(aKeep, aTol);
+    }
+    aReShape->Replace(aDrop.Oriented(TopAbs_FORWARD), aKeep.Oriented(TopAbs_FORWARD));
+  }
+  for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(aMicro); it.More();
+       it.Next())
+  {
+    aReShape->Remove(it.Key());
+  }
+  theResult = aReShape->Apply(theResult);
+  return aReShape->History();
 }
 
 //=================================================================================================
@@ -1720,8 +1839,18 @@ void ChFi3d_Builder::Compute()
         ChFi3d_EdgesCoverTheirEnds(myShapeResult, myShape);
         // the builder's history, which Generated and BRepFilletAPI read,
         // as the result has its shapes now
-        const occ::handle<BRepTools_History> aTouch =
+        occ::handle<BRepTools_History> aTouch =
+          ChFi3d_DropMicroEdges(myShapeResult, myShape, tolapp3d);
+        const occ::handle<BRepTools_History> aSplit =
           ChFi3d_SplitPinchedFaces(myShapeResult, myShape);
+        if (aTouch.IsNull())
+        {
+          aTouch = aSplit;
+        }
+        else if (!aSplit.IsNull())
+        {
+          aTouch->Merge(aSplit);
+        }
         if (!aTouch.IsNull())
         {
           for (int iS = 1; iS <= DStr.NbShapes(); iS++)
