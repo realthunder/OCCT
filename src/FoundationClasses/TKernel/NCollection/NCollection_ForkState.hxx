@@ -34,7 +34,19 @@
 //!
 //! State of an object goes behind a collection of that object instead
 //! (tests/fork/abi/README.md); this is for what belongs to no object.
-class NCollection_ForkState : public NCollection_BaseAllocator
+//!
+//! Visible by default with GCC and Clang: a client built with
+//! -fvisibility=hidden made its own type information of the class private,
+//! and the dynamic_cast in Get() then found nothing (the mac, 2026-10-14). Not
+//! Standard_EXPORT, which on MSVC would import the class from TKernel and
+//! make it a symbol upstream's library does not have.
+#if defined(__GNUC__) || defined(__clang__)
+  #define NCollection_ForkState_VISIBLE __attribute__((visibility("default")))
+#else
+  #define NCollection_ForkState_VISIBLE
+#endif
+
+class NCollection_ForkState_VISIBLE NCollection_ForkState : public NCollection_BaseAllocator
 {
 public:
   //! The fork's state, or null where the library is upstream's.
