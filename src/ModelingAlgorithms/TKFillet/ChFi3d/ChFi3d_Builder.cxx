@@ -482,8 +482,9 @@ static void ChFi3d_EdgesCoverTheirPCurves(const TopoDS_Shape& theResult,
 // meeting at a point: the corner's vertex is replaced by the input's, and
 // the face split there in two, each bounded by one loop of its wire -- only
 // where both loops bound a region, not where a loop round a hole touches
-// the outer one. Returns the history of the change, null when there was
-// none.
+// the outer one. The same with two vertices the fillet made, and with one
+// of the loops a single edge from one to the other (FindPinch). Returns the
+// history of the change, null when there was none.
 
 namespace
 {
@@ -518,9 +519,13 @@ TopoDS_Wire PinchLoop(const PinchedFace&                    theP,
 }
 
 // <theF>, one wire, pinched: its wire passes twice through a point, at two
-// vertices there with no edge between them, one of them the input's, at one
-// point of the face's parameters, and each loop of the wire from there
-// bounds a region of its own.
+// vertices there, not both the input's, with no edge between them but one
+// that is itself a loop of the wire -- longer than ten times what the
+// vertices cover: the whole circle a fillet's line makes round a disc that
+// touches the rest of the face (#523's bottom, the cylinder's rim and the
+// box's edge filleted at radius 1) --, at one point of the face's
+// parameters, and each loop of the wire from there bounds a region of its
+// own. Kept: the input's vertex, or of two the fillet made the looser.
 bool FindPinch(const TopoDS_Face&                                                   theF,
                const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theInputV,
                PinchedFace&                                                         theP)
@@ -553,9 +558,13 @@ bool FindPinch(const TopoDS_Face&                                               
       bool isJoined = false;
       for (TopExp_Explorer exE(aW, TopAbs_EDGE); exE.More() && !isJoined; exE.Next())
       {
-        TopoDS_Vertex aE1, aE2;
-        TopExp::Vertices(TopoDS::Edge(exE.Current()), aE1, aE2);
-        isJoined = (aE1.IsSame(aVi) && aE2.IsSame(aVj)) || (aE1.IsSame(aVj) && aE2.IsSame(aVi));
+        const TopoDS_Edge& anE = TopoDS::Edge(exE.Current());
+        TopoDS_Vertex      aE1, aE2;
+        TopExp::Vertices(anE, aE1, aE2);
+        isJoined = ((aE1.IsSame(aVi) && aE2.IsSame(aVj)) || (aE1.IsSame(aVj) && aE2.IsSame(aVi)))
+                   && (!BRep_Tool::IsGeometric(anE)
+                       || GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(anE))
+                            <= 10. * (BRep_Tool::Tolerance(aVi) + BRep_Tool::Tolerance(aVj)));
       }
       if (!isJoined)
       {
@@ -565,13 +574,16 @@ bool FindPinch(const TopoDS_Face&                                               
       }
     }
   }
-  if (aNbPinch != 1 || theInputV.Contains(aV1) == theInputV.Contains(aV2))
+  if (aNbPinch != 1 || (theInputV.Contains(aV1) && theInputV.Contains(aV2)))
   {
     return false;
   }
+  const bool isFirstKept =
+    theInputV.Contains(aV1)
+    || (!theInputV.Contains(aV2) && BRep_Tool::Tolerance(aV1) >= BRep_Tool::Tolerance(aV2));
   theP.Face = theF;
-  theP.Keep = theInputV.Contains(aV1) ? aV1 : aV2;
-  theP.Drop = theInputV.Contains(aV1) ? aV2 : aV1;
+  theP.Keep = isFirstKept ? aV1 : aV2;
+  theP.Drop = isFirstKept ? aV2 : aV1;
   theP.Ordered.Clear();
   for (BRepTools_WireExplorer wex(aW, theF); wex.More(); wex.Next())
   {
@@ -693,7 +705,20 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
   for (int i = 1; i <= aResultEdges.Extent(); i++)
   {
     const TopoDS_Edge& anE = TopoDS::Edge(aResultEdges(i));
-    for (TopoDS_Iterator itV(anE); itV.More(); itV.Next())
+    // a loop from the vertex dropped to the one kept is closed on the one
+    // kept, its range as it is
+    bool isLoop = false;
+    for (TopoDS_Iterator itV(anE); itV.More() && !isLoop; itV.Next())
+    {
+      if (aDropToKeep.IsBound(itV.Value()))
+      {
+        for (TopoDS_Iterator itO(anE); itO.More() && !isLoop; itO.Next())
+        {
+          isLoop = itO.Value().IsSame(aDropToKeep(itV.Value()));
+        }
+      }
+    }
+    for (TopoDS_Iterator itV(anE); itV.More() && !isLoop; itV.Next())
     {
       if (aDropToKeep.IsBound(itV.Value()))
       {
