@@ -82,7 +82,7 @@ void math_TrigonometricFunctionRoots::Perform(const double A,
 {
 
   int                        i, j = 0, k, l, NZer = 0, Nit = 10;
-  double                     Depi, Delta, Mod, AA, BB, CC, MyBorneInf;
+  double                     Depi, Delta, AA, BB, CC, MyBorneInf;
   double                     Teta, X;
   double                     Eps, Tol1 = 1.e-15;
   NCollection_Array1<double> ko(1, 5), Zer(1, 4);
@@ -97,30 +97,37 @@ void math_TrigonometricFunctionRoots::Perform(const double A,
   {
     MyBorneInf = 0.0;
     Delta      = Depi;
-    Mod        = 0.0;
   }
   else if (SupBound >= RealLast())
   {
     MyBorneInf = InfBound;
     Delta      = Depi;
-    Mod        = MyBorneInf / Depi;
   }
   else if (InfBound <= RealFirst())
   {
     MyBorneInf = SupBound - Depi;
     Delta      = Depi;
-    Mod        = MyBorneInf / Depi;
   }
   else
   {
     MyBorneInf = InfBound;
     Delta      = SupBound - InfBound;
-    Mod        = InfBound / Depi;
     if ((SupBound - InfBound) > Depi)
     {
       Delta = Depi;
     }
   }
+
+  // <theU> moved by whole periods to the first value not below the lower
+  // bound less <theTol>. The roots come out of the equations in [0, 2 PI),
+  // and were brought to the bounds by the whole periods in the lower bound,
+  // rounded toward zero: with a lower bound below zero that left them where
+  // they were, and every root between the bound and zero was dropped as
+  // out of range -- no extremum of a point on an arc of ellipse running
+  // from -PI/2 to 0, the point being on the arc.
+  auto aFromBound = [&](const double theU, const double theTol) {
+    return theU + std::ceil((MyBorneInf - theTol - theU) / Depi) * Depi;
+  };
 
   if ((std::abs(A) <= Eps) && (std::abs(B) <= Eps))
   {
@@ -161,8 +168,8 @@ void math_TrigonometricFunctionRoots::Perform(const double A,
           }
           // On rend les solutions entre InfBound et SupBound:
           // =================================================
-          Zer(i) += std::trunc(Mod) * Depi;
-          X = Zer(i) - MyBorneInf;
+          Zer(i) = aFromBound(Zer(i), Epsilon(Delta));
+          X      = Zer(i) - MyBorneInf;
           if ((X > (-Epsilon(Delta))) && (X < Delta + Epsilon(Delta)))
           {
             NbSol++;
@@ -195,8 +202,8 @@ void math_TrigonometricFunctionRoots::Perform(const double A,
         }
         // On rend les solutions entre InfBound et SupBound:
         // =================================================
-        Zer(i) += std::trunc(Mod) * 2. * M_PI;
-        X = Zer(i) - MyBorneInf;
+        Zer(i) = aFromBound(Zer(i), Epsilon(Delta));
+        X      = Zer(i) - MyBorneInf;
         if ((X >= (-Epsilon(Delta))) && (X <= Delta + Epsilon(Delta)))
         {
           NbSol++;
@@ -271,14 +278,10 @@ void math_TrigonometricFunctionRoots::Perform(const double A,
         NbSol = 0;
         for (i = 1; i <= NZer; i++)
         {
-          if (Zer(i) <= MyBorneInf - Eps)
-          {
-            Zer(i) += Depi;
-          }
           // On rend les solutions entre InfBound et SupBound:
           // =================================================
-          Zer(i) += std::trunc(Mod) * 2. * M_PI;
-          X = Zer(i) - MyBorneInf;
+          Zer(i) = aFromBound(Zer(i), Precision::PConfusion());
+          X      = Zer(i) - MyBorneInf;
           if ((X >= (-Precision::PConfusion())) && (X <= Delta + Precision::PConfusion()))
           {
             if (Zer(i) < InfBound)
@@ -327,14 +330,10 @@ void math_TrigonometricFunctionRoots::Perform(const double A,
         NbSol = 0;
         for (i = 1; i <= NZer; i++)
         {
-          if (Zer(i) <= MyBorneInf - Eps)
-          {
-            Zer(i) += Depi;
-          }
           // On rend les solutions entre InfBound et SupBound:
           // =================================================
-          Zer(i) += std::trunc(Mod) * 2. * M_PI;
-          X = Zer(i) - MyBorneInf;
+          Zer(i) = aFromBound(Zer(i), Precision::PConfusion());
+          X      = Zer(i) - MyBorneInf;
           if ((X >= (-Precision::PConfusion())) && (X <= Delta + Precision::PConfusion()))
           {
             if (Zer(i) < InfBound)
@@ -446,11 +445,7 @@ void math_TrigonometricFunctionRoots::Perform(const double A,
     {
       Teta = Depi - std::abs(Teta);
     }
-    Teta += std::trunc(Mod) * Depi;
-    if (Teta - MyBorneInf < 0)
-    {
-      Teta += Depi;
-    }
+    Teta = aFromBound(Teta, Epsilon(Delta));
 
     X = Teta - MyBorneInf;
     if ((X >= (-Epsilon(Delta))) && (X <= Delta + Epsilon(Delta)))
@@ -508,7 +503,7 @@ void math_TrigonometricFunctionRoots::Perform(const double A,
     int startIndex = NbSol + 1;
     for (int solIt = startIndex; solIt <= 4; solIt++)
     {
-      Teta = M_PI + std::trunc(Mod) * 2.0 * M_PI;
+      Teta = aFromBound(M_PI, Epsilon(Delta));
       X    = Teta - MyBorneInf;
       if ((X >= (-Epsilon(Delta))) && (X <= Delta + Epsilon(Delta)))
       {
