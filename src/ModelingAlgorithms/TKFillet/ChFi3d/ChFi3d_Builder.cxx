@@ -95,6 +95,16 @@
 #include <NCollection_IndexedMap.hxx>
 #include <BOPTools_AlgoTools.hxx>
 #include <IntTools_Context.hxx>
+#include <ElCLib.hxx>
+#include <ElSLib.hxx>
+#include <Extrema_ExtPS.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom2d_BSplineCurve.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <GeomAdaptor_Surface.hxx>
+#include <GeomAPI_Interpolate.hxx>
+#include <Geom2dAPI_Interpolate.hxx>
+#include <NCollection_HArray1.hxx>
 
 #ifdef OCCT_DEBUG
   #include <OSD_Chronometer.hxx>
@@ -2389,6 +2399,564 @@ private:
   double                        myTol;
   NCollection_List<LineOnSplit> myLines;
 };
+
+//=======================================================================
+// function : PinchEnds
+// purpose  : A closed fillet whose two ends stop short of one vertex: the
+//           foot of a boss whose wall touches a side of the plate it
+//           stands on along a line through the vertex (a cylinder flush
+//           with a plane side, or set against a round plate's rim from
+//           inside). The foot's fillet runs round the boss until its line
+//           on the plate meets the plate's edge along the side, on either
+//           side of the vertex; its line on the boss does not get there,
+//           the boss meeting the side's edge only at the vertex. Nothing
+//           makes a corner of one stripe ending twice at a vertex, and the
+//           fillet was refused.
+//           The side is carried up as it is: each end of the fillet is cut
+//           by the side's surface, from its point on the plate's edge to
+//           where its line on the boss, run on, touches the side (on the
+//           boss's line of contact with it), and the two cuts meet there.
+//           The side grows over the gap, the boss's foot is the fillet's
+//           line all round, closed at that point, and the plate's edge
+//           between the two ends goes with the vertex -- the fillet made on
+//           a plate reaching past the side, then cut by it.
+//           Made where the fillet's surface runs on exactly past its end (a
+//           periodic one: the torus round a cylinder on a plane) and the
+//           side's surface is an elementary one; refused, as before,
+//           otherwise.
+//=======================================================================
+
+struct PinchEnd
+{
+  occ::handle<ChFiDS_SurfData> SD;
+  bool                         IsFirst = false;
+  int                          OnsArc  = 0;
+  int                          OnsAir  = 0;
+  TopoDS_Face                  Fv;
+  double                       WEnd = 0., WAir = 0.;
+  gp_Pnt                       PAir;
+  occ::handle<Geom_Curve>      Cut;
+  occ::handle<Geom2d_Curve>    PcS, PcV;
+  double                       Tol = 0.;
+};
+
+//! The signed distance of <theP> to the surface <theS>, along its normal.
+double SignedDistance(const GeomAdaptor_Surface& theS, const gp_Pnt& theP, gp_Pnt2d& theUV)
+{
+  if (theS.GetType() == GeomAbs_Plane)
+  {
+    const gp_Pln aPln = theS.Plane();
+    double       aU = 0., aV = 0.;
+    ElSLib::Parameters(aPln, theP, aU, aV);
+    theUV.SetCoord(aU, aV);
+    return gp_Vec(aPln.Location(), theP).Dot(gp_Vec(aPln.Axis().Direction()));
+  }
+  Extrema_ExtPS anExt(theP, theS, Precision::PConfusion(), Precision::PConfusion());
+  if (!anExt.IsDone() || anExt.NbExt() == 0)
+  {
+    return Precision::Infinite();
+  }
+  int    iMin = 1;
+  double aD2  = anExt.SquareDistance(1);
+  for (int i = 2; i <= anExt.NbExt(); i++)
+  {
+    if (anExt.SquareDistance(i) < aD2)
+    {
+      aD2  = anExt.SquareDistance(i);
+      iMin = i;
+    }
+  }
+  double aU = 0., aV = 0.;
+  anExt.Point(iMin).Parameter(aU, aV);
+  theUV.SetCoord(aU, aV);
+  gp_Pnt aPS;
+  gp_Vec aDU, aDV;
+  theS.D1(aU, aV, aPS, aDU, aDV);
+  const gp_Vec aN = aDU.Crossed(aDV);
+  const double aD = std::sqrt(aD2);
+  return gp_Vec(aPS, theP).Dot(aN) < 0. ? -aD : aD;
+}
+
+bool HasVertex(const TopoDS_Edge& theE, const TopoDS_Vertex& theV)
+{
+  for (TopExp_Explorer ex(theE, TopAbs_VERTEX); ex.More(); ex.Next())
+  {
+    if (ex.Current().IsSame(theV))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+//! The point of the end's line on the boss where, run on past the end, it
+//! touches <theSv>, the side's surface; false if it does not within half
+//! a turn.
+bool LineTouching(const occ::handle<Geom_Surface>& theS,
+                         const ChFiDS_FaceInterference&   theFi,
+                         const bool                       theFirst,
+                         const GeomAdaptor_Surface&       theSv,
+                         const double                     theTol,
+                         double&                          theW,
+                         gp_Pnt&                          theP)
+{
+  const occ::handle<Geom2d_Curve>& aPc = theFi.PCurveOnSurf();
+  if (aPc.IsNull())
+  {
+    return false;
+  }
+  const double aW0  = theFi.Parameter(theFirst);
+  const double aDir = theFirst ? -1. : 1.;
+  // half a turn of the surface, along the line
+  gp_Vec2d aT;
+  gp_Pnt2d aUV0;
+  aPc->D1(aW0, aUV0, aT);
+  if (!theS->IsUPeriodic() || std::abs(aT.Y()) > 1.e-9 * aT.Magnitude()
+      || aT.Magnitude() <= gp::Resolution())
+  {
+    return false;
+  }
+  const double aSpan = 0.5 * theS->UPeriod() / std::abs(aT.X());
+  auto         aDist = [&](const double theWt) {
+    const gp_Pnt2d aUV = aPc->Value(theWt);
+    gp_Pnt2d       aUVv;
+    return SignedDistance(theSv, theS->Value(aUV.X(), aUV.Y()), aUVv);
+  };
+  const double aD0 = aDist(aW0);
+  if (std::abs(aD0) <= theTol || Precision::IsInfinite(aD0))
+  {
+    return false;
+  }
+  // the first local minimum of the distance on the far side, the line
+  // touching the side there (crossing it is not this corner)
+  const int NbS  = 400;
+  double    aPrv = std::abs(aD0), aWMin = aW0;
+  int       iMin = 0;
+  for (int i = 1; i <= NbS; i++)
+  {
+    const double aW = aW0 + aDir * aSpan * i / NbS;
+    const double aD = aDist(aW);
+    if (Precision::IsInfinite(aD) || aD * aD0 < -theTol * theTol)
+    {
+      return false;
+    }
+    if (std::abs(aD) < aPrv)
+    {
+      aPrv  = std::abs(aD);
+      aWMin = aW;
+      iMin  = i;
+    }
+    else if (iMin > 0)
+    {
+      break;
+    }
+  }
+  if (iMin == 0 || iMin == NbS)
+  {
+    return false;
+  }
+  // golden section on the step either side
+  const double aStep = aSpan / NbS;
+  double       a = aWMin - aStep, b = aWMin + aStep;
+  const double aG = 0.5 * (std::sqrt(5.) - 1.);
+  double       c = b - aG * (b - a), d = a + aG * (b - a);
+  double       fc = std::abs(aDist(c)), fd = std::abs(aDist(d));
+  for (int it = 0; it < 100 && b - a > Precision::PConfusion() * 1.e-3; it++)
+  {
+    if (fc < fd)
+    {
+      b  = d;
+      d  = c;
+      fd = fc;
+      c  = b - aG * (b - a);
+      fc = std::abs(aDist(c));
+    }
+    else
+    {
+      a  = c;
+      c  = d;
+      fc = fd;
+      d  = a + aG * (b - a);
+      fd = std::abs(aDist(d));
+    }
+  }
+  theW                = 0.5 * (a + b);
+  const gp_Pnt2d aUV  = aPc->Value(theW);
+  theP                = theS->Value(aUV.X(), aUV.Y());
+  return std::abs(aDist(theW)) <= theTol;
+}
+
+//! The cut of the end by the side's surface, from the point on the arc to
+//! the line's touching point, its pcurves on the fillet's surface and the
+//! side's, and the tolerance it reaches.
+bool CutEnd(const occ::handle<Geom_Surface>& theS,
+                   const GeomAdaptor_Surface&       theSv,
+                   const gp_Pnt2d&                  theUVvArc,
+                   PinchEnd&                        theEnd,
+                   const double                     theTol)
+{
+  const ChFiDS_FaceInterference& aFiArc = theEnd.SD->Interference(theEnd.OnsArc);
+  const ChFiDS_FaceInterference& aFiAir = theEnd.SD->Interference(theEnd.OnsAir);
+  const occ::handle<Geom2d_Curve>& aPcArc = aFiArc.PCurveOnSurf();
+  const occ::handle<Geom2d_Curve>& aPcAir = aFiAir.PCurveOnSurf();
+  if (aPcArc.IsNull() || aPcAir.IsNull())
+  {
+    return false;
+  }
+  // the point of the surface at <theW> along the spine, <theT> across
+  // from the arc's side (0) to the line's (1)
+  auto aUV = [&](const double theW, const double theT) {
+    const gp_Pnt2d a1 = aPcArc->Value(theW), a2 = aPcAir->Value(theW);
+    return gp_Pnt2d((1. - theT) * a1.X() + theT * a2.X(), (1. - theT) * a1.Y() + theT * a2.Y());
+  };
+  auto aDist = [&](const double theW, const double theT, gp_Pnt2d& theUVv) {
+    const gp_Pnt2d aP = aUV(theW, theT);
+    return SignedDistance(theSv, theS->Value(aP.X(), aP.Y()), theUVv);
+  };
+  const double aW0 = theEnd.WEnd, aW1 = theEnd.WAir;
+  gp_Pnt2d     aBid;
+  const double aSideIn = aDist(aW0, 1., aBid);
+  if (std::abs(aSideIn) <= theTol)
+  {
+    return false;
+  }
+  const int                                 NbP = 41;
+  occ::handle<NCollection_HArray1<gp_Pnt>>   aPnts = new NCollection_HArray1<gp_Pnt>(1, NbP);
+  occ::handle<NCollection_HArray1<gp_Pnt2d>> aUVs  = new NCollection_HArray1<gp_Pnt2d>(1, NbP);
+  occ::handle<NCollection_HArray1<gp_Pnt2d>> aUVvs = new NCollection_HArray1<gp_Pnt2d>(1, NbP);
+  occ::handle<NCollection_HArray1<double>>   aPars = new NCollection_HArray1<double>(1, NbP);
+  gp_Pnt2d                                   aUVvPrev = theUVvArc;
+  for (int k = 1; k <= NbP; k++)
+  {
+    const double t = double(k - 1) / (NbP - 1);
+    double       w = aW0;
+    if (k == NbP)
+    {
+      w = aW1;
+    }
+    else if (k > 1)
+    {
+      // the root between the end, inside, and the line's touching point,
+      // outside but at the line
+      double a = aW0, b = aW1;
+      if (aDist(b, t, aBid) * aSideIn > 0. || aDist(a, t, aBid) * aSideIn < 0.)
+      {
+        return false;
+      }
+      for (int it = 0; it < 80; it++)
+      {
+        const double m = 0.5 * (a + b);
+        if (aDist(m, t, aBid) * aSideIn > 0.)
+        {
+          a = m;
+        }
+        else
+        {
+          b = m;
+        }
+      }
+      w = 0.5 * (a + b);
+    }
+    const gp_Pnt2d aP = aUV(w, t);
+    aUVs->SetValue(k, aP);
+    aPnts->SetValue(k, theS->Value(aP.X(), aP.Y()));
+    gp_Pnt2d aUVv;
+    SignedDistance(theSv, aPnts->Value(k), aUVv);
+    // on the period of the previous point, of the arc's to start
+    if (theSv.IsUPeriodic())
+    {
+      aUVv.SetX(ElCLib::InPeriod(aUVv.X(),
+                                 aUVvPrev.X() - 0.5 * theSv.UPeriod(),
+                                 aUVvPrev.X() + 0.5 * theSv.UPeriod()));
+    }
+    if (theSv.IsVPeriodic())
+    {
+      aUVv.SetY(ElCLib::InPeriod(aUVv.Y(),
+                                 aUVvPrev.Y() - 0.5 * theSv.VPeriod(),
+                                 aUVvPrev.Y() + 0.5 * theSv.VPeriod()));
+    }
+    aUVvs->SetValue(k, aUVv);
+    aUVvPrev = aUVv;
+    aPars->SetValue(k,
+                    k == 1 ? 0.
+                           : aPars->Value(k - 1) + aPnts->Value(k).Distance(aPnts->Value(k - 1)));
+  }
+  if (aPars->Value(NbP) <= Precision::Confusion())
+  {
+    return false;
+  }
+  GeomAPI_Interpolate   anI3(aPnts, aPars, false, Precision::Confusion());
+  Geom2dAPI_Interpolate anIS(aUVs, aPars, false, Precision::PConfusion());
+  Geom2dAPI_Interpolate anIV(aUVvs, aPars, false, Precision::PConfusion());
+  anI3.Perform();
+  anIS.Perform();
+  anIV.Perform();
+  if (!anI3.IsDone() || !anIS.IsDone() || !anIV.IsDone())
+  {
+    return false;
+  }
+  theEnd.Cut = anI3.Curve();
+  theEnd.PcS = anIS.Curve();
+  theEnd.PcV = anIV.Curve();
+  const occ::handle<GeomAdaptor_Surface> aHS  = new GeomAdaptor_Surface(theS);
+  const occ::handle<GeomAdaptor_Surface> aHSv = new GeomAdaptor_Surface(theSv);
+  theEnd.Tol = std::max(ChFi3d_EvalTolReached(aHS, theEnd.PcS, aHSv, theEnd.PcV, theEnd.Cut),
+                        Precision::Confusion());
+  return true;
+}
+//=======================================================================
+// function : PerformPinchEnds
+// purpose  : See PinchEnds above. False, nothing changed, when the vertex
+//           is not such a corner.
+//=======================================================================
+
+bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
+                             const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
+                             TopOpeBRepDS_DataStructure&                         DStr,
+                             const ChFiDS_Map&                                   theEFMap,
+                             const ChFiDS_Map&                                   theVEMap,
+                             const double                                        theTol3d)
+{
+  if (theStripes.Extent() != 2 || theStripes.First() != theStripes.Last())
+  {
+    return false;
+  }
+  const occ::handle<ChFiDS_Stripe>& aSt = theStripes.First();
+  const occ::handle<ChFiDS_Spine>&  aSp = aSt->Spine();
+  if (aSp.IsNull() || !aSp->FirstVertex().IsSame(Vtx) || !aSp->LastVertex().IsSame(Vtx)
+      || aSt->SetOfSurfData().IsNull() || aSt->SetOfSurfData()->Length() == 0)
+  {
+    return false;
+  }
+  const int NbSD = aSt->SetOfSurfData()->Length();
+  PinchEnd  anEnds[2];
+  int       IndAir = 0;
+  for (int e = 0; e < 2; e++)
+  {
+    PinchEnd& anEnd = anEnds[e];
+    anEnd.IsFirst   = e == 0;
+    anEnd.SD        = aSt->SetOfSurfData()->Value(anEnd.IsFirst ? 1 : NbSD);
+    const ChFiDS_CommonPoint& aCP1 = anEnd.SD->Vertex(anEnd.IsFirst, 1);
+    const ChFiDS_CommonPoint& aCP2 = anEnd.SD->Vertex(anEnd.IsFirst, 2);
+    if (aCP1.IsOnArc() == aCP2.IsOnArc() || anEnd.SD->IndexOfS1() <= 0
+        || anEnd.SD->IndexOfS2() <= 0)
+    {
+      return false;
+    }
+    anEnd.OnsArc                     = aCP1.IsOnArc() ? 1 : 2;
+    anEnd.OnsAir                     = 3 - anEnd.OnsArc;
+    const ChFiDS_CommonPoint& aCPArc = anEnd.SD->Vertex(anEnd.IsFirst, anEnd.OnsArc);
+    const TopoDS_Edge&        anArc  = aCPArc.Arc();
+    if (!HasVertex(anArc, Vtx) || !theEFMap.Contains(anArc) || theEFMap(anArc).Extent() != 2)
+    {
+      return false;
+    }
+    const TopoDS_Shape& aFArc = DStr.Shape(anEnd.SD->Index(anEnd.OnsArc));
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(theEFMap(anArc)); itF.More(); itF.Next())
+    {
+      if (!itF.Value().IsSame(aFArc))
+      {
+        anEnd.Fv = TopoDS::Face(itF.Value());
+      }
+    }
+    const int anIndAir = anEnd.SD->Index(anEnd.OnsAir);
+    if (anEnd.Fv.IsNull() || (e == 1 && (!anEnd.Fv.IsSame(anEnds[0].Fv) || anIndAir != IndAir)))
+    {
+      return false;
+    }
+    IndAir                          = anIndAir;
+    anEnd.WEnd                      = anEnd.SD->Interference(anEnd.OnsAir).Parameter(anEnd.IsFirst);
+  }
+  // the boss touches the side at the vertex, no edge between them
+  const TopoDS_Shape& aFop = DStr.Shape(IndAir);
+  if (aFop.IsSame(anEnds[0].Fv))
+  {
+    return false;
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(theVEMap(Vtx)); itE.More(); itE.Next())
+  {
+    bool isV = false, isOp = false;
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(theEFMap(itE.Value())); itF.More();
+         itF.Next())
+    {
+      isV  = isV || itF.Value().IsSame(anEnds[0].Fv);
+      isOp = isOp || itF.Value().IsSame(aFop);
+    }
+    if (isV && isOp)
+    {
+      return false;
+    }
+  }
+  // the side's surface, untrimmed
+  TopoDS_Face Fv = anEnds[0].Fv;
+  Fv.Orientation(TopAbs_FORWARD);
+  occ::handle<Geom_Surface> aSv = BRep_Tool::Surface(Fv);
+  const occ::handle<Geom_RectangularTrimmedSurface> aTrimmed =
+    occ::down_cast<Geom_RectangularTrimmedSurface>(aSv);
+  if (!aTrimmed.IsNull())
+  {
+    aSv = aTrimmed->BasisSurface();
+  }
+  const GeomAdaptor_Surface aGSv(aSv);
+  switch (aGSv.GetType())
+  {
+    case GeomAbs_Plane:
+    case GeomAbs_Cylinder:
+    case GeomAbs_Cone:
+    case GeomAbs_Sphere:
+    case GeomAbs_Torus:
+      break;
+    default:
+      return false;
+  }
+  // where each end's line touches the side; one point
+  for (int e = 0; e < 2; e++)
+  {
+    PinchEnd&                        anEnd = anEnds[e];
+    const occ::handle<Geom_Surface>& aS    = DStr.Surface(anEnd.SD->Surf()).Surface();
+    if (!LineTouching(aS,
+                      anEnd.SD->Interference(anEnd.OnsAir),
+                      anEnd.IsFirst,
+                      aGSv,
+                      theTol3d,
+                      anEnd.WAir,
+                      anEnd.PAir))
+    {
+      return false;
+    }
+  }
+  const double aGap = anEnds[0].PAir.Distance(anEnds[1].PAir);
+  if (aGap > 10 * theTol3d)
+  {
+    return false;
+  }
+  // The fillet tangent to the side there, as to the boss: the cut then
+  // crosses the line at the point, the side's surface meeting the
+  // fillet's in two branches. A chamfer's cut is tangent to its line there
+  // instead, a corner of no angle on its face (refused, as before).
+  for (int e = 0; e < 2; e++)
+  {
+    const PinchEnd&                  anEnd = anEnds[e];
+    const occ::handle<Geom_Surface>& aS    = DStr.Surface(anEnd.SD->Surf()).Surface();
+    const gp_Pnt2d aUV = anEnd.SD->Interference(anEnd.OnsAir).PCurveOnSurf()->Value(anEnd.WAir);
+    gp_Pnt         aPS, aPV;
+    gp_Vec         aDU, aDV, aDUv, aDVv;
+    aS->D1(aUV.X(), aUV.Y(), aPS, aDU, aDV);
+    gp_Pnt2d aUVv;
+    SignedDistance(aGSv, aPS, aUVv);
+    aGSv.D1(aUVv.X(), aUVv.Y(), aPV, aDUv, aDVv);
+    const gp_Vec aN = aDU.Crossed(aDV), aNv = aDUv.Crossed(aDVv);
+    if (aN.Magnitude() <= gp::Resolution() || aNv.Magnitude() <= gp::Resolution()
+        || aN.Crossed(aNv).Magnitude() > 1.e-4 * aN.Magnitude() * aNv.Magnitude())
+    {
+      return false;
+    }
+  }
+  // the cuts
+  for (int e = 0; e < 2; e++)
+  {
+    PinchEnd&                        anEnd  = anEnds[e];
+    const ChFiDS_CommonPoint&        aCPArc = anEnd.SD->Vertex(anEnd.IsFirst, anEnd.OnsArc);
+    double                           aF = 0., aL = 0.;
+    const occ::handle<Geom2d_Curve>  aPcArc = BRep_Tool::CurveOnSurface(aCPArc.Arc(), Fv, aF, aL);
+    if (aPcArc.IsNull()
+        || !CutEnd(DStr.Surface(anEnd.SD->Surf()).Surface(),
+                   aGSv,
+                   aPcArc->Value(aCPArc.ParameterOnArc()),
+                   anEnd,
+                   theTol3d))
+    {
+      return false;
+    }
+    if (anEnd.Tol > 10 * theTol3d)
+    {
+      return false;
+    }
+  }
+
+  // The two cuts meet on the side's surface as in space: not across a seam
+  // of the side (a closed side with its seam through the vertex: the seam
+  // would have to run on up to the point)
+  {
+    const gp_Pnt2d aUV0 = anEnds[0].PcV->Value(anEnds[0].PcV->LastParameter());
+    const gp_Pnt2d aUV1 = anEnds[1].PcV->Value(anEnds[1].PcV->LastParameter());
+    const double   aRes =
+      std::max(aGSv.UResolution(10 * theTol3d), aGSv.VResolution(10 * theTol3d));
+    if (aUV0.Distance(aUV1) > aRes)
+    {
+      return false;
+    }
+  }
+  for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    if (HasVertex(TopoDS::Edge(ex.Current()), Vtx)
+        && BRep_Tool::IsClosed(TopoDS::Edge(ex.Current()), Fv))
+    {
+      return false;
+    }
+  }
+
+  // Into the DS. The side's surface untrimmed: the cuts lie past the face.
+  if (!aTrimmed.IsNull())
+  {
+    DStr.SetNewSurface(anEnds[0].Fv, aSv);
+  }
+  const int IShape = DStr.AddShape(anEnds[0].Fv);
+  const gp_Pnt aP  = anEnds[0].PAir.Translated(0.5 * gp_Vec(anEnds[0].PAir, anEnds[1].PAir));
+  const int    IndP =
+    DStr.AddPoint(TopOpeBRepDS_Point(aP,
+                                     std::max({0.5 * aGap + anEnds[0].Tol,
+                                               0.5 * aGap + anEnds[1].Tol,
+                                               Precision::Confusion()})));
+  for (int e = 0; e < 2; e++)
+  {
+    PinchEnd&                anEnd  = anEnds[e];
+    ChFiDS_CommonPoint&      aCPAir = anEnd.SD->ChangeVertex(anEnd.IsFirst, anEnd.OnsAir);
+    ChFiDS_FaceInterference& aFiAir = anEnd.SD->ChangeInterference(anEnd.OnsAir);
+    const ChFiDS_CommonPoint& aCPArc = anEnd.SD->Vertex(anEnd.IsFirst, anEnd.OnsArc);
+    aFiAir.SetParameter(anEnd.WAir, anEnd.IsFirst);
+    aCPAir.Reset();
+    aCPAir.SetPoint(aP);
+    aCPAir.SetTolerance(DStr.Point(IndP).Tolerance());
+    // the cut from the stripe's side 1 to its side 2
+    occ::handle<Geom_Curve>   aC  = anEnd.Cut;
+    occ::handle<Geom2d_Curve> aPs = anEnd.PcS, aPc = anEnd.PcV;
+    double                    aU0 = aC->FirstParameter(), aU1 = aC->LastParameter();
+    if (anEnd.OnsArc == 2)
+    {
+      aC  = aC->Reversed();
+      aPs = aPs->Reversed();
+      aPc = aPc->Reversed();
+      const double aU = aU0;
+      aU0             = aC->ReversedParameter(aU1);
+      aU1             = aC->ReversedParameter(aU);
+    }
+    // the orientation of the cut on the side, as the corner of one fillet
+    // gives it from the arc (PerformOneCorner)
+    TopAbs_Orientation Et = TopAbs_FORWARD;
+    for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More(); ex.Next())
+    {
+      if (ex.Current().IsSame(aCPArc.Arc()))
+      {
+        Et = TopAbs::Compose(ex.Current().Orientation(), aCPArc.TransitionOnArc());
+        if (anEnd.OnsArc == 1)
+        {
+          Et = TopAbs::Reverse(Et);
+        }
+        break;
+      }
+    }
+    const int ICurve = DStr.AddCurve(TopOpeBRepDS_Curve(aC, anEnd.Tol));
+    DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(ICurve, IShape, aPc, Et));
+    aSt->SetCurve(ICurve, anEnd.IsFirst);
+    aSt->SetParameters(anEnd.IsFirst, aU0, aU1);
+    aSt->ChangePCurve(anEnd.IsFirst) = aPs;
+    const int IndArc                 = ChFi3d_IndexPointInDS(aCPArc, DStr);
+    aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndArc : IndP, anEnd.IsFirst, 1);
+    aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndP : IndArc, anEnd.IsFirst, 2);
+  }
+  return true;
+}
 } // namespace
 
 //=================================================================================================
@@ -2478,6 +3046,13 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
     }
     nba=nba/2;*/
   int nba = ChFi3d_NumberOfSharpEdges(Vtx, myVEMap, myEFMap);
+
+  // a closed fillet ending twice here, short of the vertex (see PinchEnds)
+  if (nondegenere && i == 2
+      && PerformPinchEnds(Vtx, myVDataMap(Index), myDS->ChangeDS(), myEFMap, myVEMap, tolapp3d))
+  {
+    return;
+  }
 
   // A setback corner: the stripes ending here are cut back and the opening
   // is filled by one patch, whatever the count of stripes and edges.
