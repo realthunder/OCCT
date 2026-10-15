@@ -3098,7 +3098,15 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
 #ifdef OCCT_DEBUG // perf
           ChFi3d_InitChron(cl_perform1corner);
 #endif
-          if (MoreSurfdata(Index))
+          if (ChFi3d_PerformTangentEnd(Vtx,
+                                       myVDataMap(Index).First(),
+                                       myDS->ChangeDS(),
+                                       myEFMap,
+                                       tolapp3d))
+          {
+            // the last section is the cut
+          }
+          else if (MoreSurfdata(Index))
           {
             PerformMoreSurfdata(Index);
           }

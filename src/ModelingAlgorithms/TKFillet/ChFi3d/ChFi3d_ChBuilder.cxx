@@ -1956,10 +1956,13 @@ void ChFi3d_ChBuilder::ExtentOneCorner(const TopoDS_Vertex& V, const occ::handle
   double                    Coeff = 0.5;
   occ::handle<ChFiDS_Spine> Spine = S->Spine();
   ChFi3d_IndexOfSurfData(V, S, Sens);
-  if (Spine->IsTangencyExtremity((Sens == 1)))
-  {
-    return; // No extension on queue
-  }
+  // Extended at a vertex where the two faces turn tangent too, unlike a
+  // fillet: a fillet's section closes to the vertex there, a chamfer's keeps
+  // its width and has to be carried past the vertex until both its sides
+  // reach the face at end, tangent to the two there (the chamfer along the
+  // mitre of two fillets that both turn flush with a third face). Without
+  // the extension the walk cannot step onto the edges of that face: it
+  // stops short of them, or at the vertex itself going backward.
   double dU = Spine->LastParameter(Spine->NbEdges());
   if (Sens == 1)
   {

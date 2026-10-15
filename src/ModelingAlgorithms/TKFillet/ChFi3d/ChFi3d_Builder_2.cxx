@@ -2723,6 +2723,35 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
                      Vref);
     }
 
+    // A chamfer carried past a vertex where its faces turn tangent (see
+    // ChFi3d_ChBuilder::ExtentOneCorner) ends once both its sides have
+    // reached the face at end, tangent to the two there: its last section
+    // lies in that face, which is the cut (ChFi3d_PerformTangentEnd). A
+    // stripe between that face and itself would only run on over it.
+    if (!ref.IsNull() && Ok1 && Ok2 && !obstacleon1 && !obstacleon2
+        && ((intf == 4 && !forward) || (intl == 4 && forward))
+        && HS1->Face().IsSame(HS2->Face()))
+    {
+      // as at the end of a pass below
+      if (forward && complete)
+      {
+        ref     = Stripe->SetOfSurfData()->Sequence().First();
+        forward = false;
+        First   = Firstsov;
+      }
+      else if (forward)
+      {
+        fini = true;
+      }
+      if (!forward)
+      {
+        fini     = ((First - wf) <= 10. * tolesp || intf);
+        complete = false;
+        Last     = wf;
+      }
+      continue;
+    }
+
     // No more connected faces. Construction of the tangent plane to continue the path
     // till the output on the other face.
     if ((!Ok1 && HC1.IsNull()) || (!Ok2 && HC2.IsNull()))

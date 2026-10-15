@@ -1631,6 +1631,157 @@ static bool ArcPastWallSplit(const TopoDS_Vertex& Vtx,
                              const double         Tol,
                              TopoDS_Edge&         Eat);
 
+//=======================================================================
+// function : ChFi3d_PerformTangentEnd
+// purpose  : The end at <Vtx> of a stripe whose two faces turn tangent there
+//           (a tangency extremity), carried past it until both sides have
+//           reached the face at end, tangent to the two at <Vtx> -- a chamfer
+//           along the mitre of two fillets that both turn flush with a third
+//           face (ChFi3d_ChBuilder::ExtentOneCorner). Each side ends on an
+//           edge of that face, or in it (the side that reached it first ran
+//           on over it). The last section lies in the face and is the cut:
+//           the chamfer meets the face smoothly along it, and the corner of
+//           the face beyond it goes. There is nothing to intersect, the
+//           surfaces touching all along the section. False, and nothing
+//           done, at any other end.
+//=======================================================================
+
+bool ChFi3d_PerformTangentEnd(const TopoDS_Vertex&              Vtx,
+                              const occ::handle<ChFiDS_Stripe>& Stripe,
+                              TopOpeBRepDS_DataStructure&       DStr,
+                              const ChFiDS_Map&                 EFMap,
+                              const double                      Tol3d)
+{
+  int        aSens   = 0;
+  const int  aNum    = ChFi3d_IndexOfSurfData(Vtx, Stripe, aSens);
+  const bool isfirst = (aSens == 1);
+  if (!Stripe->Spine()->IsTangencyExtremity(isfirst))
+  {
+    return false;
+  }
+  const occ::handle<ChFiDS_SurfData>& Fd = Stripe->SetOfSurfData()->Value(aNum);
+  if (Fd->IndexOfS1() == 0 || Fd->IndexOfS2() == 0)
+  {
+    return false;
+  }
+  const ChFiDS_CommonPoint& CV1 = Fd->Vertex(isfirst, 1);
+  const ChFiDS_CommonPoint& CV2 = Fd->Vertex(isfirst, 2);
+  if (!CV1.IsOnArc() && !CV2.IsOnArc())
+  {
+    return false;
+  }
+  // the face each side ends on: beyond its edge, or its own
+  TopoDS_Face aFEnd[2];
+  for (int k = 0; k < 2; k++)
+  {
+    const ChFiDS_CommonPoint& aCP = k == 0 ? CV1 : CV2;
+    const TopoDS_Face         aF  = TopoDS::Face(DStr.Shape(Fd->Index(k + 1)));
+    if (!aCP.IsOnArc())
+    {
+      aFEnd[k] = aF;
+      continue;
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(aCP.Arc())); itF.More(); itF.Next())
+    {
+      if (!aF.IsSame(itF.Value()))
+      {
+        aFEnd[k] = TopoDS::Face(itF.Value());
+      }
+    }
+  }
+  if (aFEnd[0].IsNull() || !aFEnd[0].IsSame(aFEnd[1]) || !containV(aFEnd[0], Vtx))
+  {
+    return false;
+  }
+  TopoDS_Face Fv = aFEnd[0];
+  Fv.Orientation(TopAbs_FORWARD);
+
+  // The last section: an iso of the surface across the two lines (theirs
+  // are the U isos at their two ends, ChFi3d_Builder::StoreData), from CV1's
+  // side to CV2's.
+  const occ::handle<Geom_Surface>& aSurf = DStr.Surface(Fd->Surf()).Surface();
+  const ChFiDS_FaceInterference&   Fi1   = Fd->InterferenceOnS1();
+  const ChFiDS_FaceInterference&   Fi2   = Fd->InterferenceOnS2();
+  const gp_Pnt2d                   pfil1 = Fi1.PCurveOnSurf()->Value(Fi1.Parameter(isfirst));
+  const gp_Pnt2d                   pfil2 = Fi2.PCurveOnSurf()->Value(Fi2.Parameter(isfirst));
+  if (std::abs(pfil1.Y() - pfil2.Y()) > Precision::PConfusion()
+      || std::abs(pfil1.X() - pfil2.X()) <= Precision::PConfusion())
+  {
+    return false;
+  }
+  const double                  aV   = pfil1.Y();
+  const bool                    isUp = pfil1.X() < pfil2.X();
+  const occ::handle<Geom_Curve> aIso = aSurf->VIso(aV);
+  // the parameter on the iso, run backward when CV1's side is above
+  const double                    aRev   = isUp ? 0. : aIso->ReversedParameter(0.);
+  const occ::handle<Geom_Curve>   aBasis = isUp ? aIso : aIso->Reversed();
+  const double                    Udeb   = isUp ? pfil1.X() : aRev - pfil1.X();
+  const double                    Ufin   = isUp ? pfil2.X() : aRev - pfil2.X();
+  const occ::handle<Geom_Curve>   Cc     = new Geom_TrimmedCurve(aBasis, Udeb, Ufin);
+  const occ::handle<Geom2d_Curve> Ps =
+    new Geom2d_Line(gp_Pnt2d(aRev, aV), isUp ? gp::DX2d() : gp_Dir2d(-1., 0.));
+  const occ::handle<Geom_Surface> aSv      = BRep_Tool::Surface(Fv);
+  double                          aTolProj = Tol3d;
+  const occ::handle<Geom2d_Curve> Pc       = GeomProjLib::Curve2d(Cc, Udeb, Ufin, aSv, aTolProj);
+  if (Pc.IsNull())
+  {
+    return false;
+  }
+  const occ::handle<GeomAdaptor_Surface> HGs = new GeomAdaptor_Surface(aSurf);
+  const occ::handle<BRepAdaptor_Surface> HBs = new BRepAdaptor_Surface(Fv);
+  const double tolreached                    = ChFi3d_EvalTolReached(HBs, Pc, HGs, Ps, Cc);
+  // the section lies in the face, or this is not the end looked for
+  if (tolreached > std::max(10. * Tol3d, std::max(CV1.Tolerance(), CV2.Tolerance())))
+  {
+    return false;
+  }
+
+  // the cut's orientation on the face, from a side's edge as at any corner
+  // (ChFi3d_Builder::PerformOneCorner)
+  const bool                on1 = CV1.IsOnArc();
+  const ChFiDS_CommonPoint& aCP = on1 ? CV1 : CV2;
+  TopAbs_Orientation        Et  = TopAbs_FORWARD;
+  for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    if (ex.Current().IsSame(aCP.Arc()))
+    {
+      Et = TopAbs::Compose(ex.Current().Orientation(), aCP.TransitionOnArc());
+      Et = on1 ? TopAbs::Reverse(Et) : Et;
+      break;
+    }
+  }
+
+  const int IShape = DStr.AddShape(Fv);
+  Stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CV1, DStr), isfirst, 1);
+  Stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CV2, DStr), isfirst, 2);
+  const int ICurve = DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tolreached));
+  DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(ICurve, IShape, Pc, Et));
+  Stripe->ChangePCurve(isfirst) = Ps;
+  Stripe->SetCurve(ICurve, isfirst);
+  Stripe->SetParameters(isfirst, Udeb, Ufin);
+
+  Bnd_Box box1, box2;
+  ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, box1, box2);
+  ChFi3d_EnlargeBox(DStr, Stripe, Fd, box1, box2, isfirst);
+  if (CV1.IsOnArc())
+  {
+    ChFi3d_EnlargeBox(CV1.Arc(), EFMap(CV1.Arc()), CV1.ParameterOnArc(), box1);
+  }
+  if (CV2.IsOnArc())
+  {
+    ChFi3d_EnlargeBox(CV2.Arc(), EFMap(CV2.Arc()), CV2.ParameterOnArc(), box2);
+  }
+  if (!CV1.IsVertex())
+  {
+    ChFi3d_SetPointTolerance(DStr, box1, Stripe->IndexPoint(isfirst, 1));
+  }
+  if (!CV2.IsVertex())
+  {
+    ChFi3d_SetPointTolerance(DStr, box2, Stripe->IndexPoint(isfirst, 2));
+  }
+  return true;
+}
+
 void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
 {
   PerformOneCorner(Index, thePrepareOnSame, false);
