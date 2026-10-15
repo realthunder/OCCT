@@ -48,6 +48,11 @@
 
 #include <Geom2dInt_GInter.hxx>
 #include <IntRes2d_IntersectionPoint.hxx>
+#include <BOPAlgo_ArgumentAnalyzer.hxx>
+
+// Draft_Modification_1.cxx: whether <theModification>'s last Perform() placed
+// a vertex where a new edge only touches a face.
+Standard_HIDDEN bool Draft_Modification_PlacedAtTouch(const Draft_Modification* theModification);
 
 //=================================================================================================
 
@@ -306,6 +311,24 @@ void BRepOffsetAPI_DraftAngle::Build(const Message_ProgressRange& /*theRange*/)
     if (!draftFacesValid(myInitialShape, myModifier, myShape))
     {
       NotDone();
+    }
+    else if (Draft_Modification_PlacedAtTouch(
+               occ::down_cast<Draft_Modification>(myModification).get()))
+    {
+      // A vertex placed where a new edge only touches a face: the edge can
+      // run into the face beyond it, which neither the modification nor
+      // BRepCheck sees -- #876's post foot drafted about its fillets came
+      // out "valid" and self-intersecting. Only such drafts pay for the
+      // check.
+      BOPAlgo_ArgumentAnalyzer anAnalyzer;
+      anAnalyzer.SetShape1(myShape);
+      anAnalyzer.SelfInterMode()     = true;
+      anAnalyzer.StopOnFirstFaulty() = true;
+      anAnalyzer.Perform();
+      if (anAnalyzer.HasFaulty())
+      {
+        NotDone();
+      }
     }
   }
 }

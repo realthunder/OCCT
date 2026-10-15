@@ -82,6 +82,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+#include <NCollection_List.hxx>
 #include <NCollection_Map.hxx>
 
 static bool Choose(
@@ -91,6 +92,16 @@ static bool Choose(
   Draft_VertexInfo&,
   GeomAdaptor_Curve&,
   GeomAdaptor_Surface&);
+
+static bool PlaceOnKeptEdge(
+  const NCollection_IndexedDataMap<TopoDS_Face, Draft_FaceInfo, TopTools_ShapeMapHasher>&,
+  const NCollection_IndexedDataMap<TopoDS_Edge, Draft_EdgeInfo, TopTools_ShapeMapHasher>&,
+  Draft_VertexInfo&,
+  const GeomAdaptor_Curve&,
+  const GeomAdaptor_Surface&,
+  const double,
+  const gp_Pnt&,
+  gp_Pnt&);
 
 static double Parameter(const occ::handle<Geom_Curve>&, const gp_Pnt&, int&);
 
@@ -705,6 +716,20 @@ bool Draft_Modification::Propagate()
 }
 
 //=================================================================================================
+// The modification whose last Perform() on this thread placed a vertex
+// where the curve it was placed on only touches the surface it was to
+// cross; cleared when a Perform() starts computing. Not a member: the class keeps
+// upstream's layout. The query is TKOffset's own (BRepOffsetAPI_DraftAngle),
+// hidden from its exports.
+
+static thread_local const Draft_Modification* THE_TOUCHED = nullptr;
+
+Standard_HIDDEN bool Draft_Modification_PlacedAtTouch(const Draft_Modification* theModification)
+{
+  return THE_TOUCHED == theModification;
+}
+
+//=================================================================================================
 
 void Draft_Modification::Perform()
 {
@@ -715,7 +740,8 @@ void Draft_Modification::Perform()
 
   if (!myComp)
   {
-    myComp = true;
+    myComp      = true;
+    THE_TOUCHED = nullptr;
     if (!Propagate())
     {
       return;
@@ -1573,31 +1599,50 @@ void Draft_Modification::Perform()
       int nbsol = myintcs.NbPoints();
       if (nbsol <= 0)
       {
-        Extrema_ExtCS extr(AC, AS, Precision::PConfusion(), Precision::PConfusion());
-
-        if (!extr.IsDone() || extr.NbExt() == 0)
+        // The curve meets the surface nowhere: it touches it at most (a
+        // fillet's cylinder tangent to that surface, cut by a drafted plane,
+        // gives an ellipse that only touches it). The closest approach below
+        // is then good to about the square root of its tolerance only, and
+        // where the vertex has an edge the draft keeps, that is off the
+        // edge's curve. Such a vertex is where the kept curve crosses a
+        // drafted face's new surface, which is exact -- if that crossing is
+        // on the curve and the surface: else the curve misses the surface,
+        // and the closest approach is left to the checks below to refuse.
+        //
+        // Placed either way, the vertex is where a new edge only touches a
+        // face, and whether the edge then stays out of the face or runs
+        // into it beyond the vertex is not seen here: the draft's result is
+        // checked for self-intersection (BRepOffsetAPI_DraftAngle::Build()).
+        THE_TOUCHED        = this;
+        const double aTolV = std::max(BRep_Tool::Tolerance(TVV), 0.1 * Precision::Confusion());
+        if (!PlaceOnKeptEdge(myFMap, myEMap, Vinf, AC, AS, 100. * aTolV, vtori, pvt))
         {
-          errStat  = Draft_VertexRecomputation;
-          badShape = TVV;
-          return;
-        }
+          Extrema_ExtCS extr(AC, AS, Precision::PConfusion(), Precision::PConfusion());
 
-        double          disref = RealLast();
-        int             iref   = 0;
-        Extrema_POnCurv Pc;
-        Extrema_POnSurf Ps;
-        for (int i = 1; i <= extr.NbExt(); i++)
-        {
-          extr.Points(i, Pc, Ps);
-          double distemp = Pc.Value().SquareDistance(vtori);
-          if (distemp < disref)
+          if (!extr.IsDone() || extr.NbExt() == 0)
           {
-            disref = distemp;
-            iref   = i;
+            errStat  = Draft_VertexRecomputation;
+            badShape = TVV;
+            return;
           }
+
+          double          disref = RealLast();
+          int             iref   = 0;
+          Extrema_POnCurv Pc;
+          Extrema_POnSurf Ps;
+          for (int i = 1; i <= extr.NbExt(); i++)
+          {
+            extr.Points(i, Pc, Ps);
+            double distemp = Pc.Value().SquareDistance(vtori);
+            if (distemp < disref)
+            {
+              disref = distemp;
+              iref   = i;
+            }
+          }
+          extr.Points(iref, Pc, Ps);
+          pvt = Pc.Value();
         }
-        extr.Points(iref, Pc, Ps);
-        pvt = Pc.Value();
       }
       else
       {
@@ -2299,6 +2344,92 @@ static bool Choose(
     }
   }
   return true;
+}
+
+//=================================================================================================
+// A vertex the draft moves, placed where the curve of an edge at it that
+// the draft keeps crosses the new surface of a face at it that the draft
+// changes: the crossing nearest the vertex's old point, of those that lie
+// within <theTol> of the curve <theAC> and the surface <theAS> the vertex
+// was to be placed at the meeting of -- where that curve only touches that
+// surface, the touch is on them; where it misses it, the vertex is not
+// where the kept edge crosses (the draft would need another edge there).
+// False when there is no such crossing. A second kept edge whose curve
+// misses that point is refused by Perform()'s last check.
+
+static bool PlaceOnKeptEdge(
+  const NCollection_IndexedDataMap<TopoDS_Face, Draft_FaceInfo, TopTools_ShapeMapHasher>& theFMap,
+  const NCollection_IndexedDataMap<TopoDS_Edge, Draft_EdgeInfo, TopTools_ShapeMapHasher>& theEMap,
+  Draft_VertexInfo&                                                                       theVinf,
+  const GeomAdaptor_Curve&                                                                theAC,
+  const GeomAdaptor_Surface&                                                              theAS,
+  const double                                                                            theTol,
+  const gp_Pnt&                                                                           theOld,
+  gp_Pnt&                                                                                 theNew)
+{
+  NCollection_List<occ::handle<Geom_Curve>>              aKept;
+  NCollection_List<occ::handle<Geom_Surface>>            aDrafted;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+  for (theVinf.InitEdgeIterator(); theVinf.MoreEdge(); theVinf.NextEdge())
+  {
+    const Draft_EdgeInfo& anEinf = theEMap.FindFromKey(theVinf.Edge());
+    if (!anEinf.NewGeometry() && !anEinf.Geometry().IsNull())
+    {
+      aKept.Append(anEinf.Geometry());
+    }
+    for (const TopoDS_Face& aF : {anEinf.FirstFace(), anEinf.SecondFace()})
+    {
+      if (aF.IsNull() || !aSeen.Add(aF) || !theFMap.Contains(aF))
+      {
+        continue;
+      }
+      const Draft_FaceInfo& aFinf = theFMap.FindFromKey(aF);
+      if (aFinf.NewGeometry() && !aFinf.Geometry().IsNull())
+      {
+        aDrafted.Append(aFinf.Geometry());
+      }
+    }
+  }
+
+  double aBest  = RealLast();
+  bool   aFound = false;
+  for (NCollection_List<occ::handle<Geom_Curve>>::Iterator aC(aKept); aC.More(); aC.Next())
+  {
+    occ::handle<GeomAdaptor_Curve> aHC = new GeomAdaptor_Curve(aC.Value());
+    for (NCollection_List<occ::handle<Geom_Surface>>::Iterator aS(aDrafted); aS.More(); aS.Next())
+    {
+      occ::handle<GeomAdaptor_Surface> aHS = new GeomAdaptor_Surface(aS.Value());
+      IntCurveSurface_HInter           anInter;
+      anInter.Perform(aHC, aHS);
+      if (!anInter.IsDone())
+      {
+        continue;
+      }
+      for (int i = 1; i <= anInter.NbPoints(); i++)
+      {
+        const gp_Pnt& aP    = anInter.Point(i).Pnt();
+        const double  aDist = aP.SquareDistance(theOld);
+        if (aDist >= aBest)
+        {
+          continue;
+        }
+        GeomAPI_ProjectPointOnCurve anOnC(aP, theAC.Curve());
+        if (anOnC.NbPoints() == 0 || anOnC.LowerDistance() > theTol)
+        {
+          continue;
+        }
+        GeomAPI_ProjectPointOnSurf anOnS(aP, theAS.Surface());
+        if (!anOnS.IsDone() || anOnS.NbPoints() == 0 || anOnS.LowerDistance() > theTol)
+        {
+          continue;
+        }
+        aBest  = aDist;
+        theNew = aP;
+        aFound = true;
+      }
+    }
+  }
+  return aFound;
 }
 
 //=================================================================================================
