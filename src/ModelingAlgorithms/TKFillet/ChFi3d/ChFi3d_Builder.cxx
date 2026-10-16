@@ -2043,6 +2043,12 @@ void ChFi3d_Builder::Compute()
         ShapeFix::SameParameter(aF, false, SameParTol);
       }
     }
+    // ShapeFix's pass raises a vertex to its edges' curve ends, not the
+    // edges with it: #273's fillet of 0.3 on its edge 5 left a circle
+    // ending 0.029 off its vertex at tolerance 1e-7 -- covered before
+    // only while the corner's face tolerance, 0.045, had raised the vertex
+    // past it in time for the pass above
+    ChFi3d_EdgesCoverTheirEnds(myShapeResult, myShape);
     ChFi3d_EdgesCoverTheirPCurves(myShapeResult, myShape);
   }
 }

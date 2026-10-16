@@ -4800,16 +4800,19 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
     S3d.Clear();
     PSurf.Disc2dContour(4, S2d);
     PSurf.Disc3dContour(4, 0, S3d);
-    seuil = std::max(tolapp, 10 * PSurf.G0Error());
-    // A setback corner's approximation is held to the plate's own miss of
-    // its boundary, not ten times it, with more patches to do it in. At ten
-    // times, the larger the setback the sooner it stopped: 23x23 poles at
-    // 2 x r, 9x9 at 6 x r, its boundary 5.8e-2 off the stripes there.
-    if (isSetback)
-    {
-      seuil     = std::max(tolapp, PSurf.G0Error());
-      nbcarreau = 16;
-    }
+    // The approximation is held to the plate's own miss of its boundary,
+    // not ten times it, with more patches to do it in. At ten times, the
+    // larger a setback the sooner it stopped (23x23 poles at 2 x r, 9x9 at
+    // 6 x r, its boundary 5.8e-2 off the stripes there); and an ordinary
+    // corner kept the slack in its tolerance: #631's V8, two fillets of 0.3
+    // with no face in common, a plate 1.9e-4 off its boundary approximated
+    // to 1.3e-3, the corner at 3.1e-3 over a side of 0.0025 along the edge
+    // between the fillets' other faces -- an edge too small under it, its
+    // vertices overlapping, in BOP's check. Held to the plate's miss, in up
+    // to 32 patches, it is at 6.5e-4 and clean. A setback corner keeps its
+    // 16 (its results as they were).
+    seuil     = std::max(tolapp, PSurf.G0Error());
+    nbcarreau = isSetback ? 16 : 32;
     GeomPlate_PlateG0Criterion critere(S2d, S3d, seuil);
     GeomPlate_MakeApprox       Mapp(gpPlate, critere, tolapp, nbcarreau, degmax);
     occ::handle<Geom_Surface>  Surf(Mapp.Surface());
@@ -4836,8 +4839,9 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
     // the face has to answer for is its fit to the boundary, the criterion
     // (which the curves' tolerances already carry). A setback corner's
     // plate, hard to approximate inside, gave its face and so every edge of
-    // it 1.4e-2 where the boundary was 1.1e-3 off (box corner at 4 x r).
-    TopOpeBRepDS_Surface Tsurf(Surf, isSetback ? apperror : Mapp.ApproxError());
+    // it 1.4e-2 where the boundary was 1.1e-3 off (box corner at 4 x r);
+    // an ordinary corner's twice its boundary's miss (#631).
+    TopOpeBRepDS_Surface Tsurf(Surf, apperror);
     int                  Isurf = DStr.AddSurface(Tsurf);
     // lbo : historique QDF.
     if (!myEVIMap.IsBound(V1))
