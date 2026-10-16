@@ -75,6 +75,10 @@
 #include <Extrema_ExtPC.hxx>
 #include <GeomProjLib.hxx>
 #include <TopOpeBRepDS_Point.hxx>
+#include <NCollection_Array1.hxx>
+#include <TopOpeBRepDS_Transition.hxx>
+#include <TopOpeBRepDS_Surface.hxx>
+#include <TopOpeBRepDS_SolidSurfaceInterference.hxx>
 #include <Geom_Curve.hxx>
 #include <Geom_Conic.hxx>
 #include <Geom_Line.hxx>
@@ -2710,6 +2714,374 @@ bool CutEnd(const occ::handle<Geom_Surface>& theS,
                         Precision::Confusion());
   return true;
 }
+
+//! A curve through <theP> interpolated by chord length, with its pcurves
+//! through <theUV1> and <theUV2>; false if any interpolation fails.
+bool InterpolateOn(const NCollection_Array1<gp_Pnt>&   theP,
+                   const NCollection_Array1<gp_Pnt2d>& theUV1,
+                   const NCollection_Array1<gp_Pnt2d>& theUV2,
+                   occ::handle<Geom_Curve>&            theC,
+                   occ::handle<Geom2d_Curve>&          thePc1,
+                   occ::handle<Geom2d_Curve>&          thePc2)
+{
+  const int                                  aNb   = theP.Length();
+  occ::handle<NCollection_HArray1<gp_Pnt>>   aPnts = new NCollection_HArray1<gp_Pnt>(1, aNb);
+  occ::handle<NCollection_HArray1<gp_Pnt2d>> aUV1s = new NCollection_HArray1<gp_Pnt2d>(1, aNb);
+  occ::handle<NCollection_HArray1<gp_Pnt2d>> aUV2s = new NCollection_HArray1<gp_Pnt2d>(1, aNb);
+  occ::handle<NCollection_HArray1<double>>   aPars = new NCollection_HArray1<double>(1, aNb);
+  for (int k = 1; k <= aNb; k++)
+  {
+    aPnts->SetValue(k, theP(theP.Lower() + k - 1));
+    aUV1s->SetValue(k, theUV1(theUV1.Lower() + k - 1));
+    aUV2s->SetValue(k, theUV2(theUV2.Lower() + k - 1));
+    aPars->SetValue(k,
+                    k == 1 ? 0.
+                           : aPars->Value(k - 1) + aPnts->Value(k).Distance(aPnts->Value(k - 1)));
+  }
+  if (aPars->Value(aNb) <= Precision::Confusion())
+  {
+    return false;
+  }
+  GeomAPI_Interpolate   anI3(aPnts, aPars, false, Precision::Confusion());
+  Geom2dAPI_Interpolate anI1(aUV1s, aPars, false, Precision::PConfusion());
+  Geom2dAPI_Interpolate anI2(aUV2s, aPars, false, Precision::PConfusion());
+  anI3.Perform();
+  anI1.Perform();
+  anI2.Perform();
+  if (!anI3.IsDone() || !anI1.IsDone() || !anI2.IsDone())
+  {
+    return false;
+  }
+  theC   = anI3.Curve();
+  thePc1 = anI1.Curve();
+  thePc2 = anI2.Curve();
+  return true;
+}
+
+//! <theUV> moved by periods of <theS> to within half a period of <thePrev>.
+void InPeriodOf(const GeomAdaptor_Surface& theS, const gp_Pnt2d& thePrev, gp_Pnt2d& theUV)
+{
+  if (theS.IsUPeriodic())
+  {
+    theUV.SetX(ElCLib::InPeriod(theUV.X(),
+                                thePrev.X() - 0.5 * theS.UPeriod(),
+                                thePrev.X() + 0.5 * theS.UPeriod()));
+  }
+  if (theS.IsVPeriodic())
+  {
+    theUV.SetY(ElCLib::InPeriod(theUV.Y(),
+                                thePrev.Y() - 0.5 * theS.VPeriod(),
+                                thePrev.Y() + 0.5 * theS.VPeriod()));
+  }
+}
+
+//=======================================================================
+// function : PinchGap
+// purpose  : The pinch of PinchEnds where the boss's line never touches the
+//           side: a drafted boss (a cone narrowing upward) flush with the
+//           side at its foot only. The fillet made on a plate reaching past
+//           the side and cut by it is then one ring, its line on the boss
+//           closed, its lower edge notched where the side cuts it below that
+//           line: the side's cut runs across the gap between the two ends,
+//           from one end's point on the plate's edge to the other's.
+//           The stripe ends where it does, each end its section across the
+//           fillet's surface; the gap between them is closed by a face of
+//           that surface run on (a periodic one, the torus round a cone on a
+//           plane), bounded by the two sections, the boss's line run on
+//           across, and the side's cut. False, nothing changed, when the
+//           ends are not such.
+//=======================================================================
+
+bool PinchGap(const TopoDS_Vertex&                Vtx,
+              const occ::handle<ChFiDS_Stripe>&   aSt,
+              PinchEnd                            anEnds[2],
+              TopOpeBRepDS_DataStructure&         DStr,
+              const TopoDS_Face&                  Fv,
+              const occ::handle<Geom_Surface>&    aSv,
+              const GeomAdaptor_Surface&          aGSv,
+              const bool                          isTrimmed,
+              const double                        theTol3d,
+              NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>&
+                theEVIMap)
+{
+  // Each end a section of its surface at one u, its lines along u.
+  struct Section
+  {
+    occ::handle<Geom_Surface> S;
+    double                    U = 0., VArc = 0., VAir = 0.;
+  } aSec[2];
+  for (int e = 0; e < 2; e++)
+  {
+    const PinchEnd&                anEnd = anEnds[e];
+    const ChFiDS_FaceInterference& aFiA  = anEnd.SD->Interference(anEnd.OnsArc);
+    const ChFiDS_FaceInterference& aFiB  = anEnd.SD->Interference(anEnd.OnsAir);
+    if (aFiA.PCurveOnSurf().IsNull() || aFiB.PCurveOnSurf().IsNull())
+    {
+      return false;
+    }
+    aSec[e].S = DStr.Surface(anEnd.SD->Surf()).Surface();
+    if (!aSec[e].S->IsUPeriodic())
+    {
+      return false;
+    }
+    gp_Pnt2d aUVA, aUVB;
+    gp_Vec2d aTA, aTB;
+    aFiA.PCurveOnSurf()->D1(aFiA.Parameter(anEnd.IsFirst), aUVA, aTA);
+    aFiB.PCurveOnSurf()->D1(aFiB.Parameter(anEnd.IsFirst), aUVB, aTB);
+    if (aTA.Magnitude() <= gp::Resolution() || aTB.Magnitude() <= gp::Resolution()
+        || std::abs(aTA.Y()) > 1.e-9 * aTA.Magnitude()
+        || std::abs(aTB.Y()) > 1.e-9 * aTB.Magnitude() || aTA.X() * aTB.X() <= 0.
+        || std::abs(aUVA.X() - aUVB.X()) > Precision::PConfusion())
+    {
+      return false;
+    }
+    aSec[e].U    = aUVB.X();
+    aSec[e].VArc = aUVA.Y();
+    aSec[e].VAir = aUVB.Y();
+  }
+  // The gap on the first end's surface: from the last end, along the spine,
+  // to the first. The last end's section there, at the same v.
+  const occ::handle<Geom_Surface>& aS   = aSec[0].S;
+  const ChFiDS_FaceInterference&   aFiB = anEnds[0].SD->Interference(anEnds[0].OnsAir);
+  gp_Pnt2d                         aBid;
+  gp_Vec2d                         aT0;
+  aFiB.PCurveOnSurf()->D1(aFiB.Parameter(true), aBid, aT0);
+  const double aSense = aT0.X() > 0. ? 1. : -1.;
+  const double U1 = aSec[0].U, VA = aSec[0].VArc, VB = aSec[0].VAir;
+  const gp_Pnt P2 = aSec[1].S->Value(aSec[1].U, aSec[1].VArc);
+  const gp_Pnt Q2 = aSec[1].S->Value(aSec[1].U, aSec[1].VAir);
+  GeomAPI_ProjectPointOnSurf aProj(Q2, aS);
+  if (!aProj.IsDone() || aProj.NbPoints() == 0)
+  {
+    return false;
+  }
+  double aUq = 0., aVq = 0.;
+  aProj.LowerDistanceParameters(aUq, aVq);
+  const double aPer  = aS->UPeriod();
+  const double aSpan = ElCLib::InPeriod(aSense * (U1 - aUq), 0., aPer);
+  const double U2    = U1 - aSense * aSpan;
+  if (aSpan <= Precision::PConfusion() || aSpan >= 0.5 * aPer
+      || aS->Value(U2, VB).Distance(Q2) > theTol3d || aS->Value(U2, VA).Distance(P2) > theTol3d
+      || std::abs(aSec[1].VArc - VA) > Precision::PConfusion()
+      || std::abs(aSec[1].VAir - VB) > Precision::PConfusion())
+  {
+    return false;
+  }
+
+  // The side's cut across the gap, and the boss's line run on: at each u a
+  // root across from the line on the plate (outside the side past the end)
+  // to the boss's (inside it all the way: the line never reaches the side)
+  const TopoDS_Face aFAir = TopoDS::Face(DStr.Shape(anEnds[0].SD->Index(anEnds[0].OnsAir)));
+  const GeomAdaptor_Surface aGSair(BRep_Tool::Surface(aFAir));
+  auto aDist = [&](const double theU, const double theV, gp_Pnt2d& theUVv) {
+    return SignedDistance(aGSv, aS->Value(theU, theV), theUVv);
+  };
+  const double aIn = aDist(0.5 * (U1 + U2), VB, aBid);
+  if (std::abs(aIn) <= 10. * theTol3d || Precision::IsInfinite(aIn))
+  {
+    return false;
+  }
+  const int                  NbP = 81;
+  NCollection_Array1<gp_Pnt>   aCutP(1, NbP), aAirP(1, NbP);
+  NCollection_Array1<gp_Pnt2d> aCutS(1, NbP), aCutV(1, NbP), aAirS(1, NbP), aAirF(1, NbP);
+  for (int k = 1; k <= NbP; k++)
+  {
+    const double u = U2 + (U1 - U2) * (k - 1) / (NbP - 1);
+    if (aDist(u, VB, aBid) * aIn <= theTol3d * std::abs(aIn))
+    {
+      return false;
+    }
+    double v = VA;
+    if (k > 1 && k < NbP)
+    {
+      double a = VA, b = VB;
+      if (aDist(u, a, aBid) * aIn >= 0.)
+      {
+        return false;
+      }
+      for (int it = 0; it < 80; it++)
+      {
+        const double m = 0.5 * (a + b);
+        if (aDist(u, m, aBid) * aIn < 0.)
+        {
+          a = m;
+        }
+        else
+        {
+          b = m;
+        }
+      }
+      v = 0.5 * (a + b);
+    }
+    else if (std::abs(aDist(u, VA, aBid)) > 10. * theTol3d)
+    {
+      return false;
+    }
+    aCutS(k) = gp_Pnt2d(u, v);
+    aCutP(k) = aS->Value(u, v);
+    gp_Pnt2d aUVv;
+    SignedDistance(aGSv, aCutP(k), aUVv);
+    if (k > 1)
+    {
+      InPeriodOf(aGSv, aCutV(k - 1), aUVv);
+    }
+    aCutV(k) = aUVv;
+    aAirS(k) = gp_Pnt2d(u, VB);
+    aAirP(k) = aS->Value(u, VB);
+    gp_Pnt2d aUVf;
+    SignedDistance(aGSair, aAirP(k), aUVf);
+    if (k > 1)
+    {
+      InPeriodOf(aGSair, aAirF(k - 1), aUVf);
+    }
+    aAirF(k) = aUVf;
+  }
+  occ::handle<Geom_Curve>   aCut, aAir;
+  occ::handle<Geom2d_Curve> aCutPcS, aCutPcV, aAirPcS, aAirPcF;
+  if (!InterpolateOn(aCutP, aCutS, aCutV, aCut, aCutPcS, aCutPcV)
+      || !InterpolateOn(aAirP, aAirS, aAirF, aAir, aAirPcS, aAirPcF))
+  {
+    return false;
+  }
+  const occ::handle<GeomAdaptor_Surface> aHS    = new GeomAdaptor_Surface(aS);
+  const occ::handle<GeomAdaptor_Surface> aHSv   = new GeomAdaptor_Surface(aSv);
+  const occ::handle<GeomAdaptor_Surface> aHSair = new GeomAdaptor_Surface(aGSair.Surface());
+  const double aTolCut = std::max(ChFi3d_EvalTolReached(aHS, aCutPcS, aHSv, aCutPcV, aCut),
+                                  Precision::Confusion());
+  const double aTolAir = std::max(ChFi3d_EvalTolReached(aHS, aAirPcS, aHSair, aAirPcF, aAir),
+                                  Precision::Confusion());
+  if (aTolCut > 10. * theTol3d || aTolAir > 10. * theTol3d)
+  {
+    return false;
+  }
+  // the two sections: each the iso of its surface, its parameter v
+  occ::handle<Geom_Curve> aSecC[2];
+  for (int e = 0; e < 2; e++)
+  {
+    const double aLo = std::min(aSec[e].VArc, aSec[e].VAir);
+    const double aHi = std::max(aSec[e].VArc, aSec[e].VAir);
+    aSecC[e]         = new Geom_TrimmedCurve(aSec[e].S->UIso(aSec[e].U), aLo, aHi);
+    if (aSecC[e]->Value(aLo).Distance(aSec[e].S->Value(aSec[e].U, aLo)) > Precision::Confusion()
+        || aSecC[e]->Value(aHi).Distance(aSec[e].S->Value(aSec[e].U, aHi))
+             > Precision::Confusion())
+    {
+      return false;
+    }
+  }
+  // the side's seam not through the vertex (as for PinchEnds)
+  for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    if (HasVertex(TopoDS::Edge(ex.Current()), Vtx)
+        && BRep_Tool::IsClosed(TopoDS::Edge(ex.Current()), Fv))
+    {
+      return false;
+    }
+  }
+
+  // Into the DS. The side's surface untrimmed: the cut lies past the face.
+  if (isTrimmed)
+  {
+    DStr.SetNewSurface(anEnds[0].Fv, aSv);
+  }
+  const int IShape = DStr.AddShape(anEnds[0].Fv);
+  int       IndArc[2], IndAir[2];
+  for (int e = 0; e < 2; e++)
+  {
+    IndArc[e] = ChFi3d_IndexPointInDS(anEnds[e].SD->Vertex(anEnds[e].IsFirst, anEnds[e].OnsArc),
+                                      DStr);
+    IndAir[e] = ChFi3d_IndexPointInDS(anEnds[e].SD->Vertex(anEnds[e].IsFirst, anEnds[e].OnsAir),
+                                      DStr);
+    TopOpeBRepDS_Point& aPA = DStr.ChangePoint(IndArc[e]);
+    aPA.Tolerance(std::max(aPA.Tolerance(), aTolCut));
+    TopOpeBRepDS_Point& aPB = DStr.ChangePoint(IndAir[e]);
+    aPB.Tolerance(std::max(aPB.Tolerance(), aTolAir));
+  }
+  // the stripe's ends, its sections, from its side 1 to its side 2
+  TopAbs_Orientation aSecOr[2];
+  int                ISec[2];
+  for (int e = 0; e < 2; e++)
+  {
+    const PinchEnd& anEnd = anEnds[e];
+    const double    aLo   = std::min(aSec[e].VArc, aSec[e].VAir);
+    const double    aHi   = std::max(aSec[e].VArc, aSec[e].VAir);
+    const double    aV1   = anEnd.OnsArc == 1 ? aSec[e].VArc : aSec[e].VAir;
+    aSecOr[e]             = aV1 == aLo ? TopAbs_FORWARD : TopAbs_REVERSED;
+    ISec[e]               = DStr.AddCurve(TopOpeBRepDS_Curve(aSecC[e], Precision::Confusion()));
+    aSt->SetCurve(ISec[e], anEnd.IsFirst);
+    aSt->SetParameters(anEnd.IsFirst, aLo, aHi);
+    aSt->SetOrientation(aSecOr[e], anEnd.IsFirst);
+    aSt->ChangePCurve(anEnd.IsFirst) =
+      new Geom2d_Line(gp_Pnt2d(aSec[e].U, 0.), gp_Dir2d(0., 1.));
+    aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndArc[e] : IndAir[e], anEnd.IsFirst, 1);
+    aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndAir[e] : IndArc[e], anEnd.IsFirst, 2);
+  }
+
+  // The face over the gap, the first end's surface run on (ChFi3d_FilDS's
+  // orientations: a surface data from the last end's section to the
+  // first's, its lines those of the first end's, the cut in the place of
+  // its line on the plate)
+  const occ::handle<ChFiDS_SurfData>& aFd = anEnds[0].SD;
+  const int                           Ia  = anEnds[0].OnsArc;
+  const ChFiDS_FaceInterference&      aFi1 = aFd->InterferenceOnS1();
+  TopAbs_Orientation trafil1 = TopAbs::Compose(DStr.Shape(aFd->IndexOfS1()).Orientation(),
+                                               aFd->Orientation());
+  trafil1                    = TopAbs::Compose(TopAbs::Reverse(aFi1.Transition()), trafil1);
+  const TopAbs_Orientation trafil2  = TopAbs::Reverse(trafil1);
+  const TopAbs_Orientation trafilA  = Ia == 1 ? trafil1 : trafil2;
+  const TopAbs_Orientation trafilB  = Ia == 1 ? trafil2 : trafil1;
+  const TopAbs_Orientation aOrPlate = DStr.Shape(aFd->Index(Ia)).Orientation();
+  const TopAbs_Orientation aOrSide  = DStr.Shape(IShape).Orientation();
+  const TopAbs_Orientation aTrSide  = TopAbs::Compose(
+    TopAbs::Compose(aFd->Interference(Ia).Transition(), aOrPlate), aOrSide);
+  const TopAbs_Orientation aTrAir = aFd->Interference(anEnds[0].OnsAir).Transition();
+
+  const int Isurf = DStr.AddSurface(
+    TopOpeBRepDS_Surface(aS, std::max({aTolCut, aTolAir, Precision::Confusion()})));
+  DStr.ChangeShapeInterferences(aSt->SolidIndex())
+    .Append(new TopOpeBRepDS_SolidSurfaceInterference(TopOpeBRepDS_Transition(aFd->Orientation()),
+                                                      TopOpeBRepDS_SOLID,
+                                                      aSt->SolidIndex(),
+                                                      TopOpeBRepDS_SURFACE,
+                                                      Isurf));
+  if (!theEVIMap.IsBound(Vtx))
+  {
+    theEVIMap.Bind(Vtx, NCollection_List<int>());
+  }
+  theEVIMap.ChangeFind(Vtx).Append(Isurf);
+  // its first section the stripe's last, its last the stripe's first
+  DStr.ChangeSurfaceInterferences(Isurf).Append(
+    ChFi3d_FilCurveInDS(ISec[1],
+                        Isurf,
+                        new Geom2d_Line(gp_Pnt2d(U2, 0.), gp_Dir2d(0., 1.)),
+                        TopAbs::Compose(TopAbs::Reverse(trafil1), aSecOr[1])));
+  DStr.ChangeSurfaceInterferences(Isurf).Append(
+    ChFi3d_FilCurveInDS(ISec[0],
+                        Isurf,
+                        new Geom2d_Line(gp_Pnt2d(U1, 0.), gp_Dir2d(0., 1.)),
+                        TopAbs::Compose(trafil1, aSecOr[0])));
+  // the cut, on the gap's face and the side's
+  const int ICut = DStr.AddCurve(TopOpeBRepDS_Curve(aCut, aTolCut));
+  DStr.ChangeCurveInterferences(ICut).Append(
+    ChFi3d_FilPointInDS(TopAbs_FORWARD, ICut, IndArc[1], aCut->FirstParameter()));
+  DStr.ChangeCurveInterferences(ICut).Append(
+    ChFi3d_FilPointInDS(TopAbs_REVERSED, ICut, IndArc[0], aCut->LastParameter()));
+  DStr.ChangeSurfaceInterferences(Isurf).Append(
+    ChFi3d_FilCurveInDS(ICut, Isurf, aCutPcS, trafilA));
+  DStr.ChangeShapeInterferences(IShape).Append(
+    ChFi3d_FilCurveInDS(ICut, IShape, aCutPcV, aTrSide));
+  // the boss's line run on, on the gap's face and the boss's
+  const int IAir = DStr.AddCurve(TopOpeBRepDS_Curve(aAir, aTolAir));
+  DStr.ChangeCurveInterferences(IAir).Append(
+    ChFi3d_FilPointInDS(TopAbs_FORWARD, IAir, IndAir[1], aAir->FirstParameter()));
+  DStr.ChangeCurveInterferences(IAir).Append(
+    ChFi3d_FilPointInDS(TopAbs_REVERSED, IAir, IndAir[0], aAir->LastParameter()));
+  DStr.ChangeSurfaceInterferences(Isurf).Append(
+    ChFi3d_FilCurveInDS(IAir, Isurf, aAirPcS, trafilB));
+  const int IFAir = aFd->Index(anEnds[0].OnsAir);
+  DStr.ChangeShapeInterferences(IFAir).Append(ChFi3d_FilCurveInDS(IAir, IFAir, aAirPcF, aTrAir));
+  return true;
+}
+
 //=======================================================================
 // function : PerformPinchEnds
 // purpose  : See PinchEnds above. False, nothing changed, when the vertex
@@ -2721,7 +3093,9 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
                              TopOpeBRepDS_DataStructure&                         DStr,
                              const ChFiDS_Map&                                   theEFMap,
                              const ChFiDS_Map&                                   theVEMap,
-                             const double                                        theTol3d)
+                             const double                                        theTol3d,
+                             NCollection_DataMap<TopoDS_Shape, NCollection_List<int>,
+                                                 TopTools_ShapeMapHasher>&        theEVIMap)
 {
   if (theStripes.Extent() != 2 || theStripes.First() != theStripes.Last())
   {
@@ -2815,7 +3189,8 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
     default:
       return false;
   }
-  // where each end's line touches the side; one point
+  // where each end's line touches the side; one point. A line that never
+  // does (a drafted boss): the gap closed by the fillet's surface run on
   for (int e = 0; e < 2; e++)
   {
     PinchEnd&                        anEnd = anEnds[e];
@@ -2828,7 +3203,16 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
                       anEnd.WAir,
                       anEnd.PAir))
     {
-      return false;
+      return PinchGap(Vtx,
+                      aSt,
+                      anEnds,
+                      DStr,
+                      Fv,
+                      aSv,
+                      aGSv,
+                      !aTrimmed.IsNull(),
+                      theTol3d,
+                      theEVIMap);
     }
   }
   const double aGap = anEnds[0].PAir.Distance(anEnds[1].PAir);
@@ -3055,7 +3439,13 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
 
   // a closed fillet ending twice here, short of the vertex (see PinchEnds)
   if (nondegenere && i == 2
-      && PerformPinchEnds(Vtx, myVDataMap(Index), myDS->ChangeDS(), myEFMap, myVEMap, tolapp3d))
+      && PerformPinchEnds(Vtx,
+                          myVDataMap(Index),
+                          myDS->ChangeDS(),
+                          myEFMap,
+                          myVEMap,
+                          tolapp3d,
+                          myEVIMap))
   {
     return;
   }
@@ -3267,4 +3657,5 @@ const NCollection_List<TopoDS_Shape>& ChFi3d_Builder::Generated(const TopoDS_Sha
   }
   return myGenerated;
 }
+
 
