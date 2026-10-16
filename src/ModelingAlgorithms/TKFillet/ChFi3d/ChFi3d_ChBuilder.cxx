@@ -52,6 +52,7 @@
 #include <TopoDS_Vertex.hxx>
 #include <TopOpeBRepBuild_HBuilder.hxx>
 #include <TopOpeBRepDS_HDataStructure.hxx>
+#include <cmath>
 #include <memory>
 
 #ifdef OCCT_DEBUG
@@ -134,7 +135,7 @@ void ExtentSpineOnCommonFace(occ::handle<ChFiDS_Spine>& Spine1,
 
   double cosalpha, sinalpha;
   cosalpha = tg1.Dot(tg2);
-  sinalpha = sqrt(1 - cosalpha * cosalpha);
+  sinalpha = sqrt(std::max(0., 1 - cosalpha * cosalpha));
 
   // a1+a2 = alpha
   double temp;
@@ -151,8 +152,9 @@ void ExtentSpineOnCommonFace(occ::handle<ChFiDS_Spine>& Spine1,
     d2plus = dis2 / tga2;
   }
 
-  // extension by the calculated distance
-  if (d1plus > 0.)
+  // extension by the calculated distance; none when it is not a number
+  // (a guide extended to infinity, or to NaN, is walked for ever)
+  if (d1plus > 0. && std::isfinite(d1plus))
   {
     d1plus *= 3.;
     if (isfirst1)
@@ -167,7 +169,7 @@ void ExtentSpineOnCommonFace(occ::handle<ChFiDS_Spine>& Spine1,
       Spine1->SetLastTgt(param);
     }
   }
-  if (d2plus > 0.)
+  if (d2plus > 0. && std::isfinite(d2plus))
   {
     d2plus *= 1.5;
     if (isfirst2)
@@ -2102,7 +2104,7 @@ void ChFi3d_ChBuilder::ExtentTwoCorner(const TopoDS_Vertex&                     
       ExtentOneCorner(V, Stripe[j]);
     }
   }
-  else if ((State[0] == ChFiDS_OnSame) && (State[1] == ChFiDS_OnSame))
+  else if ((State[0] == ChFiDS_OnSame) && (State[1] == ChFiDS_OnSame) && !notfound)
   {
 
     ExtentSpineOnCommonFace(Spine[0], Spine[1], V, dis[0], dis[1], isfirst[0], isfirst[1]);
@@ -2180,7 +2182,7 @@ void ChFi3d_ChBuilder::ExtentThreeCorner(const TopoDS_Vertex&                   
 
   // dis[i][j] distance from chamfer i on the common face with
   // chamfer j
-  double dis[3][3];
+  double dis[3][3] = {{0., 0., 0.}, {0., 0., 0.}, {0., 0., 0.}};
 
   for (i = 0; i < 3; i++)
   {
@@ -2206,6 +2208,15 @@ void ChFi3d_ChBuilder::ExtentThreeCorner(const TopoDS_Vertex&                   
       k++;
     }
     //    }
+    // Two of three chamfers at a vertex of four or more edges may have no
+    // face in common. Their distances on it were left unset, and the
+    // spines extended by whatever they held -- -inf or NaN at times, and
+    // the walk on a guide from NaN never ends. Such a corner is refused,
+    // as it was whenever the garbage let the computation end.
+    if (notfound)
+    {
+      throw Standard_Failure("Chamfer corner of three: two chamfers on no common face");
+    }
   }
 
   // ExtentThreeCorner
