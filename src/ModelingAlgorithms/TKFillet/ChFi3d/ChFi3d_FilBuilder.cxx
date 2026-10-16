@@ -2341,10 +2341,15 @@ void ChFi3d_FilBuilder::SplitSurf(NCollection_Sequence<occ::handle<ChFiDS_SurfDa
                               50);
       if (Resol.IsDone())
       {
-        double Val, racine = Resol.Root();
+        double racine = Resol.Root();
 
-        Fonc.Value(Resol.Root(), Val);
-        if (Val < tolapp3d)
+        // The section there is a point: its length, not Fonc's value -- the
+        // derivative of its square, nothing at any root. A fillet of near
+        // constant width, a few thousandths across a kink of a degree, has
+        // minima of no depth all along; each was split at, its section made
+        // one vertex as loose as the section is long, the fillet's two lines
+        // both through it (#876's post, at 0.3).
+        if (Courbe1->Value(racine).Distance(Courbe2->Value(racine)) < tolapp3d)
         {
           // the solution (avoiding the risks of confusion)
           if (LesVi.Length() == 0)
