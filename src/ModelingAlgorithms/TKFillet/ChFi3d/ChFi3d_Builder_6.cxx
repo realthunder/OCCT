@@ -2019,6 +2019,50 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
 #endif
   }
 
+  // A walk carried past the end of a closed spine runs round it again, and
+  // can stop on a restriction whose point comes back with the guide's
+  // parameter of the spine's end instead of its own: a cylinder's seam half
+  // a turn from where a flush boss's foot meets the side -- the foot in two
+  // equal halves, the walk past that point running round the first to the
+  // seam, its last point there at 31.42 after 47.23. Out of order the line
+  // cannot be approximated, and the point is not where the walk ended: it
+  // is dropped, and the line ends free at the point before it, cut back
+  // then as any line that is all extension (below).
+  for (int isEnd = 0; isEnd <= 1; isEnd++)
+  {
+    bool isDropped = false;
+    while (Lin->NbPoints() > 2)
+    {
+      const int    aN     = Lin->NbPoints();
+      const double aOuter = Lin->Point(isEnd ? aN : 1).Parameter();
+      const double aInner = Lin->Point(isEnd ? aN - 1 : 2).Parameter();
+      if (isEnd ? aOuter >= aInner : aOuter <= aInner)
+      {
+        break;
+      }
+      Lin->Remove(isEnd ? aN : 1, isEnd ? aN : 1);
+      isDropped = true;
+    }
+    if (isDropped)
+    {
+      const Blend_Point&  aBP = Lin->Point(isEnd ? Lin->NbPoints() : 1);
+      BRepBlend_Extremity aE1, aE2;
+      double              aU, aV;
+      aBP.ParametersOnS1(aU, aV);
+      aE1.SetValue(aBP.PointOnS1(), aU, aV, aBP.Parameter(), Precision::Confusion());
+      aBP.ParametersOnS2(aU, aV);
+      aE2.SetValue(aBP.PointOnS2(), aU, aV, aBP.Parameter(), Precision::Confusion());
+      if (isEnd)
+      {
+        Lin->SetEndPoints(aE1, aE2);
+      }
+      else
+      {
+        Lin->SetStartPoints(aE1, aE2);
+      }
+    }
+  }
+
   // Here there is a more or less presentable result
   // however it covers a the minimum zone.
   // The extensions are targeted.
