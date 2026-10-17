@@ -5618,6 +5618,34 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
   }
   if (!CV1.IsOnArc() || !CV2.IsOnArc())
   {
+    // One side on an edge of Vtx, the other run on past it, far beyond the
+    // fillet's width: the walk went on as far as the spine was extended
+    // (ExtentOneCorner, half the edge), and the line on that side met no
+    // edge. The faces at Vtx then cut the strip along its length rather
+    // than across it, and the corner runs off the surface's end rather than
+    // to a line (#273's rim under the handle, 1.6 deg from tangent: BOP's
+    // check found the corner crossing itself, and its vertex 0.029 off).
+    // The strip's end would want a cap in its section at Vtx, a corner the
+    // builder has no form for. The corner is refused, as upstream refuses
+    // the edge (PerformElement takes its faces for tangent at 0.1 rad); the
+    // setback fallback may make it again set back from Vtx.
+    if (CV1.IsOnArc() != CV2.IsOnArc())
+    {
+      const int                 aFree = CV1.IsOnArc() ? 2 : 1;
+      const ChFiDS_CommonPoint& aCF   = aFree == 1 ? CV1 : CV2;
+      const ChFiDS_CommonPoint& aCA   = aFree == 1 ? CV2 : CV1;
+      const int                 aLI   = Fd->Interference(aFree).LineIndex();
+      if (aLI != 0 && !DStr.Curve(aLI).Curve().IsNull())
+      {
+        // the width: from the end on the edge across to the other line
+        GeomAPI_ProjectPointOnCurve aPr(aCA.Point(), DStr.Curve(aLI).Curve());
+        if (aPr.NbPoints() > 0 && aPr.LowerDistance() > Precision::Confusion()
+            && aCF.Point().Distance(BRep_Tool::Pnt(Vtx)) > 10. * aPr.LowerDistance())
+        {
+          throw Standard_Failure("IntersectionAtEnd : the fillet runs on past the vertex");
+        }
+      }
+    }
     PerformMoreThreeCorner(Index, 1);
     return;
   }
