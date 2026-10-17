@@ -2978,6 +2978,75 @@ bool PinchGap(const TopoDS_Vertex&                Vtx,
     }
   }
 
+  // The boss's own seam through the vertex (a boss turned so): the line run
+  // on crosses it, and is cut in two there, the seam split at the crossing
+  TopoDS_Edge aSeam;
+  double      aSeamW = 0., aSeamPar = 0., aSeamParV = 0., aSeamDist = 0.;
+  double      aUMin = 0., aUMax = 0., aPerAir = 0.;
+  for (TopExp_Explorer ex(aFAir, TopAbs_EDGE); ex.More() && aSeam.IsNull(); ex.Next())
+  {
+    const TopoDS_Edge& aE = TopoDS::Edge(ex.Current());
+    if (!HasVertex(aE, Vtx) || !BRep_Tool::IsClosed(aE, aFAir))
+    {
+      continue;
+    }
+    if (!aGSair.IsUPeriodic())
+    {
+      return false;
+    }
+    aPerAir = aGSair.UPeriod();
+    double aVMin = 0., aVMax = 0.;
+    BRepTools::UVBounds(aFAir, aUMin, aUMax, aVMin, aVMax);
+    // the seam's u, where the line's u crosses it (a whole number of periods off)
+    const double aU0 = aAirPcF->Value(aAir->FirstParameter()).X();
+    const double aU1 = aAirPcF->Value(aAir->LastParameter()).X();
+    const double aN0 = std::floor((aU0 - aUMin) / aPerAir);
+    const double aN1 = std::floor((aU1 - aUMin) / aPerAir);
+    if (aN0 == aN1)
+    {
+      break; // the line does not cross it
+    }
+    const double aUs = aUMin + std::max(aN0, aN1) * aPerAir;
+    double       a = aAir->FirstParameter(), b = aAir->LastParameter();
+    for (int it = 0; it < 80; it++)
+    {
+      const double m = 0.5 * (a + b);
+      if ((aAirPcF->Value(m).X() - aUs) * (aU0 - aUs) > 0.)
+      {
+        a = m;
+      }
+      else
+      {
+        b = m;
+      }
+    }
+    aSeamW = 0.5 * (a + b);
+    double                  aF = 0., aL = 0.;
+    occ::handle<Geom_Curve> aCE = BRep_Tool::Curve(aE, aF, aL);
+    if (aCE.IsNull())
+    {
+      return false;
+    }
+    GeomAdaptor_Curve aGC(aCE, aF, aL);
+    Extrema_ExtPC     anExt(aAir->Value(aSeamW), aGC);
+    int               iMin = 0;
+    for (int i = 1; anExt.IsDone() && i <= anExt.NbExt(); i++)
+    {
+      if (iMin == 0 || anExt.SquareDistance(i) < anExt.SquareDistance(iMin))
+      {
+        iMin = i;
+      }
+    }
+    if (iMin == 0 || anExt.SquareDistance(iMin) > Square(10. * theTol3d))
+    {
+      return false;
+    }
+    aSeam     = aE;
+    aSeamPar  = anExt.Point(iMin).Parameter();
+    aSeamParV = BRep_Tool::Parameter(Vtx, aE);
+    aSeamDist = std::sqrt(anExt.SquareDistance(iMin));
+  }
+
   // Into the DS. The side's surface untrimmed: the cut lies past the face.
   if (isTrimmed)
   {
@@ -2996,6 +3065,11 @@ bool PinchGap(const TopoDS_Vertex&                Vtx,
     TopOpeBRepDS_Point& aPB = DStr.ChangePoint(IndAir[e]);
     aPB.Tolerance(std::max(aPB.Tolerance(), aTolAir));
   }
+  const int IndSeam =
+    aSeam.IsNull()
+      ? 0
+      : DStr.AddPoint(TopOpeBRepDS_Point(aAir->Value(aSeamW),
+                                         std::max({aTolAir, aSeamDist, Precision::Confusion()})));
   // the stripe's ends, its sections, from its side 1 to its side 2
   TopAbs_Orientation aSecOr[2];
   int                ISec[2];
@@ -3069,16 +3143,43 @@ bool PinchGap(const TopoDS_Vertex&                Vtx,
     ChFi3d_FilCurveInDS(ICut, Isurf, aCutPcS, trafilA));
   DStr.ChangeShapeInterferences(IShape).Append(
     ChFi3d_FilCurveInDS(ICut, IShape, aCutPcV, aTrSide));
-  // the boss's line run on, on the gap's face and the boss's
-  const int IAir = DStr.AddCurve(TopOpeBRepDS_Curve(aAir, aTolAir));
-  DStr.ChangeCurveInterferences(IAir).Append(
-    ChFi3d_FilPointInDS(TopAbs_FORWARD, IAir, IndAir[1], aAir->FirstParameter()));
-  DStr.ChangeCurveInterferences(IAir).Append(
-    ChFi3d_FilPointInDS(TopAbs_REVERSED, IAir, IndAir[0], aAir->LastParameter()));
-  DStr.ChangeSurfaceInterferences(Isurf).Append(
-    ChFi3d_FilCurveInDS(IAir, Isurf, aAirPcS, trafilB));
+  // the boss's line run on, on the gap's face and the boss's; in two
+  // across the boss's seam
   const int IFAir = aFd->Index(anEnds[0].OnsAir);
-  DStr.ChangeShapeInterferences(IFAir).Append(ChFi3d_FilCurveInDS(IAir, IFAir, aAirPcF, aTrAir));
+  const double aW[3]  = {aAir->FirstParameter(), aSeamW, aAir->LastParameter()};
+  const int    aIP[3] = {IndAir[1], IndSeam, IndAir[0]};
+  for (int k = 0; k < (IndSeam > 0 ? 2 : 1); k++)
+  {
+    const double aW0 = aW[k], aW1 = IndSeam > 0 ? aW[k + 1] : aW[2];
+    const int    aI1 = IndSeam > 0 ? aIP[k + 1] : aIP[2];
+    occ::handle<Geom2d_Curve> aPcF = aAirPcF;
+    if (IndSeam > 0)
+    {
+      const double aUMid = aAirPcF->Value(0.5 * (aW0 + aW1)).X();
+      if (aUMid > aUMax || aUMid < aUMin)
+      {
+        aPcF = occ::down_cast<Geom2d_Curve>(
+          aAirPcF->Translated(gp_Vec2d(aUMid > aUMax ? -aPerAir : aPerAir, 0.)));
+      }
+    }
+    const int IAir = DStr.AddCurve(TopOpeBRepDS_Curve(aAir, aTolAir));
+    DStr.ChangeCurveInterferences(IAir).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, IAir, aIP[k], aW0));
+    DStr.ChangeCurveInterferences(IAir).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IAir, aI1, aW1));
+    DStr.ChangeSurfaceInterferences(Isurf).Append(
+      ChFi3d_FilCurveInDS(IAir, Isurf, aAirPcS, trafilB));
+    DStr.ChangeShapeInterferences(IFAir).Append(ChFi3d_FilCurveInDS(IAir, IFAir, aPcF, aTrAir));
+  }
+  if (IndSeam > 0)
+  {
+    const int IE = DStr.AddShape(aSeam);
+    DStr.ChangeShapeInterferences(IE).Append(
+      ChFi3d_FilPointInDS(aSeamParV > aSeamPar ? TopAbs_REVERSED : TopAbs_FORWARD,
+                          IE,
+                          IndSeam,
+                          aSeamPar));
+  }
   return true;
 }
 
@@ -3286,6 +3387,47 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
     }
   }
 
+  // The boss's own seam through the vertex (a boss turned so): the point
+  // splits it, its stretch from the vertex to the point under the fillet
+  TopoDS_Edge aSeam;
+  double      aSeamPar = 0., aSeamParV = 0., aSeamDist = 0.;
+  {
+    const gp_Pnt aPm = anEnds[0].PAir.Translated(0.5 * gp_Vec(anEnds[0].PAir, anEnds[1].PAir));
+    for (NCollection_List<TopoDS_Shape>::Iterator itE(theVEMap(Vtx)); itE.More() && aSeam.IsNull();
+         itE.Next())
+    {
+      const TopoDS_Edge& aE = TopoDS::Edge(itE.Value());
+      if (!BRep_Tool::IsClosed(aE, TopoDS::Face(aFop)))
+      {
+        continue;
+      }
+      double                  aF = 0., aL = 0.;
+      occ::handle<Geom_Curve> aCE = BRep_Tool::Curve(aE, aF, aL);
+      if (aCE.IsNull())
+      {
+        return false;
+      }
+      GeomAdaptor_Curve aGC(aCE, aF, aL);
+      Extrema_ExtPC     anExt(aPm, aGC);
+      int               iMin = 0;
+      for (int i = 1; anExt.IsDone() && i <= anExt.NbExt(); i++)
+      {
+        if (iMin == 0 || anExt.SquareDistance(i) < anExt.SquareDistance(iMin))
+        {
+          iMin = i;
+        }
+      }
+      if (iMin == 0 || anExt.SquareDistance(iMin) > Square(10. * theTol3d))
+      {
+        return false;
+      }
+      aSeam     = aE;
+      aSeamPar  = anExt.Point(iMin).Parameter();
+      aSeamParV = BRep_Tool::Parameter(Vtx, aE);
+      aSeamDist = std::sqrt(anExt.SquareDistance(iMin));
+    }
+  }
+
   // Into the DS. The side's surface untrimmed: the cuts lie past the face.
   if (!aTrimmed.IsNull())
   {
@@ -3344,6 +3486,17 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
     const int IndArc                 = ChFi3d_IndexPointInDS(aCPArc, DStr);
     aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndArc : IndP, anEnd.IsFirst, 1);
     aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndP : IndArc, anEnd.IsFirst, 2);
+  }
+  if (!aSeam.IsNull())
+  {
+    TopOpeBRepDS_Point& aDP = DStr.ChangePoint(IndP);
+    aDP.Tolerance(std::max(aDP.Tolerance(), aSeamDist));
+    const int IE = DStr.AddShape(aSeam);
+    DStr.ChangeShapeInterferences(IE).Append(
+      ChFi3d_FilPointInDS(aSeamParV > aSeamPar ? TopAbs_REVERSED : TopAbs_FORWARD,
+                          IE,
+                          IndP,
+                          aSeamPar));
   }
   return true;
 }

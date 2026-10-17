@@ -2264,6 +2264,7 @@ static void ChFi3d_Purge(occ::handle<ChFiDS_Stripe>&   Stripe,
                          const ChFiDS_CommonPoint&     VRef,
                          const bool                    isfirst,
                          const int                     ons,
+                         const TopoDS_Face&            theFOpp,
                          int&                          intf,
                          int&                          intl)
 {
@@ -2276,7 +2277,14 @@ static void ChFi3d_Purge(occ::handle<ChFiDS_Stripe>&   Stripe,
     intl = 1; // End.
   }
   int opp = 3 - ons;
-  if (!SD->Vertex(isfirst, opp).IsOnArc() || SD->TwistOnS1() || SD->TwistOnS2())
+  // The other side's face closing on itself there, its seam, is no end:
+  // the walk only stopped at the seam where its parameters do, and the
+  // surface is all extension as it would be past it (a flush boss's seam
+  // through the point where its foot meets the plate's side).
+  const ChFiDS_CommonPoint& aCPOpp = SD->Vertex(isfirst, opp);
+  const bool                isOnSeam =
+    aCPOpp.IsOnArc() && !theFOpp.IsNull() && BRep_Tool::IsClosed(aCPOpp.Arc(), theFOpp);
+  if (!aCPOpp.IsOnArc() || isOnSeam || SD->TwistOnS1() || SD->TwistOnS2())
   {
     NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& Seq =
       Stripe->ChangeSetOfSurfData()->ChangeSequence();
@@ -3157,13 +3165,13 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
       if (!Ok1 && !obstacleon1)
       {
         // clean infos on the plane of extension.
-        ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 1), !forward, 1, intf, intl);
+        ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 1), !forward, 1, HS2->Face(), intf, intl);
       }
 
       if (!Ok2 && !obstacleon2)
       {
         // clean infos on the plane of extension.
-        ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 2), !forward, 2, intf, intl);
+        ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 2), !forward, 2, HS1->Face(), intf, intl);
       }
 
       // The end. The reference is changed.
