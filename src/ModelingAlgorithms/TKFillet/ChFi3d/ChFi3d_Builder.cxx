@@ -99,6 +99,11 @@
 #include <NCollection_IndexedMap.hxx>
 #include <BOPTools_AlgoTools.hxx>
 #include <IntTools_Context.hxx>
+#include <IntTools_Curve.hxx>
+#include <IntTools_FaceFace.hxx>
+#include <Bnd_Box.hxx>
+#include <BRepBndLib.hxx>
+#include <TopLoc_Location.hxx>
 #include <ElCLib.hxx>
 #include <ElSLib.hxx>
 #include <Extrema_ExtPS.hxx>
@@ -1123,6 +1128,88 @@ bool AreFilletsMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStrip
   return true;
 }
 
+// Whether a face of <theResult> made by the computation -- not on a surface
+// of <theInput> -- and not elementary folds over itself within <theReach>
+// of one of <theVertices>, or anywhere when there are none: a line of its
+// intersection with itself, as BOP's check computes it, longer than 1e-4
+// and on two sheets -- its middle at two places in (u, v). A set back
+// corner's patch across the 22 deg apex of #273's pocket, from the top's
+// edge down to the apex at the wall's line, was valid and folded (#273 E23
+// and E24 at 0.8, lines 0.3 long; on Fillet001, whose loose input leaves
+// the patch at 0.038, 0.13 long). The line BOP finds on #962's three-sided
+// plate at its pole is a point, of no length, at one place in (u, v): no
+// fold.
+bool HasFoldNear(const TopoDS_Shape&                                    theResult,
+                 const TopoDS_Shape&                                    theInput,
+                 const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theVertices,
+                 const double                                           theReach)
+{
+  NCollection_Map<occ::handle<Standard_Transient>> aSurfIn;
+  for (TopExp_Explorer anExp(theInput, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    TopLoc_Location aL;
+    aSurfIn.Add(BRep_Tool::Surface(TopoDS::Face(anExp.Current()), aL));
+  }
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+  for (TopExp_Explorer anExp(theResult, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Face& aF = TopoDS::Face(anExp.Current());
+    TopLoc_Location    aL;
+    if (!aSeen.Add(aF.Located(TopLoc_Location())) || aSurfIn.Contains(BRep_Tool::Surface(aF, aL)))
+    {
+      continue;
+    }
+    BRepAdaptor_Surface       aS(aF, false);
+    const GeomAbs_SurfaceType aType = aS.GetType();
+    if (aType == GeomAbs_Plane || aType == GeomAbs_Cylinder || aType == GeomAbs_Cone
+        || aType == GeomAbs_Sphere
+        || (aType == GeomAbs_Torus
+            && aS.Torus().MajorRadius() > aS.Torus().MinorRadius() + Precision::Confusion()))
+    {
+      continue;
+    }
+    Bnd_Box aBox;
+    BRepBndLib::Add(aF, aBox);
+    aBox.Enlarge(theReach);
+    bool isNear = theVertices.IsEmpty();
+    for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itV(theVertices);
+         itV.More() && !isNear;
+         itV.Next())
+    {
+      isNear = !aBox.IsOut(BRep_Tool::Pnt(TopoDS::Vertex(itV.Key())));
+    }
+    if (!isNear)
+    {
+      continue;
+    }
+    IntTools_FaceFace anFF;
+    anFF.Perform(aF, aF, false);
+    if (!anFF.IsDone())
+    {
+      continue;
+    }
+    for (int i = 1; i <= anFF.Lines().Length(); i++)
+    {
+      const IntTools_Curve&            aLine = anFF.Lines()(i);
+      const occ::handle<Geom_Curve>&   aC    = aLine.Curve();
+      const occ::handle<Geom2d_Curve>& aC1   = aLine.FirstCurve2d();
+      const occ::handle<Geom2d_Curve>& aC2   = aLine.SecondCurve2d();
+      if (aC.IsNull() || aC1.IsNull() || aC2.IsNull())
+      {
+        continue;
+      }
+      const double a = aC->FirstParameter(), b = aC->LastParameter(), m = 0.5 * (a + b);
+      const gp_Pnt aP0 = aC->Value(a), aPm = aC->Value(m), aP1 = aC->Value(b);
+      if (aP0.Distance(aPm) + aPm.Distance(aP1) > 1.e-4
+          && aC1->Value(m).Distance(aC2->Value(m)) > 100. * Precision::PConfusion())
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // The largest radius at the end of <theSp> numbered <theIE> in the spine.
 double LargestRadiusAt(const occ::handle<ChFiDS_FilSpine>& theSp, const int theIE)
 {
@@ -1184,7 +1271,8 @@ void ChFi3d_Builder::ComputeLongExtension()
     return;
   }
   // as the setback fallback takes a result: valid, every fillet made, no
-  // edge looser than the input's or a twentieth of the radius
+  // edge looser than the input's or a twentieth of the radius, and no face
+  // it made folded over itself
   const double aMaxTol = std::max(MaxEdgeTolerance(myShape), 0.05 * aRadius);
   auto         FreshComputation = [&]() {
     Reset();
@@ -1197,7 +1285,8 @@ void ChFi3d_Builder::ComputeLongExtension()
     FreshComputation();
     Compute();
     if (done && IsValidResult(myShapeResult, aMaxTol)
-        && AreFilletsMade(myListStripe, myEFMap, myShapeResult))
+        && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+        && !HasFoldNear(myShapeResult, myShape, {}, 0.))
     {
       ChFi3d_LongSpineExtension() = false;
       return;
@@ -1329,6 +1418,14 @@ void ChFi3d_Builder::ComputeSetbackFallback()
     }
     return std::max(aMaxTolIn, aRadius < Precision::Infinite() ? 0.05 * aRadius : 0.);
   };
+  auto aRadiusMax = [&]() {
+    double aRadius = 0.;
+    for (int i = 1; i <= anEnds.Length(); i++)
+    {
+      aRadius = std::max(aRadius, anEnds.Value(i).Radius);
+    }
+    return aRadius;
+  };
 
   // where the stripes meet, then 1, 1.5, 2... times the radius; a step that
   // fails at a vertex not set back yet is taken again with that one set back
@@ -1345,8 +1442,14 @@ void ChFi3d_Builder::ComputeSetbackFallback()
       OCC_CATCH_SIGNALS
       FreshComputation();
       Compute();
+      // and no patch of the corners set back folded over itself, within the
+      // setback and twice the radius of their vertices
       if (done && IsValidResult(myShapeResult, aMaxTol())
-          && AreFilletsMade(myListStripe, myEFMap, myShapeResult))
+          && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+          && !HasFoldNear(myShapeResult,
+                          myShape,
+                          aVertices,
+                          (std::max(aStep, 1.) + 2.) * aRadiusMax()))
       {
         return;
       }
