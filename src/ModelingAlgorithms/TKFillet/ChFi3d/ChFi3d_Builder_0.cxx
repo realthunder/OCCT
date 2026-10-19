@@ -1447,13 +1447,28 @@ bool ChFi3d_IsInFront(TopOpeBRepDS_DataStructure&       DStr,
 
 //=================================================================================================
 
+// <p> on a periodic trace, or a period on: the nearer <ref>, the trace's end
+// at the vertex -- unless it would have the trace run, from its other end
+// <theFar>, over more than a period. A stripe extended past its vertex for
+// the corner can run on so far that a period on is the nearer to that end
+// (#962's floor, a circle of 19.45 run on 3.4 rad past the vertex: the
+// corner's point a full turn on, the fillet's face a turn over itself). A
+// whole period stays: a rim's fillet meeting itself at a point (#523).
 static double recadre(const double p,
                       const double ref,
                       const int    sens,
                       const double first,
-                      const double last)
+                      const double last,
+                      const double theFar)
 {
-  const double pp = p + (sens > 0 ? (first - last) : (last - first));
+  const double pp    = p + (sens > 0 ? (first - last) : (last - first));
+  const double aPer  = std::abs(last - first) + Precision::PConfusion();
+  const bool   isOk  = std::abs(p - theFar) <= aPer;
+  const bool   isOkP = std::abs(pp - theFar) <= aPer;
+  if (isOk != isOkP)
+  {
+    return isOk ? p : pp;
+  }
   return ((std::abs(pp - ref) < std::abs(p - ref)) ? pp : p);
 }
 
@@ -1490,6 +1505,8 @@ bool ChFi3d_IntTraces(const occ::handle<ChFiDS_SurfData>& fd1,
   {
     delta = std::min(0.1, 0.05 * (last - first));
   }
+  // the trace's end away from the vertex
+  const double far1 = sens1 > 0 ? last : first;
   occ::handle<Geom2d_Curve> pcf1 = fd1->Interference(jf1).PCurveOnFace();
   if (pcf1.IsNull())
   {
@@ -1521,6 +1538,7 @@ bool ChFi3d_IntTraces(const occ::handle<ChFiDS_SurfData>& fd1,
   {
     delta = std::min(0.1, 0.05 * (last - first));
   }
+  const double far2 = sens2 > 0 ? last : first;
   occ::handle<Geom2d_Curve> pcf2 = fd2->Interference(jf2).PCurveOnFace();
   if (pcf2.IsNull())
   {
@@ -1577,11 +1595,11 @@ bool ChFi3d_IntTraces(const occ::handle<ChFiDS_SurfData>& fd1,
         p2    = int2d.ParamOnSecond();
         if (isper1)
         {
-          p1 = recadre(p1, pref1, sens1, first1, last1);
+          p1 = recadre(p1, pref1, sens1, first1, last1, far1);
         }
         if (isper2)
         {
-          p2 = recadre(p2, pref2, sens2, first2, last2);
+          p2 = recadre(p2, pref2, sens2, first2, last2, far2);
         }
         for (int i = 2; i <= nbpt; i++)
         {
@@ -1589,7 +1607,7 @@ bool ChFi3d_IntTraces(const occ::handle<ChFiDS_SurfData>& fd1,
           if (isper1)
           {
             double pp1 = int2d.ParamOnFirst();
-            pp1        = recadre(pp1, pref1, sens1, first1, last1);
+            pp1        = recadre(pp1, pref1, sens1, first1, last1, far1);
             if ((std::abs(pp1 - pref1) < std::abs(p1 - pref1)))
             {
               p1  = pp1;
@@ -1603,7 +1621,7 @@ bool ChFi3d_IntTraces(const occ::handle<ChFiDS_SurfData>& fd1,
 
               if (isper2)
               {
-                pp2 = recadre(pp2, pref2, sens2, first2, last2);
+                pp2 = recadre(pp2, pref2, sens2, first2, last2, far2);
               }
 
               p1  = pp1;
@@ -1615,7 +1633,7 @@ bool ChFi3d_IntTraces(const occ::handle<ChFiDS_SurfData>& fd1,
           else if (isper2)
           {
             double pp2 = int2d.ParamOnSecond();
-            pp2        = recadre(pp2, pref2, sens2, first2, last2);
+            pp2        = recadre(pp2, pref2, sens2, first2, last2, far2);
             if ((std::abs(pp2 - pref2) < std::abs(p2 - pref2)))
             {
               p2  = pp2;
@@ -1629,7 +1647,7 @@ bool ChFi3d_IntTraces(const occ::handle<ChFiDS_SurfData>& fd1,
 
               if (isper1)
               {
-                pp1 = recadre(pp1, pref1, sens1, first1, last1);
+                pp1 = recadre(pp1, pref1, sens1, first1, last1, far1);
               }
 
               p1  = pp1;
