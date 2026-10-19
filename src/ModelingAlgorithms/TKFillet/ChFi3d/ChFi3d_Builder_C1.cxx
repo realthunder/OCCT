@@ -25,6 +25,7 @@
 #include <BRepExtrema_ExtCC.hxx>
 #include <BRepLib_MakeEdge.hxx>
 #include <BRepTools.hxx>
+#include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRepTopAdaptor_TopolTool.hxx>
 #include <ChFi3d.hxx>
 #include <ChFi3d_Builder.hxx>
@@ -1782,6 +1783,97 @@ bool ChFi3d_PerformTangentEnd(const TopoDS_Vertex&              Vtx,
   return true;
 }
 
+// The distance of <theP> from <theS>, signed by the surface's normal.
+static double SignedDistance(const gp_Pnt& theP, const occ::handle<Geom_Surface>& theS, bool& isOk)
+{
+  GeomAPI_ProjectPointOnSurf aProj(theP, theS);
+  isOk = aProj.NbPoints() > 0;
+  if (!isOk)
+  {
+    return 0.;
+  }
+  double u, v;
+  aProj.LowerDistanceParameters(u, v);
+  gp_Pnt aPs;
+  gp_Vec aDu, aDv;
+  theS->D1(u, v, aPs, aDu, aDv);
+  const gp_Vec aN = aDu.Crossed(aDv);
+  isOk            = aN.Magnitude() > gp::Resolution();
+  return isOk ? gp_Vec(aPs, theP).Dot(aN) / aN.Magnitude() : 0.;
+}
+
+// The point of <theFil> on <theS1> and <theS2> both, by Newton's method from
+// <theUV> on <theFil>: there in <theUV> and <theP>.
+static bool PointOnThree(const occ::handle<Geom_Surface>& theFil,
+                         const occ::handle<Geom_Surface>& theS1,
+                         const occ::handle<Geom_Surface>& theS2,
+                         gp_Pnt2d&                        theUV,
+                         gp_Pnt&                          theP)
+{
+  double u = theUV.X(), v = theUV.Y();
+  bool   isOk1 = true, isOk2 = true;
+  auto   aF = [&](const double theU, const double theV, double& theF1, double& theF2) {
+    const gp_Pnt aX = theFil->Value(theU, theV);
+    theF1           = SignedDistance(aX, theS1, isOk1);
+    theF2           = SignedDistance(aX, theS2, isOk2);
+    return isOk1 && isOk2;
+  };
+  for (int it = 0; it < 50; it++)
+  {
+    double f1, f2;
+    if (!aF(u, v, f1, f2))
+    {
+      return false;
+    }
+    if (std::max(std::abs(f1), std::abs(f2)) < 0.01 * Precision::Confusion())
+    {
+      theUV.SetCoord(u, v);
+      theP = theFil->Value(u, v);
+      return true;
+    }
+    const double hu = 1.e-7 * (1. + std::abs(u)), hv = 1.e-7 * (1. + std::abs(v));
+    double       f1u, f2u, f1v, f2v;
+    if (!aF(u + hu, v, f1u, f2u) || !aF(u, v + hv, f1v, f2v))
+    {
+      return false;
+    }
+    const double a = (f1u - f1) / hu, b = (f1v - f1) / hv;
+    const double c = (f2u - f2) / hu, d = (f2v - f2) / hv;
+    const double aDet = a * d - b * c;
+    if (std::abs(aDet) <= gp::Resolution())
+    {
+      return false;
+    }
+    u -= (f1 * d - f2 * b) / aDet;
+    v -= (a * f2 - c * f1) / aDet;
+  }
+  return false;
+}
+
+// The natural normal of <theS> at <theUV>.
+static gp_Vec NormalAt(const occ::handle<Geom_Surface>& theS, const gp_Pnt2d& theUV)
+{
+  gp_Pnt aP;
+  gp_Vec aDu, aDv;
+  theS->D1(theUV.X(), theUV.Y(), aP, aDu, aDv);
+  return aDu.Crossed(aDv);
+}
+
+// Whether the face of surface <theS> lies, across the edge of curve <theC>
+// and pcurve <thePc> on it, the way of <theKept> from the edge's middle:
+// the edge is FORWARD in the face then (the face on its left).
+static bool IsKeptLeft(const occ::handle<Geom_Surface>& theS,
+                       const occ::handle<Geom2d_Curve>& thePc,
+                       const occ::handle<Geom_Curve>&   theC,
+                       const gp_Vec&                    theKept)
+{
+  const double w = 0.5 * (theC->FirstParameter() + theC->LastParameter());
+  gp_Pnt       aP;
+  gp_Vec       aT;
+  theC->D1(w, aP, aT);
+  return NormalAt(theS, thePc->Value(w)).Crossed(aT).Dot(theKept) > 0.;
+}
+
 void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
 {
   PerformOneCorner(Index, thePrepareOnSame, false);
@@ -1893,6 +1985,20 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
   TopoDS_Edge            EsplitOS, EarcOS;
   TopoDS_Face            FnOS;
   double                 wQOS = 0., wPOS = 0., parQOS = 0., parPOS = 0.;
+  // The cut that runs off Fop (see below): the edge of Fop the fillet's line
+  // there ends on (at Q, the stripe's point), the face beyond it, the point
+  // P where the cut on Fv's surface crosses that face's, and R where the
+  // edge crosses Fv's surface -- with their parameters on the fillet, Fv,
+  // Fob and Fop, and R's on Eob
+  bool                             offFop = false;
+  TopoDS_Edge                      Eob;
+  TopoDS_Face                      Fob;
+  occ::handle<BRepAdaptor_Surface> HBob = new BRepAdaptor_Surface();
+  gp_Pnt                           POff, ROff;
+  gp_Pnt2d                         pfilP, pvP, pobP, pvR, pobR, popR, pobQ;
+  double                           parR = 0.;
+  // the orientations of Fob and Fv in the shell
+  TopAbs_Orientation OFob = TopAbs_FORWARD, OFvSh = TopAbs_FORWARD;
   if (isfirst)
   {
     Arcspine = spine->Edges(1);
@@ -2435,6 +2541,110 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
       CPopArc = saveCPopArc;
       return;
     }
+
+    // The cut runs off Fop: the fillet's line there, carried on past Vtx,
+    // ends on an edge of Fop (Eob) before it reaches Fv's surface, and the
+    // cap in Fv's surface would run past Fop too (#273's pocket in the
+    // handle's top, its apex 22 deg: a rim filleted at r, the cap in the
+    // other wall r / sin(22 deg) past the apex, the top 1.30 -- r over
+    // 0.486). The cut is carried on
+    // into the face beyond Eob (Fob): on Fv's surface from the arc to P,
+    // where it crosses Fob's, and on Fob from P to the line's end on Eob.
+    // Fv's surface carried on past Vtx meets Fob from P to R on Eob, and
+    // Arcprol is carried on to R; Eob between R and the line's end lies
+    // under the fillet. P must lie on Fob, under Fop's surface and off Fv.
+    if (!inters && CPopArc.IsOnArc() && FvT.IsNull() && Etan.IsNull() && Arcprolbis.IsNull()
+        && !hasVertex(CPopArc.Arc(), Vtx) && myEFMap(CPopArc.Arc()).Extent() == 2)
+    {
+      Eob = CPopArc.Arc();
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(Eob)); itF.More(); itF.Next())
+      {
+        if (!itF.Value().IsSame(Fop))
+        {
+          Fob = TopoDS::Face(itF.Value());
+        }
+      }
+      const TopoDS_Face             FopSh = TopoDS::Face(DStr.Shape(Fd->Index(IFopArc)));
+      double                        f = 0., l = 0.;
+      const occ::handle<Geom_Curve> aCob =
+        Fob.IsNull() ? occ::handle<Geom_Curve>() : BRep_Tool::Curve(Eob, f, l);
+      occ::handle<Geom_Surface> aSv = HBs->Surface().Surface();
+      if (HBs->Trsf().Form() != gp_Identity)
+      {
+        aSv = occ::down_cast<Geom_Surface>(aSv->Transformed(HBs->Trsf()));
+      }
+      // R: of Eob's crossings with Fv's surface, the nearest the line's end
+      const double aParQ = CPopArc.ParameterOnArc();
+      bool         hasR  = false;
+      if (!aCob.IsNull())
+      {
+        GeomAPI_IntCS anInt(aCob, aSv);
+        double        aDMin = RealLast();
+        for (int i = 1; anInt.IsDone() && i <= anInt.NbPoints(); i++)
+        {
+          double uS, vS, w;
+          anInt.Parameters(i, uS, vS, w);
+          if (aCob->IsPeriodic())
+          {
+            w = ElCLib::InPeriod(w, f, f + aCob->Period());
+          }
+          const double aD = anInt.Point(i).Distance(CPopArc.Point());
+          if (w > f + Precision::PConfusion() && w < l - Precision::PConfusion() && aD < aDMin)
+          {
+            aDMin = aD;
+            parR  = w;
+            ROff  = anInt.Point(i);
+            pvR.SetCoord(uS, vS);
+            hasR = true;
+          }
+        }
+      }
+      const occ::handle<Geom_Surface>& aSfil = DStr.Surface(Fd->Surf()).Surface();
+      pfilP = FiopArc.PCurveOnSurf()->Value(FiopArc.Parameter(isfirst));
+      if (hasR && std::abs(parR - aParQ) > Precision::PConfusion()
+          && PointOnThree(aSfil, aSv, BRep_Tool::Surface(Fob), pfilP, POff))
+      {
+        GeomAPI_ProjectPointOnSurf aPrV(POff, aSv), aPrOb(POff, BRep_Tool::Surface(Fob));
+        bool                       isIn = aPrV.NbPoints() > 0 && aPrOb.NbPoints() > 0;
+        if (isIn)
+        {
+          double u, v;
+          aPrV.LowerDistanceParameters(u, v);
+          pvP.SetCoord(u, v);
+          aPrOb.LowerDistanceParameters(u, v);
+          pobP.SetCoord(u, v);
+          const double aSide  = SignedDistance(POff, BRep_Tool::Surface(FopSh), isIn);
+          const double aDepth = FopSh.Orientation() == TopAbs_REVERSED ? aSide : -aSide;
+          isIn = isIn && aDepth > 10. * Precision::Confusion()
+                 && BRepTopAdaptor_FClass2d(Fob, Precision::PConfusion()).Perform(pobP) == TopAbs_IN
+                 && BRepTopAdaptor_FClass2d(Fv, Precision::PConfusion()).Perform(pvP) != TopAbs_IN;
+        }
+        double                          fp, lp;
+        const occ::handle<Geom2d_Curve> aPcOb =
+          isIn ? PCurveInFace(Eob, Fob, fp, lp) : occ::handle<Geom2d_Curve>();
+        const occ::handle<Geom2d_Curve> aPcOp =
+          isIn ? PCurveInFace(Eob, Fop, fp, lp) : occ::handle<Geom2d_Curve>();
+        if (!aPcOb.IsNull() && !aPcOp.IsNull())
+        {
+          pobQ = aPcOb->Value(aParQ);
+          pobR = aPcOb->Value(parR);
+          popR = aPcOp->Value(parR);
+          OFob = Fob.Orientation();
+          for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(Arcprol)); itF.More();
+               itF.Next())
+          {
+            if (itF.Value().IsSame(Fv))
+            {
+              OFvSh = itF.Value().Orientation();
+            }
+          }
+          Fob.Orientation(TopAbs_FORWARD);
+          HBob->Initialize(Fob, false);
+          offFop = true;
+          inters = true;
+        }
+      }
+    }
   }
   else
   {
@@ -2728,6 +2938,13 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
   double                    wTg = 0.;
   // the tolerances the two pieces reached, each its own
   double tolT = tolapp3d, tolV = tolapp3d;
+  // The cut off Fop (offFop): its piece on Fob (Cc is the piece on Fv), Fv's
+  // surface on Fob from P to R, the tolerances they reached, and the arc's
+  // point on Fv
+  occ::handle<Geom_Curve>   CcOb, C3;
+  occ::handle<Geom2d_Curve> PsOb, PcOb, Pc3v, Pc3ob;
+  double                    tolOb = tolapp3d, tol3 = tolapp3d;
+  gp_Pnt2d                  pvA;
 
   if (inters)
   {
@@ -2779,7 +2996,92 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
     {
       pfil2 = Fi2.PCurveOnSurf()->Value(Fi2.Parameter(!isfirst));
     }
-    if (!FvT.IsNull())
+    if (offFop)
+    {
+      // The cut off Fop: on Fv from the arc to P and on Fob from P to the
+      // line's end, each the way of the cut from CV1's side to CV2's; Fv's
+      // surface on Fob from P to R.
+      const gp_Pnt2d& pfilA = IFadArc == 1 ? pfil1 : pfil2;
+      const gp_Pnt2d& pfilQ = IFopArc == 1 ? pfil1 : pfil2;
+      pvA                   = IFadArc == 1 ? pfac1 : pfac2;
+      auto aCurve           = [&](const occ::handle<Adaptor3d_Surface>& theS1,
+                        const occ::handle<Adaptor3d_Surface>& theS2,
+                        const gp_Pnt2d&                       theA1,
+                        const gp_Pnt2d&                       theA2,
+                        const gp_Pnt2d&                       theB1,
+                        const gp_Pnt2d&                       theB2,
+                        occ::handle<Geom_Curve>&              theC,
+                        occ::handle<Geom2d_Curve>&            thePc1,
+                        occ::handle<Geom2d_Curve>&            thePc2,
+                        double&                               theTol) {
+        Pardeb(1) = theA1.X();
+        Pardeb(2) = theA1.Y();
+        Pardeb(3) = theA2.X();
+        Pardeb(4) = theA2.Y();
+        Parfin(1) = theB1.X();
+        Parfin(2) = theB1.Y();
+        Parfin(3) = theB2.X();
+        Parfin(4) = theB2.Y();
+        theTol    = tolapp3d;
+        return ChFi3d_ComputeCurves(theS1,
+                                    theS2,
+                                    Pardeb,
+                                    Parfin,
+                                    theC,
+                                    thePc1,
+                                    thePc2,
+                                    tolapp3d,
+                                    tol2d,
+                                    theTol);
+      };
+      double uu1, uu2, vv1, vv2;
+      ChFi3d_Boite(pvA, pvP, uu1, uu2, vv1, vv2);
+      ChFi3d_BoundFac(Bs, uu1, uu2, vv1, vv2);
+      bool isOk = IFadArc == 1 ? aCurve(HGs, HBs, pfilA, pvA, pfilP, pvP, Cc, Ps, Pc, tolV)
+                               : aCurve(HGs, HBs, pfilP, pvP, pfilA, pvA, Cc, Ps, Pc, tolV);
+      ChFi3d_Boite(pobQ, pobP, uu1, uu2, vv1, vv2);
+      ChFi3d_BoundFac(*HBob, uu1, uu2, vv1, vv2);
+      isOk =
+        isOk
+        && (IFopArc == 1 ? aCurve(HGs, HBob, pfilQ, pobQ, pfilP, pobP, CcOb, PsOb, PcOb, tolOb)
+                         : aCurve(HGs, HBob, pfilP, pobP, pfilQ, pobQ, CcOb, PsOb, PcOb, tolOb));
+      ChFi3d_Boite(pvP, pvR, uu1, uu2, vv1, vv2);
+      ChFi3d_BoundFac(Bs, uu1, uu2, vv1, vv2);
+      ChFi3d_Boite(pobP, pobR, uu1, uu2, vv1, vv2);
+      ChFi3d_BoundFac(*HBob, uu1, uu2, vv1, vv2);
+      isOk = isOk && aCurve(HBs, HBob, pvP, pobP, pvR, pobR, C3, Pc3v, Pc3ob, tol3);
+      // (short, the cut's end just past Fop's edge, it can fail: then the
+      // segment from P to R, on the two surfaces within the tolerance it
+      // reaches)
+      if (!isOk && !Cc.IsNull() && !CcOb.IsNull() && POff.Distance(ROff) > Precision::Confusion())
+      {
+        occ::handle<Geom_Surface> aSv = HBs->Surface().Surface();
+        if (HBs->Trsf().Form() != gp_Identity)
+        {
+          aSv = occ::down_cast<Geom_Surface>(aSv->Transformed(HBs->Trsf()));
+        }
+        const double aLen = POff.Distance(ROff);
+        C3    = new Geom_TrimmedCurve(new Geom_Line(POff, gp_Vec(POff, ROff)), 0., aLen);
+        Pc3v  = GeomProjLib::Curve2d(C3, 0., aLen, aSv);
+        Pc3ob = GeomProjLib::Curve2d(C3, 0., aLen, BRep_Tool::Surface(Fob));
+        isOk  = !Pc3v.IsNull() && !Pc3ob.IsNull();
+        if (isOk)
+        {
+          tol3 = ChFi3d_EvalTolReached(HBs, Pc3v, HBob, Pc3ob, C3);
+          isOk = tol3 <= 10. * tolapp3d;
+        }
+      }
+      if (!isOk)
+      {
+        throw Standard_Failure("OneCorner : the cut off the face fails");
+      }
+      tolreached = std::max(tolV, tolOb);
+      Udeb       = Cc->FirstParameter();
+      Ufin       = Cc->LastParameter();
+      couture    = false;
+      aCutOnOp   = pvR;
+    }
+    else if (!FvT.IsNull())
     {
       // A face's surface where the face lies: the adaptor of a face that
       // carries a location holds the surface without it.
@@ -3090,8 +3392,9 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
       ChFi3d_Couture(Fv, couture, edgecouture);
     }
 
-    // a curve ending tangent to its face's boundary kept on the face
-    const double aKeptV = KeepCurveOnFace(Pc, Fv, Udeb, Ufin);
+    // a curve ending tangent to its face's boundary kept on the face (the
+    // cut off Fop ends off Fv, on its surface carried on)
+    const double aKeptV = offFop ? 0. : KeepCurveOnFace(Pc, Fv, Udeb, Ufin);
     tolV += aKeptV;
     tolreached += aKeptV;
     if (!FvT.IsNull())
@@ -3191,7 +3494,102 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
 
   // the boxes of the cut's points: the one between its pieces
   Bnd_Box boxT;
-  if (!FvT.IsNull())
+  // the cut off Fop's: P and R, and their indices
+  Bnd_Box boxP, boxR;
+  int     indP = 0, indR = 0;
+  if (offFop)
+  {
+    // The cut off Fop, in two curves meeting at P, as the cut over two faces
+    // below; Fv's surface on Fob from P to R; and Eob cut at R and at the
+    // line's end, between them under the fillet. On the fillet each piece of
+    // the cut goes the way the plain cut does, and the piece on Fv too (Et).
+    indP            = DStr.AddPoint(TopOpeBRepDS_Point(POff, tolreached));
+    indR            = DStr.AddPoint(TopOpeBRepDS_Point(ROff, tol3));
+    const int ICV   = DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tolV));
+    const int ICOb  = DStr.AddCurve(TopOpeBRepDS_Curve(CcOb, tolOb));
+    const int IC3   = DStr.AddCurve(TopOpeBRepDS_Curve(C3, tol3));
+    const int IShOb = DStr.AddShape(Fob);
+    // At the cut, the cap -- the end of the groove the fillet leaves -- lies
+    // on Fv the way of the fillet's outward normal, what is kept of Fob the
+    // other way (the notch in it is the groove's end). Which way the
+    // fillet's normal runs, the piece on Fv says (Et). On Fv's surface on
+    // Fob, what is kept of Fv lies within Fob, what is kept of Fob outside
+    // Fv (the notch beyond).
+    const occ::handle<Geom_Surface>& aSfil = DStr.Surface(Isurf).Surface();
+    const occ::handle<Geom_Surface>  aSv   = BRep_Tool::Surface(Fv);
+    const occ::handle<Geom_Surface>  aSob  = BRep_Tool::Surface(Fob);
+    const double                     wV    = 0.5 * (Udeb + Ufin);
+    const bool                       isOutN =
+      IsKeptLeft(aSv, Pc, Cc, NormalAt(aSfil, Ps->Value(wV))) == (Et == TopAbs_FORWARD);
+    const double             wOb  = 0.5 * (CcOb->FirstParameter() + CcOb->LastParameter());
+    const gp_Vec             aNOb = NormalAt(aSfil, PsOb->Value(wOb));
+    const TopAbs_Orientation EtOb =
+      IsKeptLeft(aSob, PcOb, CcOb, isOutN ? -aNOb : aNOb) ? TopAbs_FORWARD : TopAbs_REVERSED;
+    const double w3    = 0.5 * (C3->FirstParameter() + C3->LastParameter());
+    const gp_Vec aNOb3 = NormalAt(aSob, Pc3ob->Value(w3)) * (OFob == TopAbs_REVERSED ? -1. : 1.);
+    const gp_Vec aNV3  = NormalAt(aSv, Pc3v->Value(w3)) * (OFvSh == TopAbs_REVERSED ? -1. : 1.);
+    const TopAbs_Orientation Et3V =
+      IsKeptLeft(aSv, Pc3v, C3, -aNOb3) ? TopAbs_FORWARD : TopAbs_REVERSED;
+    const TopAbs_Orientation Et3Ob =
+      IsKeptLeft(aSob, Pc3ob, C3, -aNV3) ? TopAbs_FORWARD : TopAbs_REVERSED;
+    DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(ICV, IShape, Pc, Et));
+    DStr.ChangeShapeInterferences(IShOb).Append(ChFi3d_FilCurveInDS(ICOb, IShOb, PcOb, EtOb));
+    TopAbs_Orientation aTrafil1 = TopAbs_FORWARD;
+    if (Fd->IndexOfS1() > 0)
+    {
+      aTrafil1 = DStr.Shape(Fd->IndexOfS1()).Orientation();
+    }
+    aTrafil1 = TopAbs::Compose(aTrafil1, Fd->Orientation());
+    aTrafil1 = TopAbs::Compose(TopAbs::Reverse(Fd->InterferenceOnS1().Transition()), aTrafil1);
+    const TopAbs_Orientation EtS = isfirst ? TopAbs::Reverse(aTrafil1) : aTrafil1;
+    DStr.ChangeSurfaceInterferences(Isurf).Append(ChFi3d_FilCurveInDS(ICOb, Isurf, PsOb, EtS));
+    DStr.ChangeSurfaceInterferences(Isurf).Append(ChFi3d_FilCurveInDS(ICV, Isurf, Ps, EtS));
+    stripe->InDS(isfirst);
+    const int                      ind1 = stripe->IndexPoint(isfirst, 1);
+    const int                      ind2 = stripe->IndexPoint(isfirst, 2);
+    const int                      IC1  = IFadArc == 1 ? ICV : ICOb;
+    const int                      IC2  = IFadArc == 1 ? ICOb : ICV;
+    const occ::handle<Geom_Curve>& C1   = IFadArc == 1 ? Cc : CcOb;
+    const occ::handle<Geom_Curve>& C2   = IFadArc == 1 ? CcOb : Cc;
+    DStr.ChangeCurveInterferences(IC1).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, IC1, ind1, C1->FirstParameter()));
+    DStr.ChangeCurveInterferences(IC1).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IC1, indP, C1->LastParameter()));
+    DStr.ChangeCurveInterferences(IC2).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, IC2, indP, C2->FirstParameter()));
+    DStr.ChangeCurveInterferences(IC2).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, IC2, ind2, C2->LastParameter()));
+
+    const double f3 = C3->FirstParameter(), l3 = C3->LastParameter();
+    DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(IC3, IShape, Pc3v, Et3V));
+    DStr.ChangeShapeInterferences(IShOb).Append(ChFi3d_FilCurveInDS(IC3, IShOb, Pc3ob, Et3Ob));
+    DStr.ChangeCurveInterferences(IC3).Append(ChFi3d_FilPointInDS(TopAbs_FORWARD, IC3, indP, f3));
+    DStr.ChangeCurveInterferences(IC3).Append(ChFi3d_FilPointInDS(TopAbs_REVERSED, IC3, indR, l3));
+
+    // Eob ends at R and starts again at the line's end, or the other way
+    const int    IEob = DStr.AddShape(Eob);
+    const int    indQ = stripe->IndexPoint(isfirst, IFopArc);
+    const double parQ = Fd->Vertex(isfirst, IFopArc).ParameterOnArc();
+    DStr.ChangeShapeInterferences(IEob).Append(
+      ChFi3d_FilPointInDS(parQ > parR ? TopAbs_REVERSED : TopAbs_FORWARD, IEob, indR, parR));
+    DStr.ChangeShapeInterferences(IEob).Append(
+      ChFi3d_FilPointInDS(parQ > parR ? TopAbs_FORWARD : TopAbs_REVERSED, IEob, indQ, parQ));
+
+    Bnd_Box& boxA = IFadArc == 1 ? box1 : box2;
+    Bnd_Box& boxQ = IFopArc == 1 ? box1 : box2;
+    ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, IFadArc == 1 ? boxA : boxP, IFadArc == 1 ? boxP : boxA);
+    ChFi3d_EnlargeBox(HBob,
+                      PcOb,
+                      CcOb->FirstParameter(),
+                      CcOb->LastParameter(),
+                      IFopArc == 1 ? boxQ : boxP,
+                      IFopArc == 1 ? boxP : boxQ);
+    ChFi3d_EnlargeBox(HBs, Pc3v, f3, l3, boxP, boxR);
+    ChFi3d_EnlargeBox(HBob, Pc3ob, f3, l3, boxP, boxR);
+    ChFi3d_EnlargeBox(Eob, myEFMap(Eob), parR, boxR);
+    ChFi3d_EnlargeBox(Eob, myEFMap(Eob), parQ, boxQ);
+  }
+  else if (!FvT.IsNull())
   {
     // The cut over two faces, in two curves meeting where it crosses Etg's
     // line carried on past Vp; the line from Vp to there bounds both faces.
@@ -3669,7 +4067,7 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
     DStr.ChangeCurveInterferences(Icurv2).Append(interfprol);
   }
 
-  if (FvT.IsNull() && onsOS == 0)
+  if (FvT.IsNull() && onsOS == 0 && !offFop)
   {
     ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, box1, box2);
   }
@@ -3775,7 +4173,8 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
       throw Standard_ConstructionError("Failed to get p-curve of edge");
     }
     pop1 = Hc->Value(Arcprolbis.IsNull() ? parVtx : BRep_Tool::Parameter(Vtx, Arcprolbis));
-    pop2 = Fiop.PCurveOnFace()->Value(Fiop.Parameter(isfirst));
+    // (to R, for the cut off Fop)
+    pop2 = offFop ? popR : Fiop.PCurveOnFace()->Value(Fiop.Parameter(isfirst));
     Hc   = PCurveInFace(Arcprol, Fv, Ubid, Ubid);
     if (Hc.IsNull())
     {
@@ -3883,6 +4282,10 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
     // TopoDS_Edge edgecouture;
     // bool couture;
     ChFi3d_Couture(Fop, couture, edgecouture);
+    if (offFop && couture && !BRep_Tool::Degenerated(edgecouture))
+    {
+      throw Standard_Failure("OneCorner : the cut off the face crosses a seam");
+    }
 
     if (EsplitZ.IsNull() && couture && !BRep_Tool::Degenerated(edgecouture))
     {
@@ -4125,12 +4528,16 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
       }
 #endif
       DStr.ChangeCurveInterferences(IZob).Append(interfprol);
-      int icc    = stripe->IndexPoint(isfirst, IFopArc);
+      int icc    = offFop ? indR : stripe->IndexPoint(isfirst, IFopArc);
       interfprol = ChFi3d_FilPointInDS(TopAbs_REVERSED, IZob, icc, Ufin);
       DStr.ChangeCurveInterferences(IZob).Append(interfprol);
 #ifdef VARIANT1
       {
-        if (IFopArc == 1)
+        if (offFop)
+        {
+          boxR.Add(zob3d->Value(Ufin));
+        }
+        else if (IFopArc == 1)
         {
           box1.Add(zob3d->Value(Ufin));
         }
@@ -4169,6 +4576,11 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
   if (!FvT.IsNull())
   {
     ChFi3d_SetPointTolerance(DStr, boxT, indpt);
+  }
+  if (offFop)
+  {
+    ChFi3d_SetPointTolerance(DStr, boxP, indP);
+    ChFi3d_SetPointTolerance(DStr, boxR, indR);
   }
 
 #ifdef OCCT_DEBUG
