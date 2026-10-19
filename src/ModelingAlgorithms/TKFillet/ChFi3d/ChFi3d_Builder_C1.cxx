@@ -8232,7 +8232,13 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         Cc->D0(Cc->LastParameter(), P2);
         Ct->D0(Ct->FirstParameter(), P3);
         Ct->D0(Ct->LastParameter(), P4);
-        if (P2.Distance(P3) < tolpt || P1.Distance(P4) < tolpt)
+        // The piece follows the cut on from the end they share: by the
+        // nearer pairing of ends, not the first within tolpt. The cut,
+        // computed on a face carried on, can end farther than that from the
+        // point on the edge (#273's handle at the cup's rim, 0.003 off), and
+        // then neither test held and the piece was turned regardless.
+        if (std::min(P2.Distance(P3), P1.Distance(P4))
+            <= std::min(P1.Distance(P3), P2.Distance(P4)))
         {
           orient = orien;
         }
