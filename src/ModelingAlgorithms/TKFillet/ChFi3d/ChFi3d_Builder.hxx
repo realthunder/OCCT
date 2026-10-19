@@ -220,6 +220,23 @@ public:
   //! Returns the multiple set by SetCornerSetbackFallback().
   Standard_EXPORT static double CornerSetbackFallback();
 
+  //! Sets whether a fillet's end at a vertex that would cut into the body
+  //! beyond the vertex ends flat instead. A fillet ending at a vertex of
+  //! three faces is closed by the face at the end, carried on as far as the
+  //! fillet's section reaches. Where the fillet's line on its other face
+  //! meets that face only past the vertex -- the far side of a pocket's
+  //! acute tip -- the closing face cuts a groove into the body beyond the
+  //! tip. Set, such an end is closed by a flat face through the vertex and
+  //! the fillet's point on the edge it ends on, as square to the spine as
+  //! that edge allows, and nothing past the vertex is cut; where that face
+  //! cannot be made the end is the usual one. The default is false, as
+  //! upstream OCCT. The setting is the calling thread's own: it is read by
+  //! the builders that compute on the thread that set it.
+  Standard_EXPORT static void SetFlatEndAtVertex(const bool theToUse);
+
+  //! Returns the setting of SetFlatEndAtVertex() on the calling thread.
+  Standard_EXPORT static bool FlatEndAtVertex();
+
   //! Method, implemented in the inheritants, calculates
   //! the elements of construction of the surface (fillet or
   //! chamfer).
@@ -920,5 +937,9 @@ extern "C" Standard_EXPORT double ChFi3d_SetPlateG0FallbackRatio(const double th
 //! SetCornerSetbackFallback() for the same callers; returns the multiple set
 //! before.
 extern "C" Standard_EXPORT double ChFi3d_SetCornerSetbackFallback(const double theMultiple);
+
+//! SetFlatEndAtVertex() for the same callers, non-zero for true; returns the
+//! calling thread's setting before, 1 or 0.
+extern "C" Standard_EXPORT int ChFi3d_SetFlatEndAtVertex(const int theToUse);
 
 #endif // _ChFi3d_Builder_HeaderFile

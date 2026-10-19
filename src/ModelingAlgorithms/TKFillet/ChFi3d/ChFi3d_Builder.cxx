@@ -147,6 +147,8 @@ std::atomic<double> THE_CORNER_SETBACK_FALLBACK(2.);
 // set while Compute() runs inside the setback fallback, or the plain
 // computation the fallback starts from: those do not fall back again
 thread_local bool THE_IN_SETBACK_COMPUTE = false;
+// SetFlatEndAtVertex(): the calling thread's
+thread_local bool THE_FLAT_END_AT_VERTEX = false;
 } // namespace
 
 void ChFi3d_Builder::SetPlateG0FallbackRatio(const double theRatio)
@@ -192,6 +194,23 @@ double ChFi3d_Builder::CornerSetbackFallback()
 double ChFi3d_SetCornerSetbackFallback(const double theMultiple)
 {
   return THE_CORNER_SETBACK_FALLBACK.exchange(theMultiple, std::memory_order_relaxed);
+}
+
+void ChFi3d_Builder::SetFlatEndAtVertex(const bool theToUse)
+{
+  THE_FLAT_END_AT_VERTEX = theToUse;
+}
+
+bool ChFi3d_Builder::FlatEndAtVertex()
+{
+  return THE_FLAT_END_AT_VERTEX;
+}
+
+int ChFi3d_SetFlatEndAtVertex(const int theToUse)
+{
+  const bool wasSet      = THE_FLAT_END_AT_VERTEX;
+  THE_FLAT_END_AT_VERTEX = theToUse != 0;
+  return wasSet ? 1 : 0;
 }
 
 //=================================================================================================
