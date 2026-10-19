@@ -8080,20 +8080,11 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
           throw Standard_Failure("IntersectionAtEnd : pb orientation");
         }
 
-        if (on1V1 && on1V2)
-        {
-          dist1 = (BRep_Tool::Pnt(V1)).Distance(BRep_Tool::Pnt(Vtx));
-          dist2 = (BRep_Tool::Pnt(V2)).Distance(BRep_Tool::Pnt(Vtx));
-          if (dist1 < dist2)
-          {
-            ori = TopAbs_FORWARD;
-          }
-          else
-          {
-            ori = TopAbs_REVERSED;
-          }
-        }
-        if (on2V1 && on2V2)
+        // both ends on the fillet's faces -- the same one, or one each (a
+        // face beside the vertex narrower than the fillet: #474's sliver of
+        // a top, its edge on F2 0.155 long and the cut edge's other end on
+        // F1 2 away) -- the end nearer the vertex is the one under the fillet
+        if ((on1V1 || on2V1) && (on1V2 || on2V2))
         {
           dist1 = (BRep_Tool::Pnt(V1)).Distance(BRep_Tool::Pnt(Vtx));
           dist2 = (BRep_Tool::Pnt(V2)).Distance(BRep_Tool::Pnt(Vtx));
