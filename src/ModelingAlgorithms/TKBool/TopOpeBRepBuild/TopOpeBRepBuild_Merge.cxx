@@ -138,17 +138,22 @@ static void CorrectEdgeOrientation(TopoDS_Shape& aWire)
 static void CorrectUnclosedWire(TopoDS_Shape& aWire)
 {
   //  std::cout << "-------CorrectUnclosedWire" << std::endl;
-  BRep_Builder    BB;
-  TopoDS_Iterator tdi(aWire, false, false);
-  for (; tdi.More(); tdi.Next())
+  BRep_Builder BB;
+  // The bad edges gathered first, then removed: removing one frees the
+  // child the iterator stands on, its Next() then read freed memory (a
+  // crash, #876's chamfer on edge 87 at 0.3).
+  NCollection_List<TopoDS_Shape> aBadEdges;
+  for (TopoDS_Iterator tdi(aWire, false, false); tdi.More(); tdi.Next())
   {
-    const TopoDS_Shape& ed  = tdi.Value();
-    int                 nbv = ed.NbChildren();
-    if (nbv <= 1)
+    if (tdi.Value().NbChildren() <= 1)
     {
-      //      std::cout << "Remove bad edge" << std::endl;
-      BB.Remove(aWire, ed);
+      aBadEdges.Append(tdi.Value());
     }
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(aBadEdges); itE.More(); itE.Next())
+  {
+    //      std::cout << "Remove bad edge" << std::endl;
+    BB.Remove(aWire, itE.Value());
   }
 
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
