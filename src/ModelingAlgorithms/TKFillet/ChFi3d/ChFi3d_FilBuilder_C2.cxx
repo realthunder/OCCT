@@ -394,6 +394,38 @@ void ChFi3d_FilBuilder::PerformTwoCorner(const int Index)
                                Vtx,
                                true);
 
+  // Face to face, their lines on the common face not meeting: where one
+  // fillet's edge is shorter than the other fillet is wide there -- its far
+  // vertex nearer the vertex than the other's line on the common face is to
+  // its edge -- that fillet lies in the other's end whole: the other alone
+  // takes its edge. There is no corner of the two to make, and the plate
+  // made one over the short fillet's own end (#474's Fillet002, a box corner
+  // whose top edge is 0.155 long, at 0.3: invalid).
+  if (Okvisavis && !OkinterCC && st1 != st2 && IFaCo1 > 0 && IFaCo2 > 0)
+  {
+    const gp_Pnt aPV = BRep_Tool::Pnt(Vtx);
+    for (int k = 1; k <= 2; k++)
+    {
+      const occ::handle<ChFiDS_Stripe>& aSt  = k == 1 ? st1 : st2;
+      const int                         aSns = k == 1 ? Sens1 : Sens2;
+      const TopoDS_Vertex               aVFar =
+        aSns == 1 ? aSt->Spine()->LastVertex() : aSt->Spine()->FirstVertex();
+      // the other: its line on the common face at the vertex, from its edge
+      const occ::handle<ChFiDS_Stripe>& aSo   = k == 1 ? st2 : st1;
+      const int                         aIsdo = k == 1 ? Isd2 : Isd1;
+      const bool                        isfo  = (k == 1 ? Sens2 : Sens1) == 1;
+      const int                         aJo   = k == 1 ? IFaCo2 : IFaCo1;
+      const gp_Dir&                     aDo   = k == 1 ? dir2 : dir1;
+      const double                      aW =
+        gp_Lin(aPV, aDo).Distance(aSo->SetOfSurfData()->Value(aIsdo)->Vertex(isfo, aJo).Point());
+      if (!aVFar.IsNull() && !aVFar.IsSame(Vtx)
+          && BRep_Tool::Pnt(aVFar).Distance(aPV) < aW - 10 * tolapp3d)
+      {
+        throw Standard_Failure("TwoCorner : a fillet whole in the other's end");
+      }
+    }
+  }
+
   // The two fillets on the two pieces of a wall kept in coplanar pieces (a
   // body without Refine), the split between them ending at Vtx -- the
   // reentrant corner of an L-shaped wall made of two faces: they have no
