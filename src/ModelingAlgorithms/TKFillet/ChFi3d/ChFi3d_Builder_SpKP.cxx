@@ -789,6 +789,31 @@ static bool OnSplit(const HatchGen_PointOnHatching&                             
 }
 
 //=======================================================================
+// function : RunsOnto
+// purpose  : True when at the end <PH> of a hatching the line runs onto an
+//           edge of its face, along it from there: it does not leave the
+//           face at that point, which is no end of the line's (the wall's
+//           line of a fillet whose radius is the one of a fillet the input
+//           has beside, on the same circle: #273's handle on its rim at 1).
+//=======================================================================
+
+static bool RunsOnto(const HatchGen_PointOnHatching& PH)
+{
+  if (PH.SegmentBeginning() || PH.SegmentEnd())
+  {
+    return true;
+  }
+  for (int k = 1; k <= PH.NbPoints(); k++)
+  {
+    if (PH.Point(k).SegmentBeginning() || PH.Point(k).SegmentEnd())
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+//=======================================================================
 // function : Near
 // purpose  : True when the line of <CD> on its side <ons> runs at most
 //           <Tol> from its parameter <W1> to <W2>.
@@ -1446,7 +1471,12 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
                  2,
                  pitol,
                  bout1);
-          if (!CP2.IsOnArc() || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID)))
+          // the other side taken on to where its line leaves its face, and
+          // back where it leaves for a face beyond (SearchFace), or runs onto
+          // an edge of its face instead of leaving it (RunsOnto); the same at
+          // each end and side below
+          if (!CP2.IsOnArc() || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID))
+              || RunsOnto(H2.Domain(iH2, Ind2(ion2.First())).FirstPoint()))
           {
             CP2 = sov;
             if (Spine->FirstStatus() != ChFiDS_OnSame)
@@ -1475,7 +1505,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
                  1,
                  pitol,
                  bout1);
-          if (!CP1.IsOnArc() || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID)))
+          if (!CP1.IsOnArc() || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID))
+              || RunsOnto(H1.Domain(iH1, Ind1(ion1.First())).FirstPoint()))
           {
             CP1 = sov;
             if (Spine->FirstStatus() != ChFiDS_OnSame)
@@ -1582,7 +1613,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
                  2,
                  pitol,
                  bout2);
-          if (!CP2.IsOnArc() || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID)))
+          if (!CP2.IsOnArc() || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID))
+              || RunsOnto(H2.Domain(iH2, Ind2(ion2.Last())).SecondPoint()))
           {
             CP2 = sov;
             if (Spine->LastStatus() != ChFiDS_OnSame)
@@ -1611,7 +1643,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
                  1,
                  pitol,
                  bout2);
-          if (!CP1.IsOnArc() || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID)))
+          if (!CP1.IsOnArc() || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID))
+              || RunsOnto(H1.Domain(iH1, Ind1(ion1.Last())).SecondPoint()))
           {
             CP1 = sov;
             if (Spine->LastStatus() != ChFiDS_OnSame)
