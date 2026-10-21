@@ -962,7 +962,7 @@ occ::handle<Law_Composite> ChFiDS_FilSpine::Law(const occ::handle<ChFiDS_ElSpine
 {
   NCollection_List<occ::handle<ChFiDS_ElSpine>>::Iterator Itsp(elspines);
   NCollection_List<occ::handle<Law_Function>>::Iterator   Itl(laws);
-  for (; Itsp.More(); Itsp.Next(), Itl.Next())
+  for (; Itsp.More() && Itl.More(); Itsp.Next(), Itl.Next())
   {
     if (Els == Itsp.Value())
     {

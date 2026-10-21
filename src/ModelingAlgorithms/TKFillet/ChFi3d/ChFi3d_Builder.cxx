@@ -343,13 +343,12 @@ static void ChFi3d_EdgesCoverTheirEnds(const TopoDS_Shape& theResult, const Topo
     {
       continue;
     }
-    const TopLoc_Location& aLoc = anE.Location();
-    double                 aTol = BRep_Tool::Tolerance(anE);
+    double aTol = BRep_Tool::Tolerance(anE);
     for (TopExp_Explorer exv(anE, TopAbs_VERTEX); exv.More(); exv.Next())
     {
-      const TopoDS_Vertex& aV   = TopoDS::Vertex(exv.Current());
-      gp_Pnt               aP   = aC->Value(BRep_Tool::Parameter(aV, anE));
-      aP.Transform(aLoc.Transformation());
+      const TopoDS_Vertex& aV = TopoDS::Vertex(exv.Current());
+      // the curve as BRep_Tool::Curve(E, f, l) gives it is located already
+      const gp_Pnt aP   = aC->Value(BRep_Tool::Parameter(aV, anE));
       const double aGap = aP.Distance(BRep_Tool::Pnt(aV));
       if (aGap > aTol && aGap <= BRep_Tool::Tolerance(aV))
       {
@@ -1297,7 +1296,13 @@ void ChFi3d_Builder::ComputeLongExtension()
     Reset();
     myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
   };
-  ChFi3d_LongSpineExtension() = true;
+  // on for the thread while this runs, whatever way it leaves
+  struct LongExtensionGuard
+  {
+    LongExtensionGuard() { ChFi3d_LongSpineExtension() = true; }
+
+    ~LongExtensionGuard() { ChFi3d_LongSpineExtension() = false; }
+  } aLongExtension;
   try
   {
     OCC_CATCH_SIGNALS
@@ -1307,7 +1312,6 @@ void ChFi3d_Builder::ComputeLongExtension()
         && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
         && !HasFoldNear(myShapeResult, myShape, {}, 0.))
     {
-      ChFi3d_LongSpineExtension() = false;
       return;
     }
   }
@@ -1329,11 +1333,9 @@ void ChFi3d_Builder::ComputeLongExtension()
     }
     if (done)
     {
-      ChFi3d_LongSpineExtension() = false;
       return;
     }
   }
-  ChFi3d_LongSpineExtension() = false;
   // nothing better: the computation as it was, its failure with it
   done = false;
   try
@@ -1446,6 +1448,17 @@ void ChFi3d_Builder::ComputeSetbackFallback()
     return aRadius;
   };
 
+  // The setbacks the fallback tries are consumed by Compute(); the spines keep
+  // the caller's own afterwards, kept or not, as a Build() after this one
+  // starts from what the caller set.
+  auto aRestore = [&]() {
+    for (int i = 1; i <= anEnds.Length(); i++)
+    {
+      const SetbackEnd& anEnd = anEnds.Value(i);
+      anEnd.Spine->SetSetback(anEnd.IsFirst, anEnd.Before);
+    }
+  };
+
   // where the stripes meet, then 1, 1.5, 2... times the radius; a step that
   // fails at a vertex not set back yet is taken again with that one set back
   // too, as a corner set back can move the failure to the next
@@ -1470,6 +1483,7 @@ void ChFi3d_Builder::ComputeSetbackFallback()
                           aVertices,
                           (std::max(aStep, 1.) + 2.) * aRadiusMax()))
       {
+        aRestore();
         return;
       }
     }
@@ -1483,11 +1497,7 @@ void ChFi3d_Builder::ComputeSetbackFallback()
   }
 
   // nothing valid: the setbacks as they were, and the failure as it was
-  for (int i = 1; i <= anEnds.Length(); i++)
-  {
-    const SetbackEnd& anEnd = anEnds.Value(i);
-    anEnd.Spine->SetSetback(anEnd.IsFirst, anEnd.Before);
-  }
+  aRestore();
   FreshComputation();
   Compute();
 }

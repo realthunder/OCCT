@@ -493,6 +493,10 @@ static void CurveHermite(const TopOpeBRepDS_DataStructure&                DStr,
              || theC->Value(theC->LastParameter()).Distance(theP) < 1.e-4;
     };
     occ::handle<Geom_Curve> aFirst, aLast;
+    if (cproj.Length() < nbface)
+    {
+      throw Standard_ConstructionError("CurveHermite : the projection on a face is not done");
+    }
     for (int k = cproj.Length() - nbface + 1; k <= cproj.Length(); k++)
     {
       if (!cproj.Value(k).IsNull())
@@ -1730,6 +1734,10 @@ static bool StripeParamAtSetback(const TopOpeBRepDS_DataStructure&   DStr,
 {
   const ChFiDS_FaceInterference&   aFi = theSD->Interference(theOnS);
   const occ::handle<Geom_Surface>& aS  = DStr.Surface(theSD->Surf()).Surface();
+  if (aFi.PCurveOnSurf().IsNull())
+  {
+    return false;
+  }
   auto aBeyond = [&](const double theT) {
     const gp_Pnt2d aUV = aFi.PCurveOnSurf()->Value(theT);
     return AbscissaFromVertex(theSpine, theE, theV, aS->Value(aUV.X(), aUV.Y())) - theDist;
@@ -4143,8 +4151,32 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                             pSecDir2,
                             aD3,
                             aD4);
-              const gp_Pnt2d aV2d =
-                BRep_Tool::Parameters(V1, TopoDS::Face(Fvive(ic, icplus)));
+              // the vertex's place on the face -- which need not hold the
+              // vertex, where it is a piece of a wall the corner is set back
+              // into: the vertex's point projected then
+              const TopoDS_Face aFV  = TopoDS::Face(Fvive(ic, icplus));
+              bool              isOn = false;
+              for (TopExp_Explorer exV(aFV, TopAbs_VERTEX); exV.More() && !isOn; exV.Next())
+              {
+                isOn = exV.Current().IsSame(V1);
+              }
+              gp_Pnt2d aV2d;
+              if (isOn)
+              {
+                aV2d = BRep_Tool::Parameters(V1, aFV);
+              }
+              else
+              {
+                GeomAPI_ProjectPointOnSurf aProj(BRep_Tool::Pnt(V1), Asurf->Surface());
+                if (!aProj.IsDone() || aProj.NbPoints() == 0)
+                {
+                  throw Standard_Failure("PerformMoreThreeCorner : a face's depth at a setback "
+                                         "corner has no vertex on the face");
+                }
+                double aU, aV;
+                aProj.LowerDistanceParameters(aU, aV);
+                aV2d.SetCoord(aU, aV);
+              }
               if (!DepthCurve(*Asurf, p2d1, p2d2, aD3, aD4, aV2d, aDepth, pcurve)
                   || !InFace(TopoDS::Face(Fvive(ic, icplus)), pcurve))
               {

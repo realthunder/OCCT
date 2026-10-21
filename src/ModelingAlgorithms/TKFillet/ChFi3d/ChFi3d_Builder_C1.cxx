@@ -737,7 +737,13 @@ static NCollection_List<TopoDS_Shape> EdgesToArc(const TopoDS_Face&   Fv,
   NCollection_List<TopoDS_Shape> aWay;
   TopoDS_Vertex                  aV    = V;
   TopoDS_Edge                    aPrev = Away;
-  for (int aStep = 0; aStep < 10; aStep++)
+  // at most once round the face
+  int aNbEdges = 0;
+  for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    aNbEdges++;
+  }
+  for (int aStep = 0; aStep < aNbEdges; aStep++)
   {
     TopoDS_Edge aNext;
     for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More() && aNext.IsNull(); ex.Next())
@@ -2761,6 +2767,11 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
     }
     if (Arcprol.IsNull()) /*throw StdFail_NotDone("OneCorner : edge a prolonger non trouve");*/
     {
+      // PerformIntersectionAtEnd is what sent the four-edge case here
+      if (theAtFourEdges)
+      {
+        throw Standard_Failure("OneCorner : the cut over two pieces has no edge to extend");
+      }
       PerformIntersectionAtEnd(Index);
       return;
     }
@@ -8168,7 +8179,11 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         // piece kept was then the rest of the curve.
         auto nearestOn = [&](const gp_Pnt& theP) {
           Extrema_ExtPC anExt(theP, cad, tolpt);
-          int           iMin = 1;
+          if (!anExt.IsDone() || anExt.NbExt() == 0)
+          {
+            throw Standard_Failure("IntersectionAtEnd : no point of the edge near the cut");
+          }
+          int iMin = 1;
           for (int i = 2; i <= anExt.NbExt(); i++)
           {
             if (anExt.SquareDistance(i) < anExt.SquareDistance(iMin))

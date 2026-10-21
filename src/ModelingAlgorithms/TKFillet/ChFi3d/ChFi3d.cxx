@@ -257,17 +257,15 @@ bool ChFi3d::IsTangentFaces(const TopoDS_Edge&  theEdge,
   // circle at 2.5 pi .. 3 pi between two coplanar planes) had every sample
   // refused and was never found tangent -- the fillet's and the chamfer's
   // spine taken along a split of a flat face. Both pcurves periodic with one
-  // period: the samples shifted by whole periods into the curves' range.
-  double aShift = 0.;
+  // period: each sample brought into the curves' first period (one shift of
+  // the whole range would leave the end of a range that straddles the period
+  // outside it).
+  double aWrapLo = 0., aWrapPeriod = 0.;
   if (aC2d1->IsPeriodic() && aC2d2->IsPeriodic()
       && std::abs(aC2d1->Period() - aC2d2->Period()) < Precision::PConfusion())
   {
-    const double aLo = std::max(aC2d1->FirstParameter(), aC2d2->FirstParameter());
-    const double aHi = std::min(aC2d1->LastParameter(), aC2d2->LastParameter());
-    if (aFirst < aLo - Precision::PConfusion() || aLast > aHi + Precision::PConfusion())
-    {
-      aShift = ElCLib::InPeriod(aFirst, aLo, aLo + aC2d1->Period()) - aFirst;
-    }
+    aWrapLo     = std::max(aC2d1->FirstParameter(), aC2d2->FirstParameter());
+    aWrapPeriod = aC2d1->Period();
   }
 
   // Computation of the continuity.
@@ -282,8 +280,10 @@ bool ChFi3d::IsTangentFaces(const TopoDS_Edge&  theEdge,
       aPar = aLast;
     }
 
+    const double aParIn =
+      aWrapPeriod > 0. ? ElCLib::InPeriod(aPar, aWrapLo, aWrapLo + aWrapPeriod) : aPar;
     LocalAnalysis_SurfaceContinuity
-      aCont(aC2d1, aC2d2, aPar + aShift, aSurf1, aSurf2, theOrder, 0.001, TolC0, 0.1, 0.1, G1Tol);
+      aCont(aC2d1, aC2d2, aParIn, aSurf1, aSurf2, theOrder, 0.001, TolC0, 0.1, 0.1, G1Tol);
     if (!aCont.IsDone())
     {
       if (theOrder == GeomAbs_C2 && aCont.StatusError() == LocalAnalysis_NullSecondDerivative)
