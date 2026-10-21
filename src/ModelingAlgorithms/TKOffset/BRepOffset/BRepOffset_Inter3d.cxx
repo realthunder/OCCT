@@ -2140,7 +2140,7 @@ void BRepOffset_Inter3d::ContextIntByArc(
                 SHOW_TOPO_SHAPE(OE, "CF_NoCurce2_");
               }
 
-              if (C1.IsNull())
+              if (C2.IsNull())
               {
                 SHOW_TOPO_SHAPE(OE, "OF1_NoCurve2_");
               }

@@ -308,8 +308,10 @@ void BRepOffsetAPI_DraftAngle::Build(const Message_ProgressRange& /*theRange*/)
     DoModif(myInitialShape);
     CorrectWires();
     CorrectVertexTol();
+    // a refused result is not handed out either (ModifiedShape, Modified)
     if (!draftFacesValid(myInitialShape, myModifier, myShape))
     {
+      myShape.Nullify();
       NotDone();
     }
     else if (Draft_Modification_PlacedAtTouch(
@@ -327,6 +329,7 @@ void BRepOffsetAPI_DraftAngle::Build(const Message_ProgressRange& /*theRange*/)
       anAnalyzer.Perform();
       if (anAnalyzer.HasFaulty())
       {
+        myShape.Nullify();
         NotDone();
       }
     }

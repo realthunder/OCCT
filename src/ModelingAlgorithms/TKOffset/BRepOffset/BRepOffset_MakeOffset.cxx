@@ -9042,11 +9042,15 @@ bool TrimEdge(
   //
   if (LE.Extent() > 1)
   {
+    // the edge's own ends are skipped -- those, not the ends the vertices
+    // taken so far moved V1 and V2 to, or the trim would depend on the
+    // order of the list
+    const TopoDS_Vertex                     aVF = V1, aVL = V2;
     NCollection_List<TopoDS_Shape>::Iterator it(LE);
     for (; it.More(); it.Next())
     {
       TopoDS_Vertex V = TopoDS::Vertex(it.Value());
-      if (V.IsSame(V1) || V.IsSame(V2))
+      if (V.IsSame(aVF) || V.IsSame(aVL))
       {
         continue;
       }
@@ -9064,7 +9068,6 @@ bool TrimEdge(
         if (Projector.NbPoints() == 0)
         {
           SHOW_TOPO_SHAPE(V, "NoTrimNoPoint");
-          // return false;
           continue;
         }
         U = Projector.LowerDistanceParameter();

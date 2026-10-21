@@ -716,17 +716,18 @@ bool Draft_Modification::Propagate()
 }
 
 //=================================================================================================
-// The modification whose last Perform() on this thread placed a vertex
-// where the curve it was placed on only touches the surface it was to
-// cross; cleared when a Perform() starts computing. Not a member: the class keeps
-// upstream's layout. The query is TKOffset's own (BRepOffsetAPI_DraftAngle),
-// hidden from its exports.
+// The modifications whose Perform() on this thread placed a vertex where
+// the curve it was placed on only touches the surface it was to cross; one
+// is taken out when its own Perform() starts computing, and by no other's
+// (a draft refused for it must stay so when it is built again after another
+// draft ran). Not a member: the class keeps upstream's layout. The query is
+// TKOffset's own (BRepOffsetAPI_DraftAngle), hidden from its exports.
 
-static thread_local const Draft_Modification* THE_TOUCHED = nullptr;
+static thread_local NCollection_Map<const Draft_Modification*> THE_TOUCHED;
 
 Standard_HIDDEN bool Draft_Modification_PlacedAtTouch(const Draft_Modification* theModification)
 {
-  return THE_TOUCHED == theModification;
+  return THE_TOUCHED.Contains(theModification);
 }
 
 //=================================================================================================
@@ -740,8 +741,8 @@ void Draft_Modification::Perform()
 
   if (!myComp)
   {
-    myComp      = true;
-    THE_TOUCHED = nullptr;
+    myComp = true;
+    THE_TOUCHED.Remove(this);
     if (!Propagate())
     {
       return;
@@ -1613,7 +1614,7 @@ void Draft_Modification::Perform()
         // face, and whether the edge then stays out of the face or runs
         // into it beyond the vertex is not seen here: the draft's result is
         // checked for self-intersection (BRepOffsetAPI_DraftAngle::Build()).
-        THE_TOUCHED        = this;
+        THE_TOUCHED.Add(this);
         const double aTolV = std::max(BRep_Tool::Tolerance(TVV), 0.1 * Precision::Confusion());
         if (!PlaceOnKeptEdge(myFMap, myEMap, Vinf, AC, AS, 100. * aTolV, vtori, pvt))
         {
