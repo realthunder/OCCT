@@ -39,6 +39,7 @@
 #include <Standard_NotImplemented.hxx>
 #include <Standard_Integer.hxx>
 #include <NCollection_Map.hxx>
+#include <TopAbs.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -48,6 +49,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopOpeBRepBuild_HBuilder.hxx>
+#include <TopOpeBRepBuild_PaveSet.hxx>
 #include <TopOpeBRepDS_Curve.hxx>
 #include <TopOpeBRepDS_CurveExplorer.hxx>
 #include <TopOpeBRepDS_CurvePointInterference.hxx>
@@ -149,6 +151,12 @@ std::atomic<double> THE_CORNER_SETBACK_FALLBACK(2.);
 thread_local bool THE_IN_SETBACK_COMPUTE = false;
 // SetFlatEndAtVertex(): the calling thread's
 thread_local bool THE_FLAT_END_AT_VERTEX = false;
+// The vertices where two fillets on no common face meet (OppositeEnds) that
+// the computation running is to build with the opposite corner
+// (PerformOppositeCorner), and those it met and built with the plate; both
+// the computation's own (ComputeOppositeCorners)
+thread_local NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> THE_OPPOSITE_CORNERS;
+thread_local NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> THE_OPPOSITE_SEEN;
 } // namespace
 
 void ChFi3d_Builder::SetPlateG0FallbackRatio(const double theRatio)
@@ -1502,18 +1510,280 @@ void ChFi3d_Builder::ComputeSetbackFallback()
   Compute();
 }
 
+//=======================================================================
+// function : PerformOppositeCorner
+// purpose  : Two fillets ending at a vertex of four edges on no common face
+//           (OppositeEnds). Each is ended as it would be alone
+//           (PerformIntersectionAtEnd): closed by the faces beyond the
+//           vertex carried on, so that its cap lies on the other fillet's
+//           two faces, and the other's on its own. The DS is then told how
+//           the two ends share the vertex, for the result the union of the
+//           two made alone would give. Of the four edges, each spine's keeps
+//           the stub from the vertex to the other fillet's cap (its own side
+//           goes under its fillet); each sharp edge keeps the piece from the
+//           vertex to its nearer contact -- concave between the two caps --
+//           loses the piece between its two contacts, where the caps meet on
+//           one plane, and keeps what lies past the farther. The piece to
+//           the nearer contact bounds its faces from the other side, so it
+//           is a curve of its own in the DS, reversed on both. The ends must
+//           come out as that pattern, one new point on each spine edge beyond
+//           the vertex and two on each sharp edge, or the corner is refused.
+//=======================================================================
+
+void ChFi3d_Builder::PerformOppositeCorner(const int Index)
+{
+  const TopoDS_Vertex&        Vtx  = myVDataMap.FindKey(Index);
+  TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
+  NCollection_List<occ::handle<ChFiDS_Stripe>>& aStripes =
+    const_cast<NCollection_List<occ::handle<ChFiDS_Stripe>>&>(myVDataMap(Index));
+
+  // the four edges at the vertex and their interferences so far
+  NCollection_Sequence<TopoDS_Edge> anEdges;
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(myVEMap(Vtx)); itE.More(); itE.Next())
+  {
+    const TopoDS_Edge& anE  = TopoDS::Edge(itE.Value());
+    bool               isIn = BRep_Tool::Degenerated(anE);
+    for (int j = 1; j <= anEdges.Length() && !isIn; j++)
+    {
+      isIn = anEdges(j).IsSame(anE);
+    }
+    if (!isIn)
+    {
+      anEdges.Append(anE);
+    }
+  }
+  if (anEdges.Length() != 4)
+  {
+    throw Standard_Failure("OppositeCorner : not four edges at the vertex");
+  }
+  NCollection_Sequence<int> aNbBefore;
+  for (int j = 1; j <= anEdges.Length(); j++)
+  {
+    aNbBefore.Append(DStr.HasShape(anEdges(j)) ? DStr.ShapeInterferences(anEdges(j)).Extent() : 0);
+  }
+  // the spines' edges at the vertex
+  NCollection_Sequence<TopoDS_Edge> aSpineEdges;
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator It(aStripes); It.More(); It.Next())
+  {
+    const occ::handle<ChFiDS_Spine>& aS = It.Value()->Spine();
+    aSpineEdges.Append(aS->FirstVertex().IsSame(Vtx) ? aS->Edges(1) : aS->Edges(aS->NbEdges()));
+  }
+
+  // each end as alone: PerformIntersectionAtEnd takes the list's first
+  for (int k = 0; k < 2; k++)
+  {
+    PerformIntersectionAtEnd(Index);
+    aStripes.Append(aStripes.First());
+    aStripes.RemoveFirst();
+  }
+
+  const int iV = DStr.AddShape(Vtx);
+  for (int j = 1; j <= anEdges.Length(); j++)
+  {
+    const TopoDS_Edge& anE     = anEdges(j);
+    const bool         isSpine = anE.IsSame(aSpineEdges(1)) || anE.IsSame(aSpineEdges(2));
+    if (!DStr.HasShape(anE))
+    {
+      throw Standard_Failure("OppositeCorner : an edge at the vertex got no end");
+    }
+    NCollection_List<occ::handle<TopOpeBRepDS_Interference>>& aLI =
+      DStr.ChangeShapeInterferences(anE);
+    const double pV = BRep_Tool::Parameter(Vtx, anE);
+    NCollection_Sequence<occ::handle<TopOpeBRepDS_CurvePointInterference>> aNew;
+    int                                                                     n = 0;
+    for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator itI(aLI); itI.More();
+         itI.Next(), n++)
+    {
+      occ::handle<TopOpeBRepDS_CurvePointInterference> CP =
+        occ::down_cast<TopOpeBRepDS_CurvePointInterference>(itI.Value());
+      if (n >= aNbBefore(j) && !CP.IsNull())
+      {
+        aNew.Append(CP);
+      }
+    }
+    if (aNew.Length() != (isSpine ? 1 : 2))
+    {
+      throw Standard_Failure("OppositeCorner : the ends are not two ends alone");
+    }
+    if (isSpine)
+    {
+      // the stub to the other's cap kept, the spine's side gone
+      const double pA = aNew(1)->Parameter();
+      if (std::abs(pA - pV) <= BRepAdaptor_Curve(anE).Resolution(BRep_Tool::Tolerance(Vtx)))
+      {
+        throw Standard_Failure("OppositeCorner : the other's cap at the vertex itself");
+      }
+      aLI.Append(ChFi3d_FilPointInDS(pA < pV ? TopAbs_REVERSED : TopAbs_FORWARD,
+                                     DStr.AddShape(anE),
+                                     iV,
+                                     pV,
+                                     true));
+      continue;
+    }
+    // the vertex to the nearer contact kept, between the two gone, past the
+    // farther kept
+    const int iN = std::abs(aNew(1)->Parameter() - pV) <= std::abs(aNew(2)->Parameter() - pV) ? 1 : 2;
+    const double pN = aNew(iN)->Parameter(), pF = aNew(3 - iN)->Parameter();
+    aNew(3 - iN)->Transition(TopOpeBRepDS_Transition(pF > pV ? TopAbs_FORWARD : TopAbs_REVERSED));
+    // the piece to the nearer contact: a curve of its own, the faces on its
+    // other side
+    const int iPN = aNew(iN)->Geometry();
+    for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator itI(aLI); itI.More();)
+    {
+      if (itI.Value() == aNew(iN))
+      {
+        aLI.Remove(itI);
+      }
+      else
+      {
+        itI.Next();
+      }
+    }
+    double                         f, l;
+    occ::handle<Geom_Curve>        aC = BRep_Tool::Curve(anE, f, l);
+    const double                   p1 = std::min(pV, pN), p2 = std::max(pV, pN);
+    occ::handle<Geom_TrimmedCurve> aTC = new Geom_TrimmedCurve(aC, p1, p2);
+    const int iC = DStr.AddCurve(TopOpeBRepDS_Curve(aTC, BRep_Tool::Tolerance(anE)));
+    DStr.ChangeCurveInterferences(iC).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, iC, pV < pN ? iV : iPN, p1, pV < pN));
+    DStr.ChangeCurveInterferences(iC).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, iC, pV < pN ? iPN : iV, p2, pV > pN));
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(anE)); itF.More(); itF.Next())
+    {
+      const TopoDS_Face& aF  = TopoDS::Face(itF.Value());
+      TopAbs_Orientation anO = TopAbs_FORWARD;
+      for (TopExp_Explorer exE(aF.Oriented(TopAbs_FORWARD), TopAbs_EDGE); exE.More(); exE.Next())
+      {
+        if (exE.Current().IsSame(anE))
+        {
+          anO = exE.Current().Orientation();
+        }
+      }
+      double                    f2, l2;
+      occ::handle<Geom2d_Curve> aPC = BRep_Tool::CurveOnSurface(anE, aF, f2, l2);
+      const int                 iF  = DStr.AddShape(aF);
+      DStr.ChangeShapeInterferences(iF).Append(
+        ChFi3d_FilCurveInDS(iC, iF, aPC, TopAbs::Reverse(anO)));
+    }
+  }
+}
+
+//=================================================================================================
+
+void ChFi3d_Builder::ComputeOppositeCorners()
+{
+  if (THE_OPPOSITE_SEEN.IsEmpty())
+  {
+    return;
+  }
+  // The plate's result is kept where it is valid: of the vertex sweep's 392
+  // opposite pairs the plate had right or loose, the corner below broke 61
+  // and mended 7 of the 21 it had wrong (allopp, 2026-10-21), so it only
+  // stands in for a plate that failed. Valid on the setback fallback's
+  // terms: no edge looser than the input's or a twentieth of the smallest
+  // radius at those vertices.
+  double aRadius = Precision::Infinite();
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();
+       itS.Next())
+  {
+    const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(itS.Value()->Spine());
+    if (aSp.IsNull())
+    {
+      continue;
+    }
+    for (int k = 0; k < 2; k++)
+    {
+      const bool isFirst = k == 0;
+      if (THE_OPPOSITE_SEEN.Contains(isFirst ? aSp->FirstVertex() : aSp->LastVertex()))
+      {
+        aRadius = std::min(aRadius, LargestRadiusAt(aSp, isFirst ? 1 : aSp->NbEdges()));
+      }
+    }
+  }
+  if (Precision::IsInfinite(aRadius))
+  {
+    aRadius = 0.;
+  }
+  const double aMaxTol = std::max(MaxEdgeTolerance(myShape), 0.05 * aRadius);
+  if (done && IsValidResult(myShapeResult, aMaxTol))
+  {
+    return;
+  }
+  auto FreshComputation = [&]() {
+    Reset();
+    myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
+  };
+  // the corners at every such vertex; the pieces of the edges carried past
+  // the vertex ask TopOpeBRepBuild to keep the vertex's own pave beside the
+  // one at their end (TopOpeBRepBuild_PaveSet_PastEndPaves), for this
+  // computation only
+  THE_OPPOSITE_CORNERS.Assign(THE_OPPOSITE_SEEN);
+  try
+  {
+    OCC_CATCH_SIGNALS
+    struct PastEndGuard
+    {
+      PastEndGuard() { TopOpeBRepBuild_PaveSet_PastEndPaves() = true; }
+
+      ~PastEndGuard() { TopOpeBRepBuild_PaveSet_PastEndPaves() = false; }
+    } aPastEnd;
+    FreshComputation();
+    Compute();
+    if (done && IsValidResult(myShapeResult, aMaxTol)
+        && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+        && !HasFoldNear(myShapeResult, myShape, {}, 0.))
+    {
+      THE_OPPOSITE_CORNERS.Clear();
+      return;
+    }
+  }
+  catch (Standard_Failure const&)
+  {
+  }
+  // nothing better: the computation as it was, its failure with it
+  THE_OPPOSITE_CORNERS.Clear();
+  done = false;
+  try
+  {
+    OCC_CATCH_SIGNALS
+    FreshComputation();
+    Compute();
+  }
+  catch (Standard_Failure const&)
+  {
+    done = false;
+  }
+}
+
 //=================================================================================================
 
 void ChFi3d_Builder::Compute()
 {
   if (!THE_IN_SETBACK_COMPUTE)
   {
-    // the computation, and where it fails at a vertex, the setback fallback;
-    // then, on edges short for their radius, the spines extended further
+    // the computation; where it fails at a vertex, the setback fallback;
+    // where the result is still invalid or missing and it met two fillets on
+    // no common face, the opposite corner there (ComputeOppositeCorners) --
+    // after the setback fallback, which makes such corners where the plate
+    // failed (the floor and the inline edge of a slot by a slope), and would
+    // start from the opposite corner's failure instead of the plate's; then,
+    // on edges short for their radius, the spines extended further
     // (ComputeLongExtension). A failure the fallbacks do not mend is the
     // computation's own
     SetbackComputeGuard aGuard;
-    std::exception_ptr  aFailure;
+    struct OppositeGuard
+    {
+      OppositeGuard() { Clear(); }
+
+      ~OppositeGuard() { Clear(); }
+
+      static void Clear()
+      {
+        THE_OPPOSITE_CORNERS.Clear();
+        THE_OPPOSITE_SEEN.Clear();
+      }
+    } anOpposite;
+    std::exception_ptr aFailure;
     try
     {
       Compute();
@@ -1524,6 +1794,7 @@ void ChFi3d_Builder::Compute()
       done     = false;
     }
     ComputeSetbackFallback();
+    ComputeOppositeCorners();
     if (!done)
     {
       ComputeLongExtension();
@@ -3634,6 +3905,42 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
 }
 } // namespace
 
+// True at a vertex where two fillets end whose faces there share nothing:
+// four edges, the two filleted ones opposite, the two sharp ones between.
+static bool OppositeEnds(const TopoDS_Vertex&                                theV,
+                         const NCollection_List<occ::handle<ChFiDS_Stripe>>& theL)
+{
+  int aF[2][2];
+  int k = 0;
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator It(theL); It.More(); It.Next(), k++)
+  {
+    if (k > 1)
+    {
+      return false;
+    }
+    int       aSens = 0;
+    const int aNum  = ChFi3d_IndexOfSurfData(theV, It.Value(), aSens);
+    const occ::handle<ChFiDS_SurfData>& aSD = It.Value()->SetOfSurfData()->Value(aNum);
+    aF[k][0]                                = aSD->IndexOfS1();
+    aF[k][1]                                = aSD->IndexOfS2();
+  }
+  if (k != 2 || theL.First() == theL.Last())
+  {
+    return false;
+  }
+  for (int i = 0; i < 2; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      if (aF[0][i] <= 0 || aF[0][i] == aF[1][j])
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 //=================================================================================================
 
 void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
@@ -3817,6 +4124,18 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
             {
               throw Standard_Failure("Corner of two stripes at an end across a tangent split");
             }
+          }
+          if (nba == 4 && OppositeEnds(Vtx, myVDataMap(Index)))
+          {
+            // two fillets on no common face: the plate here, the opposite
+            // corner where the plate's result was invalid
+            // (ComputeOppositeCorners)
+            if (THE_OPPOSITE_CORNERS.Contains(Vtx))
+            {
+              PerformOppositeCorner(Index);
+              break;
+            }
+            THE_OPPOSITE_SEEN.Add(Vtx);
           }
 #ifdef OCCT_DEBUG // perf
           ChFi3d_InitChron(cl_performmore3corner);

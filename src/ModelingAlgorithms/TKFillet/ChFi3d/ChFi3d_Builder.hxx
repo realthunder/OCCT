@@ -833,6 +833,19 @@ private:
   //! fallback's terms; otherwise the computation again as it was.
   Standard_EXPORT void ComputeLongExtension();
 
+  //! After a computation whose plate at a vertex where two fillets on no
+  //! common face end (four edges, the filleted ones opposite) left the
+  //! result invalid: once more with the opposite corner there
+  //! (PerformOppositeCorner), kept on the setback fallback's terms;
+  //! otherwise the computation again as it was.
+  Standard_EXPORT void ComputeOppositeCorners();
+
+  //! The corner of two fillets on no common face at the vertex of
+  //! myVDataMap(Index): each ended as alone, the vertex shared between the
+  //! two ends as the union of the two made alone would have it. Refused
+  //! where the ends do not come out as two ends alone.
+  Standard_EXPORT void PerformOppositeCorner(const int Index);
+
   //! True where a fillet stripe ending at the vertex of myVDataMap(Index)
   //! has a setback set there (ChFiDS_FilSpine::SetSetback).
   Standard_EXPORT bool HasSetbackAt(const int Index) const;

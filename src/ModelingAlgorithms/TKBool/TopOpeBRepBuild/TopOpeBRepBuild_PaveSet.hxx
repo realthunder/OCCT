@@ -29,6 +29,15 @@ class TopoDS_Shape;
 class TopOpeBRepBuild_Pave;
 class TopOpeBRepBuild_Loop;
 
+//! The calling thread's switch for TopOpeBRepBuild_PaveSet::Prepare: where
+//! an edge's own vertex and an interference vertex at it face opposite ways,
+//! the edge's vertex is dropped -- unless this is set and a pave lies past
+//! that end of the edge's range, when the vertex's own pave is kept beside
+//! the other: the pieces of an edge a fillet's opposite corner carries on
+//! past its vertex (ChFi3d_Builder::PerformOppositeCorner). Off by default;
+//! the fillet sets it for its own computation.
+Standard_EXPORT bool& TopOpeBRepBuild_PaveSet_PastEndPaves();
+
 //! class providing an exploration of a set of vertices to build edges.
 //! It is similar to LoopSet from TopOpeBRepBuild where Loop is Pave.
 class TopOpeBRepBuild_PaveSet : public TopOpeBRepBuild_LoopSet

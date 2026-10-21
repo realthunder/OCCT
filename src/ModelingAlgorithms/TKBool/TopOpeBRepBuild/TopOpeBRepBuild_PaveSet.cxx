@@ -141,6 +141,14 @@ static bool FUN_islook(const TopoDS_Edge& e)
 
 //=================================================================================================
 
+bool& TopOpeBRepBuild_PaveSet_PastEndPaves()
+{
+  static thread_local bool THE_PAST_END_PAVES = false;
+  return THE_PAST_END_PAVES;
+}
+
+//=================================================================================================
+
 void TopOpeBRepBuild_PaveSet::Prepare()
 {
   // add the edge vertices to the list of interference
@@ -247,6 +255,41 @@ void TopOpeBRepBuild_PaveSet::Prepare()
               case TopAbs_REVERSED:
                 // ofv:
                 // if (VIori != VEori) myVertices.Remove(it);
+                if (VIori != VEori && TopOpeBRepBuild_PaveSet_PastEndPaves())
+                {
+                  // the edge carried on past VE (a fillet's opposite corner,
+                  // ChFi3d_Builder::PerformOppositeCorner): VI kept, VE added
+                  double aF, aL;
+                  BRep_Tool::Range(myEdge, aF, aL);
+                  const double aPE    = BRep_Tool::Parameter(VE, myEdge);
+                  bool         isPast = false;
+                  for (NCollection_List<occ::handle<TopOpeBRepBuild_Pave>>::Iterator itP(myVertices);
+                       itP.More();
+                       itP.Next())
+                  {
+                    const double p = itP.Value()->Parameter();
+                    isPast = isPast
+                             || (VEori == TopAbs_REVERSED ? p > aL + 1.e-9 && aPE > aL - 1.e-9
+                                                          : p < aF - 1.e-9 && aPE < aF + 1.e-9);
+                  }
+                  if (isPast)
+                  {
+                    // VE's own pave beside VI, the one ending a piece first
+                    TopoDS_Shape aVE = VE;
+                    aVE.Orientation(VEori);
+                    occ::handle<TopOpeBRepBuild_Pave> aPV = new TopOpeBRepBuild_Pave(aVE, aPE, true);
+                    if (VEori == TopAbs_REVERSED)
+                    {
+                      myVertices.InsertBefore(aPV, it);
+                    }
+                    else
+                    {
+                      myVertices.InsertAfter(aPV, it);
+                    }
+                    add = false;
+                    break;
+                  }
+                }
                 if (VIori != VEori) // ofv
                 {
                   myVertices.Remove(it); // ofv
