@@ -204,7 +204,7 @@ const NCollection_List<TopoDS_Shape>& BRepAlgo_Image::Image(const TopoDS_Shape& 
 {
   if (!HasImage(S))
   {
-    static NCollection_List<TopoDS_Shape> L;
+    static thread_local NCollection_List<TopoDS_Shape> L;
     L.Clear();
     L.Append(S);
     return L;

@@ -315,15 +315,15 @@ void BRepFill_Filling::AddConstraints(
     CurFace  = SeqOfConstraints(i).myFace;
     CurOrder = SeqOfConstraints(i).myOrder;
 
-    // this silently defaults to C0 with an invalid value,
-    // where before an exception would be
-    // thrown out of curve constraints. Good, Bad?
+    // The constraint's order is 0, 1 or 2 (G0, G1, G2), not the enumeration's
+    // value: GeomAbs_C1 is 2, which would ask for G2, and GeomAbs_G2 is 3,
+    // which the constraint refuses. A Cn asks for Gn, anything else for G0.
     int orderAdapt = 0;
-    if (CurOrder == GeomAbs_G1)
+    if (CurOrder == GeomAbs_G1 || CurOrder == GeomAbs_C1)
     {
       orderAdapt = 1;
     }
-    else if (CurOrder == GeomAbs_G2)
+    else if (CurOrder == GeomAbs_G2 || CurOrder == GeomAbs_C2)
     {
       orderAdapt = 2;
     }

@@ -770,7 +770,6 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
   //------------------------------------------------
   NCollection_List<TopoDS_Shape> theEdges = myEdges;
   NCollection_List<TopoDS_Shape> ConstEdges;
-  NCollection_List<TopoDS_Shape> IntersectingEdges;
   // The span each bounded edge's own vertices give it, before the vertices of
   // the other edges are added (see anOutsideEdges).
   NCollection_DataMap<TopoDS_Shape, std::pair<double, double>, TopTools_ShapeMapHasher> aSpans;
@@ -1254,7 +1253,6 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
       {
         if (!Bounded)
         {
-          IntersectingEdges.Append(anEdge);
           myVerOnEdges.Bind(anEdge, LV);
         }
         else
@@ -1348,7 +1346,6 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
 
   if (_CollectingEdges)
   {
-#if 1
     NCollection_IndexedDataMap<TopoDS_Shape,
                                NCollection_List<TopoDS_Shape>,
                                TopTools_ShapeMapHasher>::Iterator itM(aCutEdges);
@@ -1365,14 +1362,6 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
         pLE->Append(itl.Value());
       }
     }
-#else
-    for (itl.Initialize(IntersectingEdges); itl.More(); itl.Next())
-    {
-      const NCollection_List<TopoDS_Shape>& aList = NewEdges(TopoDS::Edge(itl.Value()));
-      _EdgeMap.Bind(itl.Value(), aList);
-      SHOW_TOPO_SHAPE(itl.Value(), "InterNewEdge", aList);
-    }
-#endif
   }
 }
 
@@ -1596,7 +1585,6 @@ void FindAllLoops(const TopoDS_Vertex&                                          
 
   CurrentVEMap.UnBind(CV);
   CurrentEdgeList.RemoveFirst();
-  // SHOW_TOPO_SHAPE(CE, "Pop");
 }
 
 void SplitWires(NCollection_List<TopoDS_Shape>& OutputWires,
@@ -1812,7 +1800,6 @@ void SplitWires(NCollection_List<TopoDS_Shape>& OutputWires,
       {
         SHOW_TOPO_SHAPE(itM1.Value(), "Prune1W_");
       }
-      // aPrunedMap.Add(aWire);
     }
   }
 }
@@ -2452,23 +2439,6 @@ static bool RunsRoundPeriod(const TopoDS_Wire& theW, const TopoDS_Face& theFace)
          || (aSurf->IsVPeriodic() && isWhole(aDV, aSurf->VPeriod()));
 }
 
-// Whether FindLoop walks the angles (1, the default), searches (0), or does
-// both and reports where the minimal wires differ (2):
-// BREPALGO_LOOP_WALK=0/1/check.
-static int LoopWalkMode()
-{
-  const char* aVal = std::getenv("BREPALGO_LOOP_WALK");
-  if (aVal == nullptr)
-  {
-    return 1;
-  }
-  if (std::strcmp(aVal, "check") == 0)
-  {
-    return 2;
-  }
-  return std::atoi(aVal) != 0 ? 1 : 0;
-}
-
 // A wire through a piece of an edge beyond the span its intersections gave it
 // (the loop keeps every piece, to find the edges of a concave removed face)
 // loses to a wire sharing an edge with it that stays inside: the corner of an
@@ -2695,18 +2665,16 @@ void BRepAlgo_Loop::FindLoop()
 
   // By angle where the face is not periodic, or its edges lie within one
   // period; the search otherwise, or when the walk cannot describe the network.
-  const int aWalkMode = IsPeriodic ? 0 : LoopWalkMode();
-  MapOfWire aWalked;
-  const bool isWalked =
-    aWalkMode != 0 && FindLoopsByAngle(MVE, myFace, aWalked, anOutsideEdges);
-  if (isWalked && aWalkMode == 1)
+  MapOfWire  aWalked;
+  const bool isWalked = !IsPeriodic && FindLoopsByAngle(MVE, myFace, aWalked, anOutsideEdges);
+  if (isWalked)
   {
     NewWires = aWalked;
   }
 
   theLoopSearchSteps = THE_LOOP_SEARCH_STEPS;
   bool isGivenUp     = false;
-  for (int ii = 1; ii <= MVE.Extent() && !(isWalked && aWalkMode == 1) && !isGivenUp; ++ii)
+  for (int ii = 1; ii <= MVE.Extent() && !isWalked && !isGivenUp; ++ii)
   {
     const TopoDS_Vertex& VF = TopoDS::Vertex(MVE.FindKey(ii));
 
@@ -2921,37 +2889,6 @@ void BRepAlgo_Loop::FindLoop()
     // Split wires
     //----------------------------------------------
     SplitWires(myNewWires, NewWires, MVE, myFace);
-    if (isWalked && aWalkMode == 2)
-    {
-      // Both ways, and the minimal wires compared.
-      DropOutsideWires(aWalked, myFace);
-      NCollection_List<TopoDS_Shape> aWalkedOut;
-      SplitWires(aWalkedOut, aWalked, MVE, myFace);
-      MapOfWire aA, aB;
-      for (itl.Initialize(myNewWires); itl.More(); itl.Next())
-      {
-        aA.Add(WireInfo(TopoDS::Wire(itl.Value())));
-      }
-      for (itl.Initialize(aWalkedOut); itl.More(); itl.Next())
-      {
-        aB.Add(WireInfo(TopoDS::Wire(itl.Value())));
-      }
-      bool isSame = aA.Extent() == aB.Extent();
-      for (MapIteratorOfMapOfWire itA(aA); itA.More() && isSame; itA.Next())
-      {
-        isSame = aB.Contains(itA.Value());
-      }
-      if (!isSame)
-      {
-        std::fprintf(stderr, "LOOPWALK MISMATCH search %d walk %d\n", aA.Extent(), aB.Extent());
-        SHOW_TOPO_SHAPE(myFace, "LoopWalkMismatchSearch", myNewWires);
-        SHOW_TOPO_SHAPE(myFace, "LoopWalkMismatchWalk", aWalkedOut);
-      }
-      else
-      {
-        std::fprintf(stderr, "LOOPWALK SAME %d\n", aA.Extent());
-      }
-    }
   }
   else
   {
@@ -3339,8 +3276,6 @@ void BRepAlgo_Loop::CutEdge(const TopoDS_Edge&                    E,
   // Parse vertices on the edge.
   //--------------------------------
   Bubble(WE, SV, SU);
-
-  // KeepAll = true;
 
   if (KeepAll)
   {
