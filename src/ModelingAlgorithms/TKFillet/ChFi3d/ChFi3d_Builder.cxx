@@ -1250,6 +1250,32 @@ double LargestRadiusAt(const occ::handle<ChFiDS_FilSpine>& theSp, const int theI
 {
   return theSp->IsConstant(theIE) ? theSp->Radius(theIE) : theSp->MaxRadFromSeqAndLaws();
 }
+
+// Whether a fillet stripe of <theStripes> ends at one of <theVertices>, as
+// the setback fallback sets ends back: a chamfer's does not.
+bool HasFilletEndAt(const NCollection_List<occ::handle<ChFiDS_Stripe>>&          theStripes,
+                    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theVertices)
+{
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(theStripes); itS.More();
+       itS.Next())
+  {
+    const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(itS.Value()->Spine());
+    if (aSp.IsNull())
+    {
+      continue;
+    }
+    for (int k = 0; k < 2; k++)
+    {
+      const bool isFirst = k == 0;
+      if (theVertices.Contains(isFirst ? aSp->FirstVertex() : aSp->LastVertex())
+          && aSp->Status(isFirst) != ChFiDS_FreeBoundary && (isFirst || !aSp->IsPeriodic()))
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 } // namespace
 
 //=================================================================================================
@@ -1903,7 +1929,8 @@ void ChFi3d_Builder::Compute()
     // no common face, the opposite corner there (ComputeOppositeCorners) --
     // after the setback fallback, which makes such corners where the plate
     // failed (the floor and the inline edge of a slot by a slope), and would
-    // start from the opposite corner's failure instead of the plate's; then,
+    // start from the opposite corner's failure instead of the plate's; where
+    // the result is still invalid, the corners the plate made set back; then,
     // on edges short for their radius, the spines extended further
     // (ComputeLongExtension). A failure the fallbacks do not mend is the
     // computation's own
@@ -1937,6 +1964,7 @@ void ChFi3d_Builder::Compute()
       {
         THE_OPPOSITE_CORNERS.Clear();
         THE_OPPOSITE_SEEN.Clear();
+        ChFi3d_PlateCorners().Clear();
       }
     } anOpposite;
     std::exception_ptr aFailure;
@@ -1949,8 +1977,29 @@ void ChFi3d_Builder::Compute()
       aFailure = std::current_exception();
       done     = false;
     }
+    // the corners the first computation built with the plate
+    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aPlates = ChFi3d_PlateCorners();
     ComputeSetbackFallback();
     ComputeOppositeCorners();
+    // A result built, but invalid, where a corner was the plate: those
+    // corners set back, as where the computation fails at them (#962's
+    // groove, its floor's edge at the mouth and its wall's foot together:
+    // a corner of opposite concavity at four edges, the plate over a fillet
+    // whose line on the outer face ran on under the tooth). Nothing valid,
+    // the fallback computes it as it was.
+    if (done && !aPlates.IsEmpty() && CornerSetbackFallback() > 0.
+        && HasFilletEndAt(myListStripe, aPlates) && !BRepCheck_Analyzer(myShapeResult).IsValid())
+    {
+      badvertices.Clear();
+      for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itV(aPlates);
+           itV.More();
+           itV.Next())
+      {
+        badvertices.Append(itV.Key());
+      }
+      done = false;
+      ComputeSetbackFallback();
+    }
     if (!done)
     {
       ComputeLongExtension();

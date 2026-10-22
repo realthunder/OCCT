@@ -1821,6 +1821,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
 #endif
   TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
   const TopoDS_Vertex&        V1   = myVDataMap.FindKey(Jndex);
+  ChFi3d_PlateCorners().Add(V1);
   int                         nedge;
   bool                        bordlibre;
   TopoDS_Edge                 edgelibre1, edgelibre2;

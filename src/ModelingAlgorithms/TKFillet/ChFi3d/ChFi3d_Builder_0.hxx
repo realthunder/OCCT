@@ -51,6 +51,8 @@
 #include <GeomAbs_Shape.hxx>
 #include <gp_Pnt.hxx>
 #include <NCollection_Array1.hxx>
+#include <NCollection_Map.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #ifdef OCCT_DEBUG
   #include <OSD_Chronometer.hxx>
 extern OSD_Chronometer simul, elspine, chemine;
@@ -62,6 +64,11 @@ double ChFi3d_InPeriod(const double U, const double UFirst, const double ULast, 
 //! at least 1.5 radius past a corner (ChFi3d_FilBuilder::ExtentOneCorner):
 //! a fillet failed at the end of an edge short for its radius.
 bool& ChFi3d_LongSpineExtension();
+
+//! The vertices where the computation running built a corner's plate
+//! (ChFi3d_Builder::PerformMoreThreeCorner), the calling thread's:
+//! ChFi3d_Builder::Compute sets those back where the result is invalid.
+NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners();
 
 void ChFi3d_Boite(const gp_Pnt2d& p1,
                   const gp_Pnt2d& p2,

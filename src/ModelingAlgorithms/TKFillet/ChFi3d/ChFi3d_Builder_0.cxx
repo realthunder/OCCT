@@ -101,6 +101,14 @@ bool& ChFi3d_LongSpineExtension()
 
 //=================================================================================================
 
+NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners()
+{
+  thread_local NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aPlates;
+  return aPlates;
+}
+
+//=================================================================================================
+
 double ChFi3d_InPeriod(const double U, const double UFirst, const double ULast, const double Eps)
 {
   const double period = ULast - UFirst;
