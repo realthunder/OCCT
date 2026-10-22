@@ -109,6 +109,14 @@ NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners()
 
 //=================================================================================================
 
+bool& ChFi3d_PlateStepBackOnEdge()
+{
+  thread_local bool isOnEdge = false;
+  return isOnEdge;
+}
+
+//=================================================================================================
+
 double ChFi3d_InPeriod(const double U, const double UFirst, const double ULast, const double Eps)
 {
   const double period = ULast - UFirst;

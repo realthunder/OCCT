@@ -3099,6 +3099,24 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         PE                    = C.Value(p.Value(ic, icplus));
         double             d1 = 0., d2 = 0., dS = PE.Distance(sommet);
         ChFiDS_CommonPoint cp1, cp2;
+        // A stripe's common point on another arc has no parameter on this
+        // edge: the stripe's line ran on past the vertex over its face, past
+        // the edge's far end, onto an edge from there. That parameter, taken
+        // on this edge, sets its point anywhere and the stripe's end out to
+        // the common point, the plate across the fillet (#474's coil leaving
+        // its block: the block's top edge's line ran on to the block's far
+        // end). Stepped back so the corner is often invalid, and the setback
+        // fallback mends it; the edge's point kept where it is instead, the
+        // plate spans the stripes as far as they run past the vertex, worse
+        // than the patch set back where both of the edge's neighbours are
+        // stripes (#474's coil on its block's upright edge). So only once the
+        // result is invalid all the same (ChFi3d_PlateStepBackOnEdge).
+        auto isOnSharp = [&](const ChFiDS_CommonPoint& theCP) {
+          return theCP.IsOnArc()
+                 && (!ChFi3d_PlateStepBackOnEdge() || theCP.Arc().IsSame(Evive.Value(ic))
+                     || C.Value(theCP.ParameterOnArc()).Distance(theCP.Point())
+                          <= std::max(theCP.Tolerance(), tolapp3d));
+        };
         if (!sharp.Value(icplus))
         {
           isfirst = (sens.Value(icplus) == 1);
@@ -3127,7 +3145,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         {
           // step back till Common Points
           // without leaving the Edge ??
-          if (d2 < d1 && cp1.IsOnArc())
+          if (d2 < d1 && isOnSharp(cp1))
           {
             // cp1 is chosen
             p.SetValue(ic, icmoins, cp1.ParameterOnArc());
@@ -3141,7 +3159,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
               tolcp = cp1.Tolerance();
             }
           }
-          else if (cp2.IsOnArc())
+          else if (isOnSharp(cp2))
           {
             // cp2 is chosen
             p.SetValue(ic, icmoins, cp2.ParameterOnArc());

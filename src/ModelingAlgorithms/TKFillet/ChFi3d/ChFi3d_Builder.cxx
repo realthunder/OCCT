@@ -1930,8 +1930,9 @@ void ChFi3d_Builder::Compute()
     // after the setback fallback, which makes such corners where the plate
     // failed (the floor and the inline edge of a slot by a slope), and would
     // start from the opposite corner's failure instead of the plate's; where
-    // the result is still invalid, the corners the plate made set back; then,
-    // on edges short for their radius, the spines extended further
+    // the result is still invalid, the corners the plate made set back, and
+    // where it is invalid after that, the plates made again stepped back on
+    // their sharp edges only to points on them; then, on edges short for their radius, the spines extended further
     // (ComputeLongExtension). A failure the fallbacks do not mend is the
     // computation's own
     SetbackComputeGuard aGuard;
@@ -1999,6 +2000,74 @@ void ChFi3d_Builder::Compute()
       }
       done = false;
       ComputeSetbackFallback();
+    }
+    // Invalid still, where a corner was the plate: the plates made again,
+    // their sharp edges stepped back only to the stripes' common points on
+    // them (ChFi3d_PlateStepBackOnEdge; #474's coil leaving its block, at
+    // 1). Kept where valid, as the setback fallback takes a result; else
+    // the result as it was.
+    if (done && !aPlates.IsEmpty() && !BRepCheck_Analyzer(myShapeResult).IsValid())
+    {
+      // the smallest and largest radius of the fillets ending at those
+      // corners, for the bounds the setback fallback takes a result by
+      double aRadMin = Precision::Infinite(), aRadMax = 0.;
+      for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();
+           itS.Next())
+      {
+        const occ::handle<ChFiDS_FilSpine> aSp =
+          occ::down_cast<ChFiDS_FilSpine>(itS.Value()->Spine());
+        for (int k = 0; k < 2 && !aSp.IsNull(); k++)
+        {
+          if (aPlates.Contains(k == 0 ? aSp->FirstVertex() : aSp->LastVertex()))
+          {
+            const double aRad = LargestRadiusAt(aSp, k == 0 ? 1 : aSp->NbEdges());
+            aRadMin           = std::min(aRadMin, aRad);
+            aRadMax           = std::max(aRadMax, aRad);
+          }
+        }
+      }
+      const double aMaxTol =
+        std::max(MaxEdgeTolerance(myShape), aRadMin < Precision::Infinite() ? 0.05 * aRadMin : 0.);
+      auto FreshComputation = [&]() {
+        Reset();
+        myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
+      };
+      // on for the thread while this runs, whatever way it leaves
+      struct StepBackGuard
+      {
+        StepBackGuard() { ChFi3d_PlateStepBackOnEdge() = true; }
+
+        ~StepBackGuard() { ChFi3d_PlateStepBackOnEdge() = false; }
+      };
+      bool isKept = false;
+      try
+      {
+        OCC_CATCH_SIGNALS
+        StepBackGuard aStepBack;
+        FreshComputation();
+        Compute();
+        isKept = done && IsValidResult(myShapeResult, aMaxTol)
+                 && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+                 && !HasFoldNear(myShapeResult, myShape, aPlates, 3. * aRadMax);
+      }
+      catch (Standard_Failure const&)
+      {
+        isKept = false;
+      }
+      if (!isKept)
+      {
+        done = false;
+        try
+        {
+          OCC_CATCH_SIGNALS
+          FreshComputation();
+          Compute();
+        }
+        catch (Standard_Failure const&)
+        {
+          done = false;
+        }
+      }
     }
     if (!done)
     {

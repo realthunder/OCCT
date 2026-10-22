@@ -70,6 +70,12 @@ bool& ChFi3d_LongSpineExtension();
 //! ChFi3d_Builder::Compute sets those back where the result is invalid.
 NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners();
 
+//! Set while ChFi3d_Builder::Compute makes the corners' plates again with
+//! their sharp edges stepped back only to the stripes' common points on
+//! those edges (ChFi3d_Builder::PerformMoreThreeCorner): the result was
+//! invalid where a corner was the plate, set back or not.
+bool& ChFi3d_PlateStepBackOnEdge();
+
 void ChFi3d_Boite(const gp_Pnt2d& p1,
                   const gp_Pnt2d& p2,
                   double&         mu,
