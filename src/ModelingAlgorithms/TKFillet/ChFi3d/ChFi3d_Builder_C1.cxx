@@ -52,11 +52,13 @@
 #include <Geom2d_TrimmedCurve.hxx>
 #include <Geom2dAdaptor_Curve.hxx>
 #include <Geom2dAPI_InterCurveCurve.hxx>
+#include <Geom2dAPI_Interpolate.hxx>
 #include <Geom2dInt_GInter.hxx>
 #include <Geom_BezierSurface.hxx>
 #include <Geom_Line.hxx>
 #include <Geom_Plane.hxx>
 #include <GeomAPI_IntCS.hxx>
+#include <GeomAPI_Interpolate.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Geom_BoundedCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
@@ -1856,6 +1858,87 @@ static bool PointOnThree(const occ::handle<Geom_Surface>& theFil,
   return false;
 }
 
+// The curve of <theFil> and <theS> from <theUVA> to <theUVB> on <theFil>,
+// by its points: between the ends, each on the plane across the chord at it
+// (PointOnThree, from the point between the ends' (u, v)), interpolated by
+// chord length, its pcurve on <theFil> through the points' (u, v) on the
+// same parameters (an end can lie past <theFil>'s bounds, where a projection
+// finds nothing), on <theS> projected. For two surfaces tangent at an end,
+// where the intersection finds no line. False where a point is not found or
+// the curve is off the two by more than <theTolMax>.
+static bool CurveOnTwoByPoints(const occ::handle<Geom_Surface>& theFil,
+                               const occ::handle<Geom_Surface>& theS,
+                               const gp_Pnt2d&                  theUVA,
+                               const gp_Pnt2d&                  theUVB,
+                               const double                     theTolMax,
+                               occ::handle<Geom_Curve>&         theC,
+                               occ::handle<Geom2d_Curve>&       thePcFil,
+                               occ::handle<Geom2d_Curve>&       thePcS,
+                               double&                          theTol)
+{
+  const int    aNb = 8;
+  const gp_Pnt aA  = theFil->Value(theUVA.X(), theUVA.Y());
+  const gp_Pnt aB  = theFil->Value(theUVB.X(), theUVB.Y());
+  const gp_Vec aAB(aA, aB);
+  if (aAB.Magnitude() <= Precision::Confusion())
+  {
+    return false;
+  }
+  occ::handle<NCollection_HArray1<gp_Pnt>>   aPnts = new NCollection_HArray1<gp_Pnt>(1, aNb + 1);
+  occ::handle<NCollection_HArray1<gp_Pnt2d>> aUVs  = new NCollection_HArray1<gp_Pnt2d>(1, aNb + 1);
+  occ::handle<NCollection_HArray1<double>>   aPars = new NCollection_HArray1<double>(1, aNb + 1);
+  aPnts->SetValue(1, aA);
+  aUVs->SetValue(1, theUVA);
+  aPars->SetValue(1, 0.);
+  for (int i = 1; i <= aNb; i++)
+  {
+    const double t = double(i) / aNb;
+    gp_Pnt2d     aUV(theUVA.XY() + t * (theUVB.XY() - theUVA.XY()));
+    gp_Pnt       aP = aB;
+    if (i == aNb)
+    {
+      aUV = theUVB;
+    }
+    else if (!PointOnThree(theFil,
+                           theS,
+                           new Geom_Plane(aA.Translated(t * aAB), gp_Dir(aAB)),
+                           aUV,
+                           aP))
+    {
+      return false;
+    }
+    const double aStep = aP.Distance(aPnts->Value(i));
+    if (aStep <= Precision::Confusion())
+    {
+      return false;
+    }
+    aPnts->SetValue(i + 1, aP);
+    aUVs->SetValue(i + 1, aUV);
+    aPars->SetValue(i + 1, aPars->Value(i) + aStep);
+  }
+  GeomAPI_Interpolate   anInterp(aPnts, aPars, false, Precision::Confusion());
+  Geom2dAPI_Interpolate anInterpUV(aUVs, aPars, false, Precision::PConfusion());
+  anInterp.Perform();
+  anInterpUV.Perform();
+  if (!anInterp.IsDone() || !anInterpUV.IsDone())
+  {
+    return false;
+  }
+  theC     = anInterp.Curve();
+  thePcFil = anInterpUV.Curve();
+  thePcS   = GeomProjLib::Curve2d(theC, aPars->Value(1), aPars->Value(aNb + 1), theS);
+  if (thePcS.IsNull())
+  {
+    return false;
+  }
+  theTol = ChFi3d_EvalTolReached(new GeomAdaptor_Surface(theFil),
+                                 thePcFil,
+                                 new GeomAdaptor_Surface(theS),
+                                 thePcS,
+                                 theC);
+  return theTol <= theTolMax;
+}
+
 // The natural normal of <theS> at <theUV>.
 static gp_Vec NormalAt(const occ::handle<Geom_Surface>& theS, const gp_Pnt2d& theUV)
 {
@@ -3521,10 +3604,33 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
                                : aCurve(HGs, HBs, pfilP, pvP, pfilA, pvA, Cc, Ps, Pc, tolV);
       ChFi3d_Boite(pobQ, pobP, uu1, uu2, vv1, vv2);
       ChFi3d_BoundFac(*HBob, uu1, uu2, vv1, vv2);
+      const bool isOkV = isOk;
       isOk =
         isOk
         && (IFopArc == 1 ? aCurve(HGs, HBob, pfilQ, pobQ, pfilP, pobP, CcOb, PsOb, PcOb, tolOb)
                          : aCurve(HGs, HBob, pfilP, pobP, pfilQ, pobQ, CcOb, PsOb, PcOb, tolOb));
+      // (Fob a round across Eob, tangent to Fop there as the fillet is: the
+      // two touch at the line's end Q, and the intersection finds no line --
+      // #273's Fillet001, its handle's top rounded at the end. Then the
+      // curve through their points from Q to P.)
+      if (isOkV && !isOk)
+      {
+        const occ::handle<Geom_Surface>& aSfil = DStr.Surface(Fd->Surf()).Surface();
+        isOk = CurveOnTwoByPoints(aSfil,
+                                  BRep_Tool::Surface(Fob),
+                                  IFopArc == 1 ? pfilQ : pfilP,
+                                  IFopArc == 1 ? pfilP : pfilQ,
+                                  10. * tolapp3d,
+                                  CcOb,
+                                  PsOb,
+                                  PcOb,
+                                  tolOb);
+        // (failed, it is none: the segment below is tried only after it)
+        if (!isOk)
+        {
+          CcOb.Nullify();
+        }
+      }
       ChFi3d_Boite(pvP, pvR, uu1, uu2, vv1, vv2);
       ChFi3d_BoundFac(Bs, uu1, uu2, vv1, vv2);
       ChFi3d_Boite(pobP, pobR, uu1, uu2, vv1, vv2);
