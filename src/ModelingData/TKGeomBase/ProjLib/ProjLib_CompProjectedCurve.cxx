@@ -443,6 +443,14 @@ static void DichExactBound(gp_Pnt&                               Sol,
   while (fabs(Sol.X() - aNotSol) > Tol)
   {
     t = (Sol.X() + aNotSol) / 2;
+    // Tol is the surface's tolerance over the projection's speed on it, which
+    // near a singular point can be below the spacing of doubles at t: the
+    // middle is then one of the ends, the interval no longer shrinks, and the
+    // loop never ended (#273's Fillet001, edge 12 at 0.3).
+    if (t == Sol.X() || t == aNotSol)
+    {
+      break;
+    }
     aPrjPS.Perform(t,
                    U0,
                    V0,
