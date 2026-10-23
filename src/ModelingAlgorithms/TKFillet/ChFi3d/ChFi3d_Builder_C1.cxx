@@ -3105,6 +3105,59 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
       return;
     }
 
+    // The stripe ended where its side on Fad met Arcpiv, its point on Fop
+    // inside Fop, and the fillet's line there runs on to an edge of Fop
+    // before it reaches Fv's surface: the line's end on that edge is where
+    // the cut runs off Fop, as if the stripe had ended there (#273's
+    // Fillet001, E40 -- the mirror of E39, whose side on Fop reached the
+    // edge first). Taken back below when the cut off Fop is not made.
+    const ChFiDS_CommonPoint aCPopIn     = CPopArc;
+    bool                     isCPopMoved = false;
+    if (!inters && !CPopArc.IsOnArc() && !c3df.IsNull() && FvT.IsNull() && Etan.IsNull()
+        && Arcprolbis.IsNull())
+    {
+      const double aParEnd = FiopArc.Parameter(isfirst);
+      const gp_Pnt aPEnd   = c3df->Value(aParEnd);
+      TopoDS_Edge  anEnd;
+      double       aParOnEnd = 0., aTolEnd = 0., aDMin = RealLast();
+      for (ex.Init(Fop, TopAbs_EDGE); ex.More(); ex.Next())
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(ex.Current());
+        if (BRep_Tool::Degenerated(anE) || hasVertex(anE, Vtx) || myEFMap(anE).Extent() != 2)
+        {
+          continue;
+        }
+        BRepAdaptor_Curve aCE(anE);
+        Extrema_ExtPC     anExt(aPEnd, aCE);
+        const double      aTol = std::max(BRep_Tool::Tolerance(anE), 10. * tolapp3d);
+        for (int i = 1; anExt.IsDone() && i <= anExt.NbExt(); i++)
+        {
+          const double aD = std::sqrt(anExt.SquareDistance(i));
+          if (aD <= aTol && aD < aDMin)
+          {
+            aDMin     = aD;
+            anEnd     = anE;
+            aParOnEnd = anExt.Point(i).Parameter();
+            aTolEnd   = aTol;
+          }
+        }
+      }
+      if (!anEnd.IsNull())
+      {
+        // the transition the walk gives a line ending on an arc (anEnd is
+        // as oriented in Fop)
+        TopAbs_Orientation aTr = TopAbs::Compose(FiopArc.Transition(), anEnd.Orientation());
+        if (isfirst)
+        {
+          aTr = TopAbs::Reverse(aTr);
+        }
+        CPopArc.Reset();
+        CPopArc.SetPoint(aPEnd);
+        CPopArc.SetArc(aTolEnd, anEnd, aParOnEnd, aTr);
+        isCPopMoved = true;
+      }
+    }
+
     // The cut runs off Fop: the fillet's line there, carried on past Vtx,
     // ends on an edge of Fop (Eob) before it reaches Fv's surface, and the
     // cap in Fv's surface would run past Fop too (#273's pocket in the
@@ -3207,6 +3260,10 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
           inters = true;
         }
       }
+    }
+    if (isCPopMoved && !offFop)
+    {
+      CPopArc = aCPopIn;
     }
   }
   else
