@@ -8038,6 +8038,35 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
       CV2.SetArc(tolapp3d, Edge[nbface], paredge2, arcOri);
     }
 
+    // A face of a B-spline or a Bezier -- a loft's plane among them -- ends
+    // at its bounds, where a plane runs on: the fillet's cut past them (the
+    // end beyond the face's edge, on its line) is on the surface extended,
+    // as it is on a plane; bounded, it was not found and the end was a plate
+    // (#631: a loft on a pad, the fillet of their joint at 4 bulging out of
+    // the pad's side)
+    if (!prolface[nb - 1] && !Sfacemoins1->IsUPeriodic() && !Sfacemoins1->IsVPeriodic()
+        && (Sfacemoins1->IsKind(STANDARD_TYPE(Geom_BSplineSurface))
+            || Sfacemoins1->IsKind(STANDARD_TYPE(Geom_BezierSurface))))
+    {
+      double aU1, aU2, aV1, aV2;
+      Sfacemoins1->Bounds(aU1, aU2, aV1, aV2);
+      const double aTolU = Precision::PConfusion() * std::max(1., aU2 - aU1);
+      const double aTolV = Precision::PConfusion() * std::max(1., aV2 - aV1);
+      const auto   isOut = [&](const gp_Pnt2d& theP) {
+        return theP.X() < aU1 - aTolU || theP.X() > aU2 + aTolU || theP.Y() < aV1 - aTolV
+               || theP.Y() > aV2 + aTolV;
+      };
+      if (isOut(pfac1) || isOut(pfac2))
+      {
+        ChFi3d_ExtendSurface(Sfacemoins1, prolface[nb - 1]);
+        if (prolface[nb - 1])
+        {
+          BRep_Builder BRE;
+          BRE.MakeFace(faceprol[nb - 1], Sfacemoins1, F.Location(), BRep_Tool::Tolerance(F));
+        }
+      }
+    }
+
     if (prolface[nb - 1])
     {
       Bs.Initialize(faceprol[nb - 1]);
