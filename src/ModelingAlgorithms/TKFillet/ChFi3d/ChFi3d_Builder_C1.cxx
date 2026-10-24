@@ -2103,8 +2103,20 @@ static bool MakeFlatEnd(
   {
     return false;
   }
-  double            wo = Fio.Parameter(isFirst);
-  gp_Pnt            Po = CVo.Point();
+  const double      wo0 = Fio.Parameter(isFirst);
+  double            wo  = wo0;
+  gp_Pnt            Po  = CVo.Point();
+  // A line run on past the point (a KPart's, to its face's edge): the end is
+  // the point, where it lies on the line
+  if (aLo->Value(wo).Distance(Po) > Tol3d)
+  {
+    GeomAPI_ProjectPointOnCurve aProjO(Po, aLo, Fio.FirstParameter(), Fio.LastParameter());
+    if (aProjO.NbPoints() == 0 || aProjO.LowerDistance() > 10 * Tol3d)
+    {
+      return false;
+    }
+    wo = aProjO.LowerDistanceParameter();
+  }
   BRepAdaptor_Curve aCpr(Arcprol);
   const double      parVpr = BRep_Tool::Parameter(Vtx, Arcprol);
   gp_Vec            aDpr, aTo;
@@ -2344,9 +2356,12 @@ static bool MakeFlatEnd(
                                               TopOpeBRepDS_SURFACE,
                                               IsurfC));
   // the points
-  if (Po.Distance(CVo.Point()) > Precision::Confusion())
+  if (wo != wo0)
   {
     Fd->ChangeInterference(Io).SetParameter(wo, isFirst);
+  }
+  if (Po.Distance(CVo.Point()) > Precision::Confusion())
+  {
     CVo.Reset();
     CVo.SetPoint(Po);
     CVo.SetTolerance(std::max(aPln.Distance(Po), Precision::Confusion()));
