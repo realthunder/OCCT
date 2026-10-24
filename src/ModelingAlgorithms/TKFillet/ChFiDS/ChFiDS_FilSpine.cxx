@@ -993,6 +993,32 @@ occ::handle<Law_Function>& ChFiDS_FilSpine::ChangeLaw(const TopoDS_Edge& E)
 
 //=================================================================================================
 
+bool ChFiDS_FilSpine::RadiusAtEnd(const bool isFirst, double& theRadius) const
+{
+  const int anIE = isFirst ? 1 : NbEdges();
+  if (anIE < 1)
+  {
+    return false;
+  }
+  if (IsConstant(anIE))
+  {
+    theRadius = Radius(anIE);
+    return true;
+  }
+  const double aW = isFirst ? FirstParameter(1) : LastParameter(NbEdges());
+  for (int i = 1; i <= parandrad.Length(); i++)
+  {
+    if (std::abs(parandrad.Value(i).X() - aW) <= Precision::PConfusion())
+    {
+      theRadius = parandrad.Value(i).Y();
+      return true;
+    }
+  }
+  return false;
+}
+
+//=================================================================================================
+
 double ChFiDS_FilSpine::MaxRadFromSeqAndLaws() const
 {
   double MaxRad = 0.;

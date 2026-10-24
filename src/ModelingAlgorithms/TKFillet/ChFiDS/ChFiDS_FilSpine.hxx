@@ -96,6 +96,11 @@ public:
   //! returns the maximum radius if the fillet is non-constant
   Standard_EXPORT double MaxRadFromSeqAndLaws() const;
 
+  //! The radius at the first end (<isFirst>) or the last: the end edge's
+  //! constant one, else the one set at the end's parameter. False, and
+  //! <theRadius> untouched, where neither is set (a law).
+  Standard_EXPORT bool RadiusAtEnd(const bool isFirst, double& theRadius) const;
+
   //! Sets the setback of the contour's first end (<isFirst>) or last end:
   //! the stripe stops <theDist> from the end's vertex, measured along the
   //! spine, and the corner there is filled by one patch over the opening

@@ -516,7 +516,10 @@ occ::handle<TopOpeBRepBuild_HBuilder> BRepFilletAPI_MakeFillet::Builder() const
 
 void BRepFilletAPI_MakeFillet::Build(const Message_ProgressRange& /*theRange*/)
 {
-  myBuilder.Compute();
+  // with the flat end at a vertex, a narrow tip both rims of which are
+  // filleted is filleted along it too, the three making the corner -- and
+  // where they cannot, left as the two make it
+  myBuilder.ComputeWithFlatEndCorners();
   if (myBuilder.IsDone())
   {
     Done();

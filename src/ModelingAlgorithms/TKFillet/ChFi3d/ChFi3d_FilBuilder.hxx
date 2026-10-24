@@ -68,6 +68,11 @@ public:
   //! initialisation of the constant vector the corresponding 1st edge.
   Standard_EXPORT void Add(const double Radius, const TopoDS_Edge& E);
 
+  //! Compute(), and with the flat end at a vertex on (SetFlatEndAtVertex)
+  //! the edges AddCornerEdgesAtFlatEnds() adds filleted too; where that is
+  //! not done, those edges are removed and it is computed without them.
+  Standard_EXPORT void ComputeWithFlatEndCorners();
+
   //! Set the radius of the contour of index IC.
   Standard_EXPORT void SetRadius(const occ::handle<Law_Function>& C, const int IC, const int IinC);
 
@@ -128,6 +133,14 @@ public:
                                                                             const int IS) const;
 
 protected:
+  //! With the flat end at a vertex on (SetFlatEndAtVertex): at each vertex
+  //! of three faces where two contours end, on its two convex edges at an
+  //! acute angle, and its third edge, concave, is in none -- a pocket's
+  //! narrow tip, both rims filleted -- adds that edge, at the radius both
+  //! have there, so the three fillets make the corner in the tip and the
+  //! two do not meet past it. Appends each edge added to <theAdded>.
+  Standard_EXPORT void AddCornerEdgesAtFlatEnds(NCollection_List<TopoDS_Shape>& theAdded);
+
   Standard_EXPORT void SimulKPart(const occ::handle<ChFiDS_SurfData>& SD) const override;
 
   Standard_EXPORT bool SimulSurf(occ::handle<ChFiDS_SurfData>&           Data,

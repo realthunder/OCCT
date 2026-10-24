@@ -1085,7 +1085,11 @@ gp_Dir OutwardNormalAt(const TopoDS_Face& theF, const gp_Pnt& theP)
 // radius there, which is the least a set back corner takes -- is not
 // looked at: it is under the corner's patch, which passes nearer to it than
 // a fillet would (a fillet along a wall kept in pieces, the piece at the
-// corner shorter than the radius: refused for it, each time, valid).
+// corner shorter than the radius: refused for it, each time, valid). Half
+// the radius is the most asked: a fillet that fills a narrow corner moves
+// the edge's middle further from its faces than from the others round it --
+// #273's pocket tip, 22 deg and 1 deep, filled at 0.3, 1.28 from its fillet
+// and 0.5 from the top and the floor.
 bool AreFilletsMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
                     const ChFiDS_Map&                                   theEFMap,
                     const TopoDS_Shape&                                 theResult)
@@ -1154,7 +1158,7 @@ bool AreFilletsMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStrip
         }
       }
       BRepExtrema_DistShapeShape aDist(BRepBuilderAPI_MakeVertex(aMid).Vertex(), aFaces);
-      if (!aDist.IsDone() || aDist.Value() < std::max(0.5 * aMove, 1.e-6))
+      if (!aDist.IsDone() || aDist.Value() < std::max(0.5 * std::min(aMove, aR), 1.e-6))
       {
         return false;
       }

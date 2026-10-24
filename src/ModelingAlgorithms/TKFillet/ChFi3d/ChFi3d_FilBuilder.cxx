@@ -32,7 +32,15 @@
 #include <BRepBlend_SurfRstConstRad.hxx>
 #include <BRepBlend_SurfRstEvolRad.hxx>
 #include <BRepBlend_Walking.hxx>
+#include <BRep_Tool.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <ChFi3d.hxx>
 #include <ChFi3d_Builder_0.hxx>
+#include <NCollection_IndexedDataMap.hxx>
+#include <NCollection_Map.hxx>
+#include <Standard_ErrorHandler.hxx>
+#include <TopoDS.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <ChFi3d_FilBuilder.hxx>
 #include <ChFi3d_SearchSing.hxx>
 #include <ChFiDS_ErrorStatus.hxx>
@@ -226,6 +234,168 @@ void ChFi3d_FilBuilder::Add(const double Radius, const TopoDS_Edge& E)
   if (IC)
   {
     SetRadius(Radius, IC, E);
+  }
+}
+
+//=================================================================================================
+
+void ChFi3d_FilBuilder::ComputeWithFlatEndCorners()
+{
+  NCollection_List<TopoDS_Shape> anAdded;
+  AddCornerEdgesAtFlatEnds(anAdded);
+  Compute();
+  if (done || anAdded.IsEmpty())
+  {
+    return;
+  }
+  // the corner as the two make it: the edges removed, and the computation
+  // from a topological builder of its own, as the fallbacks take one (a
+  // builder a computation failed in crashes the next)
+  for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next())
+  {
+    Remove(TopoDS::Edge(it.Value()));
+  }
+  Reset();
+  myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
+  Compute();
+}
+
+//=================================================================================================
+
+void ChFi3d_FilBuilder::AddCornerEdgesAtFlatEnds(NCollection_List<TopoDS_Shape>& theAdded)
+{
+  if (!ChFi3d_Builder::FlatEndAtVertex())
+  {
+    return;
+  }
+  // the contours' ends, by vertex: the contour, the edge at the end, and the
+  // radius there where one is set
+  struct ContourEnd
+  {
+    int         IC;
+    TopoDS_Edge E;
+    double      R;
+    bool        HasR;
+  };
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<ContourEnd>, TopTools_ShapeMapHasher>
+    anEnds;
+  for (int IC = 1; IC <= NbElements(); IC++)
+  {
+    const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(Value(IC));
+    if (aSp.IsNull() || aSp->NbEdges() < 1 || aSp->IsClosed())
+    {
+      continue;
+    }
+    for (int k = 0; k < 2; k++)
+    {
+      const bool          isFirst = k == 0;
+      const TopoDS_Vertex aV      = isFirst ? aSp->FirstVertex() : aSp->LastVertex();
+      ContourEnd          anEnd;
+      anEnd.IC   = IC;
+      anEnd.E    = aSp->Edges(isFirst ? 1 : aSp->NbEdges());
+      anEnd.R    = 0.;
+      anEnd.HasR = aSp->RadiusAtEnd(isFirst, anEnd.R);
+      if (!anEnds.Contains(aV))
+      {
+        anEnds.Add(aV, NCollection_List<ContourEnd>());
+      }
+      anEnds.ChangeFromKey(aV).Append(anEnd);
+    }
+  }
+  // the edge's way away from <theV>, at <theV>
+  auto aWayFrom = [](const TopoDS_Edge& theE, const TopoDS_Vertex& theV, gp_Vec& theD) {
+    BRepAdaptor_Curve aC(theE);
+    const double      aPar = BRep_Tool::Parameter(theV, theE);
+    gp_Pnt            aP;
+    aC.D1(aPar, aP, theD);
+    if (theD.Magnitude() <= gp::Resolution())
+    {
+      return false;
+    }
+    if (std::abs(aPar - aC.LastParameter()) < std::abs(aPar - aC.FirstParameter()))
+    {
+      theD.Reverse();
+    }
+    theD.Normalize();
+    return true;
+  };
+  // the concavity of <theE> between its two faces
+  auto aConnect = [&](const TopoDS_Edge& theE) {
+    if (!myEFMap.Contains(theE) || myEFMap.FindFromKey(theE).Extent() != 2)
+    {
+      return ChFiDS_Mixed;
+    }
+    const NCollection_List<TopoDS_Shape>& aFs = myEFMap.FindFromKey(theE);
+    if (aFs.First().IsSame(aFs.Last()))
+    {
+      return ChFiDS_Mixed;
+    }
+    return ChFi3d::DefineConnectType(theE,
+                                     TopoDS::Face(aFs.First()),
+                                     TopoDS::Face(aFs.Last()),
+                                     1.e-5,
+                                     true);
+  };
+  for (int i = 1; i <= anEnds.Extent(); i++)
+  {
+    const TopoDS_Vertex&                  aV  = TopoDS::Vertex(anEnds.FindKey(i));
+    const NCollection_List<ContourEnd>&   aCE = anEnds.FindFromIndex(i);
+    if (aCE.Extent() != 2 || aCE.First().IC == aCE.Last().IC || !aCE.First().HasR
+        || !aCE.Last().HasR || std::abs(aCE.First().R - aCE.Last().R) > Precision::Confusion()
+        || !myVEMap.Contains(aV) || !myVFMap.Contains(aV))
+    {
+      continue;
+    }
+    // three faces and three edges, the third in no contour
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFaces, anEdges;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(myVFMap.FindFromKey(aV)); it.More(); it.Next())
+    {
+      aFaces.Add(it.Value());
+    }
+    TopoDS_Edge anEu;
+    bool        isDegenerated = false;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(myVEMap.FindFromKey(aV)); it.More(); it.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(it.Value());
+      isDegenerated          = isDegenerated || BRep_Tool::Degenerated(anE);
+      if (anEdges.Add(anE) && !anE.IsSame(aCE.First().E) && !anE.IsSame(aCE.Last().E))
+      {
+        anEu = anE;
+      }
+    }
+    if (aFaces.Extent() != 3 || anEdges.Extent() != 3 || isDegenerated || anEu.IsNull()
+        || Contains(anEu) != 0)
+    {
+      continue;
+    }
+    // a narrow tip: the rims convex, at an acute angle, the third edge concave
+    gp_Vec aD1, aD2;
+    if (aConnect(aCE.First().E) != ChFiDS_Convex || aConnect(aCE.Last().E) != ChFiDS_Convex
+        || aConnect(anEu) != ChFiDS_Concave || !aWayFrom(aCE.First().E, aV, aD1)
+        || !aWayFrom(aCE.Last().E, aV, aD2) || aD1.Dot(aD2) <= Precision::Angular())
+    {
+      continue;
+    }
+    const double aR = aCE.First().R;
+    try
+    {
+      OCC_CATCH_SIGNALS
+      Add(anEu);
+      const int IC = Contains(anEu);
+      if (IC == 0)
+      {
+        continue;
+      }
+      occ::down_cast<ChFiDS_FilSpine>(Value(IC))->SetRadius(aR);
+      theAdded.Append(anEu);
+    }
+    catch (Standard_Failure const&)
+    {
+      if (Contains(anEu) != 0)
+      {
+        Remove(anEu);
+      }
+    }
   }
 }
 
