@@ -248,16 +248,78 @@ void ChFi3d_FilBuilder::ComputeWithFlatEndCorners()
   {
     return;
   }
-  // the corner as the two make it: the edges removed, and the computation
-  // from a topological builder of its own, as the fallbacks take one (a
-  // builder a computation failed in crashes the next)
+  // each try from a topological builder of its own, as the fallbacks take
+  // one (a builder a computation failed in crashes the next)
+  const auto aRecompute = [this]() {
+    Reset();
+    myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
+    Compute();
+  };
+  // the edges at half the radius, then a quarter, an eighth: at the two's
+  // radius the tip's fillet may fill it further back than its faces reach
+  // (r (1 / sin(a / 2) - 1) along the axis), a 10 deg tip 8 long at 0.8.
+  // Each edge is removed and added again: a spine a computation failed on
+  // has lost its abscissa, which setting its radius reads
+  NCollection_List<double> aRadii;
+  try
+  {
+    OCC_CATCH_SIGNALS
+    for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next())
+    {
+      const int IC = Contains(TopoDS::Edge(it.Value()));
+      if (IC == 0)
+      {
+        break;
+      }
+      aRadii.Append(occ::down_cast<ChFiDS_FilSpine>(Value(IC))->Radius());
+    }
+  }
+  catch (Standard_Failure const&)
+  {
+    aRadii.Clear();
+  }
+  for (int aTry = 0; aTry < 3 && !done && aRadii.Size() == anAdded.Size(); aTry++)
+  {
+    bool isSet = true;
+    try
+    {
+      OCC_CATCH_SIGNALS
+      NCollection_List<double>::Iterator itR(aRadii);
+      for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next(), itR.Next())
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(it.Value());
+        itR.ChangeValue() *= 0.5;
+        Remove(anE);
+        Add(anE);
+        const int IC = Contains(anE);
+        if (IC == 0)
+        {
+          isSet = false;
+          break;
+        }
+        occ::down_cast<ChFiDS_FilSpine>(Value(IC))->SetRadius(itR.Value());
+      }
+    }
+    catch (Standard_Failure const&)
+    {
+      isSet = false;
+    }
+    if (!isSet)
+    {
+      break;
+    }
+    aRecompute();
+  }
+  if (done)
+  {
+    return;
+  }
+  // the corner as the two make it: the edges removed
   for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next())
   {
     Remove(TopoDS::Edge(it.Value()));
   }
-  Reset();
-  myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
-  Compute();
+  aRecompute();
 }
 
 //=================================================================================================

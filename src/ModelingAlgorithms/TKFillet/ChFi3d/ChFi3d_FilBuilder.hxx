@@ -70,7 +70,8 @@ public:
 
   //! Compute(), and with the flat end at a vertex on (SetFlatEndAtVertex)
   //! the edges AddCornerEdgesAtFlatEnds() adds filleted too; where that is
-  //! not done, those edges are removed and it is computed without them.
+  //! not done, again at half their radius, a quarter and an eighth, and then
+  //! those edges are removed and it is computed without them.
   Standard_EXPORT void ComputeWithFlatEndCorners();
 
   //! Set the radius of the contour of index IC.
