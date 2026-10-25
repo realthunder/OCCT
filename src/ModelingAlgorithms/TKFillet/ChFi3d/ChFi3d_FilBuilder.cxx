@@ -241,13 +241,6 @@ void ChFi3d_FilBuilder::Add(const double Radius, const TopoDS_Edge& E)
 
 void ChFi3d_FilBuilder::ComputeWithFlatEndCorners()
 {
-  NCollection_List<TopoDS_Shape> anAdded;
-  AddCornerEdgesAtFlatEnds(anAdded);
-  Compute();
-  if (done || anAdded.IsEmpty())
-  {
-    return;
-  }
   // each try from a topological builder of its own, as the fallbacks take
   // one (a builder a computation failed in crashes the next)
   const auto aRecompute = [this]() {
@@ -255,6 +248,36 @@ void ChFi3d_FilBuilder::ComputeWithFlatEndCorners()
     myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
     Compute();
   };
+
+  // Last, where all of it failed and an end found no cap: once more, the
+  // ends whose line misses the face at end whole made flat
+  // (ChFi3d_MissedFlatEnd; #962's ring)
+  struct FlagGuard
+  {
+    ~FlagGuard()
+    {
+      ChFi3d_UncappedEnd()   = false;
+      ChFi3d_MissedFlatEnd() = false;
+    }
+  } aGuard;
+
+  const auto aMissedFlatEnds = [this, &aRecompute]() {
+    if (!done && ChFi3d_UncappedEnd())
+    {
+      ChFi3d_MissedFlatEnd() = true;
+      aRecompute();
+    }
+  };
+  ChFi3d_UncappedEnd() = false;
+
+  NCollection_List<TopoDS_Shape> anAdded;
+  AddCornerEdgesAtFlatEnds(anAdded);
+  Compute();
+  if (done || anAdded.IsEmpty())
+  {
+    aMissedFlatEnds();
+    return;
+  }
   // the edges at half the radius, then a quarter, an eighth: at the two's
   // radius the tip's fillet may fill it further back than its faces reach
   // (r (1 / sin(a / 2) - 1) along the axis), a 10 deg tip 8 long at 0.8.
@@ -320,6 +343,7 @@ void ChFi3d_FilBuilder::ComputeWithFlatEndCorners()
     Remove(TopoDS::Edge(it.Value()));
   }
   aRecompute();
+  aMissedFlatEnds();
 }
 
 //=================================================================================================

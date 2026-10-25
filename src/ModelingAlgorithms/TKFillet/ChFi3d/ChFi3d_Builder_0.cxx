@@ -101,6 +101,22 @@ bool& ChFi3d_LongSpineExtension()
 
 //=================================================================================================
 
+bool& ChFi3d_UncappedEnd()
+{
+  thread_local bool isUncapped = false;
+  return isUncapped;
+}
+
+//=================================================================================================
+
+bool& ChFi3d_MissedFlatEnd()
+{
+  thread_local bool isMissed = false;
+  return isMissed;
+}
+
+//=================================================================================================
+
 NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners()
 {
   thread_local NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aPlates;

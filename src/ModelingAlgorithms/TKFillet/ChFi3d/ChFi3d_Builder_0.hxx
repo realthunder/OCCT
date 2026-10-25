@@ -65,6 +65,18 @@ double ChFi3d_InPeriod(const double U, const double UFirst, const double ULast, 
 //! a fillet failed at the end of an edge short for its radius.
 bool& ChFi3d_LongSpineExtension();
 
+//! Set where a corner found no cap at a fillet's end OnSame and failed
+//! ("OneCorner : bouchon non ecrit") while the flat end at a vertex is on,
+//! and cleared by ChFi3d_FilBuilder::ComputeWithFlatEndCorners, which reads
+//! it: the calling thread's.
+bool& ChFi3d_UncappedEnd();
+
+//! Set while ChFi3d_FilBuilder::ComputeWithFlatEndCorners computes once more,
+//! everything else failed and an end found no cap (ChFi3d_UncappedEnd):
+//! where the fillet's line on its face, carried on, misses the face at end
+//! whole, the end is made flat (MakeFlatEnd, ChFi3d_Builder_C1.cxx).
+bool& ChFi3d_MissedFlatEnd();
+
 //! The vertices where the computation running built a corner's plate
 //! (ChFi3d_Builder::PerformMoreThreeCorner), the calling thread's:
 //! ChFi3d_Builder::Compute sets those back where the result is invalid.

@@ -55,6 +55,7 @@
 #include <Geom2dAPI_Interpolate.hxx>
 #include <Geom2dInt_GInter.hxx>
 #include <Geom_BezierSurface.hxx>
+#include <Geom_Conic.hxx>
 #include <Geom_Line.hxx>
 #include <Geom_Plane.hxx>
 #include <GeomAPI_IntCS.hxx>
@@ -1963,6 +1964,32 @@ static bool IsKeptLeft(const occ::handle<Geom_Surface>& theS,
   return NormalAt(theS, thePc->Value(w)).Crossed(aT).Dot(theKept) > 0.;
 }
 
+// Whether the line or conic <theC>, carried on whole, never meets the
+// surface of <theF>: a fillet's line that the face at its end, carried on,
+// does not reach anywhere. False for any other curve, whose extension is
+// not known.
+static bool NeverMeets(const occ::handle<Geom_Curve>& theC, const TopoDS_Face& theF)
+{
+  occ::handle<Geom_Curve> aC = theC;
+  while (!occ::down_cast<Geom_TrimmedCurve>(aC).IsNull())
+  {
+    aC = occ::down_cast<Geom_TrimmedCurve>(aC)->BasisCurve();
+  }
+  if (occ::down_cast<Geom_Line>(aC).IsNull() && occ::down_cast<Geom_Conic>(aC).IsNull())
+  {
+    return false;
+  }
+  occ::handle<Geom_Surface>                         aS = BRep_Tool::Surface(theF);
+  const occ::handle<Geom_RectangularTrimmedSurface> aTrimmed =
+    occ::down_cast<Geom_RectangularTrimmedSurface>(aS);
+  if (!aTrimmed.IsNull())
+  {
+    aS = aTrimmed->BasisSurface();
+  }
+  GeomAPI_IntCS anInt(aC, aS);
+  return anInt.IsDone() && anInt.NbPoints() == 0 && anInt.NbSegments() == 0;
+}
+
 //=======================================================================
 // function : MakeFlatEnd
 // purpose  : The end of a fillet at <Vtx> flat (ChFi3d_Builder::
@@ -1972,7 +1999,10 @@ static bool IsKeptLeft(const occ::handle<Geom_Surface>& theS,
 //           (Fo). The face at end, carried on, would meet that line only
 //           past <Vtx>, along its other edge at <Vtx> (Arcprol, which Fo
 //           shares) carried on: the far side of a pocket's acute tip, where
-//           the cap would cut a groove into the body beyond the tip. The
+//           the cap would cut a groove into the body beyond the tip. Or,
+//           <theMissed>, the cap was not made (IntersUpdateOnSame, and the
+//           cut off Fop, found nothing) and Fo's line, a line or a conic, the
+//           face at end carried on meets nowhere (#962's ring). The
 //           fillet ends instead in the plane through <Vtx> and the first
 //           side's point on Epiv, as square to the spine as that allows. The
 //           face it leaves there, flat, lies between the section, the piece
@@ -1996,7 +2026,8 @@ static bool MakeFlatEnd(
   const ChFiDS_Map&                                                                  VFMap,
   const double                                                                       Tol3d,
   const double                                                                       Tol2d,
-  NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>& EVIMap)
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>& EVIMap,
+  const bool                                                                         theMissed)
 {
   if (Fd->Index(1) <= 0 || Fd->Index(2) <= 0 || Fd->Surf() <= 0
       || DStr.Shape(Fd->Index(1)).ShapeType() != TopAbs_FACE
@@ -2145,7 +2176,14 @@ static bool MakeFlatEnd(
   const gp_Pnt aX   = aPl.Translated(aTo * (-gp_Vec(PV, aPl).Crossed(aDpr).Dot(aNoU) / aDen));
   const double aLam = gp_Vec(PV, aX).Dot(aDpr);
   const double aSig = gp_Vec(PV, aX).Dot(aTS);
-  if (aLam >= -10 * Tol3d || aSig >= -10 * Tol3d)
+  // Or, asked once the cap was not made, Fo's line, carried on whole, never
+  // meets the face at end. #962's ring: its rim's fillet ends where an arm's
+  // side leaves the rim 18.6 deg off its tangent, and the line on the floor,
+  // a circle of radius R - r, misses the side's plane, carried back through
+  // the ring, from r = R (1 - cos 18.6 deg), 1.03 -- the tangent above still
+  // crosses Arcprol's line, behind Vtx.
+  const bool isMissed = aLam >= -10 * Tol3d || aSig >= -10 * Tol3d;
+  if (isMissed != theMissed || (isMissed && !NeverMeets(aLo, Fv)))
   {
     return false;
   }
@@ -2205,15 +2243,19 @@ static bool MakeFlatEnd(
     {
       return false;
     }
+    // Where no cap could be made, the point in the air is not yet the
+    // line's (#962's ring: on the far side of the gap, its crossing nearest
+    // a turn away): the crossing nearest Vtx
     const double aWs   = wo;
     double       aBest = RealLast();
     for (int i = 1; i <= anInt.NbPoints(); i++)
     {
       double aU, aV, aW;
       anInt.Parameters(i, aU, aV, aW);
-      if (std::abs(aW - aWs) < aBest)
+      const double aD = isMissed ? PV.Distance(anInt.Point(i)) : std::abs(aW - aWs);
+      if (aD < aBest)
       {
-        aBest = std::abs(aW - aWs);
+        aBest = aD;
         wo    = aW;
       }
     }
@@ -2262,16 +2304,29 @@ static bool MakeFlatEnd(
   }
 
   // the section, from side 1 to side 2, as the corners put their curves
-  const occ::handle<Geom_Surface>&       aSfil = DStr.Surface(Fd->Surf()).Surface();
-  const occ::handle<GeomAdaptor_Surface> aHGs  = new GeomAdaptor_Surface(aSfil);
-  const gp_Pnt2d                         aUVsp = Fip.PCurveOnSurf()->Value(Fip.Parameter(isFirst));
-  const gp_Pnt2d                         aUVso = Fio.PCurveOnSurf()->Value(wo);
-  const gp_Pnt2d                         aUVlp(aUP1, aVP1), aUVlo(aUP2, aVP2);
-  const gp_Pnt2d&                        aUVs1 = Ip == 1 ? aUVsp : aUVso;
-  const gp_Pnt2d&                        aUVs2 = Ip == 1 ? aUVso : aUVsp;
-  const gp_Pnt2d&                        aUVl1 = Ip == 1 ? aUVlp : aUVlo;
-  const gp_Pnt2d&                        aUVl2 = Ip == 1 ? aUVlo : aUVlp;
-  NCollection_Array1<double>             Pardeb(1, 4), Parfin(1, 4);
+  const occ::handle<Geom_Surface>& aSfil = DStr.Surface(Fd->Surf()).Surface();
+  occ::handle<GeomAdaptor_Surface> aHGs  = new GeomAdaptor_Surface(aSfil);
+  const gp_Pnt2d                   aUVsp = Fip.PCurveOnSurf()->Value(Fip.Parameter(isFirst));
+  const gp_Pnt2d                   aUVso = Fio.PCurveOnSurf()->Value(wo);
+  if (isMissed)
+  {
+    // The fillet's surface about the section's ends only: a torus meets a
+    // plane through its axis in whole circles, and the section ran the long
+    // way round the tube (#962's ring, three quarters of it)
+    const double aDu = std::abs(aUVsp.X() - aUVso.X()), aDv = std::abs(aUVsp.Y() - aUVso.Y());
+    const double aMarg = std::max({aDu, aDv, 1.e-3});
+    aHGs               = new GeomAdaptor_Surface(aSfil,
+                                   std::min(aUVsp.X(), aUVso.X()) - aMarg,
+                                   std::max(aUVsp.X(), aUVso.X()) + aMarg,
+                                   std::min(aUVsp.Y(), aUVso.Y()) - 0.1 * aMarg,
+                                   std::max(aUVsp.Y(), aUVso.Y()) + 0.1 * aMarg);
+  }
+  const gp_Pnt2d             aUVlp(aUP1, aVP1), aUVlo(aUP2, aVP2);
+  const gp_Pnt2d&            aUVs1 = Ip == 1 ? aUVsp : aUVso;
+  const gp_Pnt2d&            aUVs2 = Ip == 1 ? aUVso : aUVsp;
+  const gp_Pnt2d&            aUVl1 = Ip == 1 ? aUVlp : aUVlo;
+  const gp_Pnt2d&            aUVl2 = Ip == 1 ? aUVlo : aUVlp;
+  NCollection_Array1<double> Pardeb(1, 4), Parfin(1, 4);
   Pardeb(1) = aUVs1.X();
   Pardeb(2) = aUVs1.Y();
   Pardeb(3) = aUVl1.X();
@@ -2585,6 +2640,9 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
   ChFi3d_InitChron(ch); // init perf condition  if (onsame)
 #endif
 
+  // the end as it was, for the flat end where no cap is made (below)
+  const ChFiDS_CommonPoint      aCVIn1 = Fd->Vertex(isfirst, 1), aCVIn2 = Fd->Vertex(isfirst, 2);
+  const ChFiDS_FaceInterference aFiIn1 = Fd->Interference(1), aFiIn2 = Fd->Interference(2);
   if (onsame)
   {
     // Where the cap in the face at end would cut into the body past Vtx,
@@ -2602,7 +2660,8 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
                        myVFMap,
                        tolapp3d,
                        tol2d,
-                       myEVIMap))
+                       myEVIMap,
+                       false))
     {
       return;
     }
@@ -3279,6 +3338,48 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
     if (isCPopMoved && !offFop)
     {
       CPopArc = aCPopIn;
+    }
+
+    // No cap: where Fo's line misses the face at end whole, the end flat,
+    // if asked for, from the end as it was -- only once everything else
+    // failed (ChFi3d_MissedFlatEnd): a fillet refused here can still be made
+    // by the fallbacks after it (#273's D-hole, its flat's rim at the bottom,
+    // E36: the line on the bottom face passes the hole's cylinder, and the
+    // corner setback fallback, the end set back, takes it round into it)
+    if (!inters && !theAtFourEdges && stat == ChFiDS_OnSame && ChFi3d_Builder::FlatEndAtVertex()
+        && !ChFi3d_MissedFlatEnd())
+    {
+      ChFi3d_UncappedEnd() = true;
+    }
+    else if (!inters && !theAtFourEdges && stat == ChFiDS_OnSame
+             && ChFi3d_Builder::FlatEndAtVertex())
+    {
+      const ChFiDS_CommonPoint      aCV1 = Fd->Vertex(isfirst, 1), aCV2 = Fd->Vertex(isfirst, 2);
+      const ChFiDS_FaceInterference aFi1 = Fd->Interference(1), aFi2 = Fd->Interference(2);
+      Fd->ChangeVertex(isfirst, 1) = aCVIn1;
+      Fd->ChangeVertex(isfirst, 2) = aCVIn2;
+      Fd->ChangeInterference(1)    = aFiIn1;
+      Fd->ChangeInterference(2)    = aFiIn2;
+      if (MakeFlatEnd(DStr,
+                      stripe,
+                      Fd,
+                      isfirst,
+                      Vtx,
+                      Arcspine,
+                      myVEMap,
+                      myEFMap,
+                      myVFMap,
+                      tolapp3d,
+                      tol2d,
+                      myEVIMap,
+                      true))
+      {
+        return;
+      }
+      Fd->ChangeVertex(isfirst, 1) = aCV1;
+      Fd->ChangeVertex(isfirst, 2) = aCV2;
+      Fd->ChangeInterference(1)    = aFi1;
+      Fd->ChangeInterference(2)    = aFi2;
     }
   }
   else
