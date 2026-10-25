@@ -1972,6 +1972,11 @@ void ChFi3d_Builder::Compute()
         ChFi3d_PlateCorners().Clear();
       }
     } anOpposite;
+    // A fresh builder of the result, as each fallback takes one: Reset()
+    // leaves myCoup holding the pieces of the computation before, and a
+    // Build again after a result was refused -- BRepBuilderAPI_MakeShape::
+    // Shape() runs one -- made the input from them, unchanged, and done
+    myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
     std::exception_ptr aFailure;
     try
     {
