@@ -2073,10 +2073,23 @@ void ChFi3d_Builder::Compute()
         }
       }
     }
+    // A result BRepCheck finds invalid is no result: refused, the computation
+    // not done, the shape kept for BadShape(). Before the long extension,
+    // which may make it valid, and after it, which may give it back as it was
+    const auto RefuseInvalid = [this]() {
+      if (done && !BRepCheck_Analyzer(myShapeResult).IsValid())
+      {
+        badShape  = myShapeResult;
+        hasresult = true;
+        done      = false;
+      }
+    };
+    RefuseInvalid();
     if (!done)
     {
       ComputeLongExtension();
     }
+    RefuseInvalid();
     if (aFailure && !done)
     {
       std::rethrow_exception(aFailure);
