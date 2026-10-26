@@ -61,6 +61,7 @@
 #include <atomic>
 #include <exception>
 #include <sstream>
+#include <vector>
 #include <BRep_Builder.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
@@ -537,8 +538,10 @@ static void ChFi3d_EdgesCoverTheirPCurves(const TopoDS_Shape& theResult,
 // the face split there in two, each bounded by one loop of its wire -- only
 // where both loops bound a region, not where a loop round a hole touches
 // the outer one. The same with two vertices the fillet made, and with one
-// of the loops a single edge from one to the other (FindPinch). Returns the
-// history of the change, null when there was none.
+// of the loops a single edge from one to the other, and with a wire through
+// one vertex twice, the face's other wires to the piece they lie in (#876's
+// post, the fillet's end flat on the plate's rim, MakeRimFlatEnd)
+// (FindPinch). Returns the history of the change, null when there was none.
 
 namespace
 {
@@ -551,6 +554,7 @@ struct PinchedFace
   NCollection_Sequence<TopoDS_Shape> Ordered; // the wire's edges in order
   int                                K1 = 0;  // the edges ending at the point
   int                                K2 = 0;
+  NCollection_List<TopoDS_Shape>     Holes; // the face's other wires
 };
 
 // The wire of <theP> from the edge after <theFrom>, <theNb> edges, with the
@@ -586,13 +590,42 @@ bool FindPinch(const TopoDS_Face&                                               
 {
   TopoDS_Wire aW;
   int         aNbW = 0;
+  theP.Holes.Clear();
   for (TopExp_Explorer exW(theF, TopAbs_WIRE); exW.More(); exW.Next(), aNbW++)
   {
     aW = TopoDS::Wire(exW.Current());
   }
   if (aNbW != 1)
   {
-    return false;
+    // with holes, only a wire through one vertex twice (below): that wire,
+    // the others holes in one piece or the other
+    TopoDS_Wire aPinched;
+    for (TopExp_Explorer exW(theF, TopAbs_WIRE); exW.More(); exW.Next())
+    {
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+      bool                                                   isTwice = false;
+      for (TopoDS_Iterator itE(exW.Current()); itE.More() && !isTwice; itE.Next())
+      {
+        isTwice = !aSeen.Add(TopExp::LastVertex(TopoDS::Edge(itE.Value()), true));
+      }
+      if (isTwice && !aPinched.IsNull())
+      {
+        return false;
+      }
+      if (isTwice)
+      {
+        aPinched = TopoDS::Wire(exW.Current());
+      }
+      else
+      {
+        theP.Holes.Append(exW.Current());
+      }
+    }
+    if (aPinched.IsNull())
+    {
+      return false;
+    }
+    aW = aPinched;
   }
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aWV;
   TopExp::MapShapes(aW, TopAbs_VERTEX, aWV);
@@ -628,9 +661,139 @@ bool FindPinch(const TopoDS_Face&                                               
       }
     }
   }
-  if (aNbPinch != 1 || (theInputV.Contains(aV1) && theInputV.Contains(aV2)))
+  if (aNbPinch > 1 || (aNbPinch == 1 && theInputV.Contains(aV1) && theInputV.Contains(aV2))
+      || (aNbPinch == 1 && aNbW != 1))
   {
     return false;
+  }
+  theP.Ordered.Clear();
+  for (BRepTools_WireExplorer wex(aW, theF); wex.More(); wex.Next())
+  {
+    theP.Ordered.Append(wex.Current());
+  }
+  if (aNbPinch == 0)
+  {
+    // Or one vertex the wire passes twice, a fillet's end flat where its
+    // line runs off the face over an edge, short of the vertex the face
+    // narrows to (MakeRimFlatEnd, #876's post): the line and the edge meet
+    // there, and so do the flat face's side and the edge's piece beyond
+    NCollection_Sequence<TopoDS_Shape> anAll;
+    for (TopoDS_Iterator itE(aW); itE.More(); itE.Next())
+    {
+      anAll.Append(itE.Value());
+    }
+    NCollection_IndexedDataMap<TopoDS_Shape, int, TopTools_ShapeMapHasher> aNbEnd;
+    for (int k = 1; k <= anAll.Length(); k++)
+    {
+      const TopoDS_Vertex aV = TopExp::LastVertex(TopoDS::Edge(anAll(k)), true);
+      if (aNbEnd.Contains(aV))
+      {
+        aNbEnd.ChangeFromKey(aV)++;
+      }
+      else
+      {
+        aNbEnd.Add(aV, 1);
+      }
+    }
+    // the first such vertex; the pieces are looked at again for the next
+    // (a fillet made flat so at both its ends on one face)
+    for (int i = 1; i <= aNbEnd.Extent(); i++)
+    {
+      if (aNbEnd(i) > 2)
+      {
+        return false;
+      }
+      if (aNbEnd(i) == 2 && aNbPinch == 0 && !theInputV.Contains(aNbEnd.FindKey(i)))
+      {
+        aNbPinch++;
+        aV1 = aV2 = TopoDS::Vertex(aNbEnd.FindKey(i));
+      }
+    }
+    if (aNbPinch != 1)
+    {
+      return false;
+    }
+    // The wire explorer stops at the vertex, its first loop closed: the two
+    // loops from it, each from one of its two edges leaving the vertex back
+    // to it, one after the other
+    std::vector<bool> isUsed(anAll.Length() + 1, false);
+    theP.Ordered.Clear();
+    for (int aLoop = 0; aLoop < 2; aLoop++)
+    {
+      int aCur = 0;
+      for (int k = 1; k <= anAll.Length() && aCur == 0; k++)
+      {
+        if (!isUsed[k] && TopExp::FirstVertex(TopoDS::Edge(anAll(k)), true).IsSame(aV1))
+        {
+          aCur = k;
+        }
+      }
+      while (aCur != 0)
+      {
+        isUsed[aCur] = true;
+        theP.Ordered.Append(anAll(aCur));
+        const TopoDS_Vertex aV = TopExp::LastVertex(TopoDS::Edge(anAll(aCur)), true);
+        if (aV.IsSame(aV1))
+        {
+          break;
+        }
+        // at another such vertex either way on (the loop left is put in
+        // below)
+        int aNext = 0;
+        for (int k = 1; k <= anAll.Length() && aNext == 0; k++)
+        {
+          if (!isUsed[k] && TopExp::FirstVertex(TopoDS::Edge(anAll(k)), true).IsSame(aV))
+          {
+            aNext = k;
+          }
+        }
+        if (aNext == 0)
+        {
+          return false;
+        }
+        aCur = aNext;
+      }
+    }
+    // a loop left from another vertex the wire passes twice, put in where
+    // the wire passes that vertex
+    for (int aPass = 0; aPass < anAll.Length() && theP.Ordered.Length() < anAll.Length(); aPass++)
+    {
+      int aStart = 0, anAt = 0;
+      for (int k = 1; k <= anAll.Length() && anAt == 0; k++)
+      {
+        const TopoDS_Vertex aV = TopExp::FirstVertex(TopoDS::Edge(anAll(k)), true);
+        for (int j = 1; j <= theP.Ordered.Length() && anAt == 0 && !isUsed[k]; j++)
+        {
+          anAt = TopExp::LastVertex(TopoDS::Edge(theP.Ordered(j)), true).IsSame(aV) ? j : 0;
+        }
+        aStart = anAt != 0 ? k : 0;
+      }
+      if (anAt == 0)
+      {
+        return false;
+      }
+      const TopoDS_Vertex aW0 = TopExp::FirstVertex(TopoDS::Edge(anAll(aStart)), true);
+      NCollection_Sequence<TopoDS_Shape> aSub;
+      for (int aCur = aStart; aCur != 0;)
+      {
+        isUsed[aCur] = true;
+        aSub.Append(anAll(aCur));
+        const TopoDS_Vertex aV = TopExp::LastVertex(TopoDS::Edge(anAll(aCur)), true);
+        aCur                   = 0;
+        for (int k = 1; k <= anAll.Length() && aCur == 0 && !aV.IsSame(aW0); k++)
+        {
+          if (!isUsed[k] && TopExp::FirstVertex(TopoDS::Edge(anAll(k)), true).IsSame(aV))
+          {
+            aCur = k;
+          }
+        }
+        if (aCur == 0 && !aV.IsSame(aW0))
+        {
+          return false;
+        }
+      }
+      theP.Ordered.InsertAfter(anAt, aSub);
+    }
   }
   const bool isFirstKept =
     theInputV.Contains(aV1)
@@ -638,11 +801,6 @@ bool FindPinch(const TopoDS_Face&                                               
   theP.Face = theF;
   theP.Keep = isFirstKept ? aV1 : aV2;
   theP.Drop = isFirstKept ? aV2 : aV1;
-  theP.Ordered.Clear();
-  for (BRepTools_WireExplorer wex(aW, theF); wex.More(); wex.Next())
-  {
-    theP.Ordered.Append(wex.Current());
-  }
   int aNbE = 0;
   for (TopoDS_Iterator itE(aW); itE.More(); itE.Next())
   {
@@ -691,15 +849,29 @@ bool FindPinch(const TopoDS_Face&                                               
   {
     return false;
   }
-  // each loop a region, not a hole touching the other
+  // each loop a region, not a hole touching the other, and longer than ten
+  // times what the vertices cover: not a loop of one edge 3.2e-4 long within
+  // a vertex of tolerance 0.011, a loose fillet's (#273's handle at 0.8)
   const int aNb = theP.Ordered.Length();
   for (int aLoop = 0; aLoop < 2; aLoop++)
   {
-    const TopoDS_Wire aLW =
-      aLoop == 0 ? PinchLoop(theP, theP.K1, theP.K2 - theP.K1, nullptr)
-                 : PinchLoop(theP, theP.K2, aNb - theP.K2 + theP.K1, nullptr);
+    const int aFrom   = aLoop == 0 ? theP.K1 : theP.K2;
+    const int aLen    = aLoop == 0 ? theP.K2 - theP.K1 : aNb - theP.K2 + theP.K1;
+    double    aLength = 0.;
+    for (int n = 0; n < aLen; n++)
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(theP.Ordered((aFrom + n) % aNb + 1));
+      if (BRep_Tool::IsGeometric(anE))
+      {
+        aLength += GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(anE));
+      }
+    }
+    if (aLength <= 10. * (BRep_Tool::Tolerance(theP.Keep) + BRep_Tool::Tolerance(theP.Drop)))
+    {
+      return false;
+    }
     TopoDS_Face aPiece = TopoDS::Face(theF.EmptyCopied());
-    BRep_Builder().Add(aPiece, aLW);
+    BRep_Builder().Add(aPiece, PinchLoop(theP, aFrom, aLen, nullptr));
     if (BRepTopAdaptor_FClass2d(aPiece, Precision::PConfusion()).PerformInfinitePoint()
         != TopAbs_OUT)
     {
@@ -725,7 +897,10 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
     {
       continue;
     }
-    aDropToKeep.Bind(aP.Drop, aP.Keep);
+    if (!aP.Drop.IsSame(aP.Keep))
+    {
+      aDropToKeep.Bind(aP.Drop, aP.Keep);
+    }
     aPinches.Append(aP);
   }
   if (aPinches.IsEmpty())
@@ -804,12 +979,30 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
     const TopoDS_Face  aMF = TopoDS::Face(aMerge->Value(aP.Face).Oriented(TopAbs_FORWARD));
     TopoDS_Compound    aPieces;
     aB.MakeCompound(aPieces);
+    NCollection_List<TopoDS_Shape> aHoles = aP.Holes;
     for (int aLoop = 0; aLoop < 2; aLoop++)
     {
       TopoDS_Face aPiece = TopoDS::Face(aMF.EmptyCopied());
       aB.Add(aPiece,
              aLoop == 0 ? PinchLoop(aP, aP.K1, aP.K2 - aP.K1, aMerge)
                         : PinchLoop(aP, aP.K2, aNb - aP.K2 + aP.K1, aMerge));
+      // the holes within this loop, the rest the other's
+      const BRepTopAdaptor_FClass2d aCl(aPiece, Precision::PConfusion());
+      for (NCollection_List<TopoDS_Shape>::Iterator itH(aHoles); itH.More();)
+      {
+        TopoDS_Iterator itE(itH.Value());
+        gp_Pnt2d        aUV1, aUV2;
+        BRep_Tool::UVPoints(TopoDS::Edge(itE.Value()), aMF, aUV1, aUV2);
+        if (aLoop == 1 || aCl.Perform(aUV1) == TopAbs_IN)
+        {
+          aB.Add(aPiece, aMerge->Value(itH.Value()));
+          aHoles.Remove(itH);
+        }
+        else
+        {
+          itH.Next();
+        }
+      }
       aB.Add(aPieces, aPiece);
     }
     aSplit->Replace(aMF, aPieces);
@@ -2579,15 +2772,23 @@ void ChFi3d_Builder::Compute()
         // as the result has its shapes now
         occ::handle<BRepTools_History> aTouch =
           ChFi3d_DropMicroEdges(myShapeResult, myShape, tolapp3d);
-        const occ::handle<BRepTools_History> aSplit =
-          ChFi3d_SplitPinchedFaces(myShapeResult, myShape);
-        if (aTouch.IsNull())
+        // until no face is left pinched: a face is split at one point a time
+        for (int aPass = 0; aPass < 16; aPass++)
         {
-          aTouch = aSplit;
-        }
-        else if (!aSplit.IsNull())
-        {
-          aTouch->Merge(aSplit);
+          const occ::handle<BRepTools_History> aSplit =
+            ChFi3d_SplitPinchedFaces(myShapeResult, myShape);
+          if (aSplit.IsNull())
+          {
+            break;
+          }
+          if (aTouch.IsNull())
+          {
+            aTouch = aSplit;
+          }
+          else
+          {
+            aTouch->Merge(aSplit);
+          }
         }
         if (!aTouch.IsNull())
         {

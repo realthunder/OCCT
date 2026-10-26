@@ -251,7 +251,8 @@ void ChFi3d_FilBuilder::ComputeWithFlatEndCorners()
 
   // Last, where all of it failed and an end found no cap: once more, the
   // ends whose line misses the face at end whole made flat
-  // (ChFi3d_MissedFlatEnd; #962's ring)
+  // (ChFi3d_MissedFlatEnd; #962's ring), and those whose line runs off its
+  // face short of the vertex (MakeRimFlatEnd; #876's post)
   struct FlagGuard
   {
     ~FlagGuard()
