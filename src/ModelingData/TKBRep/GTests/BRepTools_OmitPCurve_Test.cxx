@@ -40,6 +40,7 @@
 #include <gtest/gtest.h>
 
 #include <sstream>
+#include <vector>
 
 namespace
 {
@@ -260,4 +261,50 @@ TEST(BRepTools_OmitPCurve, RefusesNonPCurve)
       EXPECT_FALSE(BRepTools::IsPCurveOmittable(anEdge, aCR.Value()));
     }
   }
+}
+
+// An Immutable edge's answer is kept on the representation and given again
+// unasked; a mutable edge's is never kept, since its geometry may change.
+TEST(BRepTools_OmitPCurve, ImmutableEdgeKeepsItsAnswer)
+{
+  const TopoDS_Shape aBox = BRepPrimAPI_MakeBox(10., 10., 10.).Shape();
+  TopExp_Explorer    anEdgeIt(aBox, TopAbs_EDGE);
+  ASSERT_TRUE(anEdgeIt.More());
+  const TopoDS_Edge anEdge = TopoDS::Edge(anEdgeIt.Current());
+
+  occ::handle<BRep_TEdge> aTE = occ::down_cast<BRep_TEdge>(anEdge.TShape());
+  std::vector<occ::handle<BRep_CurveRepresentation>> aPCurves;
+  NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator aCR(aTE->Curves());
+  for (; aCR.More(); aCR.Next())
+  {
+    if (aCR.Value()->IsCurveOnSurface())
+    {
+      aPCurves.push_back(aCR.Value());
+    }
+  }
+  ASSERT_FALSE(aPCurves.empty());
+
+  // Mutable: answered, not kept.
+  for (const auto& aRep : aPCurves)
+  {
+    EXPECT_TRUE(BRepTools::IsPCurveOmittable(anEdge, aRep));
+    EXPECT_EQ(aRep->PCurveOmittable(), -1);
+  }
+
+  // Immutable: kept, and what is kept is what is given.
+  anEdge.TShape()->Immutable(true);
+  for (const auto& aRep : aPCurves)
+  {
+    const bool anAnswer = BRepTools::IsPCurveOmittable(anEdge, aRep);
+    EXPECT_TRUE(anAnswer);
+    EXPECT_EQ(aRep->PCurveOmittable(), 1);
+    EXPECT_EQ(BRepTools::IsPCurveOmittable(anEdge, aRep), anAnswer);
+  }
+
+  // A recorded answer is the one given: set it otherwise and it is believed.
+  aPCurves.front()->PCurveOmittable(false);
+  EXPECT_FALSE(BRepTools::IsPCurveOmittable(anEdge, aPCurves.front()));
+
+  // A copy of a representation starts unasked.
+  EXPECT_EQ(aPCurves.front()->Copy()->PCurveOmittable(), -1);
 }

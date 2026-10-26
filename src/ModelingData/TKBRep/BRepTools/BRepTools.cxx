@@ -376,6 +376,13 @@ void BRepTools::AddUVBounds(const TopoDS_Face& aF, const TopoDS_Edge& aE, Bnd_Bo
 
 //=================================================================================================
 
+namespace
+{
+//! The test BRepTools::IsPCurveOmittable makes, uncached.
+bool pcurveOmittable(const TopoDS_Edge&                           theEdge,
+                     const occ::handle<BRep_CurveRepresentation>& theCR);
+} // namespace
+
 bool BRepTools::IsPCurveOmittable(const TopoDS_Edge&                           theEdge,
                                   const occ::handle<BRep_CurveRepresentation>& theCR)
 {
@@ -383,6 +390,29 @@ bool BRepTools::IsPCurveOmittable(const TopoDS_Edge&                           t
   {
     return false;
   }
+  // An Immutable edge's answer cannot change (BRep_CurveRepresentation::
+  // PCurveOmittable): a writer called on every save of an unchanged shape
+  // projects each planar pcurve once, not once per save (realthunder; fcad
+  // docs/TransactionLog.md sec 38.19).
+  if (!theEdge.Immutable())
+  {
+    return pcurveOmittable(theEdge, theCR);
+  }
+  const int8_t aKnown = theCR->PCurveOmittable();
+  if (aKnown >= 0)
+  {
+    return aKnown != 0;
+  }
+  const bool anAnswer = pcurveOmittable(theEdge, theCR);
+  theCR->PCurveOmittable(anAnswer);
+  return anAnswer;
+}
+
+namespace
+{
+bool pcurveOmittable(const TopoDS_Edge&                           theEdge,
+                     const occ::handle<BRep_CurveRepresentation>& theCR)
+{
   const occ::handle<Geom2d_Curve> aStored = theCR->PCurve();
   const occ::handle<Geom_Surface> aSurface = theCR->Surface();
   if (aStored.IsNull() || aSurface.IsNull())
@@ -481,6 +511,7 @@ bool BRepTools::IsPCurveOmittable(const TopoDS_Edge&                           t
   }
   return true;
 }
+} // namespace
 
 //=================================================================================================
 

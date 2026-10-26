@@ -22,6 +22,9 @@
 #include <TopLoc_Location.hxx>
 #include <Standard_Transient.hxx>
 #include <GeomAbs_Shape.hxx>
+
+#include <atomic>
+#include <cstdint>
 class Geom_Surface;
 class Poly_Triangulation;
 class Geom_Curve;
@@ -147,12 +150,29 @@ public:
   //! Dumps the content of me into the stream
   Standard_EXPORT virtual void DumpJson(Standard_OStream& theOStream, int theDepth = -1) const;
 
+  //! What BRepTools::IsPCurveOmittable answered for this representation of
+  //! an Immutable edge (realthunder): -1 not asked yet, 0 no, 1 yes. The
+  //! answer is derived from geometry and a tolerance the flag freezes, so it
+  //! cannot go stale, and a writer asked again on every save is spared the
+  //! projection. A copy starts unasked.
+  int8_t PCurveOmittable() const { return myPCurveOmittable.load(std::memory_order_relaxed); }
+
+  //! Records the answer, for an Immutable edge only (see above).
+  void PCurveOmittable(const bool theOmittable) const
+  {
+    myPCurveOmittable.store(theOmittable ? 1 : 0, std::memory_order_relaxed);
+  }
+
   DEFINE_STANDARD_RTTIEXT(BRep_CurveRepresentation, Standard_Transient)
 
 protected:
   Standard_EXPORT BRep_CurveRepresentation(const TopLoc_Location& L);
 
   TopLoc_Location myLocation;
+
+private:
+  //! Written by whichever thread asks first; every one computes the same.
+  mutable std::atomic<int8_t> myPCurveOmittable{-1};
 };
 
 #include <BRep_CurveRepresentation.lxx>
