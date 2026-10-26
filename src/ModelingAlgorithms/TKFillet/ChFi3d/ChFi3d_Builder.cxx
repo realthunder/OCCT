@@ -34,6 +34,7 @@
 #include <gp_Pnt2d.hxx>
 #include <Precision.hxx>
 #include <ShapeFix.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_NotImplemented.hxx>
@@ -1011,6 +1012,67 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
   occ::handle<BRepTools_History> aHistory = aMerge->History();
   aHistory->Merge(aSplit->History());
   return aHistory;
+}
+
+//=================================================================================================
+// A face and the one MakeRimRunOn made on its surface carried up beside it
+// (#876's plate side and its rise to the fillet run on to the vertex), two
+// faces of one surface across the edge between them, the rim's piece: made
+// one, nothing else (ShapeUpgrade_UnifySameDomain, every other edge kept).
+// The edges are found by their middles (ChFi3d_RunOnSeams), which are
+// cleared. Returns the history of the change, null when there was none.
+
+static occ::handle<BRepTools_History> ChFi3d_MergeRunOnSeams(TopoDS_Shape& theResult,
+                                                             const double  theTol)
+{
+  NCollection_List<gp_Pnt>& aSeams = ChFi3d_RunOnSeams();
+  if (aSeams.IsEmpty())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    anEF;
+  TopExp::MapShapesAndAncestors(theResult, TopAbs_EDGE, TopAbs_FACE, anEF);
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aKeep;
+  int                                                    aNbSeams = 0;
+  for (int i = 1; i <= anEF.Extent(); i++)
+  {
+    const TopoDS_Edge&            anE    = TopoDS::Edge(anEF.FindKey(i));
+    bool                          isSeam = false;
+    double                        aF, aL;
+    const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anE, aF, aL);
+    if (!aC.IsNull() && anEF(i).Extent() == 2)
+    {
+      const gp_Pnt aMid = aC->Value(0.5 * (aF + aL));
+      for (NCollection_List<gp_Pnt>::Iterator it(aSeams); it.More() && !isSeam; it.Next())
+      {
+        isSeam = aMid.Distance(it.Value()) <= std::max(theTol, BRep_Tool::Tolerance(anE));
+      }
+    }
+    if (isSeam)
+    {
+      aNbSeams++;
+    }
+    else
+    {
+      aKeep.Add(anE);
+    }
+  }
+  aSeams.Clear();
+  if (aNbSeams == 0)
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  ShapeUpgrade_UnifySameDomain aUnify(theResult, false, true, false);
+  aUnify.KeepShapes(aKeep);
+  aUnify.Build();
+  if (aUnify.Shape().IsNull() || aUnify.History().IsNull()
+      || !BRepCheck_Analyzer(aUnify.Shape()).IsValid())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  theResult = aUnify.Shape();
+  return aUnify.History();
 }
 
 //=================================================================================================
@@ -2163,6 +2225,7 @@ void ChFi3d_Builder::Compute()
         THE_OPPOSITE_CORNERS.Clear();
         THE_OPPOSITE_SEEN.Clear();
         ChFi3d_PlateCorners().Clear();
+        ChFi3d_RunOnSeams().Clear();
       }
     } anOpposite;
     // A fresh builder of the result, as each fallback takes one: Reset()
@@ -2788,6 +2851,20 @@ void ChFi3d_Builder::Compute()
           else
           {
             aTouch->Merge(aSplit);
+          }
+        }
+        // a face and the one the run-on made on its surface beside it, one
+        const occ::handle<BRepTools_History> aSeams =
+          ChFi3d_MergeRunOnSeams(myShapeResult, tolapp3d);
+        if (!aSeams.IsNull())
+        {
+          if (aTouch.IsNull())
+          {
+            aTouch = aSeams;
+          }
+          else
+          {
+            aTouch->Merge(aSeams);
           }
         }
         if (!aTouch.IsNull())

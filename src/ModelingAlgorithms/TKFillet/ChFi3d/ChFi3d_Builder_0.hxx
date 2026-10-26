@@ -82,6 +82,11 @@ bool& ChFi3d_MissedFlatEnd();
 //! ChFi3d_Builder::Compute sets those back where the result is invalid.
 NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners();
 
+//! The middles of the edges between a face and the face MakeRimRunOn
+//! (ChFi3d_Builder_C1.cxx) made on its surface carried up beside it, the
+//! calling thread's: ChFi3d_Builder::Compute makes the two one.
+NCollection_List<gp_Pnt>& ChFi3d_RunOnSeams();
+
 //! Set while ChFi3d_Builder::Compute makes the corners' plates again with
 //! their sharp edges stepped back only to the stripes' common points on
 //! those edges (ChFi3d_Builder::PerformMoreThreeCorner): the result was

@@ -125,6 +125,14 @@ NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners()
 
 //=================================================================================================
 
+NCollection_List<gp_Pnt>& ChFi3d_RunOnSeams()
+{
+  thread_local NCollection_List<gp_Pnt> aSeams;
+  return aSeams;
+}
+
+//=================================================================================================
+
 bool& ChFi3d_PlateStepBackOnEdge()
 {
   thread_local bool isOnEdge = false;
