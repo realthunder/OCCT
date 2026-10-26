@@ -65,6 +65,7 @@
 #include <BRep_Builder.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
+#include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -1167,6 +1168,388 @@ static occ::handle<BRepTools_History> ChFi3d_MergeRunOnSeams(TopoDS_Shape& theRe
   }
   theResult = aMerged;
   return aReShape->History();
+}
+
+//=================================================================================================
+// A face no wider than <theTol> beside a face the fillet made: two long
+// edges, within <theTol> of each other, and between their ends short ones
+// or none -- what a fillet as wide as the face leaves of it with its radius
+// a hair smaller (ChFi3d_SnapSlivers; a wall's top 2 wide, its outer edge at
+// 2; a full round, the two edges at half the width). The face goes, its
+// short edges with it, one long edge takes the other's place in the face
+// beyond, a curve on that face's surface, and the ends are made one. The
+// edge kept is the input's where one is, else the one whose face beyond is
+// on a surface of the input's: the fillet's face reaches over to it, so a
+// run of slivers (#273's ledge, a fillet as wide as a step 1 deep below the
+// top: three faces 1e-5 tall around it) all go the same way, to the top.
+// Nothing changes when the volume would by more than 1e-6 of itself.
+// Returns the history of the change, null when there was none.
+
+static occ::handle<BRepTools_History> ChFi3d_CollapseSlivers(TopoDS_Shape&       theResult,
+                                                             const TopoDS_Shape& theInput,
+                                                             const double        theTol)
+{
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputE;
+  TopExp::MapShapes(theInput, TopAbs_EDGE, anInputE);
+  NCollection_Map<occ::handle<Standard_Transient>> anInputS;
+  for (TopExp_Explorer exF(theInput, TopAbs_FACE); exF.More(); exF.Next())
+  {
+    TopLoc_Location aLoc;
+    anInputS.Add(BRep_Tool::Surface(TopoDS::Face(exF.Current()), aLoc));
+  }
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    anEF;
+  TopExp::MapShapesAndAncestors(theResult, TopAbs_EDGE, TopAbs_FACE, anEF);
+  occ::handle<BRepTools_ReShape>                         aReShape = new BRepTools_ReShape;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone, aDropped;
+  BRep_Builder                                           aB;
+  // the vertices made one, and where on which edges the one dropped was
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aVDropToKeep;
+  auto aLength = [](const TopoDS_Edge& theE) {
+    return BRep_Tool::IsGeometric(theE) ? GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(theE))
+                                        : 0.;
+  };
+  // the face beyond <theE> from <theS> on a surface of the input's
+  auto isBeyondInput = [&](const TopoDS_Shape& theE, const TopoDS_Shape& theS) {
+    for (NCollection_List<TopoDS_Shape>::Iterator it(anEF.FindFromKey(theE)); it.More(); it.Next())
+    {
+      TopLoc_Location aLoc;
+      if (!it.Value().IsSame(theS)
+          && anInputS.Contains(BRep_Tool::Surface(TopoDS::Face(it.Value()), aLoc)))
+      {
+        return true;
+      }
+    }
+    return false;
+  };
+  auto aVolume = [](const TopoDS_Shape& theShape) {
+    GProp_GProps aProps;
+    BRepGProp::VolumeProperties(theShape, aProps);
+    return aProps.Mass();
+  };
+  for (TopExp_Explorer exF(theResult, TopAbs_FACE); exF.More(); exF.Next())
+  {
+    const TopoDS_Face aS = TopoDS::Face(exF.Current());
+    if (aDone.Contains(aS))
+    {
+      continue;
+    }
+    int aNbW = 0;
+    for (TopExp_Explorer exW(aS, TopAbs_WIRE); exW.More(); exW.Next())
+    {
+      aNbW++;
+    }
+    if (aNbW != 1)
+    {
+      continue;
+    }
+    // two long edges, the rest short
+    NCollection_List<TopoDS_Shape> aLong, aShort;
+    bool                           isOk = true;
+    for (TopExp_Explorer exE(aS, TopAbs_EDGE); exE.More() && isOk; exE.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(exE.Current());
+      if (BRep_Tool::Degenerated(anE) || BRep_Tool::IsClosed(anE, aS))
+      {
+        isOk = false;
+      }
+      else if (aLength(anE) <= theTol)
+      {
+        aShort.Append(anE);
+      }
+      else
+      {
+        aLong.Append(anE);
+      }
+    }
+    if (!isOk || aLong.Size() != 2 || aShort.Size() > 2)
+    {
+      continue;
+    }
+    TopoDS_Edge aKeep = TopoDS::Edge(aLong.First()), aDrop = TopoDS::Edge(aLong.Last());
+    if (anInputE.Contains(aDrop) && !anInputE.Contains(aKeep))
+    {
+      std::swap(aKeep, aDrop);
+    }
+    else if (!anInputE.Contains(aKeep) && isBeyondInput(aDrop, aS) && !isBeyondInput(aKeep, aS))
+    {
+      std::swap(aKeep, aDrop);
+    }
+    if (anInputE.Contains(aDrop) || !anEF.Contains(aDrop) || anEF.FindFromKey(aDrop).Extent() != 2)
+    {
+      continue;
+    }
+    // within the tolerance of each other all along
+    double                        aKF, aKL, aDF, aDL;
+    const occ::handle<Geom_Curve> aCK = BRep_Tool::Curve(aKeep, aKF, aKL);
+    const occ::handle<Geom_Curve> aCD = BRep_Tool::Curve(aDrop, aDF, aDL);
+    if (aCK.IsNull() || aCD.IsNull())
+    {
+      continue;
+    }
+    double aGap = 0.;
+    for (int i = 0; i <= 10 && aGap <= theTol; i++)
+    {
+      GeomAPI_ProjectPointOnCurve aPr(aCD->Value(aDF + (aDL - aDF) * i / 10.), aCK, aKF, aKL);
+      aGap = aPr.NbPoints() > 0 ? std::max(aGap, aPr.LowerDistance()) : RealLast();
+    }
+    if (aGap > theTol)
+    {
+      continue;
+    }
+    // the face beyond the edge dropped, the keep's curve on its surface
+    TopoDS_Face aT;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(anEF.FindFromKey(aDrop)); it.More(); it.Next())
+    {
+      if (!it.Value().IsSame(aS))
+      {
+        aT = TopoDS::Face(it.Value());
+      }
+    }
+    if (aT.IsNull() || aDone.Contains(aT))
+    {
+      continue;
+    }
+    TopLoc_Location                 aLoc;
+    const occ::handle<Geom_Surface> aST    = BRep_Tool::Surface(aT, aLoc);
+    double                          aTolPj = theTol;
+    const occ::handle<Geom_Curve>   aCKL =
+      occ::down_cast<Geom_Curve>(aCK->Transformed(aLoc.Transformation().Inverted()));
+    occ::handle<Geom2d_Curve> aPc = GeomProjLib::Curve2d(aCKL, aKF, aKL, aST, aTolPj);
+    if (aPc.IsNull())
+    {
+      continue;
+    }
+    // on a periodic surface, the period the dropped edge's curve is in
+    {
+      double                          aPF, aPL;
+      const occ::handle<Geom2d_Curve> aPcD = BRep_Tool::CurveOnSurface(aDrop, aT, aPF, aPL);
+      if (aPcD.IsNull())
+      {
+        continue;
+      }
+      const gp_Pnt2d aMidD = aPcD->Value(0.5 * (aPF + aPL));
+      const gp_Pnt2d aMidK = aPc->Value(0.5 * (aKF + aKL));
+      gp_Vec2d       aShift(0., 0.);
+      if (aST->IsUPeriodic())
+      {
+        const double aT0 = aST->UPeriod();
+        aShift.SetX(aT0 * std::round((aMidD.X() - aMidK.X()) / aT0));
+      }
+      if (aST->IsVPeriodic())
+      {
+        const double aT0 = aST->VPeriod();
+        aShift.SetY(aT0 * std::round((aMidD.Y() - aMidK.Y()) / aT0));
+      }
+      if (aShift.Magnitude() > 0.)
+      {
+        aPc = occ::down_cast<Geom2d_Curve>(aPc->Translated(aShift));
+      }
+    }
+    double aDev = 0.;
+    for (int i = 0; i <= 20; i++)
+    {
+      const double   t   = aKF + (aKL - aKF) * i / 20.;
+      const gp_Pnt2d aUV = aPc->Value(t);
+      aDev               = std::max(aDev, aST->Value(aUV.X(), aUV.Y()).Distance(aCKL->Value(t)));
+    }
+    if (aDev > 2. * theTol)
+    {
+      continue;
+    }
+    // the ends: each of the dropped edge's to the keep's nearest
+    TopoDS_Vertex aK1, aK2, aD1, aD2;
+    TopExp::Vertices(aKeep, aK1, aK2);
+    TopExp::Vertices(aDrop, aD1, aD2);
+    const gp_Pnt aPK1 = BRep_Tool::Pnt(aK1), aPD1 = BRep_Tool::Pnt(aD1), aPD2 = BRep_Tool::Pnt(aD2);
+    const bool   isSameWay     = aPD1.Distance(aPK1) <= aPD2.Distance(aPK1);
+    const TopoDS_Vertex aKfor1 = isSameWay ? aK1 : aK2, aKfor2 = isSameWay ? aK2 : aK1;
+    if (BRep_Tool::Pnt(aD1).Distance(BRep_Tool::Pnt(aKfor1)) > 2. * theTol
+        || BRep_Tool::Pnt(aD2).Distance(BRep_Tool::Pnt(aKfor2)) > 2. * theTol)
+    {
+      continue;
+    }
+    aB.UpdateEdge(aKeep, aPc, aT, std::max(BRep_Tool::Tolerance(aKeep), aDev));
+    for (int k = 0; k < 2; k++)
+    {
+      const TopoDS_Vertex& aV  = k == 0 ? aD1 : aD2;
+      const TopoDS_Vertex& aVK = k == 0 ? aKfor1 : aKfor2;
+      if (aV.IsSame(aVK))
+      {
+        continue;
+      }
+      const double aD = BRep_Tool::Pnt(aV).Distance(BRep_Tool::Pnt(aVK)) + BRep_Tool::Tolerance(aV);
+      if (aD > BRep_Tool::Tolerance(aVK))
+      {
+        aB.UpdateVertex(aVK, aD);
+      }
+      aVDropToKeep.Bind(aV, aVK);
+      aReShape->Replace(aV.Oriented(TopAbs_FORWARD), aVK.Oriented(TopAbs_FORWARD));
+    }
+    // the keep in the dropped edge's place, the same way along
+    TopoDS_Edge aKeepAs = aKeep;
+    aKeepAs.Orientation(isSameWay ? TopAbs_FORWARD : TopAbs_REVERSED);
+    TopoDS_Edge aDropF = aDrop;
+    aDropF.Orientation(TopAbs_FORWARD);
+    aReShape->Replace(aDropF, aKeepAs);
+    for (NCollection_List<TopoDS_Shape>::Iterator it(aShort); it.More(); it.Next())
+    {
+      aReShape->Remove(it.Value());
+    }
+    aReShape->Remove(aS);
+    aDone.Add(aS);
+    aDone.Add(aT);
+    aDropped.Add(aDrop);
+  }
+  if (aDone.IsEmpty())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  // the edges at a vertex made one take the one kept at the same parameter
+  NCollection_List<TopoDS_Shape>                                anEdges, aKeeps;
+  NCollection_List<double>                                      aParams;
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aResultE;
+  TopExp::MapShapes(theResult, TopAbs_EDGE, aResultE);
+  for (int i = 1; i <= aResultE.Extent(); i++)
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(aResultE(i));
+    // an edge dropped: the one kept in its place has its own parameters
+    if (aDropped.Contains(anE))
+    {
+      continue;
+    }
+    for (TopoDS_Iterator itV(anE); itV.More(); itV.Next())
+    {
+      if (aVDropToKeep.IsBound(itV.Value()))
+      {
+        anEdges.Append(anE);
+        aKeeps.Append(aVDropToKeep(itV.Value()));
+        aParams.Append(BRep_Tool::Parameter(TopoDS::Vertex(itV.Value()), anE));
+      }
+    }
+  }
+  const TopoDS_Shape                       aCollapsed = aReShape->Apply(theResult);
+  NCollection_List<TopoDS_Shape>::Iterator itK(aKeeps);
+  NCollection_List<double>::Iterator       itP(aParams);
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(anEdges); itE.More();
+       itE.Next(), itK.Next(), itP.Next())
+  {
+    const TopoDS_Shape aNewE = aReShape->Value(itE.Value());
+    if (aNewE.IsNull() || aNewE.ShapeType() != TopAbs_EDGE)
+    {
+      continue;
+    }
+    const TopoDS_Vertex& aVK = TopoDS::Vertex(itK.Value());
+    aB.UpdateVertex(aVK, itP.Value(), TopoDS::Edge(aNewE), BRep_Tool::Tolerance(aVK));
+  }
+  if (aCollapsed.IsNull() || !BRepCheck_Analyzer(aCollapsed).IsValid())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  const double aVolBefore = aVolume(theResult);
+  if (std::abs(aVolume(aCollapsed) - aVolBefore) > 1e-6 * std::abs(aVolBefore))
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  theResult = aCollapsed;
+  return aReShape->History();
+}
+
+//=================================================================================================
+// Whether <theResult> has a face no wider than <theTol> (twice its area over
+// its outline) that is not one of <theInput>'s, or a vertex not <theInput>'s
+// that touches another vertex or an edge it does not bound, within their
+// tolerances (as BOP's check finds them): a sliver the radii a hair smaller
+// left and ChFi3d_CollapseSlivers did not take out. #474 `Fillet003`'s E52
+// at 2, where the coil's band is 2 thick, kept a face of area 9e-12; a
+// slot's wall 4 wide at the corner's edge filleted at 4, the fillet's line
+// 1e-5 short of the wall's far edge in a face that runs on below the slot,
+// a vertex of tolerance 1e-4 that far from that edge.
+
+static bool ChFi3d_HasSliverLeft(const TopoDS_Shape& theResult,
+                                 const TopoDS_Shape& theInput,
+                                 const double        theTol)
+{
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputF;
+  TopExp::MapShapes(theInput, TopAbs_FACE, anInputF);
+  for (TopExp_Explorer exF(theResult, TopAbs_FACE); exF.More(); exF.Next())
+  {
+    if (anInputF.Contains(exF.Current()))
+    {
+      continue;
+    }
+    GProp_GProps aProps;
+    BRepGProp::SurfaceProperties(exF.Current(), aProps);
+    double anOutline = 0.;
+    for (TopExp_Explorer exE(exF.Current(), TopAbs_EDGE); exE.More(); exE.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(exE.Current());
+      if (BRep_Tool::IsGeometric(anE))
+      {
+        anOutline += GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(anE));
+      }
+    }
+    if (anOutline > 0. && 2. * std::abs(aProps.Mass()) <= theTol * anOutline)
+    {
+      return true;
+    }
+  }
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputV, aV, anE;
+  TopExp::MapShapes(theInput, TopAbs_VERTEX, anInputV);
+  TopExp::MapShapes(theResult, TopAbs_VERTEX, aV);
+  TopExp::MapShapes(theResult, TopAbs_EDGE, anE);
+  NCollection_Array1<Bnd_Box> anEBox(1, std::max(1, anE.Extent()));
+  double                      aMaxVTol = 0.;
+  for (int i = 1; i <= aV.Extent(); i++)
+  {
+    aMaxVTol = std::max(aMaxVTol, BRep_Tool::Tolerance(TopoDS::Vertex(aV(i))));
+  }
+  for (int i = 1; i <= anE.Extent(); i++)
+  {
+    BRepBndLib::Add(anE(i), anEBox(i));
+    anEBox(i).Enlarge(aMaxVTol);
+  }
+  for (int i = 1; i <= aV.Extent(); i++)
+  {
+    if (anInputV.Contains(aV(i)))
+    {
+      continue;
+    }
+    const TopoDS_Vertex& aVi  = TopoDS::Vertex(aV(i));
+    const gp_Pnt         aP   = BRep_Tool::Pnt(aVi);
+    const double         aTol = BRep_Tool::Tolerance(aVi);
+    for (int j = 1; j <= aV.Extent(); j++)
+    {
+      const TopoDS_Vertex& aVj = TopoDS::Vertex(aV(j));
+      if (j != i && aP.Distance(BRep_Tool::Pnt(aVj)) <= aTol + BRep_Tool::Tolerance(aVj))
+      {
+        return true;
+      }
+    }
+    for (int k = 1; k <= anE.Extent(); k++)
+    {
+      if (anEBox(k).IsOut(aP))
+      {
+        continue;
+      }
+      bool isOn = false;
+      for (TopoDS_Iterator itV(anE(k)); itV.More() && !isOn; itV.Next())
+      {
+        isOn = itV.Value().IsSame(aVi);
+      }
+      if (isOn)
+      {
+        continue;
+      }
+      BRepExtrema_DistShapeShape aDist(aVi, anE(k));
+      if (aDist.IsDone() && aDist.NbSolution() > 0
+          && aDist.Value() <= aTol + BRep_Tool::Tolerance(TopoDS::Edge(anE(k))))
+      {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 //=================================================================================================
@@ -2430,9 +2813,12 @@ void ChFi3d_Builder::Compute()
     }
     // A result BRepCheck finds invalid is no result: refused, the computation
     // not done, the shape kept for BadShape(). Before the long extension,
-    // which may make it valid, and after it, which may give it back as it was
+    // which may make it valid, and after it, which may give it back as it was.
+    // So is one with the radii a hair smaller that kept a sliver
     const auto RefuseInvalid = [this]() {
-      if (done && !BRepCheck_Analyzer(myShapeResult).IsValid())
+      if (done
+          && (!BRepCheck_Analyzer(myShapeResult).IsValid()
+              || (ChFi3d_SnapSlivers() && ChFi3d_HasSliverLeft(myShapeResult, myShape, tolapp3d))))
       {
         badShape  = myShapeResult;
         hasresult = true;
@@ -2959,6 +3345,24 @@ void ChFi3d_Builder::Compute()
           else
           {
             aTouch->Merge(aSeams);
+          }
+        }
+        // the radii a hair smaller (ChFi3d_SnapSlivers): the slivers of faces
+        // as wide as the fillets beside them, gone
+        if (ChFi3d_SnapSlivers())
+        {
+          const occ::handle<BRepTools_History> aSlivers =
+            ChFi3d_CollapseSlivers(myShapeResult, myShape, tolapp3d);
+          if (!aSlivers.IsNull())
+          {
+            if (aTouch.IsNull())
+            {
+              aTouch = aSlivers;
+            }
+            else
+            {
+              aTouch->Merge(aSlivers);
+            }
           }
         }
         if (!aTouch.IsNull())

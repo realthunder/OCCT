@@ -125,6 +125,14 @@ NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners()
 
 //=================================================================================================
 
+bool& ChFi3d_SnapSlivers()
+{
+  thread_local bool isSnap = false;
+  return isSnap;
+}
+
+//=================================================================================================
+
 NCollection_List<gp_Pnt>& ChFi3d_RunOnSeams()
 {
   thread_local NCollection_List<gp_Pnt> aSeams;

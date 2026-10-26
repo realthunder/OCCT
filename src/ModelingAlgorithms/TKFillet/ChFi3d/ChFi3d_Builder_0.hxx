@@ -87,6 +87,13 @@ NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners();
 //! calling thread's: ChFi3d_Builder::Compute makes the two one.
 NCollection_List<gp_Pnt>& ChFi3d_RunOnSeams();
 
+//! Set while ChFi3d_FilBuilder::ComputeWithFlatEndCorners computes once more,
+//! everything else refused, with the radii a hair smaller: a fillet as wide
+//! as a face beside it leaves a sliver of the face, which ChFi3d_Builder::
+//! Compute makes one with the edge beside it (ChFi3d_CollapseSlivers). The
+//! calling thread's.
+bool& ChFi3d_SnapSlivers();
+
 //! Set while ChFi3d_Builder::Compute makes the corners' plates again with
 //! their sharp edges stepped back only to the stripes' common points on
 //! those edges (ChFi3d_Builder::PerformMoreThreeCorner): the result was

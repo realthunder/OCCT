@@ -248,103 +248,247 @@ void ChFi3d_FilBuilder::ComputeWithFlatEndCorners()
     myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
     Compute();
   };
-
-  // Last, where all of it failed and an end found no cap: once more, the
-  // ends whose line misses the face at end whole made flat
-  // (ChFi3d_MissedFlatEnd; #962's ring), and those whose line runs off its
-  // face short of the vertex (MakeRimFlatEnd; #876's post)
-  struct FlagGuard
-  {
-    ~FlagGuard()
+  const auto aMain = [this, &aRecompute]() {
+    // Last, where all of it failed and an end found no cap: once more, the
+    // ends whose line misses the face at end whole made flat
+    // (ChFi3d_MissedFlatEnd; #962's ring), and those whose line runs off its
+    // face short of the vertex (MakeRimFlatEnd; #876's post)
+    struct FlagGuard
     {
-      ChFi3d_UncappedEnd()   = false;
-      ChFi3d_MissedFlatEnd() = false;
-    }
-  } aGuard;
-
-  const auto aMissedFlatEnds = [this, &aRecompute]() {
-    if (!done && ChFi3d_UncappedEnd())
-    {
-      ChFi3d_MissedFlatEnd() = true;
-      aRecompute();
-    }
-  };
-  ChFi3d_UncappedEnd() = false;
-
-  NCollection_List<TopoDS_Shape> anAdded;
-  AddCornerEdgesAtFlatEnds(anAdded);
-  Compute();
-  if (done || anAdded.IsEmpty())
-  {
-    aMissedFlatEnds();
-    return;
-  }
-  // the edges at half the radius, then a quarter, an eighth: at the two's
-  // radius the tip's fillet may fill it further back than its faces reach
-  // (r (1 / sin(a / 2) - 1) along the axis), a 10 deg tip 8 long at 0.8.
-  // Each edge is removed and added again: a spine a computation failed on
-  // has lost its abscissa, which setting its radius reads
-  NCollection_List<double> aRadii;
-  try
-  {
-    OCC_CATCH_SIGNALS
-    for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next())
-    {
-      const int IC = Contains(TopoDS::Edge(it.Value()));
-      if (IC == 0)
+      ~FlagGuard()
       {
-        break;
+        ChFi3d_UncappedEnd()   = false;
+        ChFi3d_MissedFlatEnd() = false;
       }
-      aRadii.Append(occ::down_cast<ChFiDS_FilSpine>(Value(IC))->Radius());
+    } aGuard;
+
+    const auto aMissedFlatEnds = [this, &aRecompute]() {
+      if (!done && ChFi3d_UncappedEnd())
+      {
+        ChFi3d_MissedFlatEnd() = true;
+        aRecompute();
+      }
+    };
+    ChFi3d_UncappedEnd() = false;
+
+    NCollection_List<TopoDS_Shape> anAdded;
+    AddCornerEdgesAtFlatEnds(anAdded);
+    Compute();
+    if (done || anAdded.IsEmpty())
+    {
+      aMissedFlatEnds();
+      return;
     }
-  }
-  catch (Standard_Failure const&)
-  {
-    aRadii.Clear();
-  }
-  for (int aTry = 0; aTry < 3 && !done && aRadii.Size() == anAdded.Size(); aTry++)
-  {
-    bool isSet = true;
+    // the edges at half the radius, then a quarter, an eighth: at the two's
+    // radius the tip's fillet may fill it further back than its faces reach
+    // (r (1 / sin(a / 2) - 1) along the axis), a 10 deg tip 8 long at 0.8.
+    // Each edge is removed and added again: a spine a computation failed on
+    // has lost its abscissa, which setting its radius reads
+    NCollection_List<double> aRadii;
     try
     {
       OCC_CATCH_SIGNALS
-      NCollection_List<double>::Iterator itR(aRadii);
-      for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next(), itR.Next())
+      for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next())
       {
-        const TopoDS_Edge& anE = TopoDS::Edge(it.Value());
-        itR.ChangeValue() *= 0.5;
-        Remove(anE);
-        Add(anE);
-        const int IC = Contains(anE);
+        const int IC = Contains(TopoDS::Edge(it.Value()));
         if (IC == 0)
         {
-          isSet = false;
           break;
         }
-        occ::down_cast<ChFiDS_FilSpine>(Value(IC))->SetRadius(itR.Value());
+        aRadii.Append(occ::down_cast<ChFiDS_FilSpine>(Value(IC))->Radius());
       }
     }
     catch (Standard_Failure const&)
     {
-      isSet = false;
+      aRadii.Clear();
     }
-    if (!isSet)
+    for (int aTry = 0; aTry < 3 && !done && aRadii.Size() == anAdded.Size(); aTry++)
     {
-      break;
+      bool isSet = true;
+      try
+      {
+        OCC_CATCH_SIGNALS
+        NCollection_List<double>::Iterator itR(aRadii);
+        for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next(), itR.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(it.Value());
+          itR.ChangeValue() *= 0.5;
+          Remove(anE);
+          Add(anE);
+          const int IC = Contains(anE);
+          if (IC == 0)
+          {
+            isSet = false;
+            break;
+          }
+          occ::down_cast<ChFiDS_FilSpine>(Value(IC))->SetRadius(itR.Value());
+        }
+      }
+      catch (Standard_Failure const&)
+      {
+        isSet = false;
+      }
+      if (!isSet)
+      {
+        break;
+      }
+      aRecompute();
+    }
+    if (done)
+    {
+      return;
+    }
+    // the corner as the two make it: the edges removed
+    for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next())
+    {
+      Remove(TopoDS::Edge(it.Value()));
     }
     aRecompute();
-  }
+    aMissedFlatEnds();
+  };
+  aMain();
   if (done)
   {
     return;
   }
-  // the corner as the two make it: the edges removed
-  for (NCollection_List<TopoDS_Shape>::Iterator it(anAdded); it.More(); it.Next())
+
+  // Last of all, where refused: once more with each radius a hair smaller
+  // (a tenth of the tolerance) -- a fillet as wide as a face beside it, its
+  // line on the face's other edge, refused; a hair smaller it leaves a
+  // sliver of the face, which the result has made one with that edge
+  // (ChFi3d_SnapSlivers, Parasolid's way). Constant radii only. Each edge
+  // removed and added again, as above
+  struct SnapGuard
   {
-    Remove(TopoDS::Edge(it.Value()));
+    ~SnapGuard() { ChFi3d_SnapSlivers() = false; }
+  } aSnapGuard;
+
+  NCollection_List<TopoDS_Shape> anEdges;
+  NCollection_List<double>       aRadii;
+  try
+  {
+    OCC_CATCH_SIGNALS
+    for (int IC = 1; IC <= NbElements(); IC++)
+    {
+      const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(Value(IC));
+      if (aSp.IsNull() || aSp->NbEdges() < 1 || !aSp->IsConstant())
+      {
+        return;
+      }
+      anEdges.Append(aSp->Edges(1));
+      aRadii.Append(aSp->Radius());
+    }
   }
+  catch (Standard_Failure const&)
+  {
+    return;
+  }
+  // what a spine holds at its ends beside its radius -- a corner's setback,
+  // the depths of the corner's faces -- taken over by the one made again
+  const auto aCarry = [this](const occ::handle<ChFiDS_FilSpine>& theOld,
+                             const occ::handle<ChFiDS_FilSpine>& theNew) {
+    for (int anEnd = 0; anEnd < 2; anEnd++)
+    {
+      const bool          isFirst    = anEnd == 0;
+      const TopoDS_Vertex aV         = isFirst ? theOld->FirstVertex() : theOld->LastVertex();
+      const bool          isNewFirst = theNew->FirstVertex().IsSame(aV);
+      if (!isNewFirst && !theNew->LastVertex().IsSame(aV))
+      {
+        continue;
+      }
+      theNew->SetSetback(isNewFirst, theOld->Setback(isFirst));
+      if (!myVFMap.Contains(aV))
+      {
+        continue;
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(myVFMap(aV)); itF.More(); itF.Next())
+      {
+        const double aDepth = theOld->FaceDepth(isFirst, itF.Value());
+        if (aDepth > 0.)
+        {
+          theNew->SetFaceDepth(isNewFirst, itF.Value(), aDepth);
+        }
+      }
+    }
+  };
+  const auto aSetRadii = [this, &anEdges, &aRadii, &aCarry](const double theLess) {
+    try
+    {
+      OCC_CATCH_SIGNALS
+      NCollection_List<double>::Iterator itR(aRadii);
+      for (NCollection_List<TopoDS_Shape>::Iterator it(anEdges); it.More(); it.Next(), itR.Next())
+      {
+        const TopoDS_Edge&                 anE   = TopoDS::Edge(it.Value());
+        const int                          anOld = Contains(anE);
+        const occ::handle<ChFiDS_FilSpine> anOldSp =
+          anOld == 0 ? occ::handle<ChFiDS_FilSpine>()
+                     : occ::down_cast<ChFiDS_FilSpine>(Value(anOld));
+        Remove(anE);
+        Add(anE);
+        const int IC = Contains(anE);
+        if (IC == 0 || itR.Value() - theLess <= 0.)
+        {
+          return false;
+        }
+        const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(Value(IC));
+        if (!anOldSp.IsNull() && !aSp.IsNull())
+        {
+          aCarry(anOldSp, aSp);
+        }
+        aSp->SetRadius(itR.Value() - theLess);
+      }
+    }
+    catch (Standard_Failure const&)
+    {
+      return false;
+    }
+    return true;
+  };
+  // the contours refused at the radii given, by their first edges: the
+  // radii set again, their stripes are new ones, which FaultyContour has
+  // to find (FreeCAD leaves out the edges it names and builds the rest)
+  NCollection_List<TopoDS_Shape> aBad;
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(badstripes); it.More(); it.Next())
+  {
+    const occ::handle<ChFiDS_Spine>& aSp = it.Value()->Spine();
+    if (!aSp.IsNull() && aSp->NbEdges() > 0)
+    {
+      aBad.Append(aSp->Edges(1));
+    }
+  }
+  const auto aRestore = [this, &aSetRadii, &aBad]() {
+    aSetRadii(0.);
+    badstripes.Clear();
+    for (NCollection_List<TopoDS_Shape>::Iterator it(aBad); it.More(); it.Next())
+    {
+      const int IC = Contains(TopoDS::Edge(it.Value()));
+      NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itel(myListStripe);
+      for (int i = 1; i < IC && itel.More(); i++)
+      {
+        itel.Next();
+      }
+      if (IC > 0 && itel.More())
+      {
+        badstripes.Append(itel.Value());
+      }
+    }
+  };
+  if (anEdges.IsEmpty())
+  {
+    return;
+  }
+  if (!aSetRadii(0.1 * tolapp3d))
+  {
+    aRestore();
+    return;
+  }
+  ChFi3d_SnapSlivers() = true;
   aRecompute();
-  aMissedFlatEnds();
+  ChFi3d_SnapSlivers() = false;
+  if (!done)
+  {
+    aRestore();
+  }
 }
 
 //=================================================================================================
