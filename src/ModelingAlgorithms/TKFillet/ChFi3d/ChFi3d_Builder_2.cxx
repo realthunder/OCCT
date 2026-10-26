@@ -2636,6 +2636,16 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
   double MaxStep  = (bidl - bidf) * 0.05 / nbed;
   double Firstsov = 0.;
   int    intf = 0, intl = 0;
+  // In the last resort (ChFi3d_MissedFlatEnd): a side walked on the tangent
+  // plane past its face's end, at the end of the stripe (ChFi3d_BuildPlane),
+  // carried on along the rest of the guide where the walk stopped short of
+  // it at the other side's face's end, that side going on to its next face
+  // (#876's post foot at 2: the line on the top leaves it on the straight
+  // foot, and the post's line passes from its flat wall to its corner) --
+  // the side kept on the plane, the plane and where on it
+  int         aCarriedOn = 0;
+  TopoDS_Face aCarriedFace;
+  gp_Pnt2d    aCarriedPnt;
   while (!fini)
   {
     // are these the ends (no extension on periodic).
@@ -2730,6 +2740,18 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
                      decroch2,
                      Vref);
     }
+    // the side carried on the plane stays on it, from where it stopped
+    if (aCarriedOn != 0)
+    {
+      occ::handle<BRepAdaptor_Surface>& aHS = aCarriedOn == 1 ? HS1 : HS2;
+      aHS->Initialize(aCarriedFace);
+      (aCarriedOn == 1 ? pp1 : pp2) = aCarriedPnt;
+      (aCarriedOn == 1 ? Ok1 : Ok2) = false;
+      (aCarriedOn == 1 ? HC1 : HC2).Nullify();
+      (aCarriedOn == 1 ? obstacleon1 : obstacleon2) = false;
+      (aCarriedOn == 1 ? decroch1 : decroch2)       = false;
+      (aCarriedOn == 1 ? HS3 : HS4).Nullify();
+    }
 
     // A chamfer carried past a vertex where its faces turn tangent (see
     // ChFi3d_ChBuilder::ExtentOneCorner) ends once both its sides have
@@ -2764,16 +2786,17 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
     // till the output on the other face.
     if ((!Ok1 && HC1.IsNull()) || (!Ok2 && HC2.IsNull()))
     {
-      if ((intf && !forward) || (intl && forward))
+      if ((intf && !forward) || (intl && forward) || aCarriedOn != 0)
       {
-        if (!Ok1)
+        if (!Ok1 && aCarriedOn != 1)
         {
           ChFi3d_BuildPlane(DStr, HS1, pp1, ref, !forward, 1);
         }
-        if (!Ok2)
+        if (!Ok2 && aCarriedOn != 2)
         {
           ChFi3d_BuildPlane(DStr, HS2, pp2, ref, !forward, 2);
         }
+        aCarriedOn = 0;
         if (intf)
         {
           intf = 5;
@@ -3162,16 +3185,47 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
         }
       }
 
-      if (!Ok1 && !obstacleon1)
+      // a side on the plane carried on past where the walk stopped short of
+      // the guide's end at the other side's face's end (above)
+      for (int ons = 1; ons <= 2; ons++)
       {
+        if ((ons == 1 ? Ok1 || obstacleon1 : Ok2 || obstacleon2))
+        {
+          continue;
+        }
+        // (short of the spine's end, not the guide's, which runs on past it)
+        const bool isShort = ChFi3d_MissedFlatEnd()
+                             && (forward ? std::min(wl, lastedlastp) - Last
+                                         : First - std::max(wf, Spine->FirstParameter(1)))
+                                  > 10. * tolesp
+                             && SD->Vertex(!forward, 3 - ons).IsOnArc()
+                             && !SD->Interference(ons).PCurveOnFace().IsNull();
+        if (isShort)
+        {
+          const ChFiDS_FaceInterference& aFi = SD->Interference(ons);
+          aCarriedPnt                        = aFi.PCurveOnFace()->Value(aFi.Parameter(!forward));
+          aCarriedFace                       = (ons == 1 ? HS1 : HS2)->Face();
+        }
         // clean infos on the plane of extension.
-        ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 1), !forward, 1, HS2->Face(), intf, intl);
-      }
-
-      if (!Ok2 && !obstacleon2)
-      {
-        // clean infos on the plane of extension.
-        ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 2), !forward, 2, HS1->Face(), intf, intl);
+        ChFi3d_Purge(Stripe,
+                     SD,
+                     ref->Vertex(!forward, ons),
+                     !forward,
+                     ons,
+                     (ons == 1 ? HS2 : HS1)->Face(),
+                     intf,
+                     intl);
+        // (the purge drops a SurfData it cannot keep)
+        bool isKept = false;
+        for (int k = 1; k <= Stripe->SetOfSurfData()->Length() && isShort && !isKept; k++)
+        {
+          isKept = Stripe->SetOfSurfData()->Value(k) == SD;
+        }
+        if (isKept)
+        {
+          (forward ? intl : intf) = 0;
+          aCarriedOn              = ons;
+        }
       }
 
       // The end. The reference is changed.

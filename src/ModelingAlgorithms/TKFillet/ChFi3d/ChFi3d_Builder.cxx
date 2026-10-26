@@ -34,7 +34,6 @@
 #include <gp_Pnt2d.hxx>
 #include <Precision.hxx>
 #include <ShapeFix.hxx>
-#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_NotImplemented.hxx>
@@ -1018,14 +1017,18 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
 // A face and the one MakeRimRunOn made on its surface carried up beside it
 // (#876's plate side and its rise to the fillet run on to the vertex), two
 // faces of one surface across the edge between them, the rim's piece: made
-// one, nothing else (ShapeUpgrade_UnifySameDomain, every other edge kept).
-// The edges are found by their middles (ChFi3d_RunOnSeams), which are
-// cleared. Returns the history of the change, null when there was none.
+// one, nothing else -- the one's wire with that edge replaced by the
+// other's edges, which take their curves on the one's surface (the same
+// surface, a copy). Not ShapeUpgrade_UnifySameDomain, which also lowered
+// the tolerance of edges it kept below what BOP's check takes (#876's model
+// at 2). The edges are found by their middles (ChFi3d_RunOnSeams), which
+// are cleared. Returns the history of the change, null when there was none.
 
 static occ::handle<BRepTools_History> ChFi3d_MergeRunOnSeams(TopoDS_Shape& theResult,
                                                              const double  theTol)
 {
-  NCollection_List<gp_Pnt>& aSeams = ChFi3d_RunOnSeams();
+  NCollection_List<gp_Pnt> aSeams = ChFi3d_RunOnSeams();
+  ChFi3d_RunOnSeams().Clear();
   if (aSeams.IsEmpty())
   {
     return occ::handle<BRepTools_History>();
@@ -1033,46 +1036,137 @@ static occ::handle<BRepTools_History> ChFi3d_MergeRunOnSeams(TopoDS_Shape& theRe
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     anEF;
   TopExp::MapShapesAndAncestors(theResult, TopAbs_EDGE, TopAbs_FACE, anEF);
-  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aKeep;
-  int                                                    aNbSeams = 0;
+  occ::handle<BRepTools_ReShape>                         aReShape = new BRepTools_ReShape;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+  BRep_Builder                                           aB;
   for (int i = 1; i <= anEF.Extent(); i++)
   {
-    const TopoDS_Edge&            anE    = TopoDS::Edge(anEF.FindKey(i));
-    bool                          isSeam = false;
+    const TopoDS_Edge&            anE = TopoDS::Edge(anEF.FindKey(i));
     double                        aF, aL;
     const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anE, aF, aL);
-    if (!aC.IsNull() && anEF(i).Extent() == 2)
+    if (aC.IsNull() || anEF(i).Extent() != 2 || BRep_Tool::Degenerated(anE))
     {
-      const gp_Pnt aMid = aC->Value(0.5 * (aF + aL));
-      for (NCollection_List<gp_Pnt>::Iterator it(aSeams); it.More() && !isSeam; it.Next())
+      continue;
+    }
+    const gp_Pnt aMid   = aC->Value(0.5 * (aF + aL));
+    bool         isSeam = false;
+    for (NCollection_List<gp_Pnt>::Iterator it(aSeams); it.More() && !isSeam; it.Next())
+    {
+      isSeam = aMid.Distance(it.Value()) <= std::max(theTol, BRep_Tool::Tolerance(anE));
+    }
+    const TopoDS_Face aF1 = TopoDS::Face(anEF(i).First());
+    const TopoDS_Face aF2 = TopoDS::Face(anEF(i).Last());
+    if (!isSeam || aF1.IsSame(aF2) || aDone.Contains(aF1) || aDone.Contains(aF2)
+        || aF1.Orientation() != aF2.Orientation())
+    {
+      continue;
+    }
+    // the two on one surface: a point of the other's on the one's
+    {
+      const BRepAdaptor_Surface aS2(aF2);
+      const gp_Pnt aP2 = aS2.Value(0.5 * (aS2.FirstUParameter() + aS2.LastUParameter()),
+                                   0.5 * (aS2.FirstVParameter() + aS2.LastVParameter()));
+      GeomAPI_ProjectPointOnSurf aPr(aP2, BRep_Tool::Surface(aF1));
+      if (!aPr.IsDone() || aPr.NbPoints() == 0 || aPr.LowerDistance() > theTol)
       {
-        isSeam = aMid.Distance(it.Value()) <= std::max(theTol, BRep_Tool::Tolerance(anE));
+        continue;
       }
     }
-    if (isSeam)
+    // each face's wire through the edge, in order from the edge on
+    auto aLoopAfter = [&anE](const TopoDS_Face&                  theF,
+                             TopoDS_Wire&                        theW,
+                             NCollection_Sequence<TopoDS_Shape>& theEdges) {
+      for (TopExp_Explorer exW(theF, TopAbs_WIRE); exW.More(); exW.Next())
+      {
+        NCollection_Sequence<TopoDS_Shape> anAll;
+        int                                anAt = 0;
+        for (BRepTools_WireExplorer wex(TopoDS::Wire(exW.Current()), theF); wex.More(); wex.Next())
+        {
+          anAll.Append(wex.Current());
+          if (wex.Current().IsSame(anE))
+          {
+            anAt = anAll.Length();
+          }
+        }
+        if (anAt != 0)
+        {
+          theW = TopoDS::Wire(exW.Current());
+          for (int k = 1; k < anAll.Length(); k++)
+          {
+            theEdges.Append(anAll((anAt + k - 1) % anAll.Length() + 1));
+          }
+          return true;
+        }
+      }
+      return false;
+    };
+    TopoDS_Wire                        aW1, aW2;
+    NCollection_Sequence<TopoDS_Shape> anE1, anE2;
+    if (!aLoopAfter(aF1, aW1, anE1) || !aLoopAfter(aF2, aW2, anE2))
     {
-      aNbSeams++;
+      continue;
     }
-    else
+    TopoDS_Face aNew = TopoDS::Face(aF1.EmptyCopied());
+    TopoDS_Wire aW;
+    aB.MakeWire(aW);
+    for (const NCollection_Sequence<TopoDS_Shape>* aSeq : {&anE1, &anE2})
     {
-      aKeep.Add(anE);
+      for (NCollection_Sequence<TopoDS_Shape>::Iterator it(*aSeq); it.More(); it.Next())
+      {
+        aB.Add(aW, it.Value());
+      }
     }
+    aW.Closed(true);
+    aB.Add(aNew, aW);
+    for (const TopoDS_Face* aFace : {&aF1, &aF2})
+    {
+      for (TopExp_Explorer exW(*aFace, TopAbs_WIRE); exW.More(); exW.Next())
+      {
+        if (!exW.Current().IsSame(aFace == &aF1 ? aW1 : aW2))
+        {
+          aB.Add(aNew, exW.Current());
+        }
+      }
+    }
+    // the other's edges on the one's surface: its curves there
+    bool isOk = true;
+    for (TopExp_Explorer exE(aF2, TopAbs_EDGE); exE.More() && isOk; exE.Next())
+    {
+      const TopoDS_Edge& anE2 = TopoDS::Edge(exE.Current());
+      if (anE2.IsSame(anE) || BRep_Tool::IsClosed(anE2, aF2))
+      {
+        isOk = !BRep_Tool::IsClosed(anE2, aF2);
+        continue;
+      }
+      double                          aPF, aPL;
+      const occ::handle<Geom2d_Curve> aPc = BRep_Tool::CurveOnSurface(anE2, aF2, aPF, aPL);
+      if (aPc.IsNull())
+      {
+        isOk = false;
+        continue;
+      }
+      aB.UpdateEdge(anE2, aPc, aNew, BRep_Tool::Tolerance(anE2));
+    }
+    if (!isOk || !BRepCheck_Analyzer(aNew).IsValid())
+    {
+      continue;
+    }
+    aReShape->Replace(aF1, aNew);
+    aReShape->Remove(aF2);
+    aDone.Add(aF1);
+    aDone.Add(aF2);
   }
-  aSeams.Clear();
-  if (aNbSeams == 0)
+  if (aDone.IsEmpty())
   {
     return occ::handle<BRepTools_History>();
   }
-  ShapeUpgrade_UnifySameDomain aUnify(theResult, false, true, false);
-  aUnify.KeepShapes(aKeep);
-  aUnify.Build();
-  if (aUnify.Shape().IsNull() || aUnify.History().IsNull()
-      || !BRepCheck_Analyzer(aUnify.Shape()).IsValid())
+  const TopoDS_Shape aMerged = aReShape->Apply(theResult);
+  if (aMerged.IsNull() || !BRepCheck_Analyzer(aMerged).IsValid())
   {
     return occ::handle<BRepTools_History>();
   }
-  theResult = aUnify.Shape();
-  return aUnify.History();
+  theResult = aMerged;
+  return aReShape->History();
 }
 
 //=================================================================================================

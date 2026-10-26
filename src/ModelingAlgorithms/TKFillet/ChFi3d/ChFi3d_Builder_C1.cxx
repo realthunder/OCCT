@@ -6263,10 +6263,13 @@ static bool CeilingAtEnd(
 
 //=======================================================================
 // function : IsRimEnd
-// purpose  : Whether the end of <Fd> at <Vtx> is a rim end (MakeRimFlatEnd):
-//           one side's common point on an edge of <Vtx> (Epiv), short of
-//           <Vtx>, the other's on no edge of <Vtx>, and the two faces those
-//           of <EdgeSpine>. Sets <Ip> to that side.
+// purpose  : Whether the end of <Fd> at <Vtx> is a rim end (MakeRimRunOn,
+//           MakeRimFlatEnd): one side's common point on an edge of <Vtx>
+//           (Epiv), short of <Vtx>, the other's on no edge of <Vtx>, and
+//           that side's face (Fp) bounded by Epiv and by <EdgeSpine>, the
+//           edge filleted at <Vtx> -- <Fd> on it, or on an edge before it
+//           (#876's post foot at 2, the line on the top leaving it on the
+//           straight foot). Sets <Ip> to that side.
 //=======================================================================
 
 static bool IsRimEnd(const TopOpeBRepDS_DataStructure&   DStr,
@@ -6303,9 +6306,7 @@ static bool IsRimEnd(const TopOpeBRepDS_DataStructure&   DStr,
     return false;
   }
   const TopoDS_Face Fp = TopoDS::Face(DStr.Shape(Fd->Index(Ip)));
-  const TopoDS_Face Fo = TopoDS::Face(DStr.Shape(Fd->Index(3 - Ip)));
-  return containE(Fp, EdgeSpine) && containE(Fo, EdgeSpine)
-         && containE(Fp, Fd->Vertex(isFirst, Ip).Arc());
+  return containE(Fp, EdgeSpine) && containE(Fp, Fd->Vertex(isFirst, Ip).Arc());
 }
 
 //=======================================================================
@@ -6426,8 +6427,9 @@ static bool MakeRimFlatEnd(
   const TopoDS_Edge              Epiv = CVp.Arc();
   const ChFiDS_FaceInterference& Fip  = Fd->Interference(Ip);
   const ChFiDS_FaceInterference& Fio  = Fd->Interference(Io);
+  // Fd on the edge at Vtx, the other face that edge's too
   if (Fip.LineIndex() == 0 || Fio.LineIndex() == 0 || Fip.PCurveOnSurf().IsNull()
-      || Fio.PCurveOnSurf().IsNull() || Fio.PCurveOnFace().IsNull())
+      || Fio.PCurveOnSurf().IsNull() || Fio.PCurveOnFace().IsNull() || !containE(Fo, EdgeSpine))
   {
     return false;
   }
@@ -6789,10 +6791,15 @@ static bool MakeRimFlatEnd(
 // function : MakeRimRunOn
 // purpose  : The end of a fillet at <Vtx> where one side's line runs off its
 //           face (Fp) over an edge of <Vtx> (Epiv), short of it (IsRimEnd),
-//           the fillet run on to <Vtx>: <Fx>, the walk on past Epiv on Fp's
-//           tangent plane (a SurfData of no face on that side), cut by the
-//           surface of the face beyond Epiv (Fv) carried up, and ended in
-//           the plane through <Vtx> square to the spine. Fv's surface carried
+//           the fillet run on to <Vtx>: <Xs>, the walk on past Epiv on Fp's
+//           tangent plane (SurfData of no face on that side, one after the
+//           other as the other side passes from face to face: #876's post
+//           foot at 2, the line on the top leaving it on the straight foot,
+//           the post's line passing from its flat wall to its corner), cut
+//           by the surface of the face beyond Epiv (Fv) carried up, and
+//           ended in the plane through <Vtx> square to the spine; where one
+//           piece passes to the next, the section between them their
+//           surfaces' bound there. Fv's surface carried
 //           up closes it, a face of its own between Epiv's piece from the
 //           point to Vtx, the cut and the line up from Vtx in the end plane;
 //           the other face (Fo) leaning off Fv's surface at Vtx (#876's post,
@@ -6804,7 +6811,7 @@ static bool MakeRimFlatEnd(
 //           tangent to Fx (a saddle of the corner's torus, crossed along one
 //           of its asymptotic directions), and that line closes Fv's surface
 //           carried up, no sliver.
-//           <Fx> may be <Fd> itself, the walk on past Epiv kept in it, its
+//           <Xs> may be <Fd> itself, the walk on past Epiv kept in it, its
 //           line on Fp ending at Epiv and the other running on (#876's foot
 //           along E91), or with no walk past Epiv where Fd is a corner's
 //           torus, its line on Fo and that line's pcurves lines or conics,
@@ -6817,7 +6824,7 @@ static bool MakeRimRunOn(
   TopOpeBRepDS_DataStructure&                                                        DStr,
   const occ::handle<ChFiDS_Stripe>&                                                  Stripe,
   const occ::handle<ChFiDS_SurfData>&                                                Fd,
-  const occ::handle<ChFiDS_SurfData>&                                                Fx,
+  const NCollection_Sequence<occ::handle<ChFiDS_SurfData>>&                          Xs,
   const bool                                                                         isFirst,
   const TopoDS_Vertex&                                                               Vtx,
   const TopoDS_Edge&                                                                 EdgeSpine,
@@ -6827,8 +6834,9 @@ static bool MakeRimRunOn(
   NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>& EVIMap)
 {
   int        Ip    = 0;
-  const bool isOne = Fx == Fd;
-  if (Fx.IsNull() || Fx->Surf() <= 0 || !IsRimEnd(DStr, Fd, isFirst, Vtx, EdgeSpine, Tol3d, Ip))
+  const int  aNbX  = Xs.Length();
+  const bool isOne = aNbX == 1 && Xs(1) == Fd;
+  if (aNbX == 0 || !IsRimEnd(DStr, Fd, isFirst, Vtx, EdgeSpine, Tol3d, Ip))
   {
     return false;
   }
@@ -6836,20 +6844,34 @@ static bool MakeRimRunOn(
   const ChFiDS_CommonPoint&      CVp  = Fd->Vertex(isFirst, Ip);
   const ChFiDS_CommonPoint&      CVo  = Fd->Vertex(isFirst, Io);
   const TopoDS_Face              Fp   = TopoDS::Face(DStr.Shape(Fd->Index(Ip)));
-  const TopoDS_Face              Fo   = TopoDS::Face(DStr.Shape(Fd->Index(Io)));
   const TopoDS_Edge              Epiv = CVp.Arc();
   const ChFiDS_FaceInterference& Fip  = Fd->Interference(Ip);
   const ChFiDS_FaceInterference& Fio  = Fd->Interference(Io);
-  const ChFiDS_FaceInterference& Fxo  = Fx->Interference(Io);
-  // Fx on past Fd: no face on Fp's side, Fo on the other
-  if ((!isOne && (Fx->Index(Ip) != 0 || Fx->Index(Io) != Fd->Index(Io))) || Fxo.LineIndex() == 0
-      || Fxo.PCurveOnFace().IsNull() || Fxo.PCurveOnSurf().IsNull() || Fip.PCurveOnSurf().IsNull()
-      || Fio.PCurveOnSurf().IsNull())
+  if (Fip.PCurveOnSurf().IsNull() || Fio.PCurveOnSurf().IsNull())
   {
     return false;
   }
-  const TopoDS_Face Fv = RimFaceBeyond(EFMap, Epiv, Fp, Fo, Tol3d);
-  if (Fv.IsNull())
+  // the pieces on past Fd, Fx the last: no face on Fp's side, a face on the
+  // other and the line there, each but the last ending where that line
+  // reaches its face's end, the next going on on the next face
+  for (int k = 1; k <= aNbX; k++)
+  {
+    const occ::handle<ChFiDS_SurfData>& aX = Xs(k);
+    if (aX.IsNull() || aX->Surf() <= 0 || (!isOne && aX->Index(Ip) != 0) || aX->Index(Io) <= 0
+        || aX->Interference(Io).LineIndex() == 0 || aX->Interference(Io).PCurveOnFace().IsNull()
+        || aX->Interference(Io).PCurveOnSurf().IsNull()
+        || DStr.Surface(aX->Surf()).Surface().IsNull()
+        || (k < aNbX && !aX->Vertex(isFirst, Io).IsOnArc()))
+    {
+      return false;
+    }
+  }
+  const occ::handle<ChFiDS_SurfData>& Fx  = Xs(aNbX);
+  const ChFiDS_FaceInterference&      Fxo = Fx->Interference(Io);
+  const TopoDS_Face                   Fo  = TopoDS::Face(DStr.Shape(Fx->Index(Io)));
+  const TopoDS_Face                   Fv =
+    RimFaceBeyond(EFMap, Epiv, Fp, TopoDS::Face(DStr.Shape(Fd->Index(Io))), Tol3d);
+  if (Fv.IsNull() || Fv.IsSame(Fo))
   {
     return false;
   }
@@ -7070,15 +7092,7 @@ static bool MakeRimRunOn(
   const gp_Pnt2d aUVdP = Fip.PCurveOnSurf()->Value(Fip.Parameter(isFirst));
   const gp_Pnt2d aUVdO = Fio.PCurveOnSurf()->Value(Fio.Parameter(isFirst));
   gp_Pnt2d       aUVxP, aUVvP, aUVvQ, aUVvV;
-  if (isOne)
-  {
-    aUVxP = aUVdP;
-  }
-  else if (!anUV(aSx, PP, aUVxP))
-  {
-    return false;
-  }
-  if (!anUV(aSv, PP, aUVvP) || !anUV(aSv, Q, aUVvQ) || !anUV(aSv, PV, aUVvV))
+  if (!anUV(aSv, Q, aUVvQ) || !anUV(aSv, PV, aUVvV))
   {
     return false;
   }
@@ -7106,6 +7120,35 @@ static bool MakeRimRunOn(
                                                                     std::min(aU1 + aM, aSU1),
                                                                     std::max(aV0 - aM, aSV0),
                                                                     std::min(aV1 + aM, aSV1)));
+  };
+
+  // the pcurve of <theC> on <theS> by points on it, at <theC>'s own
+  // parameters: a projection fails where the curve runs along the surface's
+  // bound, a walk's section at its end
+  auto aPCurveOn = [Tol3d](const occ::handle<Geom_Curve>&   theC,
+                           const occ::handle<Geom_Surface>& theS) {
+    const int                                  aNb  = 20;
+    const double                               aF   = theC->FirstParameter();
+    const double                               aL   = theC->LastParameter();
+    occ::handle<NCollection_HArray1<gp_Pnt2d>> aUVs = new NCollection_HArray1<gp_Pnt2d>(1, aNb + 1);
+    occ::handle<NCollection_HArray1<double>>   aPars = new NCollection_HArray1<double>(1, aNb + 1);
+    for (int i = 0; i <= aNb; i++)
+    {
+      const double               t = aF + (aL - aF) * i / aNb;
+      GeomAPI_ProjectPointOnSurf aPr(theC->Value(t), theS);
+      if (!aPr.IsDone() || aPr.NbPoints() == 0 || aPr.LowerDistance() > 10 * Tol3d)
+      {
+        return occ::handle<Geom2d_Curve>();
+      }
+      double aU, aV;
+      aPr.LowerDistanceParameters(aU, aV);
+      aUVs->SetValue(i + 1, gp_Pnt2d(aU, aV));
+      aPars->SetValue(i + 1, t);
+    }
+    Geom2dAPI_Interpolate anInterp(aUVs, aPars, false, Precision::PConfusion());
+    anInterp.Perform();
+    return anInterp.IsDone() ? occ::handle<Geom2d_Curve>(anInterp.Curve())
+                             : occ::handle<Geom2d_Curve>();
   };
 
   // a curve between two surfaces from one point to another
@@ -7150,23 +7193,166 @@ static bool MakeRimRunOn(
     {
       return false;
     }
+    // the deviation as sampled, with a margin, where above the one the
+    // intersection gives: BOP's check finds its greatest, past the samples
+    // (a cut on a walk's surface, 6.9e-8 sampled against 1e-7)
     theCut.Tol =
-      std::min(theCut.Tol,
-               std::max(ChFi3d_EvalTolReached(theS1, theCut.Pc1, theS2, theCut.Pc2, theCut.C),
-                        Precision::Confusion()));
+      std::max(theCut.Tol,
+               2. * ChFi3d_EvalTolReached(theS1, theCut.Pc1, theS2, theCut.Pc2, theCut.C));
     return theCut.Tol <= 10 * Tol3d
            && theCut.C->Value(theCut.C->FirstParameter()).Distance(theA) <= 10 * Tol3d
            && theCut.C->Value(theCut.C->LastParameter()).Distance(theB) <= 10 * Tol3d;
   };
 
+  // Epiv's piece from PP to Vtx, in Fv and in Fv's surface carried up
+  double                          aFV, aLV, aFE, aLE;
+  const occ::handle<Geom_Curve>   aCpiv = BRep_Tool::Curve(Epiv, aFE, aLE);
+  const occ::handle<Geom2d_Curve> aPCpV = PCurveInFace(Epiv, Fv, aFV, aLV);
+  const double                    parEV = BRep_Tool::Parameter(Vtx, Epiv);
+  const double                    parEP = CVp.ParameterOnArc();
+  if (aCpiv.IsNull() || aPCpV.IsNull() || std::abs(parEP - parEV) <= Precision::PConfusion())
+  {
+    return false;
+  }
+  const double                    aE0 = std::min(parEV, parEP), aE1 = std::max(parEV, parEP);
+  const occ::handle<Geom_Curve>   aCr   = new Geom_TrimmedCurve(aCpiv, aE0, aE1);
+  const occ::handle<Geom2d_Curve> aPcrV = new Geom2d_TrimmedCurve(aPCpV, aE0, aE1);
+  const double aTolCr = std::max(BRep_Tool::Tolerance(Epiv), Precision::Confusion());
+  auto         aMid   = [](const occ::handle<Geom_Curve>& theC) {
+    return theC->Value(0.5 * (theC->FirstParameter() + theC->LastParameter()));
+  };
+  const gp_Pnt aMr  = aMid(aCr);
+  auto         anOr = [](const bool isLeft) { return isLeft ? TopAbs_FORWARD : TopAbs_REVERSED; };
+
+  // The pieces before the last: on each its line on its face to where it
+  // passes to the next face (O), the cut by Fv's surface to the plane
+  // there square to that line (G), and the section in that plane between
+  // the piece and the next
+  struct Piece
+  {
+    gp_Pnt                    G, O;
+    int                       IndG = 0, IndO = 0;
+    bool                      isGFirstJ = true;
+    Cut                       Cg, Cj;
+    occ::handle<Geom2d_Curve> PjNext;
+    occ::handle<Geom_Curve>   Co;
+    TopAbs_Orientation        OrXs = TopAbs_FORWARD, OrXo = TopAbs_FORWARD, OrXg = TopAbs_FORWARD,
+                       OrXj = TopAbs_FORWARD, OrNj = TopAbs_FORWARD, OrVg = TopAbs_FORWARD,
+                       OrOo = TopAbs_FORWARD;
+  };
+
+  NCollection_Array1<Piece> aPieces(1, aNbX);
+  gp_Pnt                    aStart = PP;
+  for (int k = 1; k < aNbX; k++)
+  {
+    const occ::handle<ChFiDS_SurfData>& aX   = Xs(k);
+    const ChFiDS_FaceInterference&      aXo  = aX->Interference(Io);
+    const occ::handle<Geom_Surface>&    aSk  = DStr.Surface(aX->Surf()).Surface();
+    const occ::handle<Geom_Surface>&    aSk1 = DStr.Surface(Xs(k + 1)->Surf()).Surface();
+    const occ::handle<Geom_Curve>&      aLk  = DStr.Curve(aXo.LineIndex()).Curve();
+    Piece&                              aPc  = aPieces(k);
+    const double                        wk0 = aXo.Parameter(!isFirst), wk1 = aXo.Parameter(isFirst);
+    aPc.O = aX->Vertex(isFirst, Io).Point();
+    if (aLk->Value(wk1).Distance(aPc.O) > 10 * Tol3d)
+    {
+      return false;
+    }
+    // the section where the piece ends, its surface's bound across the walk
+    // there, which the next piece starts from
+    const gp_Pnt2d aUVsO0 = aXo.PCurveOnSurf()->Value(wk0), aUVsO1 = aXo.PCurveOnSurf()->Value(wk1);
+    const bool     isUAlong = std::abs(aUVsO1.X() - aUVsO0.X()) > std::abs(aUVsO1.Y() - aUVsO0.Y());
+    const occ::handle<Geom_Curve> anIso = isUAlong ? aSk->UIso(aUVsO1.X()) : aSk->VIso(aUVsO1.Y());
+    const double                  tO    = isUAlong ? aUVsO1.Y() : aUVsO1.X();
+    // G: Fv's surface on it, nearest O
+    GeomAPI_IntCS anIntG(anIso, aSv);
+    if (!anIntG.IsDone() || anIntG.NbPoints() == 0)
+    {
+      return false;
+    }
+    double aBest = RealLast(), tG = 0.;
+    for (int j = 1; j <= anIntG.NbPoints(); j++)
+    {
+      if (anIntG.Point(j).Distance(aPc.O) < aBest)
+      {
+        double aU, aV;
+        aBest = anIntG.Point(j).Distance(aPc.O);
+        aPc.G = anIntG.Point(j);
+        anIntG.Parameters(j, aU, aV, tG);
+      }
+    }
+    if (aBest > 4. * aW || aBest <= 10 * Tol3d)
+    {
+      return false;
+    }
+    aPc.Cj.C   = new Geom_TrimmedCurve(anIso, std::min(tG, tO), std::max(tG, tO));
+    aPc.Cj.Pc1 = new Geom2d_Line(isUAlong ? gp_Pnt2d(aUVsO1.X(), 0.) : gp_Pnt2d(0., aUVsO1.Y()),
+                                 isUAlong ? gp_Dir2d(0., 1.) : gp_Dir2d(1., 0.));
+    aPc.Cj.Tol           = Precision::Confusion();
+    aPc.isGFirstJ        = tG < tO;
+    const gp_Pnt2d aUVsG = isUAlong ? gp_Pnt2d(aUVsO1.X(), tG) : gp_Pnt2d(tG, aUVsO1.Y());
+    gp_Pnt2d       aUVs0, aUVv0, aUVvG, aUVsGn;
+    if (!anUV(aSk, aStart, aUVs0) || !anUV(aSv, aStart, aUVv0) || !anUV(aSv, aPc.G, aUVvG))
+    {
+      return false;
+    }
+    const occ::handle<GeomAdaptor_Surface> aHk  = aBounded(aSk, {aUVs0, aUVsG, aUVsO0, aUVsO1});
+    const occ::handle<GeomAdaptor_Surface> aHvk = aBounded(aSv, {aUVv0, aUVvG});
+    // the cut on the piece, and the section on the next too
+    if (!aCut(aHk, aHvk, aUVs0, aUVv0, aUVsG, aUVvG, aStart, aPc.G, aPc.Cg))
+    {
+      return false;
+    }
+    aPc.PjNext = aPCurveOn(aPc.Cj.C, aSk1);
+    if (aPc.PjNext.IsNull() || !anUV(aSk1, aPc.G, aUVsGn))
+    {
+      return false;
+    }
+    aPc.Cj.Tol = std::max(aPc.Cj.Tol,
+                          ChFi3d_EvalTolReached(aBounded(aSk, {aUVsG, aUVsO1}),
+                                                aPc.Cj.Pc1,
+                                                aBounded(aSk1, {aUVsGn}),
+                                                aPc.PjNext,
+                                                aPc.Cj.C));
+    if (aPc.Cj.Tol > 10 * Tol3d)
+    {
+      return false;
+    }
+    aPc.Co = new Geom_TrimmedCurve(aLk, std::min(wk0, wk1), std::max(wk0, wk1));
+    // the sides, as for the last piece (below)
+    const gp_Pnt aMg = aMid(aPc.Cg.C), aMo = aMid(aPc.Co);
+    const gp_Pnt aO0 = k == 1 ? PO : aPieces(k - 1).O;
+    aPc.OrXo         = anOr(IsKeptLeft(aSk, aXo.PCurveOnSurf(), aPc.Co, gp_Vec(aMo, aMg)));
+    aPc.OrXg         = anOr(IsKeptLeft(aSk, aPc.Cg.Pc1, aPc.Cg.C, gp_Vec(aMg, aMo)));
+    aPc.OrXj         = anOr(IsKeptLeft(aSk, aPc.Cj.Pc1, aPc.Cj.C, gp_Vec(aPc.O, aO0)));
+    aPc.OrNj         = anOr(IsKeptLeft(aSk1, aPc.PjNext, aPc.Cj.C, gp_Vec(aO0, aPc.O)));
+    aPc.OrVg         = anOr(IsKeptLeft(aSv, aPc.Cg.Pc2, aPc.Cg.C, gp_Vec(aMg, aMr)));
+    aPc.OrOo         = anOr(IsKeptLeft(BRep_Tool::Surface(TopoDS::Face(DStr.Shape(aX->Index(Io)))),
+                               aXo.PCurveOnFace(),
+                               aPc.Co,
+                               gp_Vec(aMg, aMo)));
+    aStart           = aPc.G;
+  }
+  // the last piece's cut from G before it, or PP
+  if (!anUV(aSv, aStart, aUVvP))
+  {
+    return false;
+  }
+  if (isOne)
+  {
+    aUVxP = aUVdP;
+  }
+  else if (!anUV(aSx, aStart, aUVxP))
+  {
+    return false;
+  }
   const occ::handle<GeomAdaptor_Surface> aHx = aBounded(aSx, {aUVxP, aUVxO, aUVxE, aUVxQ});
   const occ::handle<GeomAdaptor_Surface> aHv = aBounded(aSv, {aUVvP, aUVvQ, aUVvV});
   const occ::handle<GeomAdaptor_Surface> aHo = aBounded(aSo, {aUVoE, aUVoV});
   const occ::handle<GeomAdaptor_Surface> aHpV =
     aBounded(aPlV, {aPlUV(aPlV, PV), aPlUV(aPlV, Q), aPlUV(aPlV, Pe)});
-  // the cut, Fx by Fv's surface, from PP to Q
+  // the cut, Fx by Fv's surface, from PP or the piece before to Q
   Cut aCg;
-  if (!aCut(aHx, aHv, aUVxP, aUVvP, aUVxQ, aUVvQ, PP, Q, aCg))
+  if (!aCut(aHx, aHv, aUVxP, aUVvP, aUVxQ, aUVvQ, aStart, Q, aCg))
   {
     return false;
   }
@@ -7199,20 +7385,25 @@ static bool MakeRimRunOn(
       return false;
     }
   }
-  Cut                       aCs;
-  occ::handle<Geom2d_Curve> aPsx;
-  const bool                isPFirst = Ip == 1;
+  Cut                              aCs;
+  occ::handle<Geom2d_Curve>        aPsx;
+  const bool                       isPFirst = Ip == 1;
+  const occ::handle<Geom_Surface>& aS1      = DStr.Surface(Xs(1)->Surf()).Surface();
+  // the section at PP: from side 1 to side 2 as Fd's cap would be, in the
+  // plane through PP and PO as square to the spine as that allows, where Fd
+  // is on the edge at Vtx; else the first piece's bound across the walk
+  // where it starts, which Fd ends on (#876's post foot at 2), each side
+  // then the way its face lies
+  bool isCsByIso = false, isCsPFirst = isPFirst;
   if (!isOne)
   {
-    // the section between Fd and Fx at PP, from side 1 to side 2 as Fd's cap
-    // would be, in the plane through PP and PO as square to the spine as that
-    // allows
     GeomAPI_ProjectPointOnCurve aPrS(PO, aCS, aFS, aLS);
-    if (aPrS.NbPoints() == 0)
-    {
-      return false;
-    }
-    gp_Vec aT0;
+    isCsByIso = aPrS.NbPoints() == 0 || aPrS.LowerDistance() > aW;
+  }
+  if (!isOne && !isCsByIso)
+  {
+    GeomAPI_ProjectPointOnCurve aPrS(PO, aCS, aFS, aLS);
+    gp_Vec                      aT0;
     aCS->D1(aPrS.LowerDistanceParameter(), aPbid, aT0);
     gp_Vec aChord(PP, PO);
     aChord.Normalize();
@@ -7240,46 +7431,65 @@ static bool MakeRimRunOn(
     {
       double aTolPj = Tol3d;
       aPsx =
-        GeomProjLib::Curve2d(aCs.C, aCs.C->FirstParameter(), aCs.C->LastParameter(), aSx, aTolPj);
-      if (aPsx.IsNull())
+        GeomProjLib::Curve2d(aCs.C, aCs.C->FirstParameter(), aCs.C->LastParameter(), aS1, aTolPj);
+      gp_Pnt2d aUV1P;
+      if (aPsx.IsNull() || !anUV(aS1, PP, aUV1P))
       {
         return false;
       }
-      aCs.Tol = std::max(aCs.Tol, ChFi3d_EvalTolReached(aHd, aCs.Pc1, aHx, aPsx, aCs.C));
+      aCs.Tol =
+        std::max(aCs.Tol, ChFi3d_EvalTolReached(aHd, aCs.Pc1, aBounded(aS1, {aUV1P}), aPsx, aCs.C));
       if (aCs.Tol > 10 * Tol3d)
       {
         return false;
       }
     }
   }
-  // Epiv's piece from PP to Vtx, in Fv and in Fv's surface carried up
-  double                          aFV, aLV, aFE, aLE;
-  const occ::handle<Geom_Curve>   aCpiv = BRep_Tool::Curve(Epiv, aFE, aLE);
-  const occ::handle<Geom2d_Curve> aPCpV = PCurveInFace(Epiv, Fv, aFV, aLV);
-  const double                    parEV = BRep_Tool::Parameter(Vtx, Epiv);
-  const double                    parEP = CVp.ParameterOnArc();
-  if (aCpiv.IsNull() || aPCpV.IsNull() || std::abs(parEP - parEV) <= Precision::PConfusion())
+  else if (isCsByIso)
   {
-    return false;
+    const ChFiDS_FaceInterference& aX1o = Xs(1)->Interference(Io);
+    const gp_Pnt2d                 aUVa = aX1o.PCurveOnSurf()->Value(aX1o.Parameter(!isFirst));
+    const gp_Pnt2d                 aUVb = aX1o.PCurveOnSurf()->Value(aX1o.Parameter(isFirst));
+    const bool isUAlong = std::abs(aUVb.X() - aUVa.X()) > std::abs(aUVb.Y() - aUVa.Y());
+    const occ::handle<Geom_Curve> anIso = isUAlong ? aS1->UIso(aUVa.X()) : aS1->VIso(aUVa.Y());
+    const double                  tO    = isUAlong ? aUVa.Y() : aUVa.X();
+    GeomAPI_ProjectPointOnCurve   aPrP(PP, anIso);
+    if (aPrP.NbPoints() == 0 || aPrP.LowerDistance() > 10 * Tol3d)
+    {
+      return false;
+    }
+    const double tP = aPrP.LowerDistanceParameter();
+    aCs.C           = new Geom_TrimmedCurve(anIso, std::min(tP, tO), std::max(tP, tO));
+    aPsx            = new Geom2d_Line(isUAlong ? gp_Pnt2d(aUVa.X(), 0.) : gp_Pnt2d(0., aUVa.Y()),
+                           isUAlong ? gp_Dir2d(0., 1.) : gp_Dir2d(1., 0.));
+    aCs.Pc1    = aPCurveOn(aCs.C, aSd);
+    isCsPFirst = tP < tO;
+    if (aCs.Pc1.IsNull())
+    {
+      return false;
+    }
+    aCs.Tol = std::max(Precision::Confusion(),
+                       ChFi3d_EvalTolReached(aBounded(aSd, {aUVdP, aUVdO}),
+                                             aCs.Pc1,
+                                             aBounded(aS1, {aUVa}),
+                                             aPsx,
+                                             aCs.C));
+    if (aCs.Tol > 10 * Tol3d)
+    {
+      return false;
+    }
   }
-  const double                    aE0 = std::min(parEV, parEP), aE1 = std::max(parEV, parEP);
-  const occ::handle<Geom_Curve>   aCr   = new Geom_TrimmedCurve(aCpiv, aE0, aE1);
-  const occ::handle<Geom2d_Curve> aPcrV = new Geom2d_TrimmedCurve(aPCpV, aE0, aE1);
-  const double aTolCr = std::max(BRep_Tool::Tolerance(Epiv), Precision::Confusion());
-
   // The sides: each face lies, across each of its edges, toward the face's
   // other edges
-  auto aMid = [](const occ::handle<Geom_Curve>& theC) {
-    return theC->Value(0.5 * (theC->FirstParameter() + theC->LastParameter()));
-  };
   const occ::handle<Geom_Curve> aCo =
     new Geom_TrimmedCurve(aLo, std::min(wJ, wE), std::max(wJ, wE));
-  const gp_Pnt aMg = aMid(aCg.C), aMo = aMid(aCo), aMr = aMid(aCr);
+  const gp_Pnt aMg = aMid(aCg.C), aMo = aMid(aCo);
   const gp_Pnt aG((PV.XYZ() + Q.XYZ() + Pe.XYZ()) / 3.);
-  auto         anOr = [](const bool isLeft) { return isLeft ? TopAbs_FORWARD : TopAbs_REVERSED; };
-  // on Fx
+  // on the first piece at PP, toward Vtx
   const TopAbs_Orientation anOrXs =
-    isOne ? TopAbs_FORWARD : anOr(IsKeptLeft(aSx, aPsx, aCs.C, gp_Vec(PO, Pe)));
+    isOne ? TopAbs_FORWARD
+          : anOr(IsKeptLeft(aS1, aPsx, aCs.C, gp_Vec(PO, aNbX > 1 ? aPieces(1).O : Pe)));
+  // on Fx
   const TopAbs_Orientation anOrXo =
     anOr(IsKeptLeft(aSx, Fxo.PCurveOnSurf(), aCo, gp_Vec(aMo, aMg)));
   // the cut toward Fx's line on Fo, the end back along the spine
@@ -7322,7 +7532,9 @@ static bool MakeRimRunOn(
   }
   aTrafil1 = TopAbs::Compose(aTrafil1, Fd->Orientation());
   aTrafil1 = TopAbs::Compose(TopAbs::Reverse(Fd->InterferenceOnS1().Transition()), aTrafil1);
-  const TopAbs_Orientation anOrDs = isFirst ? TopAbs::Reverse(aTrafil1) : aTrafil1;
+  const TopAbs_Orientation anOrDs =
+    isCsByIso ? anOr(IsKeptLeft(aSd, aCs.Pc1, aCs.C, gp_Vec(aNbX > 1 ? aPieces(1).O : Pe, PO)))
+              : (isFirst ? TopAbs::Reverse(aTrafil1) : aTrafil1);
 
   // -- the DS, from here on --
   const int Isurf  = Fd->Surf();
@@ -7336,7 +7548,17 @@ static bool MakeRimRunOn(
   }
   // each the way its surface lies in the solid: Fx as a fillet's, Fv's
   // surface as Fv, the end plane's normal out past Vtx
-  const int                SolInd    = Stripe->SolidIndex();
+  const int SolInd = Stripe->SolidIndex();
+  for (int k = 1; k < aNbX; k++)
+  {
+    EVIMap.ChangeFind(Vtx).Append(Xs(k)->Surf());
+    DStr.ChangeShapeInterferences(SolInd).Append(
+      new TopOpeBRepDS_SolidSurfaceInterference(TopOpeBRepDS_Transition(Xs(k)->Orientation()),
+                                                TopOpeBRepDS_SOLID,
+                                                SolInd,
+                                                TopOpeBRepDS_SURFACE,
+                                                Xs(k)->Surf()));
+  }
   const int                anIs[3]   = {IsurfX, IsurfV, IsurfT};
   const TopAbs_Orientation anOrIs[3] = {Fx->Orientation(), Fv.Orientation(), TopAbs_FORWARD};
   for (int k = isOne ? 1 : 0; k < (isFlush ? 2 : 3); k++)
@@ -7402,20 +7624,74 @@ static bool MakeRimRunOn(
   };
   const int IFo = DStr.AddShape(Fo);
   const int IFv = DStr.AddShape(Fv);
+  // the pieces before the last: the points where each passes to the next,
+  // its line on its face, its cut, the section to the next, and the edge
+  // between the faces cut where the line crosses it
+  int anIndStartG = IndP, anIndStartO = IndO;
+  for (int k = 1; k < aNbX; k++)
+  {
+    Piece&                              aPc  = aPieces(k);
+    const occ::handle<ChFiDS_SurfData>& aX   = Xs(k);
+    const ChFiDS_FaceInterference&      aXo  = aX->Interference(Io);
+    const ChFiDS_CommonPoint&           aCPo = aX->Vertex(isFirst, Io);
+    const int                           IsX  = aX->Surf();
+    const int                           IsN  = Xs(k + 1)->Surf();
+    aPc.IndO                                 = ChFi3d_IndexPointInDS(aCPo, DStr);
+    aPc.IndG = DStr.AddPoint(TopOpeBRepDS_Point(aPc.G, std::max(aPc.Cg.Tol, aPc.Cj.Tol)));
+    {
+      TopOpeBRepDS_Point& aTO = DStr.ChangePoint(aPc.IndO);
+      aTO.Tolerance(std::max(aTO.Tolerance(), aPc.Cj.Tol));
+    }
+    const double wk0 = aXo.Parameter(!isFirst), wk1 = aXo.Parameter(isFirst);
+    const bool   isOLow = wk1 < wk0;
+    const int    ICok   = aCurveInDS(aPc.Co,
+                                DStr.Curve(aXo.LineIndex()).Tolerance(),
+                                isOLow ? aPc.IndO : anIndStartO,
+                                false,
+                                isOLow ? anIndStartO : aPc.IndO,
+                                false);
+    const int    IFok   = aX->Index(Io);
+    DStr.ChangeSurfaceInterferences(IsX).Append(
+      ChFi3d_FilCurveInDS(ICok, IsX, aXo.PCurveOnSurf(), aPc.OrXo));
+    DStr.ChangeShapeInterferences(IFok).Append(
+      ChFi3d_FilCurveInDS(ICok, IFok, aXo.PCurveOnFace(), aPc.OrOo));
+    const int ICgk = aCurveInDS(aPc.Cg.C, aPc.Cg.Tol, anIndStartG, false, aPc.IndG, false);
+    DStr.ChangeSurfaceInterferences(IsX).Append(
+      ChFi3d_FilCurveInDS(ICgk, IsX, aPc.Cg.Pc1, aPc.OrXg));
+    DStr.ChangeSurfaceInterferences(IsurfV).Append(
+      ChFi3d_FilCurveInDS(ICgk, IsurfV, aPc.Cg.Pc2, aPc.OrVg));
+    const int ICjk = aCurveInDS(aPc.Cj.C,
+                                aPc.Cj.Tol,
+                                aPc.isGFirstJ ? aPc.IndG : aPc.IndO,
+                                false,
+                                aPc.isGFirstJ ? aPc.IndO : aPc.IndG,
+                                false);
+    DStr.ChangeSurfaceInterferences(IsX).Append(
+      ChFi3d_FilCurveInDS(ICjk, IsX, aPc.Cj.Pc1, aPc.OrXj));
+    DStr.ChangeSurfaceInterferences(IsN).Append(
+      ChFi3d_FilCurveInDS(ICjk, IsN, aPc.PjNext, aPc.OrNj));
+    const int IEk = DStr.AddShape(aCPo.Arc());
+    DStr.ChangeShapeInterferences(IEk).Append(
+      ChFi3d_FilPointInDS(aCPo.TransitionOnArc(), IEk, aPc.IndO, aCPo.ParameterOnArc()));
+    anIndStartG = aPc.IndG;
+    anIndStartO = aPc.IndO;
+  }
   if (!isOne)
   {
-    // the section at PP, Fd's end and Fx's start
+    // the section at PP, Fd's end and the first piece's start
     const int ICs =
-      aCurveInDS(aCs.C, aCs.Tol, isPFirst ? IndP : IndO, false, isPFirst ? IndO : IndP, false);
+      aCurveInDS(aCs.C, aCs.Tol, isCsPFirst ? IndP : IndO, false, isCsPFirst ? IndO : IndP, false);
     DStr.ChangeSurfaceInterferences(Isurf).Append(ChFi3d_FilCurveInDS(ICs, Isurf, aCs.Pc1, anOrDs));
-    DStr.ChangeSurfaceInterferences(IsurfX).Append(ChFi3d_FilCurveInDS(ICs, IsurfX, aPsx, anOrXs));
-    // Fx's line on Fo, from the section to the end plane
+    DStr.ChangeSurfaceInterferences(Xs(1)->Surf())
+      .Append(ChFi3d_FilCurveInDS(ICs, Xs(1)->Surf(), aPsx, anOrXs));
+    // Fx's line on Fo, from the section or the piece before to the end
+    // plane
     const bool isELow = wE < wJ;
     const int  ICo    = aCurveInDS(aCo,
                                DStr.Curve(Fxo.LineIndex()).Tolerance(),
-                               isELow ? IndE : IndO,
+                               isELow ? IndE : anIndStartO,
                                false,
-                               isELow ? IndO : IndE,
+                               isELow ? anIndStartO : IndE,
                                false);
     DStr.ChangeSurfaceInterferences(IsurfX).Append(
       ChFi3d_FilCurveInDS(ICo, IsurfX, Fxo.PCurveOnSurf(), anOrXo));
@@ -7423,7 +7699,7 @@ static bool MakeRimRunOn(
       ChFi3d_FilCurveInDS(ICo, IFo, Fxo.PCurveOnFace(), anOrOo));
   }
   // the cut, on Fx and on Fv's surface carried up
-  const int ICg = aCurveInDS(aCg.C, aCg.Tol, IndP, false, IndQ, false);
+  const int ICg = aCurveInDS(aCg.C, aCg.Tol, anIndStartG, false, IndQ, false);
   DStr.ChangeSurfaceInterferences(IsurfX).Append(ChFi3d_FilCurveInDS(ICg, IsurfX, aCg.Pc1, anOrXg));
   DStr.ChangeSurfaceInterferences(IsurfV).Append(ChFi3d_FilCurveInDS(ICg, IsurfV, aCg.Pc2, anOrVg));
   // the end: on Fx and the end plane, on Fo and the end plane, on Fv's
@@ -7550,10 +7826,18 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
     {
     }
     const occ::handle<ChFiDS_SurfData> aFd = SeqFil.Value(aNum);
-    // the walk on past the end on a tangent plane, MakeRimRunOn's: a
-    // SurfData of its own, or kept in the end's
-    const occ::handle<ChFiDS_SurfData> aFx =
-      aNum == aNum0 ? aFd : SeqFil.Value(isFirstR ? aNum - 1 : aNum + 1);
+    // the walk on past the end on a tangent plane, MakeRimRunOn's: one or
+    // more SurfData of its own, from the end's on, or kept in the end's
+    NCollection_Sequence<occ::handle<ChFiDS_SurfData>> aXs;
+    for (int k = aNum; k != aNum0;)
+    {
+      k += isFirstR ? -1 : 1;
+      aXs.Append(SeqFil.Value(k));
+    }
+    if (aXs.IsEmpty())
+    {
+      aXs.Append(aFd);
+    }
     const TopoDS_Edge& aEs = isFirstR ? spine->Edges(1) : spine->Edges(spine->NbEdges());
     int                aIp = 0;
     if (IsRimEnd(DStr, aFd, isFirstR, Vtx, aEs, tolapp3d, aIp))
@@ -7566,7 +7850,7 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
                && (MakeRimRunOn(DStr,
                                 stripe,
                                 aFd,
-                                aFx,
+                                aXs,
                                 isFirstR,
                                 Vtx,
                                 aEs,
