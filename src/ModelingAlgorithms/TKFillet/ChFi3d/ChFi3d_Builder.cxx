@@ -1171,6 +1171,334 @@ static occ::handle<BRepTools_History> ChFi3d_MergeRunOnSeams(TopoDS_Shape& theRe
 }
 
 //=================================================================================================
+// A closed side whose seam ends at the vertex where a fillet was pinched
+// (PerformPinchEnds: a round plate's rim, its seam through the point where
+// a boss inside touches it) and the side carried up over the gap, a face of
+// its own on a copy of the side's surface between the cuts and the side's
+// edge either side of the vertex: made one, the seam carried up from the
+// vertex to the point where the cuts meet, those two pieces of the edge and
+// the vertex gone. The pair of points (vertex, point) of each are in
+// ChFi3d_SideSeams, which is cleared. Returns the history of the change,
+// null when there was none.
+
+static occ::handle<BRepTools_History> ChFi3d_MergeSideSeams(TopoDS_Shape& theResult,
+                                                            const double  theTol)
+{
+  NCollection_List<std::pair<gp_Pnt, gp_Pnt>> aPairs = ChFi3d_SideSeams();
+  ChFi3d_SideSeams().Clear();
+  if (aPairs.IsEmpty())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    anEF, aVE;
+  TopExp::MapShapesAndAncestors(theResult, TopAbs_EDGE, TopAbs_FACE, anEF);
+  TopExp::MapShapesAndAncestors(theResult, TopAbs_VERTEX, TopAbs_EDGE, aVE);
+  auto aVertexAt = [&aVE, theTol](const gp_Pnt& theP) {
+    for (int i = 1; i <= aVE.Extent(); i++)
+    {
+      const TopoDS_Vertex& aV = TopoDS::Vertex(aVE.FindKey(i));
+      if (BRep_Tool::Pnt(aV).Distance(theP) <= std::max(theTol, BRep_Tool::Tolerance(aV)))
+      {
+        return aV;
+      }
+    }
+    return TopoDS_Vertex();
+  };
+  // the oriented edges of the wire of <theF> holding <theE>, in order
+  auto aLoop = [](const TopoDS_Face&                  theF,
+                  const TopoDS_Shape&                 theE,
+                  TopoDS_Wire&                        theW,
+                  NCollection_Sequence<TopoDS_Shape>& theEdges) {
+    for (TopExp_Explorer exW(theF, TopAbs_WIRE); exW.More(); exW.Next())
+    {
+      NCollection_Sequence<TopoDS_Shape> anAll;
+      bool                               isIn = false;
+      for (BRepTools_WireExplorer wex(TopoDS::Wire(exW.Current()), theF); wex.More(); wex.Next())
+      {
+        anAll.Append(wex.Current());
+        isIn = isIn || wex.Current().IsSame(theE);
+      }
+      if (isIn)
+      {
+        theW     = TopoDS::Wire(exW.Current());
+        theEdges = anAll;
+        return true;
+      }
+    }
+    return false;
+  };
+  // the uv of <theV> on the edge <theE> of <theF>
+  auto anUV = [](const TopoDS_Shape& theE, const TopoDS_Vertex& theV, const TopoDS_Face& theF) {
+    double                          aF = 0., aL = 0.;
+    const occ::handle<Geom2d_Curve> aPc =
+      BRep_Tool::CurveOnSurface(TopoDS::Edge(theE), theF, aF, aL);
+    return aPc.IsNull() ? gp_Pnt2d(Precision::Infinite(), Precision::Infinite())
+                        : aPc->Value(BRep_Tool::Parameter(theV, TopoDS::Edge(theE)));
+  };
+  occ::handle<BRepTools_ReShape>                         aReShape = new BRepTools_ReShape;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+  BRep_Builder                                           aB;
+  for (NCollection_List<std::pair<gp_Pnt, gp_Pnt>>::Iterator itP(aPairs); itP.More(); itP.Next())
+  {
+    const TopoDS_Vertex aV  = aVertexAt(itP.Value().first);
+    const TopoDS_Vertex aVP = aVertexAt(itP.Value().second);
+    if (aV.IsNull() || aVP.IsNull() || aV.IsSame(aVP))
+    {
+      continue;
+    }
+    // the seam ending at the vertex, the side, and the face carried up:
+    // the one beside the side across the two edges of the vertex
+    TopoDS_Edge aSeam;
+    TopoDS_Face aF1, aFn;
+    for (NCollection_List<TopoDS_Shape>::Iterator itE(aVE.FindFromKey(aV)); itE.More(); itE.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+      if (!anEF.Contains(anE))
+      {
+        continue;
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(anEF.FindFromKey(anE)); itF.More();
+           itF.Next())
+      {
+        if (BRep_Tool::IsClosed(anE, TopoDS::Face(itF.Value())))
+        {
+          aSeam = anE;
+          aF1   = TopoDS::Face(itF.Value());
+        }
+      }
+    }
+    if (aSeam.IsNull() || aDone.Contains(aF1))
+    {
+      continue;
+    }
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aShared;
+    for (NCollection_List<TopoDS_Shape>::Iterator itE(aVE.FindFromKey(aV)); itE.More(); itE.Next())
+    {
+      if (itE.Value().IsSame(aSeam) || !anEF.Contains(itE.Value()))
+      {
+        continue;
+      }
+      const NCollection_List<TopoDS_Shape>& aLF = anEF.FindFromKey(itE.Value());
+      if (aLF.Extent() != 2 || (!aLF.First().IsSame(aF1) && !aLF.Last().IsSame(aF1)))
+      {
+        aShared.Clear();
+        break;
+      }
+      const TopoDS_Face aFo = TopoDS::Face(aLF.First().IsSame(aF1) ? aLF.Last() : aLF.First());
+      if (!aFn.IsNull() && !aFn.IsSame(aFo))
+      {
+        aShared.Clear();
+        break;
+      }
+      aFn = aFo;
+      aShared.Add(itE.Value());
+    }
+    if (aShared.Extent() != 2 || aFn.IsNull() || aDone.Contains(aFn)
+        || aFn.Orientation() != aF1.Orientation())
+    {
+      continue;
+    }
+    const occ::handle<Geom_Surface> aS1 = BRep_Tool::Surface(aF1);
+    if (!aS1->IsUPeriodic())
+    {
+      continue;
+    }
+    const double                       aPer = aS1->UPeriod();
+    TopoDS_Wire                        aW1, aWn;
+    NCollection_Sequence<TopoDS_Shape> aL1, aLn;
+    if (!aLoop(aF1, aSeam, aW1, aL1)
+        || !aLoop(aFn,
+                  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator(aShared).Value(),
+                  aWn,
+                  aLn))
+    {
+      continue;
+    }
+    // the face carried up's other edges, from one shared edge round to the
+    // other, cut in two at the point: <aQ[0]> to it, <aQ[1]> from it
+    NCollection_Sequence<TopoDS_Shape> aQ[2];
+    {
+      const int aNb = aLn.Length();
+      int       i0  = 0;
+      for (int i = 1; i <= aNb && i0 == 0; i++)
+      {
+        if (aShared.Contains(aLn(i)) && !aShared.Contains(aLn(i % aNb + 1)))
+        {
+          i0 = i % aNb + 1;
+        }
+      }
+      int k = 0;
+      for (int i = 0; i0 != 0 && i < aNb; i++)
+      {
+        const TopoDS_Shape& anE = aLn((i0 - 1 + i) % aNb + 1);
+        if (aShared.Contains(anE))
+        {
+          break;
+        }
+        aQ[k].Append(anE);
+        if (k == 0 && TopExp::LastVertex(TopoDS::Edge(anE), true).IsSame(aVP))
+        {
+          k = 1;
+        }
+      }
+      if (aQ[0].IsEmpty() || aQ[1].IsEmpty() || aQ[0].Length() + aQ[1].Length() + 2 != aNb)
+      {
+        continue;
+      }
+    }
+    // each half moved by periods onto the side's: where it meets the shared
+    // edge it takes the place of
+    double aShift[2] = {0., 0.};
+    bool   isOk      = true;
+    for (int k = 0; k < 2 && isOk; k++)
+    {
+      const TopoDS_Edge   aQE = TopoDS::Edge(k == 0 ? aQ[0].First() : aQ[1].Last());
+      const TopoDS_Vertex aA =
+        k == 0 ? TopExp::FirstVertex(aQE, true) : TopExp::LastVertex(aQE, true);
+      TopoDS_Shape aSh;
+      for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itS(aShared);
+           itS.More();
+           itS.Next())
+      {
+        TopoDS_Vertex aS0, aS1;
+        TopExp::Vertices(TopoDS::Edge(itS.Value()), aS0, aS1);
+        if (aS0.IsSame(aA) || aS1.IsSame(aA))
+        {
+          aSh = itS.Value();
+        }
+      }
+      if (aSh.IsNull())
+      {
+        isOk = false;
+        break;
+      }
+      const gp_Pnt2d aUV1 = anUV(aSh, aA, aF1), aUVn = anUV(aQE, aA, aFn);
+      if (Precision::IsInfinite(aUV1.X()) || Precision::IsInfinite(aUVn.X()))
+      {
+        isOk = false;
+        break;
+      }
+      aShift[k] = aPer * std::round((aUV1.X() - aUVn.X()) / aPer);
+      isOk      = aS1->Value(aUVn.X() + aShift[k], aUVn.Y())
+               .Transformed(aF1.Location().Transformation())
+               .Distance(BRep_Tool::Pnt(aA))
+             <= std::max(theTol, BRep_Tool::Tolerance(aA));
+    }
+    if (!isOk)
+    {
+      continue;
+    }
+    // the seam carried up from the vertex to the point, along its line
+    TopoDS_Vertex aSV0, aSV1;
+    TopExp::Vertices(aSeam, aSV0, aSV1);
+    double                        aF = 0., aL = 0.;
+    const occ::handle<Geom_Curve> aCS = BRep_Tool::Curve(aSeam, aF, aL);
+    if (aCS.IsNull() || aSV0.IsSame(aSV1))
+    {
+      continue;
+    }
+    GeomAPI_ProjectPointOnCurve aPr(BRep_Tool::Pnt(aVP), aCS);
+    if (aPr.NbPoints() == 0 || aPr.LowerDistance() > std::max(theTol, BRep_Tool::Tolerance(aVP)))
+    {
+      continue;
+    }
+    const bool   isVLast = aSV1.IsSame(aV);
+    const double aTP     = aPr.LowerDistanceParameter();
+    if (isVLast ? aTP <= aL : aTP >= aF)
+    {
+      continue;
+    }
+    TopoDS_Edge aNewSeam = TopoDS::Edge(aSeam.Oriented(TopAbs_FORWARD).EmptyCopied());
+    aB.Add(aNewSeam, (isVLast ? aSV0 : aVP).Oriented(TopAbs_FORWARD));
+    aB.Add(aNewSeam, (isVLast ? aVP : aSV1).Oriented(TopAbs_REVERSED));
+    aB.Range(aNewSeam, isVLast ? aF : aTP, isVLast ? aTP : aL);
+    // the point off the line by as much as the cuts' meeting allows
+    aB.UpdateVertex(aVP, std::max(BRep_Tool::Tolerance(aVP), 1.001 * aPr.LowerDistance()));
+    // the side's wire with the seam carried up and the two shared edges
+    // replaced by the halves: the one from the vertex by the half from the
+    // point, the one to it by the half to it
+    TopoDS_Wire aW;
+    aB.MakeWire(aW);
+    for (NCollection_Sequence<TopoDS_Shape>::Iterator it(aL1); it.More(); it.Next())
+    {
+      const TopoDS_Shape& anE = it.Value();
+      if (anE.IsSame(aSeam))
+      {
+        aB.Add(aW, aNewSeam.Oriented(anE.Orientation()));
+      }
+      else if (aShared.Contains(anE))
+      {
+        const int k = TopExp::FirstVertex(TopoDS::Edge(anE), true).IsSame(aV) ? 1 : 0;
+        for (NCollection_Sequence<TopoDS_Shape>::Iterator itQ(aQ[k]); itQ.More(); itQ.Next())
+        {
+          aB.Add(aW, itQ.Value());
+        }
+      }
+      else
+      {
+        aB.Add(aW, anE);
+      }
+    }
+    aW.Closed(true);
+    TopoDS_Face aNew = TopoDS::Face(aF1.EmptyCopied());
+    aB.Add(aNew, aW);
+    for (TopExp_Explorer exW(aF1, TopAbs_WIRE); exW.More(); exW.Next())
+    {
+      if (!exW.Current().IsSame(aW1))
+      {
+        aB.Add(aNew, exW.Current());
+      }
+    }
+    for (TopExp_Explorer exW(aFn, TopAbs_WIRE); exW.More(); exW.Next())
+    {
+      if (!exW.Current().IsSame(aWn))
+      {
+        isOk = false;
+      }
+    }
+    // the halves' edges on the side's surface: their curves there
+    for (int k = 0; k < 2 && isOk; k++)
+    {
+      for (NCollection_Sequence<TopoDS_Shape>::Iterator itQ(aQ[k]); itQ.More() && isOk; itQ.Next())
+      {
+        const TopoDS_Edge&              anE = TopoDS::Edge(itQ.Value());
+        double                          aPF = 0., aPL = 0.;
+        const occ::handle<Geom2d_Curve> aPc = BRep_Tool::CurveOnSurface(anE, aFn, aPF, aPL);
+        if (aPc.IsNull() || BRep_Tool::IsClosed(anE, aFn))
+        {
+          isOk = false;
+          break;
+        }
+        aB.UpdateEdge(anE,
+                      occ::down_cast<Geom2d_Curve>(aPc->Translated(gp_Vec2d(aShift[k], 0.))),
+                      aNew,
+                      BRep_Tool::Tolerance(anE));
+      }
+    }
+    if (!isOk || !BRepCheck_Analyzer(aNew).IsValid())
+    {
+      continue;
+    }
+    aReShape->Replace(aF1, aNew);
+    aReShape->Remove(aFn);
+    aDone.Add(aF1);
+    aDone.Add(aFn);
+  }
+  if (aDone.IsEmpty())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  const TopoDS_Shape aMerged = aReShape->Apply(theResult);
+  if (aMerged.IsNull() || !BRepCheck_Analyzer(aMerged).IsValid())
+  {
+    return occ::handle<BRepTools_History>();
+  }
+  theResult = aMerged;
+  return aReShape->History();
+}
+
+//=================================================================================================
 // A face no wider than <theTol> beside a face the fillet made: two long
 // edges, within <theTol> of each other, and between their ends short ones
 // or none -- what a fillet as wide as the face leaves of it with its radius
@@ -2703,6 +3031,7 @@ void ChFi3d_Builder::Compute()
         THE_OPPOSITE_SEEN.Clear();
         ChFi3d_PlateCorners().Clear();
         ChFi3d_RunOnSeams().Clear();
+        ChFi3d_SideSeams().Clear();
       }
     } anOpposite;
     // A fresh builder of the result, as each fallback takes one: Reset()
@@ -3333,11 +3662,17 @@ void ChFi3d_Builder::Compute()
             aTouch->Merge(aSplit);
           }
         }
-        // a face and the one the run-on made on its surface beside it, one
-        const occ::handle<BRepTools_History> aSeams =
-          ChFi3d_MergeRunOnSeams(myShapeResult, tolapp3d);
-        if (!aSeams.IsNull())
+        // a face and the one the run-on made on its surface beside it, one;
+        // a closed side and the face its surface carried up made at a pinch
+        for (int k = 0; k < 2; k++)
         {
+          const occ::handle<BRepTools_History> aSeams =
+            k == 0 ? ChFi3d_MergeRunOnSeams(myShapeResult, tolapp3d)
+                   : ChFi3d_MergeSideSeams(myShapeResult, tolapp3d);
+          if (aSeams.IsNull())
+          {
+            continue;
+          }
           if (aTouch.IsNull())
           {
             aTouch = aSeams;
@@ -4234,6 +4569,12 @@ bool InterpolateOn(const NCollection_Array1<gp_Pnt>&   theP,
   return true;
 }
 
+//! <theC> moved by <theDU> in u; <theC> itself when that is none.
+occ::handle<Geom2d_Curve> Shifted(const occ::handle<Geom2d_Curve>& theC, const double theDU)
+{
+  return theDU == 0. ? theC : occ::down_cast<Geom2d_Curve>(theC->Translated(gp_Vec2d(theDU, 0.)));
+}
+
 //! <theUV> moved by periods of <theS> to within half a period of <thePrev>.
 void InPeriodOf(const GeomAdaptor_Surface& theS, const gp_Pnt2d& thePrev, gp_Pnt2d& theUV)
 {
@@ -4249,6 +4590,149 @@ void InPeriodOf(const GeomAdaptor_Surface& theS, const gp_Pnt2d& thePrev, gp_Pnt
                                 thePrev.Y() - 0.5 * theS.VPeriod(),
                                 thePrev.Y() + 0.5 * theS.VPeriod()));
   }
+}
+
+//! The side's seam through <theVtx> (a closed side: a round plate's rim
+//! with its seam there), null where there is none. False where there is
+//! one that the side carried up cannot take: more than one, a side other
+//! than a cylinder or a cone, a seam not a line or closed at the vertex.
+bool SideSeamAt(const TopoDS_Face&         theFv,
+                const TopoDS_Vertex&       theVtx,
+                const GeomAdaptor_Surface& theSv,
+                TopoDS_Edge&               theSeam)
+{
+  theSeam.Nullify();
+  for (TopExp_Explorer ex(theFv, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    if (HasVertex(TopoDS::Edge(ex.Current()), theVtx)
+        && BRep_Tool::IsClosed(TopoDS::Edge(ex.Current()), theFv))
+    {
+      if (!theSeam.IsNull() && !theSeam.IsSame(ex.Current()))
+      {
+        return false;
+      }
+      theSeam = TopoDS::Edge(ex.Current());
+    }
+  }
+  if (theSeam.IsNull())
+  {
+    return true;
+  }
+  if ((theSv.GetType() != GeomAbs_Cylinder && theSv.GetType() != GeomAbs_Cone)
+      || !theSv.IsUPeriodic())
+  {
+    return false;
+  }
+  TopoDS_Vertex aV0, aV1;
+  TopExp::Vertices(theSeam, aV0, aV1);
+  double                  aF = 0., aL = 0.;
+  occ::handle<Geom_Curve> aCS = BRep_Tool::Curve(theSeam, aF, aL);
+  while (!occ::down_cast<Geom_TrimmedCurve>(aCS).IsNull())
+  {
+    aCS = occ::down_cast<Geom_TrimmedCurve>(aCS)->BasisCurve();
+  }
+  return !occ::down_cast<Geom_Line>(aCS).IsNull() && !aV0.IsSame(aV1);
+}
+
+//! Whether <theP> lies on the line of the side's seam <theSeam> past
+//! <theVtx>, its end, by <theTol>: the seam carried up to it.
+bool SeamRunsTo(const TopoDS_Edge&   theSeam,
+                const TopoDS_Vertex& theVtx,
+                const gp_Pnt&        theP,
+                const double         theTol)
+{
+  TopoDS_Vertex aV0, aV1;
+  TopExp::Vertices(theSeam, aV0, aV1);
+  double                  aF = 0., aL = 0.;
+  occ::handle<Geom_Curve> aCS = BRep_Tool::Curve(theSeam, aF, aL);
+  while (!occ::down_cast<Geom_TrimmedCurve>(aCS).IsNull())
+  {
+    aCS = occ::down_cast<Geom_TrimmedCurve>(aCS)->BasisCurve();
+  }
+  const occ::handle<Geom_Line> aLS = occ::down_cast<Geom_Line>(aCS);
+  const gp_Pnt                 aPV = BRep_Tool::Pnt(theVtx);
+  const gp_Pnt                 aPO = BRep_Tool::Pnt(aV0.IsSame(theVtx) ? aV1 : aV0);
+  return !aLS.IsNull() && aLS->Lin().Distance(theP) <= theTol
+         && gp_Vec(aPV, theP).Dot(gp_Vec(aPO, aPV)) > 0.;
+}
+
+//! The side carried up over the gap of a pinch, a face of its own on a copy
+//! of the side's surface <theSv>, lying in the solid as the side <theFv>
+//! does: its index in the DS.
+int CarriedUpSide(
+  TopOpeBRepDS_DataStructure&                                                        DStr,
+  const occ::handle<Geom_Surface>&                                                   theSv,
+  const TopoDS_Face&                                                                 theFv,
+  const int                                                                          theSolid,
+  const TopoDS_Vertex&                                                               theVtx,
+  const double                                                                       theTol,
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>& theEVIMap)
+{
+  const int IsurfV =
+    DStr.AddSurface(TopOpeBRepDS_Surface(occ::down_cast<Geom_Surface>(theSv->Copy()), theTol));
+  DStr.ChangeShapeInterferences(theSolid).Append(
+    new TopOpeBRepDS_SolidSurfaceInterference(TopOpeBRepDS_Transition(theFv.Orientation()),
+                                              TopOpeBRepDS_SOLID,
+                                              theSolid,
+                                              TopOpeBRepDS_SURFACE,
+                                              IsurfV));
+  if (!theEVIMap.IsBound(theVtx))
+  {
+    theEVIMap.Bind(theVtx, NCollection_List<int>());
+  }
+  theEVIMap.ChangeFind(theVtx).Append(IsurfV);
+  return IsurfV;
+}
+
+//! The arc of <theCPArc> from its point (<theIndArc> in the DS) to <theVtx>
+//! (<theIVtx>), in the side <theFv> (FORWARD; <theIShape> in the DS) as the
+//! arc is, and on the side carried up (<theIsurfV>) the other way, its
+//! pcurve there moved by <theShift> in u.
+void AddArcPiece(TopOpeBRepDS_DataStructure& DStr,
+                 const TopoDS_Face&          theFv,
+                 const int                   theIShape,
+                 const int                   theIsurfV,
+                 const TopoDS_Vertex&        theVtx,
+                 const int                   theIVtx,
+                 const ChFiDS_CommonPoint&   theCPArc,
+                 const int                   theIndArc,
+                 const double                theShift)
+{
+  const TopoDS_Edge&              anArc = theCPArc.Arc();
+  double                          aF = 0., aL = 0., aPF = 0., aPL = 0.;
+  const occ::handle<Geom_Curve>   aCA  = BRep_Tool::Curve(anArc, aF, aL);
+  const occ::handle<Geom2d_Curve> aPcA = BRep_Tool::CurveOnSurface(anArc, theFv, aPF, aPL);
+  TopoDS_Vertex                   aVA0, aVA1;
+  TopExp::Vertices(anArc, aVA0, aVA1);
+  const double aT = theCPArc.ParameterOnArc();
+  const double aTV =
+    aVA0.IsSame(aVA1) ? (aT - aF < aL - aT ? aF : aL) : (aVA0.IsSame(theVtx) ? aF : aL);
+  const bool isVLow = aTV < aT;
+  const int  IC     = DStr.AddCurve(
+    TopOpeBRepDS_Curve(new Geom_TrimmedCurve(aCA, std::min(aT, aTV), std::max(aT, aTV)),
+                       BRep_Tool::Tolerance(anArc)));
+  DStr.ChangeCurveInterferences(IC).Append(ChFi3d_FilPointInDS(TopAbs_FORWARD,
+                                                               IC,
+                                                               isVLow ? theIVtx : theIndArc,
+                                                               std::min(aT, aTV),
+                                                               isVLow || theCPArc.IsVertex()));
+  DStr.ChangeCurveInterferences(IC).Append(ChFi3d_FilPointInDS(TopAbs_REVERSED,
+                                                               IC,
+                                                               isVLow ? theIndArc : theIVtx,
+                                                               std::max(aT, aTV),
+                                                               !isVLow || theCPArc.IsVertex()));
+  TopAbs_Orientation anOrA = TopAbs_FORWARD;
+  for (TopExp_Explorer ex(theFv, TopAbs_EDGE); ex.More(); ex.Next())
+  {
+    if (ex.Current().IsSame(anArc))
+    {
+      anOrA = ex.Current().Orientation();
+      break;
+    }
+  }
+  DStr.ChangeShapeInterferences(theIShape).Append(ChFi3d_FilCurveInDS(IC, theIShape, aPcA, anOrA));
+  DStr.ChangeSurfaceInterferences(theIsurfV).Append(
+    ChFi3d_FilCurveInDS(IC, theIsurfV, Shifted(aPcA, theShift), TopAbs::Reverse(anOrA)));
 }
 
 //=======================================================================
@@ -4444,14 +4928,92 @@ bool PinchGap(const TopoDS_Vertex&                Vtx,
       return false;
     }
   }
-  // the side's seam not through the vertex (as for PinchEnds)
-  for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More(); ex.Next())
+  // The side closed, its seam through the vertex (as for PinchEnds): the
+  // cut crosses the seam's line, and is cut in two there; the side carried
+  // up over the gap a face of its own on a copy of its surface, between the
+  // cut and the side's edge either side of the vertex, made one with the
+  // side after, the seam carried up to the crossing (ChFi3d_MergeSideSeams).
+  // Each arc's pcurve moved by <aShiftArc> onto the cut's period at its end;
+  // the cut on that face the way of <aCutOrV>.
+  TopoDS_Edge aSideSeam;
+  if (!SideSeamAt(Fv, Vtx, aGSv, aSideSeam))
   {
-    if (HasVertex(TopoDS::Edge(ex.Current()), Vtx)
-        && BRep_Tool::IsClosed(TopoDS::Edge(ex.Current()), Fv))
+    return false;
+  }
+  double             aCutW = 0., aShiftArc[2] = {0., 0.};
+  gp_Pnt             aCutX;
+  TopAbs_Orientation aCutOrV = TopAbs_FORWARD;
+  if (!aSideSeam.IsNull())
+  {
+    const double                    aPerV = aGSv.UPeriod();
+    double                          aF = 0., aL = 0.;
+    const occ::handle<Geom2d_Curve> aPcSeam = BRep_Tool::CurveOnSurface(aSideSeam, Fv, aF, aL);
+    if (aPcSeam.IsNull())
     {
       return false;
     }
+    const gp_Pnt2d aUVV = aPcSeam->Value(BRep_Tool::Parameter(Vtx, aSideSeam));
+    const double   aW0 = aCut->FirstParameter(), aW1 = aCut->LastParameter();
+    const double   aU0 = aCutPcV->Value(aW0).X(), aU1 = aCutPcV->Value(aW1).X();
+    const double   aN0 = std::floor((aU0 - aUVV.X()) / aPerV);
+    const double   aN1 = std::floor((aU1 - aUVV.X()) / aPerV);
+    if (std::abs(aN0 - aN1) != 1.)
+    {
+      return false;
+    }
+    const double aUs = aUVV.X() + std::max(aN0, aN1) * aPerV;
+    double       a = aW0, b = aW1;
+    for (int it = 0; it < 80; it++)
+    {
+      const double m = 0.5 * (a + b);
+      if ((aCutPcV->Value(m).X() - aUs) * (aU0 - aUs) > 0.)
+      {
+        a = m;
+      }
+      else
+      {
+        b = m;
+      }
+    }
+    aCutW = 0.5 * (a + b);
+    aCutX = aCut->Value(aCutW);
+    if (!SeamRunsTo(aSideSeam, Vtx, aCutX, 10. * theTol3d))
+    {
+      return false;
+    }
+    // the cut runs from the last end's point (its first) to the first's
+    for (int e = 0; e < 2; e++)
+    {
+      const ChFiDS_CommonPoint& aCP = anEnds[e].SD->Vertex(anEnds[e].IsFirst, anEnds[e].OnsArc);
+      if (!aCP.IsOnArc() || aCP.Arc().IsSame(aSideSeam) || BRep_Tool::IsClosed(aCP.Arc(), Fv))
+      {
+        return false;
+      }
+      const occ::handle<Geom2d_Curve> aPcA = BRep_Tool::CurveOnSurface(aCP.Arc(), Fv, aF, aL);
+      if (aPcA.IsNull())
+      {
+        return false;
+      }
+      const double aUA = aPcA->Value(aCP.ParameterOnArc()).X();
+      const double aUC = (e == 1 ? aU0 : aU1);
+      aShiftArc[e]     = aPerV * std::round((aUC - aUA) / aPerV);
+    }
+    // the face over the cut, between it and the vertex: the loop from the
+    // cut's first point over it to its last and back by the vertex, turning
+    // left or right in the side's (u, v)
+    const int NbA   = 40;
+    double    aArea = 0.;
+    gp_Pnt2d  aPrev = aCutPcV->Value(aW0);
+    for (int k = 1; k <= NbA + 1; k++)
+    {
+      const gp_Pnt2d aNext =
+        k <= NbA ? aCutPcV->Value(aW0 + (aW1 - aW0) * k / NbA) : gp_Pnt2d(aUs, aUVV.Y());
+      aArea += aPrev.X() * aNext.Y() - aNext.X() * aPrev.Y();
+      aPrev = aNext;
+    }
+    const gp_Pnt2d aFirst = aCutPcV->Value(aW0);
+    aArea += aPrev.X() * aFirst.Y() - aFirst.X() * aPrev.Y();
+    aCutOrV = aArea > 0. ? TopAbs_FORWARD : TopAbs_REVERSED;
   }
 
   // The boss's own seam through the vertex (a boss turned so): the line run
@@ -4609,16 +5171,56 @@ bool PinchGap(const TopoDS_Vertex&                Vtx,
                         Isurf,
                         new Geom2d_Line(gp_Pnt2d(U1, 0.), gp_Dir2d(0., 1.)),
                         TopAbs::Compose(trafil1, aSecOr[0])));
-  // the cut, on the gap's face and the side's
-  const int ICut = DStr.AddCurve(TopOpeBRepDS_Curve(aCut, aTolCut));
-  DStr.ChangeCurveInterferences(ICut).Append(
-    ChFi3d_FilPointInDS(TopAbs_FORWARD, ICut, IndArc[1], aCut->FirstParameter()));
-  DStr.ChangeCurveInterferences(ICut).Append(
-    ChFi3d_FilPointInDS(TopAbs_REVERSED, ICut, IndArc[0], aCut->LastParameter()));
-  DStr.ChangeSurfaceInterferences(Isurf).Append(
-    ChFi3d_FilCurveInDS(ICut, Isurf, aCutPcS, trafilA));
-  DStr.ChangeShapeInterferences(IShape).Append(
-    ChFi3d_FilCurveInDS(ICut, IShape, aCutPcV, aTrSide));
+  // the cut, on the gap's face and the side's; on the side carried up in
+  // two across the seam's line, with the arc's pieces either side of the
+  // vertex
+  if (aSideSeam.IsNull())
+  {
+    const int ICut = DStr.AddCurve(TopOpeBRepDS_Curve(aCut, aTolCut));
+    DStr.ChangeCurveInterferences(ICut).Append(
+      ChFi3d_FilPointInDS(TopAbs_FORWARD, ICut, IndArc[1], aCut->FirstParameter()));
+    DStr.ChangeCurveInterferences(ICut).Append(
+      ChFi3d_FilPointInDS(TopAbs_REVERSED, ICut, IndArc[0], aCut->LastParameter()));
+    DStr.ChangeSurfaceInterferences(Isurf).Append(
+      ChFi3d_FilCurveInDS(ICut, Isurf, aCutPcS, trafilA));
+    DStr.ChangeShapeInterferences(IShape).Append(
+      ChFi3d_FilCurveInDS(ICut, IShape, aCutPcV, aTrSide));
+  }
+  else
+  {
+    const int IsurfV =
+      CarriedUpSide(DStr, aSv, anEnds[0].Fv, aSt->SolidIndex(), Vtx, theTol3d, theEVIMap);
+    const int IVtx = DStr.AddShape(Vtx);
+    const int IndX =
+      DStr.AddPoint(TopOpeBRepDS_Point(aCutX, std::max(aTolCut, Precision::Confusion())));
+    const double aWc[3] = {aCut->FirstParameter(), aCutW, aCut->LastParameter()};
+    const int    aIc[3] = {IndArc[1], IndX, IndArc[0]};
+    for (int k = 0; k < 2; k++)
+    {
+      const int ICut = DStr.AddCurve(TopOpeBRepDS_Curve(aCut, aTolCut));
+      DStr.ChangeCurveInterferences(ICut).Append(
+        ChFi3d_FilPointInDS(TopAbs_FORWARD, ICut, aIc[k], aWc[k]));
+      DStr.ChangeCurveInterferences(ICut).Append(
+        ChFi3d_FilPointInDS(TopAbs_REVERSED, ICut, aIc[k + 1], aWc[k + 1]));
+      DStr.ChangeSurfaceInterferences(Isurf).Append(
+        ChFi3d_FilCurveInDS(ICut, Isurf, aCutPcS, trafilA));
+      DStr.ChangeSurfaceInterferences(IsurfV).Append(
+        ChFi3d_FilCurveInDS(ICut, IsurfV, aCutPcV, aCutOrV));
+    }
+    for (int e = 0; e < 2; e++)
+    {
+      AddArcPiece(DStr,
+                  Fv,
+                  IShape,
+                  IsurfV,
+                  Vtx,
+                  IVtx,
+                  anEnds[e].SD->Vertex(anEnds[e].IsFirst, anEnds[e].OnsArc),
+                  IndArc[e],
+                  aShiftArc[e]);
+    }
+    ChFi3d_SideSeams().Append(std::make_pair(BRep_Tool::Pnt(Vtx), aCutX));
+  }
   // the boss's line run on, on the gap's face and the boss's; in two
   // across the boss's seam
   const int IFAir = aFd->Index(anEnds[0].OnsAir);
@@ -4814,6 +5416,25 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
                       theEVIMap);
     }
   }
+  // One surface data from end to end (the foot one closed edge, the boss's
+  // seam through the vertex), its line on the boss run on from both ends to
+  // one point: a whole turn of a periodic line, not a hair over -- the
+  // points are found to some 1e-8, and BRepCheck refuses a range past the
+  // period (the rim's boss turned so, "BRep_API: command not done")
+  if (anEnds[0].SD == anEnds[1].SD && anEnds[0].IsFirst != anEnds[1].IsFirst)
+  {
+    const int                     anIL = anEnds[0].SD->Interference(anEnds[0].OnsAir).LineIndex();
+    const occ::handle<Geom_Curve> aCL  = anIL > 0 ? DStr.Curve(anIL).Curve() : nullptr;
+    if (!aCL.IsNull() && aCL->IsPeriodic())
+    {
+      PinchEnd& aF = anEnds[0].IsFirst ? anEnds[0] : anEnds[1];
+      PinchEnd& aL = anEnds[0].IsFirst ? anEnds[1] : anEnds[0];
+      if (aL.WAir - aF.WAir > aCL->Period())
+      {
+        aL.WAir = aF.WAir + aCL->Period();
+      }
+    }
+  }
   const double aGap = anEnds[0].PAir.Distance(anEnds[1].PAir);
   if (aGap > 10 * theTol3d)
   {
@@ -4863,23 +5484,50 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
     }
   }
 
-  // The two cuts meet on the side's surface as in space: not across a seam
-  // of the side (a closed side with its seam through the vertex: the seam
-  // would have to run on up to the point)
+  // The side closed, its seam through the vertex (a round plate's rim with
+  // its seam there): the cuts meet across the seam, and the side carried up
+  // over the gap is a face of its own on a copy of its surface, between the
+  // cuts and the side's edge either side of the vertex, put in that edge's
+  // stead in the side; after the build the two are made one, the seam
+  // carried up from the vertex to the point (ChFi3d_MergeSideSeams). A
+  // cylinder or a cone, its seam a line, and the point on that line past
+  // the vertex.
+  TopoDS_Edge aSideSeam;
+  if (!SideSeamAt(Fv, Vtx, aGSv, aSideSeam))
   {
-    const gp_Pnt2d aUV0 = anEnds[0].PcV->Value(anEnds[0].PcV->LastParameter());
-    const gp_Pnt2d aUV1 = anEnds[1].PcV->Value(anEnds[1].PcV->LastParameter());
-    const double   aRes =
-      std::max(aGSv.UResolution(10 * theTol3d), aGSv.VResolution(10 * theTol3d));
-    if (aUV0.Distance(aUV1) > aRes)
+    return false;
+  }
+  // the second cut's pcurve on the side's surface moved by <aShift> in u to
+  // meet the first's
+  double aShift = 0.;
+  if (!aSideSeam.IsNull())
+  {
+    if (!SeamRunsTo(aSideSeam,
+                    Vtx,
+                    anEnds[0].PAir.Translated(0.5 * gp_Vec(anEnds[0].PAir, anEnds[1].PAir)),
+                    10 * theTol3d))
     {
       return false;
     }
+    for (int e = 0; e < 2; e++)
+    {
+      const TopoDS_Edge& anArc = anEnds[e].SD->Vertex(anEnds[e].IsFirst, anEnds[e].OnsArc).Arc();
+      if (anArc.IsSame(aSideSeam) || BRep_Tool::IsClosed(anArc, Fv))
+      {
+        return false;
+      }
+    }
+    const double aU0 = anEnds[0].PcV->Value(anEnds[0].PcV->LastParameter()).X();
+    const double aU1 = anEnds[1].PcV->Value(anEnds[1].PcV->LastParameter()).X();
+    aShift           = aGSv.UPeriod() * std::round((aU0 - aU1) / aGSv.UPeriod());
   }
-  for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More(); ex.Next())
+  // The two cuts meet on the side's surface as in space
   {
-    if (HasVertex(TopoDS::Edge(ex.Current()), Vtx)
-        && BRep_Tool::IsClosed(TopoDS::Edge(ex.Current()), Fv))
+    const gp_Pnt2d aUV0 = anEnds[0].PcV->Value(anEnds[0].PcV->LastParameter());
+    const gp_Pnt2d aUV1 =
+      anEnds[1].PcV->Value(anEnds[1].PcV->LastParameter()).Translated(gp_Vec2d(aShift, 0.));
+    const double aRes = std::max(aGSv.UResolution(10 * theTol3d), aGSv.VResolution(10 * theTol3d));
+    if (aUV0.Distance(aUV1) > aRes)
     {
       return false;
     }
@@ -4938,6 +5586,16 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
                                      std::max({0.5 * aGap + anEnds[0].Tol,
                                                0.5 * aGap + anEnds[1].Tol,
                                                Precision::Confusion()})));
+  // the side carried up, a face of its own
+  const int IsurfV = aSideSeam.IsNull() ? 0
+                                        : CarriedUpSide(DStr,
+                                                        aSv,
+                                                        anEnds[0].Fv,
+                                                        anEnds[0].St->SolidIndex(),
+                                                        Vtx,
+                                                        theTol3d,
+                                                        theEVIMap);
+  const int IVtx   = aSideSeam.IsNull() ? 0 : DStr.AddShape(Vtx);
   for (int e = 0; e < 2; e++)
   {
     PinchEnd&                anEnd  = anEnds[e];
@@ -4977,13 +5635,30 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
       }
     }
     const int ICurve = DStr.AddCurve(TopOpeBRepDS_Curve(aC, anEnd.Tol));
-    DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(ICurve, IShape, aPc, Et));
+    if (IsurfV == 0)
+    {
+      DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(ICurve, IShape, aPc, Et));
+    }
+    else
+    {
+      DStr.ChangeSurfaceInterferences(IsurfV).Append(
+        ChFi3d_FilCurveInDS(ICurve, IsurfV, Shifted(aPc, e == 1 ? aShift : 0.), Et));
+    }
     anEnd.St->SetCurve(ICurve, anEnd.IsFirst);
     anEnd.St->SetParameters(anEnd.IsFirst, aU0, aU1);
     anEnd.St->ChangePCurve(anEnd.IsFirst) = aPs;
     const int IndArc                 = ChFi3d_IndexPointInDS(aCPArc, DStr);
     anEnd.St->SetIndexPoint(anEnd.OnsArc == 1 ? IndArc : IndP, anEnd.IsFirst, 1);
     anEnd.St->SetIndexPoint(anEnd.OnsArc == 1 ? IndP : IndArc, anEnd.IsFirst, 2);
+    if (IsurfV == 0)
+    {
+      continue;
+    }
+    AddArcPiece(DStr, Fv, IShape, IsurfV, Vtx, IVtx, aCPArc, IndArc, e == 1 ? aShift : 0.);
+  }
+  if (IsurfV != 0)
+  {
+    ChFi3d_SideSeams().Append(std::make_pair(BRep_Tool::Pnt(Vtx), aP));
   }
   if (!aSeam.IsNull())
   {

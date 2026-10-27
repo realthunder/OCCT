@@ -141,6 +141,14 @@ NCollection_List<gp_Pnt>& ChFi3d_RunOnSeams()
 
 //=================================================================================================
 
+NCollection_List<std::pair<gp_Pnt, gp_Pnt>>& ChFi3d_SideSeams()
+{
+  thread_local NCollection_List<std::pair<gp_Pnt, gp_Pnt>> aSeams;
+  return aSeams;
+}
+
+//=================================================================================================
+
 bool& ChFi3d_PlateStepBackOnEdge()
 {
   thread_local bool isOnEdge = false;

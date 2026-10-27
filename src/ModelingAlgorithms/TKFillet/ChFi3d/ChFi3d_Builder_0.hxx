@@ -53,6 +53,8 @@
 #include <NCollection_Array1.hxx>
 #include <NCollection_Map.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+
+#include <utility>
 #ifdef OCCT_DEBUG
   #include <OSD_Chronometer.hxx>
 extern OSD_Chronometer simul, elspine, chemine;
@@ -86,6 +88,12 @@ NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChFi3d_PlateCorners();
 //! (ChFi3d_Builder_C1.cxx) made on its surface carried up beside it, the
 //! calling thread's: ChFi3d_Builder::Compute makes the two one.
 NCollection_List<gp_Pnt>& ChFi3d_RunOnSeams();
+
+//! The vertex and the point of each pinch (ChFi3d_Builder.cxx,
+//! PerformPinchEnds) at a closed side whose seam ends at that vertex, the
+//! side carried up over the gap a face of its own, the calling thread's:
+//! ChFi3d_Builder::Compute makes the two one, the seam carried up.
+NCollection_List<std::pair<gp_Pnt, gp_Pnt>>& ChFi3d_SideSeams();
 
 //! Set while ChFi3d_FilBuilder::ComputeWithFlatEndCorners computes once more,
 //! everything else refused, with the radii a hair smaller: a fillet as wide
