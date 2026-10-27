@@ -1243,6 +1243,11 @@ void ChFi3d_Builder::Remove(const TopoDS_Edge& E)
   for (; itel.More(); itel.Next())
   {
     const occ::handle<ChFiDS_Spine>& sp = itel.Value()->Spine();
+    // (a corner's stripe a computation left has none, until Reset)
+    if (sp.IsNull())
+    {
+      continue;
+    }
     for (int j = 1; j <= sp->NbEdges(); j++)
     {
       if (E.IsSame(sp->Edges(j)))

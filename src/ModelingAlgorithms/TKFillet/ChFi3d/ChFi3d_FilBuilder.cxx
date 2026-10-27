@@ -412,6 +412,21 @@ void ChFi3d_FilBuilder::ComputeWithFlatEndCorners()
     }
   };
   const auto aSetRadii = [this, &anEdges, &aRadii, &aCarry](const double theLess) {
+    // the corners' stripes a computation left, of no spine, dropped as
+    // Reset drops them: Remove takes every stripe for one with a spine, and
+    // NbElements stops at the first without (three edges at a vertex of
+    // #962's ring and #474's coil, refused, crashed in Remove)
+    for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();)
+    {
+      if (itS.Value().IsNull() || itS.Value()->Spine().IsNull())
+      {
+        myListStripe.Remove(itS);
+      }
+      else
+      {
+        itS.Next();
+      }
+    }
     try
     {
       OCC_CATCH_SIGNALS
