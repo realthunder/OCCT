@@ -2486,6 +2486,16 @@ static bool MakeFlatEnd(
   return true;
 }
 
+static bool RimEnd(
+  TopOpeBRepDS_DataStructure&                                                        DStr,
+  const occ::handle<ChFiDS_Stripe>&                                                  Stripe,
+  const TopoDS_Vertex&                                                               Vtx,
+  const TopoDS_Shape&                                                                theSolid,
+  const ChFiDS_Map&                                                                  EFMap,
+  const double                                                                       Tol3d,
+  const double                                                                       Tol2d,
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>& EVIMap);
+
 void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
 {
   PerformOneCorner(Index, thePrepareOnSame, false);
@@ -2515,6 +2525,18 @@ void ChFi3d_Builder::PerformOneCorner(const int  Index,
     stripe->ChangeSetOfSurfData()->ChangeSequence();
   // SurfData and its CommonPoints,
   int sens = 0;
+
+  // A rim end (RimEnd), in the last resort, before the walk past the rim
+  // is taken for surplus below: a post standing straight on the plate, its
+  // corner one face with the plate's side below, has three edges at Vtx, not
+  // four, and comes here, where the drafted one goes to
+  // PerformIntersectionAtEnd
+  if (!thePrepareOnSame && !theAtFourEdges && ChFi3d_Builder::FlatEndAtVertex()
+      && ChFi3d_MissedFlatEnd() && myVDataMap(Index).Extent() == 1
+      && RimEnd(DStr, stripe, Vtx, myShape, myEFMap, tolapp3d, tolapp2d, myEVIMap))
+  {
+    return;
+  }
 
   // Choose proper SurfData
   int  num     = ChFi3d_IndexOfSurfData(Vtx, stripe, sens);
@@ -7778,6 +7800,83 @@ static bool RemoveSurfDataTo(NCollection_Sequence<occ::handle<ChFiDS_SurfData>>&
   return true;
 }
 
+//=======================================================================
+// function : RimEnd
+// purpose  : A side's line run off its face over an edge of <Vtx>, short of
+//           it, the face narrowing to nothing at <Vtx>: the fillet run on to
+//           <Vtx>, cut by the face beyond the edge carried up (MakeRimRunOn),
+//           or where that cannot be made the end flat where the line leaves
+//           the face (MakeRimFlatEnd) -- only once everything else failed
+//           (ChFi3d_MissedFlatEnd), as at an end OnSame whose line misses the
+//           face at end: marked here (ChFi3d_UncappedEnd), whether or not the
+//           corner fails at it (on #876's foot it throws; on a model of it
+//           drafted, it is made, and the result refused). True where the end
+//           is made.
+//=======================================================================
+
+static bool RimEnd(
+  TopOpeBRepDS_DataStructure&                                                        DStr,
+  const occ::handle<ChFiDS_Stripe>&                                                  Stripe,
+  const TopoDS_Vertex&                                                               Vtx,
+  const TopoDS_Shape&                                                                theSolid,
+  const ChFiDS_Map&                                                                  EFMap,
+  const double                                                                       Tol3d,
+  const double                                                                       Tol2d,
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>& EVIMap)
+{
+  NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& SeqFil =
+    Stripe->ChangeSetOfSurfData()->ChangeSequence();
+  const occ::handle<ChFiDS_Spine>& spine    = Stripe->Spine();
+  int                              aSens    = 0;
+  const int                        aNum0    = ChFi3d_IndexOfSurfData(Vtx, Stripe, aSens);
+  const bool                       isFirstR = (aSens == 1);
+  // the end's SurfData past those of no face, as the corners take it; those
+  // removed only where the end is made here
+  int aNum = aNum0;
+  for (; (isFirstR ? aNum < SeqFil.Length() : aNum > 1)
+         && (SeqFil.Value(aNum)->IndexOfS1() == 0 || SeqFil.Value(aNum)->IndexOfS2() == 0);
+       aNum += isFirstR ? 1 : -1)
+  {
+  }
+  const occ::handle<ChFiDS_SurfData> aFd = SeqFil.Value(aNum);
+  // the walk on past the end on a tangent plane, MakeRimRunOn's: one or
+  // more SurfData of its own, from the end's on, or kept in the end's
+  NCollection_Sequence<occ::handle<ChFiDS_SurfData>> aXs;
+  for (int k = aNum; k != aNum0;)
+  {
+    k += isFirstR ? -1 : 1;
+    aXs.Append(SeqFil.Value(k));
+  }
+  if (aXs.IsEmpty())
+  {
+    aXs.Append(aFd);
+  }
+  const TopoDS_Edge& aEs = isFirstR ? spine->Edges(1) : spine->Edges(spine->NbEdges());
+  int                aIp = 0;
+  if (!IsRimEnd(DStr, aFd, isFirstR, Vtx, aEs, Tol3d, aIp))
+  {
+    return false;
+  }
+  if (!ChFi3d_MissedFlatEnd())
+  {
+    ChFi3d_UncappedEnd() = true;
+    return false;
+  }
+  return RemoveSurfDataTo(SeqFil, aNum0, aNum)
+         && (MakeRimRunOn(DStr, Stripe, aFd, aXs, isFirstR, Vtx, aEs, EFMap, Tol3d, Tol2d, EVIMap)
+             || MakeRimFlatEnd(DStr,
+                               Stripe,
+                               aFd,
+                               isFirstR,
+                               Vtx,
+                               aEs,
+                               theSolid,
+                               EFMap,
+                               Tol3d,
+                               Tol2d,
+                               EVIMap));
+}
+
 //=================================================================================================
 
 void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
@@ -7805,74 +7904,11 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
 
   // A side's line run off its face over an edge of Vtx, short of it, the
   // face narrowing to nothing at Vtx: with the flat end at a vertex asked
-  // for, the fillet run on to Vtx, cut by the face beyond the edge carried
-  // up (MakeRimRunOn), or where that cannot be made the end flat where the
-  // line leaves the face (MakeRimFlatEnd) -- only once everything else
-  // failed (ChFi3d_MissedFlatEnd), as at an end OnSame whose line misses the
-  // face at end: marked here (ChFi3d_UncappedEnd), whether or not the corner
-  // below fails at it (on #876's foot it throws; on a model of it drafted,
-  // it is made, and the result refused)
-  if (ChFi3d_Builder::FlatEndAtVertex() && myVDataMap(Index).Extent() == 1)
+  // for, the fillet run on to Vtx (RimEnd)
+  if (ChFi3d_Builder::FlatEndAtVertex() && myVDataMap(Index).Extent() == 1
+      && RimEnd(DStr, stripe, Vtx, myShape, myEFMap, tolapp3d, tolapp2d, myEVIMap))
   {
-    int        aSens    = 0;
-    const int  aNum0    = ChFi3d_IndexOfSurfData(Vtx, stripe, aSens);
-    const bool isFirstR = (aSens == 1);
-    // the end's SurfData past those of no face, as the corners below take it;
-    // those removed only where the end is made here
-    int aNum = aNum0;
-    for (; (isFirstR ? aNum < SeqFil.Length() : aNum > 1)
-           && (SeqFil.Value(aNum)->IndexOfS1() == 0 || SeqFil.Value(aNum)->IndexOfS2() == 0);
-         aNum += isFirstR ? 1 : -1)
-    {
-    }
-    const occ::handle<ChFiDS_SurfData> aFd = SeqFil.Value(aNum);
-    // the walk on past the end on a tangent plane, MakeRimRunOn's: one or
-    // more SurfData of its own, from the end's on, or kept in the end's
-    NCollection_Sequence<occ::handle<ChFiDS_SurfData>> aXs;
-    for (int k = aNum; k != aNum0;)
-    {
-      k += isFirstR ? -1 : 1;
-      aXs.Append(SeqFil.Value(k));
-    }
-    if (aXs.IsEmpty())
-    {
-      aXs.Append(aFd);
-    }
-    const TopoDS_Edge& aEs = isFirstR ? spine->Edges(1) : spine->Edges(spine->NbEdges());
-    int                aIp = 0;
-    if (IsRimEnd(DStr, aFd, isFirstR, Vtx, aEs, tolapp3d, aIp))
-    {
-      if (!ChFi3d_MissedFlatEnd())
-      {
-        ChFi3d_UncappedEnd() = true;
-      }
-      else if (RemoveSurfDataTo(SeqFil, aNum0, aNum)
-               && (MakeRimRunOn(DStr,
-                                stripe,
-                                aFd,
-                                aXs,
-                                isFirstR,
-                                Vtx,
-                                aEs,
-                                myEFMap,
-                                tolapp3d,
-                                tolapp2d,
-                                myEVIMap)
-                   || MakeRimFlatEnd(DStr,
-                                     stripe,
-                                     aFd,
-                                     isFirstR,
-                                     Vtx,
-                                     aEs,
-                                     myShape,
-                                     myEFMap,
-                                     tolapp3d,
-                                     tolapp2d,
-                                     myEVIMap)))
-      {
-        return;
-      }
-    }
+    return;
   }
   int                  sens    = 0, num, num1;
   bool                 couture = false, isfirst;
