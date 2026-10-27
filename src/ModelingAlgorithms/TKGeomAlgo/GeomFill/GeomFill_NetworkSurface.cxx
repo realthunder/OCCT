@@ -214,6 +214,26 @@ bool interpolatePoles(const int                         theDegree,
                       NCollection_Array1<double>&       theWeights)
 {
   int anInversionProblem = 0;
+  // Fork: a polynomial family is interpolated without its weights of 1. Run
+  // through the homogeneous form, they came back 1 only to rounding, which
+  // made the skin rational (Geom_BSplineSurface compares weights at Epsilon)
+  // and sent a polynomial network down the exact rational product: degree 9
+  // from cubics, and interior knots of multiplicity up to 9.
+  bool isPolynomial = true;
+  for (size_t aWeightIdx = 0; aWeightIdx < theWeights.Size(); ++aWeightIdx)
+  {
+    isPolynomial = isPolynomial && theWeights.At(aWeightIdx) == 1.0;
+  }
+  if (isPolynomial)
+  {
+    BSplCLib::Interpolate(theDegree,
+                          theFlatKnots,
+                          theParameters,
+                          theContactOrders,
+                          thePoles,
+                          anInversionProblem);
+    return anInversionProblem == 0;
+  }
   BSplCLib::Interpolate(theDegree,
                         theFlatKnots,
                         theParameters,
@@ -1077,7 +1097,10 @@ occ::handle<Geom_BSplineSurface> makeNetworkSurface(
   // The reference surface starts from the same contact grid validated during preparation.
   NCollection_Array2<gp_Pnt> aReferencePoles(aIntersectionPoints);
   NCollection_Array2<double> aReferenceWeights(aIntersectionWeights);
-  const bool isReferencePolynomial = hasRationalCurve(theProfiles) != hasRationalCurve(aGuides);
+  // Fork: polynomial unless both families are rational. It read `!=`, which
+  // took a network with no rational curve at all for a rational one.
+  const bool isReferencePolynomial =
+    !(hasRationalCurve(theProfiles) && hasRationalCurve(aGuides));
   if (isReferencePolynomial)
   {
     aReferenceWeights.Init(1.0);
@@ -1093,15 +1116,30 @@ occ::handle<Geom_BSplineSurface> makeNetworkSurface(
   }
 
   int anInversionProblem = 0;
-  BSplSLib::Interpolate(anUBasis.Degree,
-                        aVBasis.Degree,
-                        anUBasis.FlatKnots,
-                        aVBasis.FlatKnots,
-                        aGuideParameters,
-                        theProfileParameters,
-                        aReferencePoles,
-                        aReferenceWeights,
-                        anInversionProblem);
+  if (isReferencePolynomial)
+  {
+    // its weights stay exactly 1 (see interpolatePoles)
+    BSplSLib::Interpolate(anUBasis.Degree,
+                          aVBasis.Degree,
+                          anUBasis.FlatKnots,
+                          aVBasis.FlatKnots,
+                          aGuideParameters,
+                          theProfileParameters,
+                          aReferencePoles,
+                          anInversionProblem);
+  }
+  else
+  {
+    BSplSLib::Interpolate(anUBasis.Degree,
+                          aVBasis.Degree,
+                          anUBasis.FlatKnots,
+                          aVBasis.FlatKnots,
+                          aGuideParameters,
+                          theProfileParameters,
+                          aReferencePoles,
+                          aReferenceWeights,
+                          anInversionProblem);
+  }
   if (anInversionProblem != 0)
   {
     theStatus = GeomFill_NetworkSurface::ResultStatus::ReferenceSurfaceFailed;
