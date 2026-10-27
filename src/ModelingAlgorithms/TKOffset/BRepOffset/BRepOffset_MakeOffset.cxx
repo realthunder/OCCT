@@ -5967,7 +5967,10 @@ void BRepOffset_MakeOffset::ToContext(
         }
         if (myInitOffsetEdge.HasImage(V))
         {
-          myInitOffsetEdge.Remove(myInitOffsetEdge.Image(V).First());
+          // a copy: Remove frees the list node Image(V).First() refers to,
+          // then unbinds the shape by it
+          const TopoDS_Shape anOldImage = myInitOffsetEdge.Image(V).First();
+          myInitOffsetEdge.Remove(anOldImage);
         }
         myInitOffsetEdge.Bind(V, aCapArc);
         SHOW_TOPO_SHAPE(aSF, "TangentCorner", aCapArc);
