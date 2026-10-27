@@ -4409,11 +4409,13 @@ bool LineTouching(const occ::handle<Geom_Surface>& theS,
 
 //! The cut of the end by the side's surface, from the point on the arc to
 //! the line's touching point, its pcurves on the fillet's surface and the
-//! side's, and the tolerance it reaches.
+//! side's, and the tolerance it reaches. <theToLine>: the cut tangent to the
+//! line at that point.
 bool CutEnd(const occ::handle<Geom_Surface>& theS,
                    const GeomAdaptor_Surface&       theSv,
                    const gp_Pnt2d&                  theUVvArc,
                    PinchEnd&                        theEnd,
+                   const bool                       theToLine,
                    const double                     theTol)
 {
   const ChFiDS_FaceInterference& aFiArc = theEnd.SD->Interference(theEnd.OnsArc);
@@ -4449,7 +4451,10 @@ bool CutEnd(const occ::handle<Geom_Surface>& theS,
   gp_Pnt2d                                   aUVvPrev = theUVvArc;
   for (int k = 1; k <= NbP; k++)
   {
-    const double t = double(k - 1) / (NbP - 1);
+    // tangent to the line, the steps across closing in on it as the
+    // square, those along the spine even
+    const double s = double(k - 1) / (NbP - 1);
+    const double t = theToLine ? 1. - (1. - s) * (1. - s) : s;
     double       w = aW0;
     if (k == NbP)
     {
@@ -5442,8 +5447,10 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
   }
   // The fillet tangent to the side there, as to the boss: the cut then
   // crosses the line at the point, the side's surface meeting the
-  // fillet's in two branches. A chamfer's cut is tangent to its line there
-  // instead, a corner of no angle on its face (refused, as before).
+  // fillet's in two branches. A chamfer is not: its cut is tangent to its
+  // line there, a corner of no angle on its face, the cut's position along
+  // the spine going as the root of its distance from the line
+  bool isToLine = false;
   for (int e = 0; e < 2; e++)
   {
     const PinchEnd&                  anEnd = anEnds[e];
@@ -5456,11 +5463,16 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
     SignedDistance(aGSv, aPS, aUVv);
     aGSv.D1(aUVv.X(), aUVv.Y(), aPV, aDUv, aDVv);
     const gp_Vec aN = aDU.Crossed(aDV), aNv = aDUv.Crossed(aDVv);
-    if (aN.Magnitude() <= gp::Resolution() || aNv.Magnitude() <= gp::Resolution()
-        || aN.Crossed(aNv).Magnitude() > 1.e-4 * aN.Magnitude() * aNv.Magnitude())
+    if (aN.Magnitude() <= gp::Resolution() || aNv.Magnitude() <= gp::Resolution())
     {
       return false;
     }
+    const bool isTangent = aN.Crossed(aNv).Magnitude() <= 1.e-4 * aN.Magnitude() * aNv.Magnitude();
+    if (e == 1 && isTangent == isToLine)
+    {
+      return false;
+    }
+    isToLine = !isTangent;
   }
   // the cuts
   for (int e = 0; e < 2; e++)
@@ -5474,6 +5486,7 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
                    aGSv,
                    aPcArc->Value(aCPArc.ParameterOnArc()),
                    anEnd,
+                   isToLine,
                    theTol3d))
     {
       return false;
