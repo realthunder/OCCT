@@ -4778,9 +4778,10 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
       return false;
   }
   // where each end's line touches the side; one point. A line that never
-  // does (a drafted boss): the gap closed by the fillet's surface run on --
-  // of one stripe only (a drafted boss at a corner came out short by its
-  // gap at 2, its line on the plate passing the corner by 0.1)
+  // does (a drafted boss): the gap closed by the fillet's surface run on,
+  // from the end that is a stripe's last to the one that is a stripe's
+  // first (two stripes: one of each, or none made; PinchGap goes along the
+  // spine from anEnds[1] to anEnds[0])
   for (int e = 0; e < 2; e++)
   {
     PinchEnd&                        anEnd = anEnds[e];
@@ -4793,17 +4794,24 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
                       anEnd.WAir,
                       anEnd.PAir))
     {
-      return isOne
-             && PinchGap(Vtx,
-                         anEnds[0].St,
-                         anEnds,
-                         DStr,
-                         Fv,
-                         aSv,
-                         aGSv,
-                         !aTrimmed.IsNull(),
-                         theTol3d,
-                         theEVIMap);
+      if (!isOne && anEnds[0].IsFirst == anEnds[1].IsFirst)
+      {
+        return false;
+      }
+      if (!anEnds[0].IsFirst)
+      {
+        std::swap(anEnds[0], anEnds[1]);
+      }
+      return PinchGap(Vtx,
+                      anEnds[0].St,
+                      anEnds,
+                      DStr,
+                      Fv,
+                      aSv,
+                      aGSv,
+                      !aTrimmed.IsNull(),
+                      theTol3d,
+                      theEVIMap);
     }
   }
   const double aGap = anEnds[0].PAir.Distance(anEnds[1].PAir);
