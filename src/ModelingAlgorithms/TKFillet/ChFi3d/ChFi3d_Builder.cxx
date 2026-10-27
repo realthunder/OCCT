@@ -3913,6 +3913,7 @@ private:
 
 struct PinchEnd
 {
+  occ::handle<ChFiDS_Stripe>   St;
   occ::handle<ChFiDS_SurfData> SD;
   bool                         IsFirst = false;
   int                          OnsArc  = 0;
@@ -4556,13 +4557,13 @@ bool PinchGap(const TopoDS_Vertex&                Vtx,
     const double    aV1   = anEnd.OnsArc == 1 ? aSec[e].VArc : aSec[e].VAir;
     aSecOr[e]             = aV1 == aLo ? TopAbs_FORWARD : TopAbs_REVERSED;
     ISec[e]               = DStr.AddCurve(TopOpeBRepDS_Curve(aSecC[e], Precision::Confusion()));
-    aSt->SetCurve(ISec[e], anEnd.IsFirst);
-    aSt->SetParameters(anEnd.IsFirst, aLo, aHi);
-    aSt->SetOrientation(aSecOr[e], anEnd.IsFirst);
-    aSt->ChangePCurve(anEnd.IsFirst) =
+    anEnd.St->SetCurve(ISec[e], anEnd.IsFirst);
+    anEnd.St->SetParameters(anEnd.IsFirst, aLo, aHi);
+    anEnd.St->SetOrientation(aSecOr[e], anEnd.IsFirst);
+    anEnd.St->ChangePCurve(anEnd.IsFirst) =
       new Geom2d_Line(gp_Pnt2d(aSec[e].U, 0.), gp_Dir2d(0., 1.));
-    aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndArc[e] : IndAir[e], anEnd.IsFirst, 1);
-    aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndAir[e] : IndArc[e], anEnd.IsFirst, 2);
+    anEnd.St->SetIndexPoint(anEnd.OnsArc == 1 ? IndArc[e] : IndAir[e], anEnd.IsFirst, 1);
+    anEnd.St->SetIndexPoint(anEnd.OnsArc == 1 ? IndAir[e] : IndArc[e], anEnd.IsFirst, 2);
   }
 
   // The face over the gap, the first end's surface run on (ChFi3d_FilDS's
@@ -4673,25 +4674,36 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
                              NCollection_DataMap<TopoDS_Shape, NCollection_List<int>,
                                                  TopTools_ShapeMapHasher>&        theEVIMap)
 {
-  if (theStripes.Extent() != 2 || theStripes.First() != theStripes.Last())
+  if (theStripes.Extent() != 2)
   {
     return false;
   }
-  const occ::handle<ChFiDS_Stripe>& aSt = theStripes.First();
-  const occ::handle<ChFiDS_Spine>&  aSp = aSt->Spine();
-  if (aSp.IsNull() || !aSp->FirstVertex().IsSame(Vtx) || !aSp->LastVertex().IsSame(Vtx)
-      || aSt->SetOfSurfData().IsNull() || aSt->SetOfSurfData()->Length() == 0)
-  {
-    return false;
-  }
-  const int NbSD = aSt->SetOfSurfData()->Length();
-  PinchEnd  anEnds[2];
-  int       IndAir = 0;
-  for (int e = 0; e < 2; e++)
+  // One stripe ending twice here, or two ending here once each: the boss
+  // flush with two sides at a corner of the plate, the plate's top cut in
+  // two at the points its foot touches them, the foot with it
+  const bool isOne = theStripes.First() == theStripes.Last();
+  PinchEnd   anEnds[2];
+  int        IndAir = 0;
+  NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itSt(theStripes);
+  for (int e = 0; e < 2; e++, itSt.Next())
   {
     PinchEnd& anEnd = anEnds[e];
-    anEnd.IsFirst   = e == 0;
-    anEnd.SD        = aSt->SetOfSurfData()->Value(anEnd.IsFirst ? 1 : NbSD);
+    anEnd.St                             = itSt.Value();
+    const occ::handle<ChFiDS_Spine>& aSp = anEnd.St->Spine();
+    if (aSp.IsNull() || anEnd.St->SetOfSurfData().IsNull()
+        || anEnd.St->SetOfSurfData()->Length() == 0)
+    {
+      return false;
+    }
+    const bool isFirstHere = aSp->FirstVertex().IsSame(Vtx);
+    const bool isLastHere  = aSp->LastVertex().IsSame(Vtx);
+    if (isOne ? !(isFirstHere && isLastHere) : isFirstHere == isLastHere)
+    {
+      return false;
+    }
+    anEnd.IsFirst = isOne ? e == 0 : isFirstHere;
+    anEnd.SD =
+      anEnd.St->SetOfSurfData()->Value(anEnd.IsFirst ? 1 : anEnd.St->SetOfSurfData()->Length());
     const ChFiDS_CommonPoint& aCP1 = anEnd.SD->Vertex(anEnd.IsFirst, 1);
     const ChFiDS_CommonPoint& aCP2 = anEnd.SD->Vertex(anEnd.IsFirst, 2);
     if (aCP1.IsOnArc() == aCP2.IsOnArc() || anEnd.SD->IndexOfS1() <= 0
@@ -4766,7 +4778,9 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
       return false;
   }
   // where each end's line touches the side; one point. A line that never
-  // does (a drafted boss): the gap closed by the fillet's surface run on
+  // does (a drafted boss): the gap closed by the fillet's surface run on --
+  // of one stripe only (a drafted boss at a corner came out short by its
+  // gap at 2, its line on the plate passing the corner by 0.1)
   for (int e = 0; e < 2; e++)
   {
     PinchEnd&                        anEnd = anEnds[e];
@@ -4779,16 +4793,17 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
                       anEnd.WAir,
                       anEnd.PAir))
     {
-      return PinchGap(Vtx,
-                      aSt,
-                      anEnds,
-                      DStr,
-                      Fv,
-                      aSv,
-                      aGSv,
-                      !aTrimmed.IsNull(),
-                      theTol3d,
-                      theEVIMap);
+      return isOne
+             && PinchGap(Vtx,
+                         anEnds[0].St,
+                         anEnds,
+                         DStr,
+                         Fv,
+                         aSv,
+                         aGSv,
+                         !aTrimmed.IsNull(),
+                         theTol3d,
+                         theEVIMap);
     }
   }
   const double aGap = anEnds[0].PAir.Distance(anEnds[1].PAir);
@@ -4955,12 +4970,12 @@ bool PerformPinchEnds(const TopoDS_Vertex&                                Vtx,
     }
     const int ICurve = DStr.AddCurve(TopOpeBRepDS_Curve(aC, anEnd.Tol));
     DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(ICurve, IShape, aPc, Et));
-    aSt->SetCurve(ICurve, anEnd.IsFirst);
-    aSt->SetParameters(anEnd.IsFirst, aU0, aU1);
-    aSt->ChangePCurve(anEnd.IsFirst) = aPs;
+    anEnd.St->SetCurve(ICurve, anEnd.IsFirst);
+    anEnd.St->SetParameters(anEnd.IsFirst, aU0, aU1);
+    anEnd.St->ChangePCurve(anEnd.IsFirst) = aPs;
     const int IndArc                 = ChFi3d_IndexPointInDS(aCPArc, DStr);
-    aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndArc : IndP, anEnd.IsFirst, 1);
-    aSt->SetIndexPoint(anEnd.OnsArc == 1 ? IndP : IndArc, anEnd.IsFirst, 2);
+    anEnd.St->SetIndexPoint(anEnd.OnsArc == 1 ? IndArc : IndP, anEnd.IsFirst, 1);
+    anEnd.St->SetIndexPoint(anEnd.OnsArc == 1 ? IndP : IndArc, anEnd.IsFirst, 2);
   }
   if (!aSeam.IsNull())
   {
