@@ -561,10 +561,15 @@ inline bool ShiftPoint(double        theUStart,
   }
 
   aStep /= aDist;
+  const double aUPrev = theU, aVPrev = theV;
   theU += aDirU * aStep;
   theV += aDirV * aStep;
 
-  return true;
+  // A step below the parameters' resolution leaves the point where it was,
+  // its distance from the start stays nought and the step never grows: at a
+  // point far out of the bounds (2e27, met in a thick solid's section) the
+  // caller's loop never ended
+  return theU != aUPrev || theV != aVPrev;
 }
 
 //! Template function for D0 evaluation with pre-computed basis surface D1.
