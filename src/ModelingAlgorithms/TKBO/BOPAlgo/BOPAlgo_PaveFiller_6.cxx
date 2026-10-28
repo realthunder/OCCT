@@ -3548,6 +3548,43 @@ void BOPAlgo_PaveFiller::PutClosingPaveOnCurve(BOPDS_Curve& aNC)
 
   if (nV < 0)
   {
+    // A vertex at an end in space, put on the curve a little way in: a
+    // cylinder's seam 1e-8 from where its circle section starts is 2e-7 from
+    // the circle's end, within the vertex's tolerance, so no vertex was made
+    // at the end -- the seam's stands for it, at 1e-8, and no pave was found
+    // at a bound. Not closed, the circle had one pave and no block: the
+    // section was lost. The closing pave goes at the opposite bound.
+    const double aTolC = std::max(aNC.Tolerance(), aNC.TangentialTolerance()) + Precision::Confusion();
+    for (aItLP.Initialize(aLP); aItLP.More() && (nV < 0); aItLP.Next())
+    {
+      const BOPDS_Pave&    aPv  = aItLP.Value();
+      const TopoDS_Vertex& aVx  = TopoDS::Vertex(myDS->Shape(aPv.Index()));
+      const gp_Pnt         aPVx = BRep_Tool::Pnt(aVx);
+      const double         aTol = BRep_Tool::Tolerance(aVx) + aTolC;
+      for (int j = 0; j < 2; ++j)
+      {
+        if (aPVx.Distance(aP[j]) <= aTol)
+        {
+          aPave = aPv;
+          nV    = aPv.Index();
+          aTOp  = (!j) ? aT[1] : aT[0];
+          aPOp  = (!j) ? aP[1] : aP[0];
+          break;
+        }
+      }
+    }
+    // a pave at the opposite bound already: nothing to close
+    for (aItLP.Initialize(aLP); aItLP.More() && nV >= 0; aItLP.Next())
+    {
+      if (std::abs(aItLP.Value().Parameter() - aTOp) < Precision::PConfusion())
+      {
+        nV = -1;
+      }
+    }
+  }
+
+  if (nV < 0)
+  {
     // No paves on the bounds of the curve
     return;
   }
