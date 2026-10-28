@@ -33,6 +33,7 @@
 #include <BRepOffset_Tool.hxx>
 #include <BRepTools.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <GeomAdaptor_Curve.hxx>
 #include <Precision.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -48,6 +49,8 @@
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_Map.hxx>
+#include <NCollection_IndexedDataMap.hxx>
+#include <NCollection_DataMap.hxx>
 //
 #include <BRepBndLib.hxx>
 #include <BOPTools_BoxTree.hxx>
@@ -1897,6 +1900,220 @@ void BRepOffset_Inter3d::ContextIntByInt(
   }
 }
 
+//=======================================================================
+// function : ShareTurns
+// purpose  : The offsets of the caps' edges that ExtentEdge stretches round
+//            their whole periodic curve: two caps on one plane, each with an
+//            arc of one cylinder -- a groove across a cylinder's end, the end
+//            removed on both sides of it. The two arcs' offsets lie on one
+//            circle of the cylinder's offset, each was stretched to the whole
+//            circle, the two lay on each other, and the offset's loops were
+//            made of the slivers between them: its side was cut off below the
+//            groove and the thickness was refused. Arcs of one circle on one
+//            offset face share it: each is stretched to the middle of the gap
+//            on either side of it, to a vertex the arc beyond takes too.
+//            <theShares> gets, for each such offset edge, its stretched range
+//            on its own curve and the vertices at its new ends.
+//=======================================================================
+namespace
+{
+struct TurnShare
+{
+  double        First, Last;
+  TopoDS_Vertex V1, V2;
+};
+} // namespace
+
+static void ShareTurns(
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>&   theContextFaces,
+  const BRepOffset_Analyse&                                              theAnalyse,
+  const BRepAlgo_Image&                                                  theInitOffsetFace,
+  const BRepAlgo_Image&                                                  theInitOffsetEdge,
+  NCollection_DataMap<TopoDS_Shape, TurnShare, TopTools_ShapeMapHasher>& theShares)
+{
+  // The offset edges stretched round, by the offset face they lie on.
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+                                                         aByFace;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+  for (int j = 1; j <= theContextFaces.Extent(); ++j)
+  {
+    for (TopExp_Explorer aExp(theContextFaces(j), TopAbs_EDGE); aExp.More(); aExp.Next())
+    {
+      const TopoDS_Edge& aE = TopoDS::Edge(aExp.Current());
+      if (!theAnalyse.HasAncestor(aE) || theInitOffsetFace.HasImage(aE)
+          || !theInitOffsetEdge.HasImage(aE))
+      {
+        continue;
+      }
+      const TopoDS_Shape& aSI = theAnalyse.Ancestors(aE).First();
+      if (!theInitOffsetFace.HasImage(aSI))
+      {
+        continue;
+      }
+      const TopoDS_Shape& aOF = theInitOffsetFace.Image(aSI).First();
+      const TopoDS_Edge   aOE = TopoDS::Edge(theInitOffsetEdge.Image(aE).First());
+      TopoDS_Vertex       aV1, aV2;
+      TopExp::Vertices(aOE, aV1, aV2);
+      if (aV1.IsNull() || aV2.IsNull() || aV1.IsSame(aV2) || theInitOffsetEdge.HasImage(aV1)
+          || theInitOffsetEdge.HasImage(aV2) || !aSeen.Add(aOE))
+      {
+        continue;
+      }
+      BRepAdaptor_Curve aC(aOE);
+      if (!aC.IsPeriodic())
+      {
+        continue;
+      }
+      if (!aByFace.Contains(aOF))
+      {
+        aByFace.Add(aOF, NCollection_List<TopoDS_Shape>());
+      }
+      aByFace.ChangeFromKey(aOF).Append(aOE);
+    }
+  }
+  for (int i = 1; i <= aByFace.Extent(); ++i)
+  {
+    NCollection_List<TopoDS_Shape> aRest = aByFace(i);
+    while (aRest.Extent() > 1)
+    {
+      // The arcs on the circle of the first.
+      const TopoDS_Edge             aRef = TopoDS::Edge(aRest.First());
+      double                        aRF, aRL;
+      const occ::handle<Geom_Curve> aRC = BRep_Tool::Curve(aRef, aRF, aRL);
+      if (aRC.IsNull() || !aRC->IsPeriodic())
+      {
+        aRest.RemoveFirst();
+        continue;
+      }
+      const double aP   = aRC->Period();
+      const double aTol = std::max(BRep_Tool::Tolerance(aRef), 1.e-5);
+      auto         aMod = [aP](double theU) {
+        double aU = std::fmod(theU, aP);
+        return aU < 0. ? aU + aP : aU;
+      };
+      NCollection_List<TopoDS_Shape> aOn;
+      std::vector<double>            aStart, aEnd; // on aRC, in its direction
+      for (NCollection_List<TopoDS_Shape>::Iterator it(aRest); it.More();)
+      {
+        const TopoDS_Edge aOE = TopoDS::Edge(it.Value());
+        BRepAdaptor_Curve aC(aOE);
+        const double      aAt[3] = {0., 0.5, 1.};
+        double            aU[3];
+        bool              isOn = true;
+        for (int k = 0; k < 3 && isOn; ++k)
+        {
+          const double aT =
+            aC.FirstParameter() + (aC.LastParameter() - aC.FirstParameter()) * aAt[k];
+          GeomAPI_ProjectPointOnCurve aProj(aC.Value(aT), aRC);
+          isOn = aProj.NbPoints() > 0 && aProj.LowerDistance() <= aTol;
+          if (isOn)
+          {
+            aU[k] = aProj.LowerDistanceParameter();
+          }
+        }
+        if (!isOn)
+        {
+          it.Next();
+          continue;
+        }
+        // The arc's way round on aRC: its middle between its ends going on.
+        const double aS = aMod(aU[0]), aM = aMod(aU[1] - aS), aL = aMod(aU[2] - aS);
+        if (aM < aL)
+        {
+          aStart.push_back(aS);
+          aEnd.push_back(aS + aL);
+        }
+        else
+        {
+          aStart.push_back(aMod(aU[2]));
+          aEnd.push_back(aMod(aU[2]) + aMod(aS - aU[2]));
+        }
+        aOn.Append(aOE);
+        aRest.Remove(it);
+      }
+      if (aOn.Extent() < 2)
+      {
+        continue;
+      }
+      // The middle of the gap after each arc's end, a vertex there.
+      const size_t               aN = aStart.size();
+      std::vector<TopoDS_Vertex> aGapV(aN);
+      std::vector<gp_Pnt>        aGapP(aN);
+      bool                       isOverlap = false;
+      // Arcs that touch -- a cap's arc split by the cylinder's seam -- have a
+      // gap of nothing between them, a hair either way round.
+      const double aTolP = GeomAdaptor_Curve(aRC).Resolution(aTol);
+      for (size_t a = 0; a < aN; ++a)
+      {
+        double aGap = aP;
+        for (size_t b = 0; b < aN; ++b)
+        {
+          double aD = aMod(aStart[b] - aEnd[a]);
+          if (aD > aP - aTolP)
+          {
+            aD = 0.;
+          }
+          if (b != a || aN == 1)
+          {
+            aGap = std::min(aGap, aD);
+          }
+          if (b != a && aMod(aStart[b] - aStart[a]) < aEnd[a] - aStart[a] - aTol)
+          {
+            isOverlap = true;
+          }
+        }
+        aGapP[a] = aRC->Value(aEnd[a] + aGap / 2.);
+        BRep_Builder().MakeVertex(aGapV[a], aGapP[a], aTol);
+      }
+      if (isOverlap)
+      {
+        continue;
+      }
+      // Each arc from the gap before it to the gap after it, on its own curve.
+      size_t a = 0;
+      for (NCollection_List<TopoDS_Shape>::Iterator it(aOn); it.More(); it.Next(), ++a)
+      {
+        const TopoDS_Edge             aOE = TopoDS::Edge(it.Value());
+        double                        aF, aL;
+        const occ::handle<Geom_Curve> aC     = BRep_Tool::Curve(aOE, aF, aL);
+        const double                  aPC    = aC->Period();
+        double                        aBestB = aPC, aBestF = aPC;
+        TurnShare                     aShare;
+        for (size_t g = 0; g < aN; ++g)
+        {
+          GeomAPI_ProjectPointOnCurve aProj(aGapP[g], aC);
+          if (aProj.NbPoints() == 0)
+          {
+            continue;
+          }
+          const double aU     = aProj.LowerDistanceParameter();
+          double       aDB    = std::fmod(std::fmod(aF - aU, aPC) + aPC, aPC);
+          double       aDF    = std::fmod(std::fmod(aU - aL, aPC) + aPC, aPC);
+          const double aTolPC = GeomAdaptor_Curve(aC).Resolution(aTol);
+          aDB                 = aDB > aPC - aTolPC ? 0. : aDB;
+          aDF                 = aDF > aPC - aTolPC ? 0. : aDF;
+          if (aDB < aBestB)
+          {
+            aBestB       = aDB;
+            aShare.First = aF - aDB;
+            aShare.V1    = aGapV[g];
+          }
+          if (aDF < aBestF)
+          {
+            aBestF      = aDF;
+            aShare.Last = aL + aDF;
+            aShare.V2   = aGapV[g];
+          }
+        }
+        if (!aShare.V1.IsNull() && !aShare.V2.IsNull() && !aShare.V1.IsSame(aShare.V2))
+        {
+          theShares.Bind(aOE, aShare);
+        }
+      }
+    }
+  }
+}
+
 //=================================================================================================
 
 void BRepOffset_Inter3d::ContextIntByArc(
@@ -1930,6 +2147,9 @@ void BRepOffset_Inter3d::ContextIntByArc(
     const TopoDS_Face& CF = TopoDS::Face(ContextFaces(j));
     myTouched.Add(CF);
   }
+
+  NCollection_DataMap<TopoDS_Shape, TurnShare, TopTools_ShapeMapHasher> aShares;
+  ShareTurns(ContextFaces, Analyse, InitOffsetFace, InitOffsetEdge, aShares);
 
   Message_ProgressScope aPS(theRange, "Intersecting with deepening faces", ContextFaces.Extent());
   for (j = 1; j <= ContextFaces.Extent(); j++, aPS.Next())
@@ -2032,6 +2252,17 @@ void BRepOffset_Inter3d::ContextIntByArc(
         ExtentEdge(CF, OE, NE);
         TopoDS_Vertex V1, V2;
         TopExp::Vertices(OE, V1, V2);
+        if (const TurnShare* aShare = aShares.Seek(OE))
+        {
+          // The circle shared with the arcs of other caps (ShareTurns).
+          NE = TopoDS::Edge(OE.EmptyCopied());
+          NE.Orientation(TopAbs_FORWARD);
+          B.Range(NE, aShare->First, aShare->Last);
+          B.Add(NE, aShare->V1.Oriented(TopAbs_FORWARD));
+          B.Add(NE, aShare->V2.Oriented(TopAbs_REVERSED));
+          B.UpdateVertex(aShare->V1, aShare->First, NE, BRep_Tool::Tolerance(aShare->V1));
+          B.UpdateVertex(aShare->V2, aShare->Last, NE, BRep_Tool::Tolerance(aShare->V2));
+        }
         // An end at a step (BRepOffset_Tool::ExtentFace; the vertex has the
         // step for its image) is where the section ends: it met no edge
         // there to be cut by, and stretched past it the section runs on
