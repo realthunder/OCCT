@@ -331,7 +331,17 @@ bool BRepTools_TrsfModification::NewCurve2d(const TopoDS_Edge& E,
   GeomAdaptor_Surface GAsurf(S);
   if (GAsurf.GetType() == GeomAbs_Plane)
   {
-    return false;
+    // On a plane the pcurve is not kept: BRep_Tool projects the edge's 3D
+    // curve when one is asked for. An edge with no 3D curve (a degenerated
+    // edge) has nothing to project, and dropped here it lost its only curve
+    // (#580 of realthunder/FreeCAD's occ issues: a mirrored solid invalid):
+    // its pcurve is carried over as on any other surface.
+    TopLoc_Location aCLoc;
+    double          aCF, aCL;
+    if (!BRep_Tool::Curve(E, aCLoc, aCF, aCL).IsNull())
+    {
+      return false;
+    }
   }
 
   double                    f, l;
