@@ -15,6 +15,7 @@
 // commercial license or contractual agreement.
 
 #include <BRepOffset_Tool.hxx>
+#include <BRep_CurveRepresentation.hxx>
 
 #include <Bnd_Box2d.hxx>
 #include <BndLib_Add3dCurve.hxx>
@@ -2273,6 +2274,73 @@ static void ExtentEdge(const TopoDS_Face& F,
   B.UpdateEdge(NE, CNE2d, EF, BRep_Tool::Tolerance(E));
   B.Range(NE, CNE2d->FirstParameter(), CNE2d->LastParameter());
   NE.Orientation(E.Orientation());
+}
+
+//=================================================================================================
+
+void BRepOffset_Tool::KeepToCurvesDomain(const TopoDS_Edge& theE,
+                                         double&            theFirst,
+                                         double&            theLast)
+{
+  const occ::handle<BRep_TEdge> aTE = occ::down_cast<BRep_TEdge>(theE.TShape());
+  if (aTE.IsNull())
+  {
+    return;
+  }
+  auto aNarrow = [&](double theCurveFirst, double theCurveLast, bool theIsPeriodic) {
+    if (theIsPeriodic || theCurveFirst >= theCurveLast)
+    {
+      return;
+    }
+    if (!Precision::IsNegativeInfinite(theCurveFirst))
+    {
+      theFirst = std::max(theFirst, theCurveFirst);
+    }
+    if (!Precision::IsPositiveInfinite(theCurveLast))
+    {
+      theLast = std::min(theLast, theCurveLast);
+    }
+  };
+  auto aNarrow3d = [&](occ::handle<Geom_Curve> theC) {
+    if (theC.IsNull())
+    {
+      return;
+    }
+    if (const occ::handle<Geom_TrimmedCurve> aT = occ::down_cast<Geom_TrimmedCurve>(theC))
+    {
+      theC = aT->BasisCurve();
+    }
+    aNarrow(theC->FirstParameter(), theC->LastParameter(), theC->IsPeriodic());
+  };
+  auto aNarrow2d = [&](occ::handle<Geom2d_Curve> theC) {
+    if (theC.IsNull())
+    {
+      return;
+    }
+    if (const occ::handle<Geom2d_TrimmedCurve> aT = occ::down_cast<Geom2d_TrimmedCurve>(theC))
+    {
+      theC = aT->BasisCurve();
+    }
+    aNarrow(theC->FirstParameter(), theC->LastParameter(), theC->IsPeriodic());
+  };
+  for (NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(aTE->Curves());
+       anIt.More();
+       anIt.Next())
+  {
+    const occ::handle<BRep_CurveRepresentation>& aRep = anIt.Value();
+    if (aRep->IsCurve3D())
+    {
+      aNarrow3d(aRep->Curve3D());
+    }
+    else if (aRep->IsCurveOnSurface())
+    {
+      aNarrow2d(aRep->PCurve());
+      if (aRep->IsCurveOnClosedSurface())
+      {
+        aNarrow2d(aRep->PCurve2());
+      }
+    }
+  }
 }
 
 //=================================================================================================
@@ -4791,6 +4859,14 @@ void BRepOffset_Tool::ExtentFace(
             B.UpdateEdge(Ecs, C2, EF, BRep_Tool::Tolerance(CE));
           }
         }
+        // The range is the pcurve's; the edge's 3D curve may end a hair short
+        // of it (1.6e-5 on a B-spline section): past its end the plane's
+        // pcurve was refused, the edge then had none on its face
+        KeepToCurvesDomain(CE, f, l);
+        if (!Ecs.IsNull())
+        {
+          KeepToCurvesDomain(Ecs, f, l);
+        }
         B.Range(CE, f, l);
         if (!Ecs.IsNull())
         {
@@ -5216,6 +5292,15 @@ void BRepOffset_Tool::ExtentFace(
         aLocalEdge              = NE.Oriented(TopAbs_FORWARD);
         U2 =
           BRep_Tool::Parameter(TopoDS::Vertex(aLocalVertexOrientedNV1), TopoDS::Edge(aLocalEdge));
+        {
+          // A vertex's parameter may be a hair past its edge's curve (4.05504
+          // on a B-spline section ending at 4.05502): the edge's range is
+          // kept to its curves, as everywhere the edge is stretched
+          double aDomF = -Precision::Infinite(), aDomL = Precision::Infinite();
+          KeepToCurvesDomain(NE, aDomF, aDomL);
+          U1 = std::min(std::max(U1, aDomF), aDomL);
+          U2 = std::min(std::max(U2, aDomF), aDomL);
+        }
         //	U1 = BRep_Tool::Parameter
         //	  (TopoDS::Vertex(NV1.Oriented(TopAbs_INTERNAL)),
         //	   TopoDS::Edge  (NE .Oriented(TopAbs_FORWARD)));

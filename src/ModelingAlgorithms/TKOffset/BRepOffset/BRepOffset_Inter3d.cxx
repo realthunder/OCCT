@@ -18,8 +18,6 @@
 
 #include <Bnd_Tools.hxx>
 #include <BRep_Builder.hxx>
-#include <BRep_CurveRepresentation.hxx>
-#include <BRep_TEdge.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -35,8 +33,6 @@
 #include <BRepOffset_Tool.hxx>
 #include <BRepTools.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
-#include <Geom2d_TrimmedCurve.hxx>
-#include <Geom_TrimmedCurve.hxx>
 #include <Precision.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -72,76 +68,6 @@ BRepOffset_Inter3d::BRepOffset_Inter3d(const occ::handle<BRepAlgo_AsDes>& AsDes,
 }
 
 //=================================================================================================
-
-//! Narrows [theFirst, theLast] to the parameters every curve of <theE> -- its
-//! 3D curve and each pcurve -- is defined on. A line or a circle has no
-//! bounds and takes any stretch; a B-spline (an offset edge, a section) is
-//! nothing past its ends, and a range stretched beyond them read its
-//! polynomial extrapolated: a pcurve 2e27 out of its face, an offset
-//! surface evaluated there for ever (a thick solid of a fillet). A trimmed
-//! curve counts by its basis, as before; a periodic one does not count.
-static void KeepToCurvesDomain(const TopoDS_Edge& theE, double& theFirst, double& theLast)
-{
-  const occ::handle<BRep_TEdge> aTE = occ::down_cast<BRep_TEdge>(theE.TShape());
-  if (aTE.IsNull())
-  {
-    return;
-  }
-  auto aNarrow = [&](double theCurveFirst, double theCurveLast, bool theIsPeriodic) {
-    if (theIsPeriodic || theCurveFirst >= theCurveLast)
-    {
-      return;
-    }
-    if (!Precision::IsNegativeInfinite(theCurveFirst))
-    {
-      theFirst = std::max(theFirst, theCurveFirst);
-    }
-    if (!Precision::IsPositiveInfinite(theCurveLast))
-    {
-      theLast = std::min(theLast, theCurveLast);
-    }
-  };
-  auto aNarrow3d = [&](occ::handle<Geom_Curve> theC) {
-    if (theC.IsNull())
-    {
-      return;
-    }
-    if (const occ::handle<Geom_TrimmedCurve> aT = occ::down_cast<Geom_TrimmedCurve>(theC))
-    {
-      theC = aT->BasisCurve();
-    }
-    aNarrow(theC->FirstParameter(), theC->LastParameter(), theC->IsPeriodic());
-  };
-  auto aNarrow2d = [&](occ::handle<Geom2d_Curve> theC) {
-    if (theC.IsNull())
-    {
-      return;
-    }
-    if (const occ::handle<Geom2d_TrimmedCurve> aT = occ::down_cast<Geom2d_TrimmedCurve>(theC))
-    {
-      theC = aT->BasisCurve();
-    }
-    aNarrow(theC->FirstParameter(), theC->LastParameter(), theC->IsPeriodic());
-  };
-  for (NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator anIt(aTE->Curves());
-       anIt.More();
-       anIt.Next())
-  {
-    const occ::handle<BRep_CurveRepresentation>& aRep = anIt.Value();
-    if (aRep->IsCurve3D())
-    {
-      aNarrow3d(aRep->Curve3D());
-    }
-    else if (aRep->IsCurveOnSurface())
-    {
-      aNarrow2d(aRep->PCurve());
-      if (aRep->IsCurveOnClosedSurface())
-      {
-        aNarrow2d(aRep->PCurve2());
-      }
-    }
-  }
-}
 
 static void ExtentEdge(const TopoDS_Face& /*F*/, const TopoDS_Edge& E, TopoDS_Edge& NE)
 {
@@ -190,7 +116,7 @@ static void ExtentEdge(const TopoDS_Face& /*F*/, const TopoDS_Edge& E, TopoDS_Ed
   {
     if (!CE.IsPeriodic())
     {
-      KeepToCurvesDomain(E, f, l);
+      BRepOffset_Tool::KeepToCurvesDomain(E, f, l);
       B.Range(NE, f, l);
     }
     TopoDS_Vertex V1 = BRepLib_MakeVertex(CE.Value(f));
@@ -2103,7 +2029,7 @@ void BRepOffset_Inter3d::ContextIntByArc(
           double aNL = isStep2 ? l : l + aExt;
           if (!aCE.IsPeriodic())
           {
-            KeepToCurvesDomain(OE, aNF, aNL);
+            BRepOffset_Tool::KeepToCurvesDomain(OE, aNF, aNL);
           }
           TopoDS_Vertex aNV1 = BRepLib_MakeVertex(aCE.Value(aNF));
           TopoDS_Vertex aNV2 = BRepLib_MakeVertex(aCE.Value(aNL));

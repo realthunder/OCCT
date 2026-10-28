@@ -217,6 +217,15 @@ public:
     const double                                                              TolConf,
     TopoDS_Face&                                                              NF);
 
+  //! Narrows [theFirst, theLast] to the parameters every curve of <theE> --
+  //! its 3D curve and each pcurve -- is defined on. A line or a circle has no
+  //! bounds and takes any range; a B-spline is nothing past its ends, and a
+  //! range beyond them reads its polynomial extrapolated. A trimmed curve
+  //! counts by its basis; a periodic one does not count.
+  Standard_EXPORT static void KeepToCurvesDomain(const TopoDS_Edge& theE,
+                                                 double&            theFirst,
+                                                 double&            theLast);
+
   //! Via the wire explorer store in <NOnV1> for
   //! an Edge <E> of <W> his Edge neighbour on the first
   //! vertex <V1> of <E>.
