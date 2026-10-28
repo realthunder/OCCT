@@ -591,13 +591,18 @@ void IntAna_QuadQuadGeo::Perform(const gp_Pln&      P,
     {
       double sinda = std::abs(std::sin(dangle));
       double dif   = std::abs(sinda - Tol);
-      // When the cylinder face height H is known and small, use the deviation
-      // of the axis over this height (sinda * H) as an additional criterion.
-      // If the axis deviates from the plane by less than a small multiple of
-      // the tolerance over the full height of the face, the axis is effectively
+      // When the cylinder face height H is known, the deviation of the axis
+      // from the plane over this height (sinda * H) is the criterion: if it is
+      // below a small multiple of the tolerance, the axis is effectively
       // parallel for this face, and the Line intersection type should be used
       // instead of the Ellipse (which degenerates for nearly-parallel cases).
-      if (dif < Tol || (H > 0. && sinda * H < 2. * Tol))
+      // sinda against Tol (a sine against a length, dif < Tol) stands in for it
+      // only when H is not known: with a fuzzy value Tol is large, and it took
+      // a plane tilted by up to 2 Tol radians for parallel, the lines missing
+      // the cylinder. Below 2 Precision::Confusion() the angle is parallel
+      // whatever H, as that test made it at the default tolerance.
+      const bool isParallel = H > 0. ? sinda * H < 2. * Tol : dif < Tol;
+      if (isParallel || sinda < 2. * Precision::Confusion())
       {
         tolang = sinda * 2.;
         // Relax the linear tolerance so that the endpoint distance check
