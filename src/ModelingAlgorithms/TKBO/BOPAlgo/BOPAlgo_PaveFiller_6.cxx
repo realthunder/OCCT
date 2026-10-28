@@ -78,6 +78,15 @@
 class BOPDS_PaveBlock;
 
 static double ToleranceFF(const BRepAdaptor_Surface& aBAS1, const BRepAdaptor_Surface& aBAS2);
+static void   getBoundPaves(const BOPDS_DS* theDS, const BOPDS_Curve& theNC, int theNV[2]);
+static int    tangentEndVertex(const BOPDS_PDS&                     theDS,
+                               const occ::handle<IntTools_Context>& theCtx,
+                               const TopoDS_Face&                   theF1,
+                               const TopoDS_Face&                   theF2,
+                               const BOPDS_Curve&                   theNC,
+                               const int                            theEnd,
+                               const NCollection_Map<int>&          theMV,
+                               double&                              theDist);
 
 //=================================================================================================
 
@@ -830,6 +839,30 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
         aLBV.Clear();
         //
         PutBoundPaveOnCurve(aF1, aF2, aNC, aLBV);
+        //
+        // an end outside a face, at a corner where the faces are tangent
+        int aBndNV[2];
+        getBoundPaves(myDS, aNC, aBndNV);
+        for (int k = 0; k < 2; ++k)
+        {
+          if (aBndNV[k] >= 0)
+          {
+            continue;
+          }
+          NCollection_Map<int> aMV;
+          aMV.Assign(aMVCommon);
+          for (NCollection_Map<int>::Iterator aItS(aMVStick); aItS.More(); aItS.Next())
+          {
+            aMV.Add(aItS.Value());
+          }
+          RemoveUsedVertices(aVC, aMV);
+          double    aD;
+          const int nV = tangentEndVertex(myDS, myContext, aF1, aF2, aNC, k, aMV, aD);
+          if (nV >= 0)
+          {
+            PutPaveOnCurve(nV, aD, aNC, aMI, aMVTol, aDMVLV);
+          }
+        }
         //
         if (!aLBV.IsEmpty())
         {
@@ -2301,6 +2334,85 @@ static void getBoundPaves(const BOPDS_DS* theDS, const BOPDS_Curve& theNC, int t
       theNV[j] = -1;
     }
   }
+}
+
+//=================================================================================================
+
+// The normal of the face's surface at the projection of the point; false if
+// it does not project.
+static bool normalAt(const occ::handle<IntTools_Context>& theCtx,
+                     const TopoDS_Face&                   theF,
+                     const gp_Pnt&                        theP,
+                     gp_Dir&                              theN)
+{
+  GeomAPI_ProjectPointOnSurf& aPS = theCtx->ProjPS(theF);
+  aPS.Perform(theP);
+  if (!aPS.IsDone() || !aPS.NbPoints())
+  {
+    return false;
+  }
+  double u, v;
+  aPS.LowerDistanceParameters(u, v);
+  BOPTools_AlgoTools3D::GetNormalToSurface(BRep_Tool::Surface(theF), u, v, theN);
+  return true;
+}
+
+//=================================================================================================
+
+// A vertex of both faces for the end <theEnd> of the section curve, which
+// lies outside one of them, at a tangent end. Two faces tangent at a corner
+// -- the offsets of two fillets each meeting a third face tangentially
+// there -- cut each other in a curve that passes the corner at a hair's
+// distance, not through it, and leaves the faces there across the boundary
+// of one: the end is not on both faces and takes no vertex, and with one
+// end only the section has no edge. The corner's vertex is the end if the
+// faces are tangent at it and stay within the curve's tolerance of each other
+// all the way from the end to it (the distance times the sine of the angle
+// between them at the end), and it is near the end, not as far as the curve
+// is long. Returns the vertex and its distance, or -1.
+static int tangentEndVertex(const BOPDS_PDS&                     theDS,
+                            const occ::handle<IntTools_Context>& theCtx,
+                            const TopoDS_Face&                   theF1,
+                            const TopoDS_Face&                   theF2,
+                            const BOPDS_Curve&                   theNC,
+                            const int                            theEnd,
+                            const NCollection_Map<int>&          theMV,
+                            double&                              theDist)
+{
+  const IntTools_Curve& aIC = theNC.Curve();
+  double                aT[2];
+  gp_Pnt                aP[2];
+  aIC.Bounds(aT[0], aT[1], aP[0], aP[1]);
+  const double aTolR3D = std::max(theNC.Tolerance(), theNC.TangentialTolerance());
+  const double aDMax   = 0.1 * aP[0].Distance(aP[1]);
+  gp_Dir       aDN[2];
+  if (!normalAt(theCtx, theF1, aP[theEnd], aDN[0]) || !normalAt(theCtx, theF2, aP[theEnd], aDN[1]))
+  {
+    return -1;
+  }
+  // the sine of the angle between the faces at the end
+  const double aSin  = gp_Vec(aDN[0]).Crossed(gp_Vec(aDN[1])).Magnitude();
+  int          nVEnd = -1;
+  theDist            = RealLast();
+  for (NCollection_Map<int>::Iterator aIt(theMV); aIt.More(); aIt.Next())
+  {
+    const int    nV  = aIt.Value();
+    const gp_Pnt aPV = BRep_Tool::Pnt(TopoDS::Vertex(theDS->Shape(nV)));
+    const double aD  = aPV.Distance(aP[theEnd]);
+    if (aD >= theDist || aD > aDMax || aD * aSin > aTolR3D)
+    {
+      continue;
+    }
+    gp_Dir aDNV[2];
+    if (!normalAt(theCtx, theF1, aPV, aDNV[0]) || !normalAt(theCtx, theF2, aPV, aDNV[1])
+        || 1. - std::abs(aDNV[0] * aDNV[1]) > 5.e-9) // the creasing criteria
+    {
+      continue;
+    }
+    nVEnd   = nV;
+    theDist = aD;
+  }
+  return nVEnd;
 }
 
 //=================================================================================================
