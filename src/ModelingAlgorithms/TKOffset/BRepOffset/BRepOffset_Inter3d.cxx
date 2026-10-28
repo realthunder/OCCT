@@ -403,7 +403,33 @@ void BRepOffset_Inter3d::ConnexIntByArc(const NCollection_List<TopoDS_Shape>& /*
         F2                        = TopoDS::Face(InitOffsetFace.Image(InitF2).First());
         if (!IsDone(F1, F2))
         {
-          BRepOffset_Tool::Inter3D(F1, F2, LInt1, LInt2, mySide, E, InitF1, InitF2);
+          // Every edge of the proper type the two faces share, and the
+          // section's piece near each: a cylinder's side meets the plane of
+          // its end, cut by a groove across it, in two arcs, and each side of
+          // the groove at each end of it. The piece nearest the first was all
+          // the pair was given, and the side of the thickness made of the
+          // cylinder had nothing to close it at the other.
+          NCollection_List<TopoDS_Shape>                         aRefEdges;
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aRefMap;
+          for (TopExp_Explorer aExpE(InitF1, TopAbs_EDGE); aExpE.More(); aExpE.Next())
+          {
+            const TopoDS_Edge&                           aE    = TopoDS::Edge(aExpE.Current());
+            const NCollection_List<TopoDS_Shape>&        aAncE = Analyse.Ancestors(aE);
+            const NCollection_List<BRepOffset_Interval>& aLE   = Analyse.Type(aE);
+            if (aAncE.Extent() == 2 && !aLE.IsEmpty() && aLE.First().Type() == OT
+                && (aAncE.First().IsSame(InitF2) || aAncE.Last().IsSame(InitF2)) && aRefMap.Add(aE))
+            {
+              aRefEdges.Append(aE);
+            }
+          }
+          if (aRefEdges.Extent() > 1)
+          {
+            BRepOffset_Tool::Inter3D(F1, F2, LInt1, LInt2, mySide, aRefEdges, InitF1, InitF2);
+          }
+          else
+          {
+            BRepOffset_Tool::Inter3D(F1, F2, LInt1, LInt2, mySide, E, InitF1, InitF2);
+          }
           SHOW_TOPO_SHAPE(InitF1, "InterInitF1");
           SHOW_TOPO_SHAPE(InitF2, "InterInitF2");
           SHOW_TOPO_SHAPE(F1, "InterF1", LInt1);

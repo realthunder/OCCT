@@ -92,6 +92,17 @@ public:
                                       const TopoDS_Face&              RefFace1,
                                       const TopoDS_Face&              RefFace2);
 
+  //! As above, for two faces that share several edges <RefEdges>, apart from
+  //! each other: the section kept is the piece of it nearest each of them.
+  Standard_EXPORT static void Inter3D(const TopoDS_Face&                    F1,
+                                      const TopoDS_Face&                    F2,
+                                      NCollection_List<TopoDS_Shape>&       LInt1,
+                                      NCollection_List<TopoDS_Shape>&       LInt2,
+                                      const TopAbs_State                    Side,
+                                      const NCollection_List<TopoDS_Shape>& RefEdges,
+                                      const TopoDS_Face&                    RefFace1,
+                                      const TopoDS_Face&                    RefFace2);
+
   //! Find if the edges <Edges> of the face <F2> are on
   //! the face <F1>.
   //! Set in <LInt1> <LInt2> the updated edges.

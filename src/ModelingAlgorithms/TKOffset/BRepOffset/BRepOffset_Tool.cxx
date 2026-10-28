@@ -1516,6 +1516,29 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
                               const TopoDS_Face&              theRefFace1,
                               const TopoDS_Face&              theRefFace2)
 {
+  NCollection_List<TopoDS_Shape> aRefEdges;
+  if (!RefEdge.IsNull())
+  {
+    aRefEdges.Append(RefEdge);
+  }
+  Inter3D(F1, F2, L1, L2, Side, aRefEdges, theRefFace1, theRefFace2);
+}
+
+//=================================================================================================
+
+void BRepOffset_Tool::Inter3D(const TopoDS_Face&                    F1,
+                              const TopoDS_Face&                    F2,
+                              NCollection_List<TopoDS_Shape>&       L1,
+                              NCollection_List<TopoDS_Shape>&       L2,
+                              const TopAbs_State                    Side,
+                              const NCollection_List<TopoDS_Shape>& theRefEdges,
+                              const TopoDS_Face&                    theRefFace1,
+                              const TopoDS_Face&                    theRefFace2)
+{
+  // The one edge the section is to run along; with several, the piece
+  // nearest each of them is kept and nothing more is taken off.
+  const TopoDS_Edge RefEdge =
+    theRefEdges.Extent() == 1 ? TopoDS::Edge(theRefEdges.First()) : TopoDS_Edge();
 
   // Check if the faces are planar and not trimmed - in this case
   // the IntTools_FaceFace intersection algorithm will be used directly.
@@ -1550,9 +1573,9 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
   aPF.Perform();
 
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> TrueEdges;
-  if (!RefEdge.IsNull())
+  for (NCollection_List<TopoDS_Shape>::Iterator aRefIt(theRefEdges); aRefIt.More(); aRefIt.Next())
   {
-    CheckIntersFF(aPF.PDS(), RefEdge, TrueEdges, theRefFace1, theRefFace2);
+    CheckIntersFF(aPF.PDS(), TopoDS::Edge(aRefIt.Value()), TrueEdges, theRefFace1, theRefFace2);
   }
 
   bool addPCurve1 = true;
@@ -1698,7 +1721,7 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
     isEl2 = true;
   }
 
-  if (L1.Extent() > 1 && (!isEl1 || !isEl2) && !theRefFace1.IsNull())
+  if (L1.Extent() > 1 && (!isEl1 || !isEl2) && !theRefFace1.IsNull() && !RefEdge.IsNull())
   {
     // remove excess edges that are out of range
     TopoDS_Vertex aV1, aV2;
