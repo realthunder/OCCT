@@ -141,13 +141,21 @@ static void RecModif(
   const occ::handle<ShapeExtend_MsgRegistrator>&                                  msg,
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&       map,
   occ::handle<ShapeExtend_MsgRegistrator>&                                        myMsg,
-  const TopAbs_ShapeEnum                                                          until)
+  const TopAbs_ShapeEnum                                                          until,
+  const TopLoc_Location&                                                          theRootLocInv)
 {
   TopoDS_Shape r = S;
   // gka  -modification to keep history for shape with location (OCC21617)
   const TopLoc_Location& aShLoc = S.Location();
-  TopLoc_Location        aNullLoc;
-  r.Location(aNullLoc);
+  // The history is kept for the sub-shape as it is in the root, the root's
+  // own location left out. Without its location at all, two sub-shapes of
+  // one TShape at different places (a prism's bottom face and its top, the
+  // same face moved) were one key: the second one's result replaced the
+  // first's, and the writer bound one of them only (a STEP colour of the
+  // top went to the bottom). The ReShape version below keys the same way.
+  const TopLoc_Location aKeyLoc = theRootLocInv * aShLoc;
+  const TopoDS_Shape    aKey    = S.Located(aKeyLoc);
+  r.Location(aKeyLoc);
 
   if (map.IsBound(r))
   {
@@ -206,7 +214,7 @@ static void RecModif(
 
     if (res != r)
     {
-      map.Bind(S.Located(aNullLoc), res);
+      map.Bind(aKey, res);
     }
   }
 
@@ -240,7 +248,7 @@ static void RecModif(
 
   for (TopoDS_Iterator it(S); it.More(); it.Next())
   {
-    RecModif(it.Value(), repl, msg, map, myMsg, until);
+    RecModif(it.Value(), repl, msg, map, myMsg, until, theRootLocInv);
   }
 }
 
@@ -252,7 +260,7 @@ void ShapeProcess_ShapeContext::RecordModification(
   {
     return;
   }
-  RecModif(myShape, repl, msg, myMap, myMsg, myUntil);
+  RecModif(myShape, repl, msg, myMap, myMsg, myUntil, myShape.Location().Inverted());
   if (myMap.IsBound(myShape))
   {
     myResult = myMap.Find(myShape);
@@ -269,16 +277,18 @@ static void RecModif(const TopoDS_Shape&                                        
                      const occ::handle<ShapeExtend_MsgRegistrator>&                            msg,
                      NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& map,
                      occ::handle<ShapeExtend_MsgRegistrator>& myMsg,
-                     const TopAbs_ShapeEnum                   until)
+                     const TopAbs_ShapeEnum                   until,
+                     const TopLoc_Location&                   theRootLocInv)
 {
   if (S.IsNull())
   {
     return;
   }
-  // gka  -modification to keep history for shape with location (OCC21617)
-  TopLoc_Location aNullLoc;
-  TopoDS_Shape    aS = S.Located(aNullLoc);
-  TopoDS_Shape    r  = aS;
+  // gka  -modification to keep history for shape with location (OCC21617):
+  // the sub-shape as it is in the root, the root's own location left out
+  // (see the map version above)
+  TopoDS_Shape aS = S.Located(theRootLocInv * S.Location());
+  TopoDS_Shape r  = aS;
 
   if (map.IsBound(r))
   {
@@ -336,7 +346,7 @@ static void RecModif(const TopoDS_Shape&                                        
 
   for (TopoDS_Iterator it(S, false /*,false*/); it.More(); it.Next())
   {
-    RecModif(it.Value(), repl, msg, map, myMsg, until);
+    RecModif(it.Value(), repl, msg, map, myMsg, until, theRootLocInv);
   }
 }
 
@@ -345,7 +355,7 @@ void ShapeProcess_ShapeContext::RecordModification(
   const occ::handle<ShapeExtend_MsgRegistrator>& msg)
 {
 
-  RecModif(myShape, repl, msg, myMap, myMsg, myUntil);
+  RecModif(myShape, repl, msg, myMap, myMsg, myUntil, myShape.Location().Inverted());
   if (myMap.IsBound(myShape))
   {
     myResult = myMap.Find(myShape);
