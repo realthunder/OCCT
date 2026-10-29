@@ -63,7 +63,11 @@
 // one. A call that changes nothing -- a tolerance at or under the one held, a
 // flag or a range already so, a pcurve the edge already has -- returns without
 // a write, so a caller normalising a shape it did not make need not know which
-// of its parts are frozen. And an edge takes a pcurve for a surface it has no
+// of its parts are frozen. Nor is a Make call refused for the shape the
+// handle it is given holds: it makes a new TShape and leaves that one as it
+// was (an Immutable one -- the fillet remakes its variable for the extended
+// face from the input's face, PerformIntersectionAtEnd). A Locked one is, as
+// upstream has it. And an edge takes a pcurve for a surface it has no
 // representation on yet: a pcurve is derived data, like the triangulation --
 // BRep_Tool computes the one on a plane on demand, and STEP is routinely
 // written without them -- and an edge shared with a new face gains one for
@@ -852,7 +856,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                     F,
                             const double                     Tol) const
 {
   occ::handle<BRep_TFace> TF = new BRep_TFace();
-  if (!F.IsNull() && (F.Locked() || F.Immutable()))
+  if (!F.IsNull() && F.Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -867,7 +871,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                           theFace,
                             const occ::handle<Poly_Triangulation>& theTriangulation) const
 {
   occ::handle<BRep_TFace> aTFace = new BRep_TFace();
-  if (!theFace.IsNull() && (theFace.Locked() || theFace.Immutable()))
+  if (!theFace.IsNull() && theFace.Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -883,7 +887,7 @@ void BRep_Builder::MakeFace(
   const occ::handle<Poly_Triangulation>&                   theActiveTriangulation) const
 {
   occ::handle<BRep_TFace> aTFace = new BRep_TFace();
-  if (!theFace.IsNull() && (theFace.Locked() || theFace.Immutable()))
+  if (!theFace.IsNull() && theFace.Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -899,7 +903,7 @@ void BRep_Builder::MakeFace(TopoDS_Face&                     F,
                             const double                     Tol) const
 {
   occ::handle<BRep_TFace> TF = new BRep_TFace();
-  if (!F.IsNull() && (F.Locked() || F.Immutable()))
+  if (!F.IsNull() && F.Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeFace");
   }
@@ -988,7 +992,7 @@ void BRep_Builder::NaturalRestriction(const TopoDS_Face& F, const bool N) const
 void BRep_Builder::MakeEdge(TopoDS_Edge& E) const
 {
   occ::handle<BRep_TEdge> TE = new BRep_TEdge();
-  if (!E.IsNull() && (E.Locked() || E.Immutable()))
+  if (!E.IsNull() && E.Locked())
   {
     throw TopoDS_LockedShape("BRep_Builder::MakeEdge");
   }
