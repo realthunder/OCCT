@@ -280,11 +280,21 @@ void BRepFilletAPI_MakeChamfer::Build(const Message_ProgressRange& /*theRange*/)
     Done();
     myShape = myBuilder.Shape();
 
-    // creation of the Map.
+    // creation of the Map; a thawed copy stands for the face it was copied
+    // from (BRepFilletAPI_MakeFillet::Build)
     TopExp_Explorer ex;
     for (ex.Init(myShape, TopAbs_FACE); ex.More(); ex.Next())
     {
       myMap.Add(ex.Current());
+      TopoDS_Shape anOriginal = ex.Current();
+      for (occ::handle<TopoDS_TShape> aFrom =
+             TopoDS_TShape::ThawedFrom(ex.Current().TShape().get());
+           !aFrom.IsNull();
+           aFrom = TopoDS_TShape::ThawedFrom(aFrom.get()))
+      {
+        anOriginal.TShape(aFrom);
+        myMap.Add(anOriginal);
+      }
     }
   }
 }

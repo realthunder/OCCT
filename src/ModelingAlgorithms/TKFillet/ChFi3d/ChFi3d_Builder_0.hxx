@@ -53,6 +53,8 @@
 #include <NCollection_Array1.hxx>
 #include <NCollection_Map.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+#include <NCollection_DataMap.hxx>
+#include <TopoDS_Vertex.hxx>
 
 #include <utility>
 #ifdef OCCT_DEBUG
@@ -457,6 +459,71 @@ int ChFi3d_SolidIndex(const occ::handle<ChFiDS_Spine>& sp,
                       ChFiDS_Map&                      MapESh);
 
 int ChFi3d_IndexPointInDS(const ChFiDS_CommonPoint& P1, TopOpeBRepDS_DataStructure& DStr);
+
+//! (realthunder) A vertex's tolerance -- and, given <theP>, its point -- as
+//! BRep_Builder::UpdateVertex sets them. A vertex the result shares with the
+//! input is Immutable (a fork flag) where the input is frozen, and a change to
+//! it a write into the input: inside a ChFi3d_ThawScope it is kept for a copy
+//! of the vertex instead, which the scope puts into the result in its place;
+//! outside one it is the builder's, and refused.
+void ChFi3d_UpdateVertex(const TopoDS_Vertex& theV,
+                         const double         theTol,
+                         const gp_Pnt*        theP = nullptr);
+
+//! (realthunder) A vertex's tolerance as ChFi3d_UpdateVertex has left it: the
+//! one kept for its copy, for a frozen vertex changed in a ChFi3d_ThawScope.
+double ChFi3d_VertexTolerance(const TopoDS_Vertex& theV);
+
+//! (realthunder) A pass that makes vertices one raising the tolerance of the one
+//! it keeps to <theTol>: in place -- or, where the vertex is frozen (Immutable,
+//! the input's), kept in <theRaised> for ChFi3d_ThawInto, which the pass calls
+//! once it has made its result.
+void ChFi3d_RaiseKept(
+  const TopoDS_Vertex&                                                theKeep,
+  const double                                                        theTol,
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theRaised);
+
+//! (realthunder) A thawed copy of each vertex of <theTolerances> (one for each
+//! TShape) -- its tolerance raised to the one there and, for one of
+//! <thePoints>, moved there, as BRep_Builder::UpdateVertex would have changed
+//! it -- for BRepLib_PutThawed.
+NCollection_List<TopoDS_Shape> ChFi3d_ThawedCopies(
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theTolerances,
+  const NCollection_DataMap<TopoDS_Shape, gp_Pnt, TopTools_ShapeMapHasher>& thePoints =
+    NCollection_DataMap<TopoDS_Shape, gp_Pnt, TopTools_ShapeMapHasher>());
+
+//! (realthunder) A copy of each vertex of <theTolerances> -- its tolerance raised
+//! to the one there and, for one of <thePoints>, moved there, as BRep_Builder::
+//! UpdateVertex would have changed it -- put into <theResult> in its place
+//! (BRepLib_ThawedVertex, BRepLib_PutThawed).
+void ChFi3d_ThawInto(
+  const TopoDS_Shape&                                                       theResult,
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theTolerances,
+  const NCollection_DataMap<TopoDS_Shape, gp_Pnt, TopTools_ShapeMapHasher>& thePoints =
+    NCollection_DataMap<TopoDS_Shape, gp_Pnt, TopTools_ShapeMapHasher>());
+
+//! (realthunder) Keeps the changes ChFi3d_UpdateVertex is asked for on frozen
+//! vertices while it lives, on the thread that made it -- a computation's,
+//! ChFi3d_Builder::Compute -- and puts them into its result. Scopes nest.
+class ChFi3d_ThawScope
+{
+public:
+  ChFi3d_ThawScope();
+  ~ChFi3d_ThawScope();
+  ChFi3d_ThawScope(const ChFi3d_ThawScope&)            = delete;
+  ChFi3d_ThawScope& operator=(const ChFi3d_ThawScope&) = delete;
+
+  //! A copy of each vertex changed in <theResult> in its place, the changes
+  //! made to it (BRepLib_ThawedVertex, BRepLib_PutThawed); the changes kept
+  //! are then cleared -- a copy is not frozen, and takes later ones itself.
+  void Apply(const TopoDS_Shape& theResult);
+
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> Tolerances;
+  NCollection_DataMap<TopoDS_Shape, gp_Pnt, TopTools_ShapeMapHasher> Points;
+
+private:
+  ChFi3d_ThawScope* myOuter;
+};
 
 occ::handle<TopOpeBRepDS_CurvePointInterference> ChFi3d_FilPointInDS(const TopAbs_Orientation Et,
                                                                      const int                Ic,

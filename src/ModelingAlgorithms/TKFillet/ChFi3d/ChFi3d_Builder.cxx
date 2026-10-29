@@ -331,6 +331,39 @@ void ChFi3d_Builder::ExtentAnalyse()
 }
 
 //=================================================================================================
+// Adds to <theOld>, the input's shapes of type <theType>, each one of that type
+// in <theResult> that is a thawed copy of one of them (TopoDS_TShape::Thawed):
+// a frozen input's shape the fillet copied for a vertex it changed stands for
+// the shape it was copied from, as that shape would be, changed in place.
+
+template <class TheMap>
+static void ChFi3d_AddThawed(TheMap&                theOld,
+                             const TopoDS_Shape&    theResult,
+                             const TopAbs_ShapeEnum theType)
+{
+  for (TopExp_Explorer ex(theResult, theType); ex.More(); ex.Next())
+  {
+    const TopoDS_Shape& aS = ex.Current();
+    if (!aS.TShape()->Thawed())
+    {
+      continue;
+    }
+    TopoDS_Shape anOriginal = aS;
+    for (occ::handle<TopoDS_TShape> aFrom = TopoDS_TShape::ThawedFrom(aS.TShape().get());
+         !aFrom.IsNull();
+         aFrom = TopoDS_TShape::ThawedFrom(aFrom.get()))
+    {
+      anOriginal.TShape(aFrom);
+      if (theOld.Contains(anOriginal))
+      {
+        theOld.Add(aS);
+        break;
+      }
+    }
+  }
+}
+
+//=================================================================================================
 // An edge the fillet made whose curve ends off its vertex by more than the
 // edge's tolerance, but within the vertex's, takes that distance: at a corner
 // the extension of an edge ends at a point computed on the fillet's line, not
@@ -347,6 +380,7 @@ static void ChFi3d_EdgesCoverTheirEnds(const TopoDS_Shape& theResult, const Topo
   {
     anOld.Add(ex.Current());
   }
+  ChFi3d_AddThawed(anOld, theResult, TopAbs_EDGE);
   BRep_Builder                                           aB;
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
   for (TopExp_Explorer ex(theResult, TopAbs_EDGE); ex.More(); ex.Next())
@@ -445,6 +479,7 @@ static void ChFi3d_EdgesCoverTheirPCurves(const TopoDS_Shape& theResult,
   {
     anOld.Add(ex.Current());
   }
+  ChFi3d_AddThawed(anOld, theResult, TopAbs_EDGE);
   BRep_Builder aB;
   for (TopExp_Explorer exf(theResult, TopAbs_FACE); exf.More(); exf.Next())
   {
@@ -888,6 +923,7 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
 {
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputV;
   TopExp::MapShapes(theInput, TopAbs_VERTEX, anInputV);
+  ChFi3d_AddThawed(anInputV, theResult, TopAbs_VERTEX);
   NCollection_List<PinchedFace>                                             aPinches;
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aDropToKeep;
   for (TopExp_Explorer exF(theResult, TopAbs_FACE); exF.More(); exF.Next())
@@ -913,6 +949,8 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
   // the vertex kept at the same parameter
   BRep_Builder                   aB;
   occ::handle<BRepTools_ReShape> aMerge = new BRepTools_ReShape;
+  // a frozen vertex kept: its copy raised, in the result once it is made
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aRaised;
   for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(
          aDropToKeep);
        it.More();
@@ -922,10 +960,7 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
     const TopoDS_Vertex& aKeep = TopoDS::Vertex(it.Value());
     const double         aTol =
       BRep_Tool::Pnt(aDrop).Distance(BRep_Tool::Pnt(aKeep)) + BRep_Tool::Tolerance(aDrop);
-    if (aTol > BRep_Tool::Tolerance(aKeep))
-    {
-      aB.UpdateVertex(aKeep, aTol);
-    }
+    ChFi3d_RaiseKept(aKeep, aTol, aRaised);
     aMerge->Replace(aDrop.Oriented(TopAbs_FORWARD), aKeep.Oriented(TopAbs_FORWARD));
   }
   NCollection_List<TopoDS_Shape> anEdges, aKeeps;
@@ -1008,7 +1043,8 @@ static occ::handle<BRepTools_History> ChFi3d_SplitPinchedFaces(TopoDS_Shape&    
     }
     aSplit->Replace(aMF, aPieces);
   }
-  theResult                               = aSplit->Apply(aMerged);
+  theResult = aSplit->Apply(aMerged);
+  ChFi3d_ThawInto(theResult, aRaised);
   occ::handle<BRepTools_History> aHistory = aMerge->History();
   aHistory->Merge(aSplit->History());
   return aHistory;
@@ -1519,6 +1555,7 @@ static occ::handle<BRepTools_History> ChFi3d_CollapseSlivers(TopoDS_Shape&      
 {
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputE;
   TopExp::MapShapes(theInput, TopAbs_EDGE, anInputE);
+  ChFi3d_AddThawed(anInputE, theResult, TopAbs_EDGE);
   NCollection_Map<occ::handle<Standard_Transient>> anInputS;
   for (TopExp_Explorer exF(theInput, TopAbs_FACE); exF.More(); exF.Next())
   {
@@ -1533,6 +1570,8 @@ static occ::handle<BRepTools_History> ChFi3d_CollapseSlivers(TopoDS_Shape&      
   BRep_Builder                                           aB;
   // the vertices made one, and where on which edges the one dropped was
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aVDropToKeep;
+  // a frozen vertex kept: its copy raised, in the result once it is made
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aRaised;
   auto aLength = [](const TopoDS_Edge& theE) {
     return BRep_Tool::IsGeometric(theE) ? GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(theE))
                                         : 0.;
@@ -1707,10 +1746,7 @@ static occ::handle<BRepTools_History> ChFi3d_CollapseSlivers(TopoDS_Shape&      
         continue;
       }
       const double aD = BRep_Tool::Pnt(aV).Distance(BRep_Tool::Pnt(aVK)) + BRep_Tool::Tolerance(aV);
-      if (aD > BRep_Tool::Tolerance(aVK))
-      {
-        aB.UpdateVertex(aVK, aD);
-      }
+      ChFi3d_RaiseKept(aVK, aD, aRaised);
       aVDropToKeep.Bind(aV, aVK);
       aReShape->Replace(aV.Oriented(TopAbs_FORWARD), aVK.Oriented(TopAbs_FORWARD));
     }
@@ -1770,13 +1806,20 @@ static occ::handle<BRepTools_History> ChFi3d_CollapseSlivers(TopoDS_Shape&      
     const TopoDS_Vertex& aVK = TopoDS::Vertex(itK.Value());
     aB.UpdateVertex(aVK, itP.Value(), TopoDS::Edge(aNewE), BRep_Tool::Tolerance(aVK));
   }
+  // the frozen vertices kept, their copies raised in their places; refused,
+  // in the result as it was all the same, as a vertex raised in place stays
+  // raised -- the same copies, which the result shares containers with
+  const NCollection_List<TopoDS_Shape> aKeptCopies = ChFi3d_ThawedCopies(aRaised);
+  BRepLib_PutThawed(aCollapsed, aKeptCopies);
   if (aCollapsed.IsNull() || !BRepCheck_Analyzer(aCollapsed).IsValid())
   {
+    BRepLib_PutThawed(theResult, aKeptCopies);
     return occ::handle<BRepTools_History>();
   }
   const double aVolBefore = aVolume(theResult);
   if (std::abs(aVolume(aCollapsed) - aVolBefore) > 1e-6 * std::abs(aVolBefore))
   {
+    BRepLib_PutThawed(theResult, aKeptCopies);
     return occ::handle<BRepTools_History>();
   }
   theResult = aCollapsed;
@@ -1800,6 +1843,7 @@ static bool ChFi3d_HasSliverLeft(const TopoDS_Shape& theResult,
 {
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputF;
   TopExp::MapShapes(theInput, TopAbs_FACE, anInputF);
+  ChFi3d_AddThawed(anInputF, theResult, TopAbs_FACE);
   for (TopExp_Explorer exF(theResult, TopAbs_FACE); exF.More(); exF.Next())
   {
     if (anInputF.Contains(exF.Current()))
@@ -1824,6 +1868,7 @@ static bool ChFi3d_HasSliverLeft(const TopoDS_Shape& theResult,
   }
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputV, aV, anE;
   TopExp::MapShapes(theInput, TopAbs_VERTEX, anInputV);
+  ChFi3d_AddThawed(anInputV, theResult, TopAbs_VERTEX);
   TopExp::MapShapes(theResult, TopAbs_VERTEX, aV);
   TopExp::MapShapes(theResult, TopAbs_EDGE, anE);
   NCollection_Array1<Bnd_Box> anEBox(1, std::max(1, anE.Extent()));
@@ -1909,6 +1954,8 @@ static occ::handle<BRepTools_History> ChFi3d_DropMicroEdges(TopoDS_Shape&       
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anInputE, anInputV, anEdges;
   TopExp::MapShapes(theInput, TopAbs_EDGE, anInputE);
   TopExp::MapShapes(theInput, TopAbs_VERTEX, anInputV);
+  ChFi3d_AddThawed(anInputE, theResult, TopAbs_EDGE);
+  ChFi3d_AddThawed(anInputV, theResult, TopAbs_VERTEX);
   TopExp::MapShapes(theResult, TopAbs_EDGE, anEdges);
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aDropToKeep;
   // the vertex a vertex has become
@@ -1971,8 +2018,9 @@ static occ::handle<BRepTools_History> ChFi3d_DropMicroEdges(TopoDS_Shape&       
     }
   }
 
-  BRep_Builder                   aB;
   occ::handle<BRepTools_ReShape> aReShape = new BRepTools_ReShape;
+  // a frozen vertex kept: its copy raised, in the result once it is made
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aRaised;
   for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(
          aDropToKeep);
        it.More();
@@ -1982,10 +2030,7 @@ static occ::handle<BRepTools_History> ChFi3d_DropMicroEdges(TopoDS_Shape&       
     const TopoDS_Vertex  aKeep = TopoDS::Vertex(aKept(it.Value()));
     const double         aTol =
       BRep_Tool::Pnt(aDrop).Distance(BRep_Tool::Pnt(aKeep)) + BRep_Tool::Tolerance(aDrop);
-    if (aTol > BRep_Tool::Tolerance(aKeep))
-    {
-      aB.UpdateVertex(aKeep, aTol);
-    }
+    ChFi3d_RaiseKept(aKeep, aTol, aRaised);
     aReShape->Replace(aDrop.Oriented(TopAbs_FORWARD), aKeep.Oriented(TopAbs_FORWARD));
   }
   for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(aMicro); it.More();
@@ -1994,6 +2039,7 @@ static occ::handle<BRepTools_History> ChFi3d_DropMicroEdges(TopoDS_Shape&       
     aReShape->Remove(it.Key());
   }
   theResult = aReShape->Apply(theResult);
+  ChFi3d_ThawInto(theResult, aRaised);
   return aReShape->History();
 }
 
@@ -3209,6 +3255,9 @@ void ChFi3d_Builder::Compute()
   ChFi3d_InitChron(cl_total);
   ChFi3d_InitChron(cl_extent);
 #endif
+  // the changes the computation makes to the input's frozen vertices, kept for
+  // copies of them in the result (ChFi3d_UpdateVertex)
+  ChFi3d_ThawScope aThaw;
   UpdateTolesp();
 
   if (myListStripe.IsEmpty())
@@ -3515,7 +3564,7 @@ void ChFi3d_Builder::Compute()
           if (gk == TopOpeBRepDS_VERTEX)
           {
             const TopoDS_Vertex& v    = TopoDS::Vertex(myDS->Shape(gi));
-            double               tolv = BRep_Tool::Tolerance(v);
+            double               tolv = ChFi3d_VertexTolerance(v);
             if (tolv > 0.0001)
             {
               tolv += 0.0003;
@@ -3544,7 +3593,7 @@ void ChFi3d_Builder::Compute()
             }
             else if (tolcv > tolv)
             {
-              B1.UpdateVertex(v, tolcv);
+              ChFi3d_UpdateVertex(v, tolcv);
             }
           }
           else if (gk == TopOpeBRepDS_POINT)
@@ -3597,10 +3646,10 @@ void ChFi3d_Builder::Compute()
           for (; exv.More(); exv.Next())
           {
             const TopoDS_Vertex& v    = TopoDS::Vertex(exv.Current());
-            double               tolv = BRep_Tool::Tolerance(v);
+            double               tolv = ChFi3d_VertexTolerance(v);
             if (tole > tolv)
             {
-              B1.UpdateVertex(v, tole);
+              ChFi3d_UpdateVertex(v, tole);
             }
           }
         }
@@ -3639,6 +3688,9 @@ void ChFi3d_Builder::Compute()
             }
           }
         }
+        // the changes to the input's frozen vertices so far, in the result
+        // before the passes below read its tolerances
+        aThaw.Apply(myShapeResult);
         ChFi3d_EdgesCoverTheirEnds(myShapeResult, myShape);
         // the builder's history, which Generated and BRepFilletAPI read,
         // as the result has its shapes now
@@ -3758,6 +3810,10 @@ void ChFi3d_Builder::Compute()
 
       // Regularities are coded after cutting.
       SetRegul();
+      if (done)
+      {
+        aThaw.Apply(myShapeResult);
+      }
 
 #ifdef OCCT_DEBUG // perf
       ChFi3d_ResultChron(cl_setregul, t_setregul);

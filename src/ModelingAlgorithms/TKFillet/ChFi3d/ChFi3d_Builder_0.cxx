@@ -28,6 +28,9 @@
 #include <BRepTopAdaptor_TopolTool.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
+#include <Precision.hxx>
+#include <algorithm>
+#include <limits>
 #include <ChFi3d.hxx>
 #include <ChFiDS_FilSpine.hxx>
 #include <ElCLib.hxx>
@@ -2624,6 +2627,168 @@ int ChFi3d_SolidIndex(const occ::handle<ChFiDS_Spine>& sp,
 
 //=================================================================================================
 
+namespace
+{
+// the innermost ChFi3d_ThawScope of the calling thread
+thread_local ChFi3d_ThawScope* THE_THAW_SCOPE = nullptr;
+} // namespace
+
+ChFi3d_ThawScope::ChFi3d_ThawScope()
+    : myOuter(THE_THAW_SCOPE)
+{
+  THE_THAW_SCOPE = this;
+}
+
+ChFi3d_ThawScope::~ChFi3d_ThawScope()
+{
+  THE_THAW_SCOPE = myOuter;
+}
+
+void ChFi3d_ThawScope::Apply(const TopoDS_Shape& theResult)
+{
+  ChFi3d_ThawInto(theResult, Tolerances, Points);
+  Tolerances.Clear();
+  Points.Clear();
+}
+
+//=================================================================================================
+
+NCollection_List<TopoDS_Shape> ChFi3d_ThawedCopies(
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theTolerances,
+  const NCollection_DataMap<TopoDS_Shape, gp_Pnt, TopTools_ShapeMapHasher>& thePoints)
+{
+  NCollection_DataMap<const TopoDS_TShape*, TopoDS_Vertex> aByTShape;
+  NCollection_List<TopoDS_Shape>                           aCopies;
+  BRep_Builder                                             aB;
+  for (NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator anIt(
+         theTolerances);
+       anIt.More();
+       anIt.Next())
+  {
+    const TopoDS_Vertex& aV = TopoDS::Vertex(anIt.Key());
+    TopoDS_Vertex        aCopy;
+    if (const TopoDS_Vertex* aDone = aByTShape.Seek(aV.TShape().get()))
+    {
+      aCopy = aV;
+      aCopy.TShape(aDone->TShape());
+    }
+    else
+    {
+      aCopy = BRepLib_ThawedVertex(aV);
+      aByTShape.Bind(aV.TShape().get(), aCopy);
+      aCopies.Append(aCopy);
+    }
+    if (const gp_Pnt* aP = thePoints.Seek(anIt.Key()))
+    {
+      aB.UpdateVertex(aCopy, *aP, anIt.Value());
+    }
+    else
+    {
+      aB.UpdateVertex(aCopy, anIt.Value());
+    }
+  }
+  return aCopies;
+}
+
+//=================================================================================================
+
+void ChFi3d_ThawInto(
+  const TopoDS_Shape&                                                       theResult,
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theTolerances,
+  const NCollection_DataMap<TopoDS_Shape, gp_Pnt, TopTools_ShapeMapHasher>& thePoints)
+{
+  if (!theTolerances.IsEmpty() && !theResult.IsNull())
+  {
+    BRepLib_PutThawed(theResult, ChFi3d_ThawedCopies(theTolerances, thePoints));
+  }
+}
+
+//=================================================================================================
+
+void ChFi3d_RaiseKept(
+  const TopoDS_Vertex&                                                theKeep,
+  const double                                                        theTol,
+  NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theRaised)
+{
+  if (!theKeep.Immutable())
+  {
+    if (theTol > BRep_Tool::Tolerance(theKeep))
+    {
+      BRep_Builder().UpdateVertex(theKeep, theTol);
+    }
+    return;
+  }
+  if (theTol <= BRep_Tool::Tolerance(theKeep))
+  {
+    return;
+  }
+  if (double* aKept = theRaised.ChangeSeek(theKeep))
+  {
+    *aKept = std::max(*aKept, theTol);
+  }
+  else
+  {
+    theRaised.Bind(theKeep, theTol);
+  }
+}
+
+//=================================================================================================
+
+void ChFi3d_UpdateVertex(const TopoDS_Vertex& theV, const double theTol, const gp_Pnt* theP)
+{
+  ChFi3d_ThawScope* aScope = THE_THAW_SCOPE;
+  if (aScope == nullptr || !theV.Immutable())
+  {
+    BRep_Builder aB;
+    if (theP != nullptr)
+    {
+      aB.UpdateVertex(theV, *theP, theTol);
+    }
+    else
+    {
+      aB.UpdateVertex(theV, theTol);
+    }
+    return;
+  }
+  // the vertex as the changes kept so far leave it; a change the builder lets
+  // through on a frozen vertex -- a tolerance it covers to rounding, its point
+  // restated to rounding (BRep_Builder.cxx, covers) -- is none
+  const double* aKeptTol = aScope->Tolerances.Seek(theV);
+  const gp_Pnt* aKeptPnt = aScope->Points.Seek(theV);
+  const double  aHeld    = aKeptTol != nullptr ? *aKeptTol : BRep_Tool::Tolerance(theV);
+  const gp_Pnt  aPnt     = aKeptPnt != nullptr ? *aKeptPnt : BRep_Tool::Pnt(theV);
+  const double  aScale =
+    std::max(1., std::max(std::abs(aPnt.X()), std::max(std::abs(aPnt.Y()), std::abs(aPnt.Z()))));
+  const bool isMoved = theP != nullptr
+                       && theP->Distance(aPnt) > 16. * std::numeric_limits<double>::epsilon() * aScale;
+  const bool isGrown = theTol > aHeld + std::max(1.e-4 * Precision::Confusion(), 1.e-5 * aHeld);
+  if (!isMoved && !isGrown)
+  {
+    return;
+  }
+  if (aKeptTol == nullptr)
+  {
+    aScope->Tolerances.Bind(theV, aHeld);
+  }
+  double& aTol = aScope->Tolerances.ChangeFind(theV);
+  aTol         = std::max(aTol, theTol);
+  if (isMoved)
+  {
+    aScope->Points.Bind(theV, *theP);
+  }
+}
+
+//=================================================================================================
+
+double ChFi3d_VertexTolerance(const TopoDS_Vertex& theV)
+{
+  const ChFi3d_ThawScope* aScope = THE_THAW_SCOPE;
+  const double* aKept = aScope != nullptr ? aScope->Tolerances.Seek(theV) : nullptr;
+  return aKept != nullptr ? *aKept : BRep_Tool::Tolerance(theV);
+}
+
+//=================================================================================================
+
 int ChFi3d_IndexPointInDS(const ChFiDS_CommonPoint& P1, TopOpeBRepDS_DataStructure& DStr)
 {
   if (P1.IsVertex())
@@ -2631,8 +2796,7 @@ int ChFi3d_IndexPointInDS(const ChFiDS_CommonPoint& P1, TopOpeBRepDS_DataStructu
     // --------------------------------->  !*!*!*
     // Attention : it is necessary ti implement a mechanism
     // controlling tolerance.
-    BRep_Builder B;
-    B.UpdateVertex(P1.Vertex(), P1.Point(), P1.Tolerance());
+    ChFi3d_UpdateVertex(P1.Vertex(), P1.Tolerance(), &P1.Point());
     return DStr.AddShape(P1.Vertex());
   }
   return DStr.AddPoint(TopOpeBRepDS_Point(P1.Point(), P1.Tolerance()));

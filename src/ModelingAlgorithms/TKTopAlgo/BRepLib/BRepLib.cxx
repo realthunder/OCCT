@@ -1030,6 +1030,33 @@ static void putThawed(const TopoDS_Shape& theRoot, ThawedMap& theThawed)
   thawedFor(theRoot.TShape(), theThawed, aDone);
 }
 
+//=================================================================================================
+
+TopoDS_Vertex BRepLib_ThawedVertex(const TopoDS_Vertex& theV)
+{
+  const TopoDS_Shape aCopy = copyForThaw(theV);
+  TopoDS_TShape::Thaw(aCopy.TShape(), theV.TShape());
+  return TopoDS::Vertex(aCopy);
+}
+
+//=================================================================================================
+
+void BRepLib_PutThawed(const TopoDS_Shape&                   theRoot,
+                       const NCollection_List<TopoDS_Shape>& theCopies)
+{
+  ThawedMap aThawed;
+  for (NCollection_List<TopoDS_Shape>::Iterator anIt(theCopies); anIt.More(); anIt.Next())
+  {
+    const occ::handle<TopoDS_TShape> aFrom =
+      TopoDS_TShape::ThawedFrom(anIt.Value().TShape().get());
+    if (!aFrom.IsNull())
+    {
+      aThawed[aFrom.get()] = anIt.Value().TShape();
+    }
+  }
+  putThawed(theRoot, aThawed);
+}
+
 //=======================================================================
 // function : UpdShTol
 // purpose  : Update vertices/edges/faces according to ShToTol map (create copies of necessary)
