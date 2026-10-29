@@ -1623,6 +1623,135 @@ static TopoDS_Edge AssembleEdge(const BOPDS_PDS&                          pDS,
 }
 
 //=================================================================================================
+// The filler cuts a section on a closed curve at the curve's origin, where
+// nothing else need be: two pieces of one ellipse, a vertex between them that
+// only they reach. Where that origin falls on an edge of the faces to come,
+// the piece beyond it is an edge of its own lying outside them, which the
+// loops took in and out again -- a box with two adjacent top edges filleted,
+// the bottom removed, Intersection join: the offsets of the fillets meet on an
+// ellipse whose origin lies on the line the fillet's offset shares with the
+// wall's, and the fillet's face came back with a second wire round nothing
+// (three corners of the four; at the fourth the origin lies off the section).
+// Such pieces are one edge again.
+
+static void JoinAtCurveOrigin(const BOPDS_PDS&                     pDS,
+                              const TopoDS_Face&                   F1,
+                              const TopoDS_Face&                   F2,
+                              const bool                           addPCurve1,
+                              const bool                           addPCurve2,
+                              const occ::handle<IntTools_Context>& theContext,
+                              NCollection_List<TopoDS_Shape>&      L1)
+{
+  bool isJoined = true;
+  while (isJoined)
+  {
+    isJoined = false;
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      aMVE;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(L1); it.More(); it.Next())
+    {
+      TopExp::MapShapesAndAncestors(it.Value(), TopAbs_VERTEX, TopAbs_EDGE, aMVE);
+    }
+    for (int i = 1; i <= aMVE.Extent() && !isJoined; ++i)
+    {
+      const NCollection_List<TopoDS_Shape>& aLE = aMVE(i);
+      if (aLE.Extent() != 2)
+      {
+        continue;
+      }
+      const TopoDS_Vertex& aV = TopoDS::Vertex(aMVE.FindKey(i));
+      TopoDS_Edge aE[2] = {TopoDS::Edge(aLE.First().Oriented(TopAbs_FORWARD)),
+                           TopoDS::Edge(aLE.Last().Oriented(TopAbs_FORWARD))};
+      if (aE[0].IsSame(aE[1]) || BRep_Tool::IsClosed(aE[0]) || BRep_Tool::IsClosed(aE[1]))
+      {
+        continue;
+      }
+      double                  aF[2], aL[2];
+      occ::handle<Geom_Curve> aC[2];
+      for (int k = 0; k < 2; ++k)
+      {
+        aC[k] = BRep_Tool::Curve(aE[k], aF[k], aL[k]);
+        if (!aC[k].IsNull() && aC[k]->IsInstance(STANDARD_TYPE(Geom_TrimmedCurve)))
+        {
+          aC[k] = occ::down_cast<Geom_TrimmedCurve>(aC[k])->BasisCurve();
+        }
+      }
+      if (aC[0].IsNull() || aC[1].IsNull() || !aC[0]->IsPeriodic()
+          || aC[0]->DynamicType() != aC[1]->DynamicType())
+      {
+        continue;
+      }
+      // The pieces come from curves of their own: one curve if they run
+      // through the same points at the same parameters.
+      const double aP      = aC[0]->Period();
+      bool         isSameC = true;
+      for (int k = 0; k < 4 && isSameC; ++k)
+      {
+        const double aU = aC[0]->FirstParameter() + aP * k / 4.;
+        isSameC         = aC[0]->Value(aU).Distance(aC[1]->Value(aU)) <= Precision::Confusion();
+      }
+      if (!isSameC)
+      {
+        continue;
+      }
+      // The one ending on the period's end, the other starting on its start.
+      const double aT = Precision::PConfusion();
+      int          iB = -1;
+      for (int k = 0; k < 2 && iB < 0; ++k)
+      {
+        if (std::abs(aL[k] - aC[0]->LastParameter()) <= aT
+            && std::abs(aF[1 - k] - aC[0]->FirstParameter()) <= aT
+            && TopExp::LastVertex(aE[k]).IsSame(aV) && TopExp::FirstVertex(aE[1 - k]).IsSame(aV))
+        {
+          iB = k;
+        }
+      }
+      if (iB < 0 || !IsAutonomVertex(aV, pDS, F1, F2))
+      {
+        continue;
+      }
+      const TopoDS_Edge& aBefore = aE[iB];
+      const TopoDS_Edge& aAfter  = aE[1 - iB];
+      BRepLib_MakeEdge   aME(aC[0],
+                           TopExp::FirstVertex(aBefore),
+                           TopExp::LastVertex(aAfter),
+                           aF[iB],
+                           aL[1 - iB] + aP);
+      if (!aME.IsDone())
+      {
+        continue;
+      }
+      TopoDS_Edge  aNE = aME.Edge();
+      BRep_Builder aBB;
+      aBB.UpdateEdge(aNE,
+                     std::max(BRep_Tool::Tolerance(aBefore), BRep_Tool::Tolerance(aAfter)));
+      if (addPCurve1)
+      {
+        BOPTools_AlgoTools2D::BuildPCurveForEdgeOnFace(aNE, F1, theContext);
+      }
+      if (addPCurve2)
+      {
+        BOPTools_AlgoTools2D::BuildPCurveForEdgeOnFace(aNE, F2, theContext);
+      }
+      SHOW_TOPO_SHAPE(aNE, "JoinedAtCurveOrigin");
+      for (NCollection_List<TopoDS_Shape>::Iterator it(L1); it.More();)
+      {
+        if (it.Value().IsSame(aBefore) || it.Value().IsSame(aAfter))
+        {
+          L1.Remove(it);
+        }
+        else
+        {
+          it.Next();
+        }
+      }
+      L1.Append(aNE);
+      isJoined = true;
+    }
+  }
+}
+
+//=================================================================================================
 
 void BRepOffset_Tool::Inter3D(const TopoDS_Face&              F1,
                               const TopoDS_Face&              F2,
@@ -2191,6 +2320,39 @@ void BRepOffset_Tool::Inter3D(const TopoDS_Face&                    F1,
 
   else
   {
+    if (L1.Extent() > 1)
+    {
+      NCollection_List<TopoDS_Shape> aJoined = L1;
+      JoinAtCurveOrigin(pDS, F1, F2, addPCurve1, addPCurve2, aContext, aJoined);
+      if (aJoined.Extent() < L1.Extent())
+      {
+        NCollection_List<TopoDS_Shape> aOld1 = L1, aOld2 = L2;
+        L1.Clear();
+        L2.Clear();
+        for (NCollection_List<TopoDS_Shape>::Iterator itJ(aJoined); itJ.More(); itJ.Next())
+        {
+          const TopoDS_Edge&                       anEdge = TopoDS::Edge(itJ.Value());
+          NCollection_List<TopoDS_Shape>::Iterator itO1(aOld1), itO2(aOld2);
+          for (; itO1.More() && !itO1.Value().IsSame(anEdge); itO1.Next(), itO2.Next())
+          {
+          }
+          if (itO1.More())
+          {
+            L1.Append(itO1.Value());
+            L2.Append(itO2.Value());
+            continue;
+          }
+          OrientSection(anEdge, F1, F2, O1, O2);
+          if (Side == TopAbs_OUT)
+          {
+            O1 = TopAbs::Reverse(O1);
+            O2 = TopAbs::Reverse(O2);
+          }
+          L1.Append(anEdge.Oriented(O1));
+          L2.Append(anEdge.Oriented(O2));
+        }
+      }
+    }
     NCollection_List<TopoDS_Shape>::Iterator itl(L1);
     for (; itl.More(); itl.Next())
     {
