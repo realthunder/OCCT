@@ -1849,6 +1849,41 @@ bool BRepOffset_Inter2d::ExtentEdge(const TopoDS_Edge& E, TopoDS_Edge& NE, const
           f   = FirstParOnPC;
           l   = LastParOnPC;
           BB.UpdateEdge(NE, C3d, std::max(aMaxDev, BRep_Tool::Tolerance(NE)));
+          // The other pcurves were prolonged their own way, and past the old
+          // curve's end their parameters are not the new curve's: on a
+          // fillet's offset, a line in its parameters, the same parameter
+          // came 0.022 and 0.043 off the curve at the ends, +2. A corner the
+          // intersection found on such a pcurve was given its parameter
+          // there, and the edge ended that far short of it on the curve,
+          // under a tolerance that took the gap in (the fork's
+          // tests/fork/thickness/models/Thickness.md sec 32, 33). They are
+          // made again, the new curve projected on their surfaces, and the
+          // edge is marked to be checked again: BRepLib::SameParameter, below,
+          // passes over an edge that says it is SameParameter.
+          for (NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator itP(
+                 (occ::down_cast<BRep_TEdge>(NE.TShape()))->ChangeCurves());
+               itP.More();
+               itP.Next())
+          {
+            const occ::handle<BRep_CurveRepresentation>& aCR = itP.Value();
+            if (!aCR->IsCurveOnSurface() || aCR->IsCurveOnClosedSurface()
+                || aCR->PCurve() == MinPC)
+            {
+              continue;
+            }
+            const TopLoc_Location         aSL = E.Location() * aCR->Location();
+            const occ::handle<Geom_Curve> aCS =
+              occ::down_cast<Geom_Curve>(C3d->Transformed(aSL.Transformation().Inverted()));
+            double                    aTolPC = Precision::Confusion();
+            occ::handle<Geom2d_Curve> aPC =
+              GeomProjLib::Curve2d(aCS, FirstParOnPC, LastParOnPC, aCR->Surface(), aTolPC);
+            if (!aPC.IsNull())
+            {
+              aCR->PCurve(aPC);
+              occ::down_cast<BRep_GCurve>(aCR)->SetRange(FirstParOnPC, LastParOnPC);
+            }
+          }
+          BB.SameParameter(NE, false);
           isProlonged = true;
         }
       }
