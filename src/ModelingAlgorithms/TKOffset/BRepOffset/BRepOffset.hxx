@@ -70,6 +70,11 @@ public:
 //! comes back as it was; each level adds those of its own to the ones below
 //! it. Returns the level set before. A C function, so that a client looks it
 //! up by name and goes on without it where the library is upstream's.
+//!  1 -- the dome outward with the Intersection join (Thickness.md sec 31):
+//!       a B-spline edge prolonged before the faces are cut goes on past its
+//!       curve, made again from its pcurve, where it stopped at the curve's
+//!       end; and a vertex stored on such an edge is given the tolerance it
+//!       has where it lies on it, not the edge's.
 extern "C" Standard_EXPORT int BRepOffset_SetFixLevel(const int theLevel);
 
 //! The calling thread's level of BRepOffset_SetFixLevel().

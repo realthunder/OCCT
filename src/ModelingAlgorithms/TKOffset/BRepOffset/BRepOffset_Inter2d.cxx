@@ -16,6 +16,7 @@
 
 //  Modified by skv - Wed Dec 24 18:08:39 2003 OCC4455
 
+#include <BRepOffset.hxx>
 #include <BRepOffset_Inter2d.hxx>
 
 #include <BOPTools_AlgoTools.hxx>
@@ -54,8 +55,10 @@
 #include <Geom_TrimmedCurve.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomConvert_CompCurveToBSplineCurve.hxx>
 #include <GeomLib.hxx>
+#include <Geom_BoundedCurve.hxx>
 #include <GeomProjLib.hxx>
 #include <gp_Pnt.hxx>
 #include <IntRes2d_IntersectionPoint.hxx>
@@ -77,6 +80,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopTools.hxx>
 #include <NCollection_List.hxx>
+#include <NCollection_Map.hxx>
 
 #include <cstdio>
 
@@ -738,6 +742,54 @@ static void EdgeInter(
 
 //=================================================================================================
 
+//=======================================================================
+// function : LocalTolerance
+// purpose  : How far the vertex <theV> is from the edge <theE> at the
+//           parameter <theT> on it: from the edge's 3D curve and from each
+//           of its pcurves on its surfaces there. The parameter is the one
+//           the vertex was given, not BRep_Tool::Parameter's, which takes a
+//           vertex whose tolerance reaches both ends of the edge for one end
+//           of a closed edge -- the tolerance raised here would then feed
+//           the next call.
+//=======================================================================
+static double LocalTolerance(const TopoDS_Vertex& theV, const TopoDS_Edge& theE, const double theT)
+{
+  const gp_Pnt aP = BRep_Tool::Pnt(theV);
+  double       aD = 0.;
+  for (NCollection_List<occ::handle<BRep_CurveRepresentation>>::Iterator it(
+         occ::down_cast<BRep_TEdge>(theE.TShape())->Curves());
+       it.More();
+       it.Next())
+  {
+    const occ::handle<BRep_CurveRepresentation>& aCR = it.Value();
+    // the representation's location under the edge's
+    const gp_Trsf aTr = (theE.Location() * aCR->Location()).Transformation();
+    if (aCR->IsCurve3D())
+    {
+      // a degenerated edge's has no curve
+      if (!aCR->Curve3D().IsNull())
+      {
+        aD = std::max(aD, aP.Distance(aCR->Curve3D()->Value(theT).Transformed(aTr)));
+      }
+    }
+    else if (aCR->IsCurveOnSurface())
+    {
+      const occ::handle<Geom_Surface>& aS = aCR->Surface();
+      for (int i = 0; i < (aCR->IsCurveOnClosedSurface() ? 2 : 1); ++i)
+      {
+        const occ::handle<Geom2d_Curve>& aPC = i == 0 ? aCR->PCurve() : aCR->PCurve2();
+        if (aPC.IsNull() || aS.IsNull())
+        {
+          continue;
+        }
+        const gp_Pnt2d aUV = aPC->Value(theT);
+        aD = std::max(aD, aP.Distance(aS->Value(aUV.X(), aUV.Y()).Transformed(aTr)));
+      }
+    }
+  }
+  return aD;
+}
+
 static void RefEdgeInter(
   const TopoDS_Face&                 F,
   const BRepAdaptor_Surface&         BAsurf,
@@ -1108,10 +1160,174 @@ static void RefEdgeInter(
     TolStore        = std::max(TolStore, Tol);
     // Compare to Line-Line tolerance
     TolStore = std::max(TolStore, TolLL);
+    // From fix level 1, the vertex is as far as it is from the two edges
+    // where it lies on them, not as far as the edges stray anywhere. An edge
+    // prolonged before the faces are cut has a tolerance from the whole of
+    // its prolongation, where its surfaces part, and the vertices stored on
+    // it had it too, though they lie where the surfaces meet: the corners of
+    // a filleted B-spline dome's walls inward came out at 0.0059 and 0.0122
+    // with its edges prolonged (Thickness.md sec 31), 9.4e-4 so.
+    if (BRepOffset_FixLevel() >= 1)
+    {
+      TolStore = std::max(Tol, TolLL);
+      for (NCollection_List<TopoDS_Shape>::Iterator itV(LV1); itV.More(); itV.Next())
+      {
+        const TopoDS_Vertex& aV = TopoDS::Vertex(itV.Value());
+        double               aT1, aT2;
+        if (!BRep_Tool::Parameter(aV, E1, aT1) || !BRep_Tool::Parameter(aV, E2, aT2))
+        {
+          TolStore = std::max(TolStore, BRep_Tool::Tolerance(E1) + BRep_Tool::Tolerance(E2));
+          continue;
+        }
+        TolStore = std::max(TolStore, LocalTolerance(aV, E1, aT1) * 1.001);
+        TolStore = std::max(TolStore, LocalTolerance(aV, E2, aT2) * 1.001);
+      }
+    }
     Store(E1, E2, LV1, LV2, TolStore, AsDes, aDMVV);
   }
   SHOW_TOPO_SHAPE(E1, "RefEdgeInterE1_", LV1);
   SHOW_TOPO_SHAPE(E2, "RefEdgeInterE2_", LV2);
+}
+
+//=======================================================================
+// function : StoreAtSmoothVertex
+// purpose  : Where every face at the vertex <theVref> has the one normal
+//           there, the offsets of its edges all pass through one point, the
+//           vertex carried along that normal by the offset; two of them that
+//           the intersection found no crossing for -- they run on almost
+//           tangent to each other there -- are given a vertex at it. On a
+//           box under a B-spline dome, its four edges filleted, the fillets
+//           crossing each other in a crease that fades to nothing at the
+//           dome (Thickness.md sec 31): outward with the Intersection join
+//           the section of two fillets' offsets and the offset of the dome's
+//           edge pass within 1.5e-3 of that point and meet nowhere, and the
+//           fillet's face closed no wire. Only edges that pass within a
+//           hundredth of the offset of the point are given it.
+//=======================================================================
+static bool StoreAtSmoothVertex(
+  const TopoDS_Face&                 theF,
+  const TopoDS_Edge&                 theE1,
+  const TopoDS_Edge&                 theE2,
+  const TopAbs_Orientation           theOr1,
+  const TopAbs_Orientation           theOr2,
+  const TopoDS_Vertex&               theVref,
+  const BRepOffset_Analyse&          theAnalyse,
+  const double                       theOffset,
+  const double                       theTol,
+  const occ::handle<BRepAlgo_AsDes>& theAsDes2d,
+  BRepAlgo_Image&                    theImageVV,
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+    theDMVV)
+{
+  if (theVref.IsNull() || theOr1 == TopAbs_EXTERNAL || theOr2 == TopAbs_EXTERNAL
+      || std::abs(theOffset) < Precision::Confusion() || !theAnalyse.HasAncestor(theVref))
+  {
+    return false;
+  }
+  // Every face at the vertex with the one normal.
+  constexpr double                                       anAngTol = 1.e-3;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMF;
+  gp_Dir                                                 aN0;
+  for (NCollection_List<TopoDS_Shape>::Iterator itE(theAnalyse.Ancestors(theVref)); itE.More();
+       itE.Next())
+  {
+    if (!theAnalyse.HasAncestor(itE.Value()))
+    {
+      continue;
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(theAnalyse.Ancestors(itE.Value()));
+         itF.More();
+         itF.Next())
+    {
+      const TopoDS_Face& aFV = TopoDS::Face(itF.Value());
+      if (!aMF.Add(aFV))
+      {
+        continue;
+      }
+      gp_Pnt2d aUV;
+      try
+      {
+        aUV = BRep_Tool::Parameters(theVref, aFV);
+      }
+      catch (Standard_Failure const&)
+      {
+        return false;
+      }
+      BRepAdaptor_Surface aS(aFV, false);
+      gp_Pnt              aP;
+      gp_Vec              aDU, aDV;
+      aS.D1(aUV.X(), aUV.Y(), aP, aDU, aDV);
+      gp_Vec aN = aDU.Crossed(aDV);
+      if (aN.Magnitude() < gp::Resolution())
+      {
+        return false;
+      }
+      if (aFV.Orientation() == TopAbs_REVERSED)
+      {
+        aN.Reverse();
+      }
+      if (aMF.Extent() == 1)
+      {
+        aN0 = gp_Dir(aN);
+      }
+      else if (aN0.Angle(gp_Dir(aN)) > anAngTol)
+      {
+        return false;
+      }
+    }
+  }
+  if (aMF.Extent() < 3)
+  {
+    return false;
+  }
+  // The point: the vertex projected on the offset face, a thickness away.
+  const gp_Pnt               aPV = BRep_Tool::Pnt(theVref);
+  GeomAPI_ProjectPointOnSurf aPS(aPV, BRep_Tool::Surface(theF));
+  if (!aPS.NbPoints()
+      || std::abs(aPS.LowerDistance() - std::abs(theOffset)) > anAngTol * std::abs(theOffset))
+  {
+    return false;
+  }
+  const gp_Pnt aW    = aPS.NearestPoint();
+  const double aDMax = 0.01 * std::abs(theOffset);
+  double       aT[2], aD[2];
+  for (int i = 0; i < 2; ++i)
+  {
+    double                  f, l;
+    occ::handle<Geom_Curve> aC = BRep_Tool::Curve(i == 0 ? theE1 : theE2, f, l);
+    if (aC.IsNull())
+    {
+      return false;
+    }
+    GeomAPI_ProjectPointOnCurve aPC(aW, aC, f, l);
+    if (!aPC.NbPoints() || aPC.LowerDistance() > aDMax)
+    {
+      return false;
+    }
+    aT[i] = aPC.LowerDistanceParameter();
+    aD[i] = aPC.LowerDistance();
+  }
+  const double  aTolV = std::max(std::max(aD[0], aD[1]) * 1.01, theTol);
+  BRep_Builder  aBB;
+  TopoDS_Vertex aV = BRepLib_MakeVertex(aW);
+  aBB.UpdateVertex(TopoDS::Vertex(aV.Oriented(TopAbs_INTERNAL)), aT[0], theE1, aTolV);
+  aBB.UpdateVertex(TopoDS::Vertex(aV.Oriented(TopAbs_INTERNAL)), aT[1], theE2, aTolV);
+  aBB.UpdateVertex(aV, aTolV);
+  NCollection_List<TopoDS_Shape> aLV1, aLV2;
+  aLV1.Append(aV.Oriented(theOr1));
+  aLV2.Append(aV.Oriented(theOr2));
+  if (theImageVV.HasImage(theVref))
+  {
+    theImageVV.Add(theVref.Oriented(TopAbs_FORWARD), aV.Oriented(TopAbs_FORWARD));
+  }
+  else
+  {
+    theImageVV.Bind(theVref.Oriented(TopAbs_FORWARD), aV.Oriented(TopAbs_FORWARD));
+  }
+  Store(theE1, theE2, aLV1, aLV2, aTolV, theAsDes2d, theDMVV);
+  SHOW_TOPO_SHAPE(theE1, "SmoothVertexE1_", aLV1);
+  SHOW_TOPO_SHAPE(theE2, "SmoothVertexE2_", aLV2);
+  return true;
 }
 
 //======================================================================
@@ -1608,7 +1824,40 @@ bool BRepOffset_Inter2d::ExtentEdge(const TopoDS_Edge& E, TopoDS_Edge& NE, const
       // pcurves' ends instead (GeomLib::ExtendCurveToPoint) was tried: the
       // vertices where the edge met two sections came out under 0.0122,
       // where the Arc join's have 1e-4.
-      if (!C3d->IsPeriodic()
+      // From fix level 1 such a curve is made again from the pcurve the
+      // range was taken from, over all of it: the edge between a wall and a
+      // B-spline fillet of a dome outward (Thickness.md sec 31) has to go on
+      // past its curve to meet the next wall, and with it held to its curve
+      // no wall closed a wire. Made from the pcurve, the curve keeps its
+      // parameters; the vertices it is given are as far from it as they are
+      // where they lie (RefEdgeInter, FuseVertices), not as far as the
+      // prolongation parts from the other face.
+      bool isProlonged = false;
+      if (BRepOffset_FixLevel() >= 1 && !C3d->IsPeriodic()
+          && (C3d->IsInstance(STANDARD_TYPE(Geom_BSplineCurve))
+              || C3d->IsInstance(STANDARD_TYPE(Geom_BezierCurve)))
+          && (f < C3d->FirstParameter() || l > C3d->LastParameter()))
+      {
+        occ::handle<Geom_Surface> aSurf =
+          occ::down_cast<Geom_Surface>(MinSurf->Transformed(MinLoc.Transformation()));
+        Geom2dAdaptor_Curve              anAC2d(MinPC, FirstParOnPC, LastParOnPC);
+        occ::handle<Geom2dAdaptor_Curve> aHC2d  = new Geom2dAdaptor_Curve(anAC2d);
+        occ::handle<GeomAdaptor_Surface> aHSurf = new GeomAdaptor_Surface(aSurf);
+        Adaptor3d_CurveOnSurface         aConS(aHC2d, aHSurf);
+        occ::handle<Geom_Curve>          aC3dNew;
+        double                           aMaxDev = 0., anAvDev = 0.;
+        GeomLib::BuildCurve3d(Precision::Confusion(), aConS, FirstParOnPC, LastParOnPC, aC3dNew,
+                              aMaxDev, anAvDev, GeomAbs_C1, 14, evaluateMaxSegment(aConS));
+        if (!aC3dNew.IsNull())
+        {
+          C3d = aC3dNew;
+          f   = FirstParOnPC;
+          l   = LastParOnPC;
+          BB.UpdateEdge(NE, C3d, std::max(aMaxDev, BRep_Tool::Tolerance(NE)));
+          isProlonged = true;
+        }
+      }
+      if (!isProlonged && !C3d->IsPeriodic()
           && (C3d->IsInstance(STANDARD_TYPE(Geom_BSplineCurve))
               || C3d->IsInstance(STANDARD_TYPE(Geom_BezierCurve))))
       {
@@ -2541,6 +2790,8 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
         }
         else
         {
+          const int aNb1 = AsDes2d->Descendant(aE1).Extent();
+          const int aNb2 = AsDes2d->Descendant(aE2).Extent();
           RefEdgeInter(FIO,
                        BAsurf,
                        aE1,
@@ -2554,6 +2805,15 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
                        theImageVV,
                        theDMVV,
                        bCoincide);
+          // Two edges that run on almost tangent to each other at Vref meet
+          // nowhere the intersection finds, though both pass through the
+          // same point: see StoreAtSmoothVertex. From fix level 1.
+          if (BRepOffset_FixLevel() >= 1 && AsDes2d->Descendant(aE1).Extent() == aNb1
+              && AsDes2d->Descendant(aE2).Extent() == aNb2)
+          {
+            StoreAtSmoothVertex(FIO, aE1, aE2, anOr1, anOr2, Vref, Analyse, Offset, Tol, AsDes2d,
+                                theImageVV, theDMVV);
+          }
         }
 
         if (theEdgeIntEdges.IsBound(aE1))
@@ -2913,6 +3173,14 @@ bool BRepOffset_Inter2d::FuseVertices(
         if (!BRep_Tool::Parameter(aVOldInt, aE, aT))
         {
           return false;
+        }
+        if (BRepOffset_FixLevel() >= 1)
+        {
+          // From fix level 1, as far as the vertex is from the edge where it
+          // lies on it, not the edge's tolerance (RefEdgeInter)
+          aBB.UpdateVertex(aVNewInt, aT, aE, BRep_Tool::Tolerance(aVNew));
+          aBB.UpdateVertex(aVNew, LocalTolerance(aVNew, aE, aT) * 1.001);
+          continue;
         }
         aBB.UpdateVertex(aVNewInt, aT, aE, aTolE);
       }
