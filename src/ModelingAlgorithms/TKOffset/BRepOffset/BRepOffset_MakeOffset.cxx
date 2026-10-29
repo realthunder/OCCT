@@ -9247,6 +9247,27 @@ bool TrimEdge(
           TopoDS_Vertex V = TopoDS::Vertex(it.Value());
           if (!V.IsSame(V1) && !V.IsSame(V2))
           {
+            // A vertex found on the edge by projection (above) has no
+            // parameter on it, and the loops ask for one: the end of a
+            // neighbour's offset edge, stored on this one where the two cross
+            // beside it -- the corner of a filleted B-spline dome's top
+            // inward, the Intersection join, two vertices 5e-4 apart, one
+            // taken for this edge's end. It is given the one it was found at.
+            double aTV;
+            if (!BRep_Tool::Parameter(V, NE, aTV))
+            {
+              double                      f, l;
+              occ::handle<Geom_Curve>     aC = BRep_Tool::Curve(NE, f, l);
+              GeomAPI_ProjectPointOnCurve aProj(BRep_Tool::Pnt(V), aC, f, l);
+              if (aProj.NbPoints() == 0
+                  || aProj.LowerDistance()
+                       > BRep_Tool::Tolerance(V) + BRep_Tool::Tolerance(NE))
+              {
+                SHOW_TOPO_SHAPE(V, "TrimOffEdge");
+                continue;
+              }
+              B.UpdateVertex(V, aProj.LowerDistanceParameter(), NE, BRep_Tool::Tolerance(V));
+            }
             AsDes->Add(NE, V);
           }
         }
