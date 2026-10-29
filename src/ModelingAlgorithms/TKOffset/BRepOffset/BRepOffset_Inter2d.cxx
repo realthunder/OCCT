@@ -44,6 +44,7 @@
 #include <Geom2dAdaptor_Curve.hxx>
 #include <Geom2dConvert_CompCurveToBSplineCurve.hxx>
 #include <Geom2dInt_GInter.hxx>
+#include <Geom_BezierCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_ConicalSurface.hxx>
@@ -1596,6 +1597,23 @@ bool BRepOffset_Inter2d::ExtentEdge(const TopoDS_Edge& E, TopoDS_Edge& NE, const
             std::cout << "ProjectPointOnCurve not done" << std::endl;
 #endif
         }
+      }
+      // A B-spline is not defined past its ends, and the pcurves prolonged
+      // there have nothing on it to be projected on (above): the range was
+      // taken from them as they were, ran past the curve, and the curve was
+      // evaluated where it does not go -- the edge between a wall and a
+      // B-spline fillet came out under a tolerance of 1.87 and its face was
+      // cut short (a filleted B-spline dome inward, the Intersection join).
+      // The edge goes no further than its curve. Prolonging the curve to the
+      // pcurves' ends instead (GeomLib::ExtendCurveToPoint) was tried: the
+      // vertices where the edge met two sections came out under 0.0122,
+      // where the Arc join's have 1e-4.
+      if (!C3d->IsPeriodic()
+          && (C3d->IsInstance(STANDARD_TYPE(Geom_BSplineCurve))
+              || C3d->IsInstance(STANDARD_TYPE(Geom_BezierCurve))))
+      {
+        f = std::max(f, C3d->FirstParameter());
+        l = std::min(l, C3d->LastParameter());
       }
       BB.Range(NE, f, l);
       if (!Precision::IsInfinite(f) && !Precision::IsInfinite(l))
