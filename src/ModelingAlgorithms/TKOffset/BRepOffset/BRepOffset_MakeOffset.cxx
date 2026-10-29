@@ -4368,6 +4368,56 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
     myError = BRepOffset_UserBreak;
     return;
   }
+  // A face whose every edge is tangent meets no section and is not extended:
+  // it kept the edges its offset was made with, while a neighbour across a
+  // tangent edge -- extended, cut and rebuilt by the loops -- took new ones
+  // along the same line, and the shell had edges only one face held (a box's
+  // top with all four of its edges filleted, the Intersection join). Such a
+  // face is extended with its neighbours, and rebuilt with them.
+  for (bool isAdded = true; isAdded;)
+  {
+    isAdded = false;
+    for (Exp.Init(myFaceComp, TopAbs_FACE); Exp.More(); Exp.Next())
+    {
+      const TopoDS_Face&       aF  = TopoDS::Face(Exp.Current());
+      const BRepOffset_Offset* pOF = MapSF.Seek(aF);
+      if (!pOF || MES.IsBound(pOF->Face()) || myFaces.Contains(aF))
+      {
+        continue;
+      }
+      bool isBesideExtended = false;
+      for (Exp2.Init(aF, TopAbs_EDGE); Exp2.More() && !isBesideExtended; Exp2.Next())
+      {
+        const TopoDS_Edge&                           aE = TopoDS::Edge(Exp2.Current());
+        const NCollection_List<BRepOffset_Interval>& aL = myAnalyse.Type(aE);
+        if (aL.IsEmpty() || aL.First().Type() != ChFiDS_Tangential || !myAnalyse.HasAncestor(aE))
+        {
+          continue;
+        }
+        for (itLF.Initialize(myAnalyse.Ancestors(aE)); itLF.More(); itLF.Next())
+        {
+          const BRepOffset_Offset* pON = MapSF.Seek(itLF.Value());
+          if (!itLF.Value().IsSame(aF) && pON && MES.IsBound(pON->Face()))
+          {
+            isBesideExtended = true;
+            break;
+          }
+        }
+      }
+      if (!isBesideExtended)
+      {
+        continue;
+      }
+      bool enlargeU = true, enlargeVfirst = true, enlargeVlast = true;
+      BRepOffset_Tool::CheckBounds(aF, myAnalyse, enlargeU, enlargeVfirst, enlargeVlast);
+      TopoDS_Face aNF;
+      BRepOffset_Tool::EnLargeFace(pOF->Face(), aNF, true, true, enlargeU, enlargeVfirst,
+                                   enlargeVlast);
+      SHOW_TOPO_SHAPE(aNF, "ExtendedBesideTangent");
+      MES.Bind(pOF->Face(), aNF);
+      isAdded = true;
+    }
+  }
 
   NCollection_List<TopoDS_Shape> aLFaces;
   for (Exp.Init(myFaceComp, TopAbs_FACE); Exp.More(); Exp.Next())
