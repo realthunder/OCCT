@@ -16,7 +16,6 @@
 
 //  Modified by skv - Wed Dec 24 18:08:39 2003 OCC4455
 
-#include <BRepOffset.hxx>
 #include <BRepOffset_Inter2d.hxx>
 
 #include <BOPTools_AlgoTools.hxx>
@@ -1156,32 +1155,28 @@ static void RefEdgeInter(
     }
 
     ////-----------------------------------------------------
-    double TolStore = BRep_Tool::Tolerance(E1) + BRep_Tool::Tolerance(E2);
-    TolStore        = std::max(TolStore, Tol);
     // Compare to Line-Line tolerance
-    TolStore = std::max(TolStore, TolLL);
-    // From fix level 1, the vertex is as far as it is from the two edges
-    // where it lies on them, not as far as the edges stray anywhere. An edge
-    // prolonged before the faces are cut has a tolerance from the whole of
-    // its prolongation, where its surfaces part, and the vertices stored on
-    // it had it too, though they lie where the surfaces meet: the corners of
-    // a filleted B-spline dome's walls inward came out at 0.0059 and 0.0122
-    // with its edges prolonged (Thickness.md sec 31), 9.4e-4 so.
-    if (BRepOffset_FixLevel() >= 1)
+    double TolStore = std::max(Tol, TolLL);
+    // The vertex is as far as it is from the two edges where it lies on
+    // them, not as far as the edges stray anywhere (the sum of their
+    // tolerances, before Thickness.md sec 31). An edge prolonged before the
+    // faces are cut has a tolerance from the whole of its prolongation,
+    // where its surfaces part, and the vertices stored on it had it too,
+    // though they lie where the surfaces meet: the corners of a filleted
+    // B-spline dome's walls inward came out at 0.0059 and 0.0122 with its
+    // edges prolonged, 9.4e-4 so. A vertex without a parameter on both
+    // edges takes the sum still.
+    for (NCollection_List<TopoDS_Shape>::Iterator itV(LV1); itV.More(); itV.Next())
     {
-      TolStore = std::max(Tol, TolLL);
-      for (NCollection_List<TopoDS_Shape>::Iterator itV(LV1); itV.More(); itV.Next())
+      const TopoDS_Vertex& aV = TopoDS::Vertex(itV.Value());
+      double               aT1, aT2;
+      if (!BRep_Tool::Parameter(aV, E1, aT1) || !BRep_Tool::Parameter(aV, E2, aT2))
       {
-        const TopoDS_Vertex& aV = TopoDS::Vertex(itV.Value());
-        double               aT1, aT2;
-        if (!BRep_Tool::Parameter(aV, E1, aT1) || !BRep_Tool::Parameter(aV, E2, aT2))
-        {
-          TolStore = std::max(TolStore, BRep_Tool::Tolerance(E1) + BRep_Tool::Tolerance(E2));
-          continue;
-        }
-        TolStore = std::max(TolStore, LocalTolerance(aV, E1, aT1) * 1.001);
-        TolStore = std::max(TolStore, LocalTolerance(aV, E2, aT2) * 1.001);
+        TolStore = std::max(TolStore, BRep_Tool::Tolerance(E1) + BRep_Tool::Tolerance(E2));
+        continue;
       }
+      TolStore = std::max(TolStore, LocalTolerance(aV, E1, aT1) * 1.001);
+      TolStore = std::max(TolStore, LocalTolerance(aV, E2, aT2) * 1.001);
     }
     Store(E1, E2, LV1, LV2, TolStore, AsDes, aDMVV);
   }
@@ -1824,16 +1819,16 @@ bool BRepOffset_Inter2d::ExtentEdge(const TopoDS_Edge& E, TopoDS_Edge& NE, const
       // pcurves' ends instead (GeomLib::ExtendCurveToPoint) was tried: the
       // vertices where the edge met two sections came out under 0.0122,
       // where the Arc join's have 1e-4.
-      // From fix level 1 such a curve is made again from the pcurve the
-      // range was taken from, over all of it: the edge between a wall and a
-      // B-spline fillet of a dome outward (Thickness.md sec 31) has to go on
+      // Such a curve is made again from the pcurve the range was taken
+      // from, over all of it (Thickness.md sec 31): the edge between a wall and a
+      // B-spline fillet of a dome outward has to go on
       // past its curve to meet the next wall, and with it held to its curve
       // no wall closed a wire. Made from the pcurve, the curve keeps its
       // parameters; the vertices it is given are as far from it as they are
       // where they lie (RefEdgeInter, FuseVertices), not as far as the
       // prolongation parts from the other face.
       bool isProlonged = false;
-      if (BRepOffset_FixLevel() >= 1 && !C3d->IsPeriodic()
+      if (!C3d->IsPeriodic()
           && (C3d->IsInstance(STANDARD_TYPE(Geom_BSplineCurve))
               || C3d->IsInstance(STANDARD_TYPE(Geom_BezierCurve)))
           && (f < C3d->FirstParameter() || l > C3d->LastParameter()))
@@ -2807,8 +2802,8 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
                        bCoincide);
           // Two edges that run on almost tangent to each other at Vref meet
           // nowhere the intersection finds, though both pass through the
-          // same point: see StoreAtSmoothVertex. From fix level 1.
-          if (BRepOffset_FixLevel() >= 1 && AsDes2d->Descendant(aE1).Extent() == aNb1
+          // same point: see StoreAtSmoothVertex.
+          if (AsDes2d->Descendant(aE1).Extent() == aNb1
               && AsDes2d->Descendant(aE2).Extent() == aNb2)
           {
             StoreAtSmoothVertex(FIO, aE1, aE2, anOr1, anOr2, Vref, Analyse, Offset, Tol, AsDes2d,
@@ -3167,22 +3162,16 @@ bool BRepOffset_Inter2d::FuseVertices(
       NCollection_List<TopoDS_Shape>::Iterator aItLE(aLE);
       for (; aItLE.More(); aItLE.Next())
       {
-        const TopoDS_Edge& aE    = TopoDS::Edge(aItLE.Value());
-        double             aTolE = BRep_Tool::Tolerance(aE);
+        const TopoDS_Edge& aE = TopoDS::Edge(aItLE.Value());
         double             aT;
         if (!BRep_Tool::Parameter(aVOldInt, aE, aT))
         {
           return false;
         }
-        if (BRepOffset_FixLevel() >= 1)
-        {
-          // From fix level 1, as far as the vertex is from the edge where it
-          // lies on it, not the edge's tolerance (RefEdgeInter)
-          aBB.UpdateVertex(aVNewInt, aT, aE, BRep_Tool::Tolerance(aVNew));
-          aBB.UpdateVertex(aVNew, LocalTolerance(aVNew, aE, aT) * 1.001);
-          continue;
-        }
-        aBB.UpdateVertex(aVNewInt, aT, aE, aTolE);
+        // As far as the vertex is from the edge where it lies on it, not the
+        // edge's tolerance (RefEdgeInter)
+        aBB.UpdateVertex(aVNewInt, aT, aE, BRep_Tool::Tolerance(aVNew));
+        aBB.UpdateVertex(aVNew, LocalTolerance(aVNew, aE, aT) * 1.001);
       }
       // and replace the vertex
       theAsDes->Replace(aVOld, aVNew);

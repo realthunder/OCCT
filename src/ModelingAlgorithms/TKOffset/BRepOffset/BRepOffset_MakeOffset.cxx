@@ -54,7 +54,6 @@
 #include <NCollection_IndexedDataMap.hxx>
 #include <BRepOffset_Inter2d.hxx>
 #include <BRepOffset_Inter3d.hxx>
-#include <BRepOffset.hxx>
 #include <BRepOffset_MakeOffset.hxx>
 #include <BRepOffset_Offset.hxx>
 #include <BRepOffset_Tool.hxx>
@@ -9234,16 +9233,16 @@ bool TrimEdge(
         SHOW_TOPO_SHAPE(itLV.Value(), "TrimRemove");
         B.Remove(NE, itLV.Value());
       }
-      // From fix level 1, an end found by projection keeps the parameter it
-      // was found at, as the vertices between the ends do (below): the
-      // corner of the dome outward (Thickness.md sec 31), put on the edge
-      // where its neighbours pass through it, and one end of the edge.
+      // An end found by projection keeps the parameter it was found at, as
+      // the vertices between the ends do (below): the corner of the dome
+      // outward (Thickness.md sec 31), put on the edge where its neighbours
+      // pass through it, and one end of the edge.
       double aTE;
-      if (BRepOffset_FixLevel() >= 1 && !BRep_Tool::Parameter(V1, NE, aTE))
+      if (!BRep_Tool::Parameter(V1, NE, aTE))
       {
         B.UpdateVertex(V1, UMin, NE, BRep_Tool::Tolerance(V1));
       }
-      if (BRepOffset_FixLevel() >= 1 && !BRep_Tool::Parameter(V2, NE, aTE))
+      if (!BRep_Tool::Parameter(V2, NE, aTE))
       {
         B.UpdateVertex(V2, UMax, NE, BRep_Tool::Tolerance(V2));
       }
@@ -9254,12 +9253,11 @@ bool TrimEdge(
       AsDes->Add(NE, V1.Oriented(TopAbs_FORWARD));
       AsDes->Add(NE, V2.Oriented(TopAbs_REVERSED));
       BRepLib::SameParameter(NE, aSameParTol, true);
-      // From fix level 1 the edge's tolerance takes in how far its curve
-      // ends from its vertices: an end where two edges that run on almost
-      // tangent to each other pass a point and miss each other (the corners
-      // of the dome, Thickness.md sec 31) is up to 1.4e-3 from it, on a
-      // section whose tolerance said 1e-7.
-      if (BRepOffset_FixLevel() >= 1)
+      // The edge's tolerance takes in how far its curve ends from its
+      // vertices: an end where two edges that run on almost tangent to each
+      // other pass a point and miss each other (the corners of the dome,
+      // Thickness.md sec 31) is up to 1.4e-3 from it, on a section whose
+      // tolerance said 1e-7.
       {
         double                  aCF, aCL;
         occ::handle<Geom_Curve> aC = BRep_Tool::Curve(NE, aCF, aCL);
