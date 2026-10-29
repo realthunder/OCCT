@@ -373,6 +373,37 @@ static void ChFi3d_AddThawed(TheMap&                theOld,
 // offset alone exceeded (#631's Fillet002: 3.7e-7 off, tolerance 1e-7).
 // Edges of the input are left alone: the input shares them.
 
+//! The thawed copies <thePart> of <theResult> holds that <theSpread> has not
+//! seen, put in their originals' place in the whole of <theResult>. BRepLib
+//! raises a frozen vertex or edge of the part it is given on a copy, and puts
+//! the copy in that part alone (BRepLib::UpdateTolerances' copy-on-write):
+//! another face of the result that shares the original -- one of the input's
+//! kept as it was -- would keep it, and the wire the two faces share would not
+//! close at it (#273's flat end, 0.3 on its edge 39, frozen). Unfrozen, the
+//! vertex is raised in place, in every face that holds it.
+static void ChFi3d_SpreadThawed(const TopoDS_Shape&                    theResult,
+                                const TopoDS_Shape&                    thePart,
+                                NCollection_Map<const TopoDS_TShape*>& theSpread)
+{
+  NCollection_List<TopoDS_Shape> aCopies;
+  for (const TopAbs_ShapeEnum aType : {TopAbs_VERTEX, TopAbs_EDGE})
+  {
+    for (TopExp_Explorer ex(thePart, aType); ex.More(); ex.Next())
+    {
+      if (ex.Current().TShape()->Thawed() && theSpread.Add(ex.Current().TShape().get()))
+      {
+        aCopies.Append(ex.Current());
+      }
+    }
+  }
+  if (!aCopies.IsEmpty())
+  {
+    BRepLib_PutThawed(theResult, aCopies);
+  }
+}
+
+//=================================================================================================
+
 static void ChFi3d_EdgesCoverTheirEnds(const TopoDS_Shape& theResult, const TopoDS_Shape& theInput)
 {
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anOld;
@@ -3902,6 +3933,7 @@ void ChFi3d_Builder::Compute()
     //
     aNbSurfaces = myDS->NbSurfaces();
 
+    NCollection_Map<const TopoDS_TShape*> aSpread;
     for (iF = 1; iF <= aNbSurfaces; ++iF)
     {
       const NCollection_List<TopoDS_Shape>& aLF = myCoup->NewFaces(iF);
@@ -3910,6 +3942,7 @@ void ChFi3d_Builder::Compute()
       {
         const TopoDS_Shape& aF = aIt.Value();
         BRepLib::SameParameter(aF, SameParTol, true);
+        ChFi3d_SpreadThawed(myShapeResult, aF, aSpread);
         ShapeFix::SameParameter(aF, false, SameParTol);
       }
     }
