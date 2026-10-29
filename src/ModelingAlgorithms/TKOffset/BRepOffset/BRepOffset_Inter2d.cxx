@@ -568,11 +568,14 @@ static void EdgeInter(
           {
             continue;
           }
+          // Within the edges' tolerances, not the vertices': a vertex of an
+          // offset edge can carry one of the offset's size (8.7 at the corner
+          // of a filleted dome's offset outward, the Intersection join), and
+          // ends that far apart are not one point.
           const gp_Pnt aPV  = BRep_Tool::Pnt(aV);
-          const double aTol = std::max(BRep_Tool::Tolerance(aV), BRep_Tool::Tolerance(anOther));
+          const double aTol = std::max(BRep_Tool::Tolerance(anEnd), BRep_Tool::Tolerance(anOther));
           // At an end of the other within the edges' tolerance: the two ends
-          // meet, as the test at the ends below takes them within the
-          // vertices' -- the curve between two tubes ends where their edges
+          // meet -- the curve between two tubes ends where their edges
           // on the neighbours' offsets meet, 5e-6 from either. Cut there, the
           // edge kept a sliver and lost its piece.
           TopoDS_Vertex aW[2];
@@ -584,11 +587,8 @@ static void EdgeInter(
             {
               continue;
             }
-            const double aTolEE =
-              std::max(std::max(BRep_Tool::Tolerance(aV), BRep_Tool::Tolerance(aW[w])),
-                       std::max(BRep_Tool::Tolerance(anEnd), BRep_Tool::Tolerance(anOther)));
             const double aDist = aPV.Distance(BRep_Tool::Pnt(aW[w]));
-            if (aDist > aTolEE)
+            if (!aV.IsSame(aW[w]) && aDist > aTol)
             {
               continue;
             }
