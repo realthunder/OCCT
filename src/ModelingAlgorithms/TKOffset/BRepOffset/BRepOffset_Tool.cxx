@@ -33,6 +33,8 @@
 #include <BRepAlgo_Image.hxx>
 #include <BRepAlgo_Loop.hxx>
 #include <BRepLib.hxx>
+#include <Bnd_Box.hxx>
+#include <BRepBndLib.hxx>
 #include <BRepLib_MakeEdge.hxx>
 #include <BRepLib_MakeFace.hxx>
 #include <BRepLib_MakeVertex.hxx>
@@ -797,9 +799,123 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
         continue;
       }
       TopoDS_Edge E = BRepLib_MakeEdge(CI);
+      TopoDS_Vertex anEnds[2];
+      gp_Pnt        anEndPnts[2];
+      bool          isMoved = false;
+      // An end near a vertex both tubes have -- where two tubes round the
+      // tangent edges of a removed face start, both on the offsets of the
+      // faces beside it: there the tubes all but touch, and their section
+      // ended 3e-4 to 1e-3 off the vertex, which then cut a sliver off the
+      // edge it ends. It ends at the vertex.
+      {
+        NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aV1, aV2;
+        TopExp::MapShapes(F1, TopAbs_VERTEX, aV1);
+        TopExp::MapShapes(F2, TopAbs_VERTEX, aV2);
+        Bnd_Box aBox1, aBox2;
+        BRepBndLib::Add(F1, aBox1);
+        BRepBndLib::Add(F2, aBox2);
+        const double aSnap =
+          1.e-3 * std::min(std::sqrt(aBox1.SquareExtent()), std::sqrt(aBox2.SquareExtent()));
+        const double aPar[2] = {CI->FirstParameter(), CI->LastParameter()};
+        for (int k = 0; k < 2; ++k)
+        {
+          const gp_Pnt aP    = CI->Value(aPar[k]);
+          double       aBest = aSnap;
+          for (int j = 1; j <= aV1.Extent(); ++j)
+          {
+            // F2 has it, or a vertex of its own there.
+            const gp_Pnt aPV1 = BRep_Tool::Pnt(TopoDS::Vertex(aV1(j)));
+            bool         isOn2 = aV2.Contains(aV1(j));
+            for (int m = 1; m <= aV2.Extent() && !isOn2; ++m)
+            {
+              const TopoDS_Vertex& aW = TopoDS::Vertex(aV2(m));
+              isOn2 = aPV1.Distance(BRep_Tool::Pnt(aW))
+                      <= BRep_Tool::Tolerance(aW) + BRep_Tool::Tolerance(TopoDS::Vertex(aV1(j)));
+            }
+            if (!isOn2)
+            {
+              continue;
+            }
+            const double aD = aP.Distance(aPV1);
+            if (aD < aBest)
+            {
+              aBest    = aD;
+              anEnds[k] = TopoDS::Vertex(aV1(j));
+            }
+          }
+        }
+        // The curve's end moved onto the vertex, its pcurves' with it: a
+        // B-spline ends on its end pole. Otherwise the vertex covers it.
+        occ::handle<Geom_BSplineCurve> aBS = occ::down_cast<Geom_BSplineCurve>(CI);
+        isMoved = !aBS.IsNull() && !aBS->IsPeriodic() && !S1->IsUPeriodic()
+                  && !S1->IsVPeriodic() && !S2->IsUPeriodic() && !S2->IsVPeriodic();
+        if (isMoved)
+        {
+          aBS = occ::down_cast<Geom_BSplineCurve>(aBS->Copy());
+          for (int k = 0; k < 2; ++k)
+          {
+            if (!anEnds[k].IsNull())
+            {
+              aBS->SetPole(k == 0 ? 1 : aBS->NbPoles(), BRep_Tool::Pnt(anEnds[k]));
+            }
+          }
+          CI = aBS;
+        }
+        for (int k = 0; k < 2; ++k)
+        {
+          if (!anEnds[k].IsNull())
+          {
+            anEndPnts[k] = BRep_Tool::Pnt(anEnds[k]);
+            if (!isMoved)
+            {
+              B.UpdateVertex(anEnds[k], 1.01 * CI->Value(aPar[k]).Distance(anEndPnts[k]));
+            }
+          }
+        }
+        if (!anEnds[0].IsNull() || !anEnds[1].IsNull())
+        {
+          BRepLib_MakeEdge aME(CI,
+                               anEnds[0].IsNull() ? BRepLib_MakeVertex(CI->Value(aPar[0])).Vertex()
+                                                  : anEnds[0],
+                               anEnds[1].IsNull() ? BRepLib_MakeVertex(CI->Value(aPar[1])).Vertex()
+                                                  : anEnds[1],
+                               aPar[0],
+                               aPar[1]);
+          if (aME.IsDone())
+          {
+            E = aME.Edge();
+          }
+        }
+      }
+      // A pcurve's end on the vertex, as the curve's.
+      auto aMoveEnds = [&](occ::handle<Geom2d_Curve>& theC2, const occ::handle<Geom_Surface>& theS) {
+        occ::handle<Geom2d_BSplineCurve> aBS2 = occ::down_cast<Geom2d_BSplineCurve>(theC2);
+        if (!isMoved || aBS2.IsNull() || aBS2->IsPeriodic())
+        {
+          return;
+        }
+        aBS2 = occ::down_cast<Geom2d_BSplineCurve>(aBS2->Copy());
+        for (int k = 0; k < 2; ++k)
+        {
+          if (anEnds[k].IsNull())
+          {
+            continue;
+          }
+          GeomAPI_ProjectPointOnSurf aProj(anEndPnts[k], theS);
+          if (aProj.NbPoints() == 0)
+          {
+            return;
+          }
+          double aU, aV;
+          aProj.LowerDistanceParameters(aU, aV);
+          aBS2->SetPole(k == 0 ? 1 : aBS2->NbPoles(), gp_Pnt2d(aU, aV));
+        }
+        theC2 = aBS2;
+      };
       if (Inter.HasLineOnS1(i))
       {
         occ::handle<Geom2d_Curve> C2 = Inter.LineOnS1(i);
+        aMoveEnds(C2, S1);
         PutInBounds(F1, E, C2);
         B.UpdateEdge(E, C2, F1, BRep_Tool::Tolerance(E));
       }
@@ -810,6 +926,7 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
       if (Inter.HasLineOnS2(i))
       {
         occ::handle<Geom2d_Curve> C2 = Inter.LineOnS2(i);
+        aMoveEnds(C2, S2);
         PutInBounds(F2, E, C2);
         B.UpdateEdge(E, C2, F2, BRep_Tool::Tolerance(E));
       }
