@@ -64,4 +64,15 @@ public:
     double                           thePrecision);
 };
 
+//! The fork's corrections to the offset that give a different shape than
+//! before for some input that already had one, on the calling thread: 0, the
+//! default on every thread, makes none of them, so a shape a document saved
+//! comes back as it was; each level adds those of its own to the ones below
+//! it. Returns the level set before. A C function, so that a client looks it
+//! up by name and goes on without it where the library is upstream's.
+extern "C" Standard_EXPORT int BRepOffset_SetFixLevel(const int theLevel);
+
+//! The calling thread's level of BRepOffset_SetFixLevel().
+extern "C" Standard_EXPORT int BRepOffset_FixLevel();
+
 #endif // _BRepOffset_HeaderFile

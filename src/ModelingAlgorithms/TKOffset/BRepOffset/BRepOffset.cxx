@@ -363,3 +363,25 @@ occ::handle<Geom_Surface> BRepOffset::CollapseSingularities(
 
   return theSurface;
 }
+
+namespace
+{
+// BRepOffset_SetFixLevel(): the calling thread's
+thread_local int THE_FIX_LEVEL = 0;
+} // namespace
+
+//=================================================================================================
+
+int BRepOffset_SetFixLevel(const int theLevel)
+{
+  const int aPrevious = THE_FIX_LEVEL;
+  THE_FIX_LEVEL       = theLevel;
+  return aPrevious;
+}
+
+//=================================================================================================
+
+int BRepOffset_FixLevel()
+{
+  return THE_FIX_LEVEL;
+}
