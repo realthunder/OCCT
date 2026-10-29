@@ -3906,6 +3906,86 @@ const TopoDS_Shape& BRepOffset_MakeOffset::Shape() const
 
 //=================================================================================================
 
+// Whether the offsets of the faces around the vertex all meet in one point
+// there: each face's offset of it within the vertex's tolerance of every
+// other's. So they do where every edge at the vertex is tangential, and
+// also where an edge between two of the faces is a crease that fades out at
+// the vertex -- two fillets meeting in a mitre that ends where both meet a
+// third face tangentially. Their offsets are then to share the vertex, or
+// the tube of the crease ends in an edge of no length that nothing else
+// shares.
+static bool offsetsMeetAt(
+  const TopoDS_Vertex&                                                     theV,
+  const BRepOffset_Analyse&                                                theAnalyse,
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theFaceOffset,
+  const double                                                             theOffset)
+{
+  const gp_Pnt                                           aP   = BRep_Tool::Pnt(theV);
+  const double                                           aTol = BRep_Tool::Tolerance(theV);
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFaces;
+  NCollection_Sequence<gp_Pnt>                           aPts;
+  try
+  {
+    for (NCollection_List<TopoDS_Shape>::Iterator aItE(theAnalyse.Ancestors(theV)); aItE.More();
+         aItE.Next())
+    {
+      const TopoDS_Edge& aE = TopoDS::Edge(aItE.Value());
+      for (NCollection_List<TopoDS_Shape>::Iterator aItF(theAnalyse.Ancestors(aE)); aItF.More();
+           aItF.Next())
+      {
+        const TopoDS_Face& aF = TopoDS::Face(aItF.Value());
+        if (!aFaces.Add(aF))
+        {
+          continue;
+        }
+        // the vertex on the face: at its end of the edge's pcurve
+        double                          aT1, aT2;
+        const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(aE, aF, aT1, aT2);
+        if (aC2d.IsNull())
+        {
+          return false;
+        }
+        const gp_Pnt2d      aUV = aC2d->Value(BRep_Tool::Parameter(theV, aE, aF));
+        BRepAdaptor_Surface aS(aF, false);
+        gp_Pnt              aPS;
+        gp_Vec              aDU, aDV;
+        aS.D1(aUV.X(), aUV.Y(), aPS, aDU, aDV);
+        // no normal of its own where the surface is singular -- a sphere's pole
+        gp_Vec       aN = aDU.Crossed(aDV);
+        const double aM = std::max(aDU.Magnitude(), aDV.Magnitude());
+        if (aN.Magnitude() <= 1.e-6 * aM * aM || aN.Magnitude() < gp::Resolution())
+        {
+          return false;
+        }
+        aN.Normalize();
+        if (aF.Orientation() == TopAbs_REVERSED)
+        {
+          aN.Reverse();
+        }
+        const double aOff = theFaceOffset.IsBound(aF) ? theFaceOffset(aF) : theOffset;
+        aPts.Append(aP.Translated(aN * aOff));
+      }
+    }
+  }
+  catch (Standard_Failure const&)
+  {
+    return false;
+  }
+  for (int i = 1; i <= aPts.Length(); ++i)
+  {
+    for (int j = i + 1; j <= aPts.Length(); ++j)
+    {
+      if (aPts(i).Distance(aPts(j)) > aTol)
+      {
+        return false;
+      }
+    }
+  }
+  return aPts.Length() > 1;
+}
+
+//=================================================================================================
+
 void BRepOffset_MakeOffset::MakeOffsetFaces(
   NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& theMapSF,
   const Message_ProgressRange&                                                   theRange)
@@ -3950,7 +4030,7 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
         {
           myAnalyse.Edges(V1, ChFiDS_Tangential, LE);
           const NCollection_List<TopoDS_Shape>& LA = myAnalyse.Ancestors(V1);
-          if (LE.Extent() == LA.Extent())
+          if (LE.Extent() == LA.Extent() || offsetsMeetAt(V1, myAnalyse, myFaceOffset, myOffset))
           {
             ShapeTgt.Bind(V1, OV1);
           }
@@ -3960,7 +4040,7 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
           LE.Clear();
           myAnalyse.Edges(V2, ChFiDS_Tangential, LE);
           const NCollection_List<TopoDS_Shape>& LA = myAnalyse.Ancestors(V2);
-          if (LE.Extent() == LA.Extent())
+          if (LE.Extent() == LA.Extent() || offsetsMeetAt(V2, myAnalyse, myFaceOffset, myOffset))
           {
             ShapeTgt.Bind(V2, OV2);
           }
