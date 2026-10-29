@@ -24,6 +24,7 @@
 #include <BRep_TEdge.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <Extrema_ExtPC.hxx>
 #include <BRepAdaptor_Curve2d.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgo_AsDes.hxx>
@@ -533,6 +534,113 @@ static void EdgeInter(
       ResPoints.Append(P3d);
       ResParamsOnE1.Append(ParamsOnE1);
       ResParamsOnE2.Append(ParamsOnE2);
+    }
+    // An end of one edge on the other, inside it, within their tolerances:
+    // where two tubes round tangent edges of a removed face meet at a corner
+    // of it, the curve between them ends where both tubes' edges on the face
+    // cross, on the one to 1e-7 and on the other to 7e-6 -- the curves on
+    // the face missed each other by that, and the tube's edge was not cut.
+    if (!WithDegen)
+    {
+      const double TolConfEnd = Tol;
+      for (int iE = 1; iE <= 2; ++iE)
+      {
+        const TopoDS_Edge&       anEnd   = EI[iE];
+        const TopoDS_Edge&       anOther = EI[3 - iE];
+        const BRepAdaptor_Curve& aCO     = iE == 1 ? CE2 : CE1;
+        const double             fO = f[3 - iE], lO = l[3 - iE];
+        for (TopoDS_Iterator itV(anEnd); itV.More(); itV.Next())
+        {
+          const TopoDS_Vertex& aV = TopoDS::Vertex(itV.Value());
+          if (aV.Orientation() != TopAbs_FORWARD && aV.Orientation() != TopAbs_REVERSED)
+          {
+            continue;
+          }
+          const double aTV  = BRep_Tool::Parameter(aV, anEnd);
+          bool         isIn = false;
+          for (int k = 1; k <= ResPoints.Length() && !isIn; ++k)
+          {
+            isIn = std::abs((iE == 1 ? ResParamsOnE1(k) : ResParamsOnE2(k)) - aTV)
+                   <= Precision::Confusion();
+          }
+          if (isIn)
+          {
+            continue;
+          }
+          // Within the edges' tolerances, not the vertices': a vertex of an
+          // offset edge can carry one of the offset's size (8.7 at the corner
+          // of a filleted dome's offset outward, the Intersection join), and
+          // ends that far apart are not one point.
+          const gp_Pnt aPV  = BRep_Tool::Pnt(aV);
+          const double aTol = std::max(BRep_Tool::Tolerance(anEnd), BRep_Tool::Tolerance(anOther));
+          // At an end of the other within the edges' tolerance: the two ends
+          // meet -- the curve between two tubes ends where their edges
+          // on the neighbours' offsets meet, 5e-6 from either. Cut there, the
+          // edge kept a sliver and lost its piece.
+          TopoDS_Vertex aW[2];
+          TopExp::Vertices(anOther, aW[0], aW[1]);
+          bool isAtEnd = false;
+          for (int w = 0; w < 2; ++w)
+          {
+            if (aW[w].IsNull())
+            {
+              continue;
+            }
+            const double aDist = aPV.Distance(BRep_Tool::Pnt(aW[w]));
+            if (!aV.IsSame(aW[w]) && aDist > aTol)
+            {
+              continue;
+            }
+            isAtEnd = true;
+            if (iE == 2 || aV.IsSame(aW[w]) || aDist < TolConfEnd)
+            {
+              // The pair is E1's; or the test at the ends has it.
+              continue;
+            }
+            TopoDS_Vertex aNV = BRepLib_MakeVertex(aPV);
+            const double  aTolV =
+              std::max(1.01 * aDist,
+                       std::max(BRep_Tool::Tolerance(aV), BRep_Tool::Tolerance(aW[w])));
+            TopoDS_Shape aLocal = aNV.Oriented(TopAbs_INTERNAL);
+            B.UpdateVertex(TopoDS::Vertex(aLocal), aTV, E1, aTolV);
+            B.UpdateVertex(TopoDS::Vertex(aLocal), BRep_Tool::Parameter(aW[w], E2), E2, aTolV);
+            LV1.Prepend(aNV.Oriented(aV.Orientation()));
+            LV2.Prepend(aNV.Oriented(aW[w].Orientation()));
+          }
+          if (isAtEnd)
+          {
+            continue;
+          }
+          Extrema_ExtPC anExt(aPV, aCO, fO, lO);
+          if (!anExt.IsDone())
+          {
+            continue;
+          }
+          for (int k = 1; k <= anExt.NbExt(); ++k)
+          {
+            const double aTO = anExt.Point(k).Parameter();
+            // Not where the two touch to within the intersection's own
+            // tolerance: there it found nothing on purpose (a sphere's pole
+            // on a meridian's line), and a vertex put there broke the wire.
+            if (anExt.SquareDistance(k) > aTol * aTol || anExt.SquareDistance(k) <= TolDub * TolDub
+                || aTO - fO <= Precision::Confusion() || lO - aTO <= Precision::Confusion())
+            {
+              continue;
+            }
+            if (!InterEndpoint)
+            {
+              InterEndpoint = true;
+              ResPoints.Clear();
+              ResParamsOnE1.Clear();
+              ResParamsOnE2.Clear();
+            }
+            ResPoints.Append(aPV);
+            ResParamsOnE1.Append(iE == 1 ? aTV : aTO);
+            ResParamsOnE2.Append(iE == 1 ? aTO : aTV);
+            break;
+          }
+        }
+      }
     }
 
     for (i = 1; i <= ResPoints.Length(); i++)

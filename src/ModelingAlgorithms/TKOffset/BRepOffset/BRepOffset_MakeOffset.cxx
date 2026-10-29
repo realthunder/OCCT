@@ -82,6 +82,7 @@
 #include <NCollection_Array1.hxx>
 #include <GeomProjLib.hxx>
 #include <GeomAPI_PointsToBSpline.hxx>
+#include <GeomAPI.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomAPI_IntCS.hxx>
 #include <gp_Circ.hxx>
@@ -254,6 +255,19 @@ enum BRepOffset_PIOperation
   PIOperation_Sewing,
   PIOperation_Last
 };
+
+//=================================================================================================
+
+// The angle under which the analysis takes two faces as tangent along their
+// edge: what the tolerance allows over half the offset. A test of tangency
+// that is to agree with the analysis uses it too.
+static double analyseTolAngle(const double theTol, const double theOffset)
+{
+  // There are possible second variant: analytical continuation of arcsin.
+  const double aCoeff =
+    std::min(theTol / (std::abs(theOffset * 0.5) + Precision::Confusion()), 1.0);
+  return 4 * std::asin(aCoeff);
+}
 
 //=======================================================================
 // function : normalizeSteps
@@ -1080,9 +1094,7 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   // Preanalyse.
   // ------------
   EvalMax(myShape, myTol);
-  // There are possible second variant: analytical continuation of arcsin.
-  double TolAngleCoeff = std::min(myTol / (std::abs(myOffset * 0.5) + Precision::Confusion()), 1.0);
-  double TolAngle      = 4 * std::asin(TolAngleCoeff);
+  const double TolAngle = analyseTolAngle(myTol, myOffset);
   if ((myJoin == GeomAbs_Intersection) && myInter && myIsPlanar)
   {
     myAnalyse.SetOffsetValue(myOffset);
@@ -5343,6 +5355,13 @@ void BRepOffset_MakeOffset::SelfInter(
 // face's interior is on the left of its edge, seen along its normal). A
 // translated line when the edge is straight and every step is the same; a
 // B-spline through the points otherwise. It carries its pcurve on the cap.
+// The B-spline runs on past each end of theE, where theE's curve goes on,
+// until it has left the cap: at a corner of the cap it is to reach the cap's
+// next edge, as the lines and circles do. Ended where theE did, it fell
+// short, and the corner of the cap was never cut off. Run on much further
+// (twice the radius) it ran past the tube's own surface, and the tube lost
+// its edge. Its pcurve is fitted through the points' parameters on the cap:
+// the projection of the curve onto a B-spline dome came back with none.
 static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
                                         const TopoDS_Face&               theCap,
                                         const occ::handle<Geom_Surface>& theSurf,
@@ -5361,36 +5380,46 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
   const double sF = theCap.Orientation() == TopAbs_REVERSED ? -1. : 1.;
   const double sE = theE.Orientation() == TopAbs_REVERSED ? -1. : 1.;
   const bool   isLine = aC->IsKind(STANDARD_TYPE(Geom_Line));
-  const int    aNb    = isLine ? 3 : 21;
-  NCollection_Array1<gp_Pnt> aPnts(1, aNb);
-  NCollection_Array1<double> aPars(1, aNb);
-  NCollection_Array1<gp_Vec> aSteps(1, aNb);
-  for (int i = 1; i <= aNb; ++i)
-  {
-    const double u = f + (l - f) * (i - 1) / (aNb - 1);
-    gp_Pnt       aP;
-    gp_Vec       aT;
+  // The point at u, and its parameters on the cap.
+  auto aPoint = [&](const double u, gp_Pnt& thePnt, gp_Pnt2d& theUV) {
+    gp_Pnt aP;
+    gp_Vec aT;
     aC->D1(u, aP, aT);
-    const gp_Pnt2d aUV = aC2d->Value(u);
-    gp_Pnt         aPS;
-    gp_Vec         aDU, aDV;
+    gp_Pnt2d aUV;
+    if (u >= f2 - Precision::PConfusion() && u <= l2 + Precision::PConfusion())
+    {
+      aUV = aC2d->Value(u);
+    }
+    else
+    {
+      // Past the pcurve: where the point lies on the cap.
+      GeomAPI_ProjectPointOnSurf aProj(aP, theSurf);
+      if (aProj.NbPoints() == 0)
+      {
+        return false;
+      }
+      double aU, aV;
+      aProj.LowerDistanceParameters(aU, aV);
+      aUV.SetCoord(aU, aV);
+    }
+    gp_Pnt aPS;
+    gp_Vec aDU, aDV;
     theSurf->D1(aUV.X(), aUV.Y(), aPS, aDU, aDV);
     gp_Vec aN = aDU ^ aDV;
     if (aN.Magnitude() < gp::Resolution() || aT.Magnitude() < gp::Resolution())
     {
-      return aResult;
+      return false;
     }
     const gp_Vec aIn = (aN.Normalized() * sF) ^ (aT.Normalized() * sE);
     if (aIn.Magnitude() < gp::Resolution())
     {
-      return aResult;
+      return false;
     }
-    occ::handle<Geom_Circle> aCirc =
-      new Geom_Circle(gp_Ax2(aP, gp_Dir(aT), gp_Dir(aIn)), theR);
-    GeomAPI_IntCS anInt(aCirc, theSurf);
+    occ::handle<Geom_Circle> aCirc = new Geom_Circle(gp_Ax2(aP, gp_Dir(aT), gp_Dir(aIn)), theR);
+    GeomAPI_IntCS            anInt(aCirc, theSurf);
     if (!anInt.IsDone())
     {
-      return aResult;
+      return false;
     }
     int    iBest = 0;
     double aBest = 0.;
@@ -5405,14 +5434,46 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
     }
     if (iBest == 0)
     {
-      return aResult;
+      return false;
     }
-    aPnts(i)  = anInt.Point(iBest);
-    aPars(i)  = u;
-    aSteps(i) = gp_Vec(aP, aPnts(i));
+    double aU, aV, aW;
+    anInt.Parameters(iBest, aU, aV, aW);
+    thePnt = anInt.Point(iBest);
+    theUV.SetCoord(aU, aV);
+    return true;
+  };
+  // The points from theF to theL.
+  auto aSample = [&](const double                  theF,
+                     const double                  theL,
+                     NCollection_Array1<gp_Pnt>&   thePnts,
+                     NCollection_Array1<gp_Pnt2d>& theUVs,
+                     NCollection_Array1<double>&   thePars) {
+    const int aNb = thePnts.Length();
+    for (int i = 1; i <= aNb; ++i)
+    {
+      thePars(i) = theF + (theL - theF) * (i - 1) / (aNb - 1);
+      if (!aPoint(thePars(i), thePnts(i), theUVs(i)))
+      {
+        return false;
+      }
+    }
+    return true;
+  };
+  const int                    aNb = isLine ? 3 : 21;
+  NCollection_Array1<gp_Pnt>   aPnts(1, aNb);
+  NCollection_Array1<gp_Pnt2d> aUVs(1, aNb);
+  NCollection_Array1<double>   aPars(1, aNb);
+  if (!aSample(f, l, aPnts, aUVs, aPars))
+  {
+    return aResult;
+  }
+  NCollection_Array1<gp_Vec> aSteps(1, aNb);
+  for (int i = 1; i <= aNb; ++i)
+  {
+    aSteps(i) = gp_Vec(aC->Value(aPars(i)), aPnts(i));
   }
   occ::handle<Geom_Curve> aNC;
-  bool isTranslation = isLine;
+  bool                    isTranslation = isLine;
   for (int i = 2; i <= aNb && isTranslation; ++i)
   {
     isTranslation = aSteps(i).IsEqual(aSteps(1), Precision::Confusion(), Precision::Angular());
@@ -5421,7 +5482,7 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
   // distance from it -- the equator of a sphere in two domes -- is met in a
   // circle on the same axis. A B-spline through those points, extended with
   // the cap, ran off to 1e16.
-  occ::handle<Geom_Circle> aCircle = occ::down_cast<Geom_Circle>(aC);
+  occ::handle<Geom_Circle> aCircle   = occ::down_cast<Geom_Circle>(aC);
   bool                     isCoaxial = !aCircle.IsNull();
   double                   aH = 0., aRho = 0.;
   for (int i = 1; i <= aNb && isCoaxial; ++i)
@@ -5439,6 +5500,7 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
                 && std::abs(rho - aRho) < Precision::Confusion();
   }
   isCoaxial = isCoaxial && aRho > Precision::Confusion();
+  occ::handle<Geom2d_Curve> aPC;
   if (isTranslation)
   {
     aNC = occ::down_cast<Geom_Curve>(aC->Translated(aSteps(1)));
@@ -5451,23 +5513,99 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
   }
   else
   {
-    GeomAPI_PointsToBSpline anApprox(aPnts, aPars, 3, 8, GeomAbs_C2, Precision::Confusion());
+    // Past each end in steps of an eighth of the radius, until a point is
+    // off the cap; a step further. None off within the radius: not at all.
+    double aF = f, aL = l;
+    if (!aC->IsPeriodic())
+    {
+      IntTools_FClass2d aClass(theCap, Precision::PConfusion());
+      for (int iEnd = 0; iEnd < 2; ++iEnd)
+      {
+        const double u0 = iEnd == 0 ? f : l;
+        gp_Pnt       aP;
+        gp_Vec       aT;
+        aC->D1(u0, aP, aT);
+        const double aStep = (iEnd == 0 ? -1. : 1.) * theR / 8. / aT.Magnitude();
+        for (int k = 1; k <= 8; ++k)
+        {
+          const double u = u0 + k * aStep;
+          gp_Pnt       aPk;
+          gp_Pnt2d     aUVk;
+          if (u < aC->FirstParameter() || u > aC->LastParameter() || !aPoint(u, aPk, aUVk))
+          {
+            break;
+          }
+          if (aClass.Perform(aUVk) == TopAbs_OUT)
+          {
+            const double aEnd = std::min(std::max(u + aStep, aC->FirstParameter()),
+                                         aC->LastParameter());
+            (iEnd == 0 ? aF : aL) = aEnd;
+            break;
+          }
+        }
+      }
+    }
+    const int aNbX = 21 + (aF < f ? 4 : 0) + (aL > l ? 4 : 0);
+    NCollection_Array1<gp_Pnt>          aPntsX(1, aNbX);
+    NCollection_Array1<gp_Pnt2d>        aUVsX(1, aNbX);
+    NCollection_Array1<double>          aParsX(1, aNbX);
+    const bool isLonger = aNbX > 21 && aSample(aF, aL, aPntsX, aUVsX, aParsX);
+    const NCollection_Array1<gp_Pnt>&   aPntsB   = isLonger ? aPntsX : aPnts;
+    const NCollection_Array1<gp_Pnt2d>& aUVsB    = isLonger ? aUVsX : aUVs;
+    const NCollection_Array1<double>&   aParsB   = isLonger ? aParsX : aPars;
+    GeomAPI_PointsToBSpline anApprox(aPntsB, aParsB, 3, 8, GeomAbs_C2, Precision::Confusion());
     if (!anApprox.IsDone())
     {
       return aResult;
     }
     aNC = anApprox.Curve();
+    // Not on a periodic surface: there the points' parameters may jump at
+    // the seam. Fitted in 3D, in the plane z = 0: the 2D fit takes its own
+    // parameters, from 0 to 1, whatever it is given.
+    if (!theSurf->IsUPeriodic() && !theSurf->IsVPeriodic())
+    {
+      NCollection_Array1<gp_Pnt> aUVPnts(1, aUVsB.Length());
+      for (int i = 1; i <= aUVsB.Length(); ++i)
+      {
+        aUVPnts(i) = gp_Pnt(aUVsB(i).X(), aUVsB(i).Y(), 0.);
+      }
+      GeomAPI_PointsToBSpline anApprox2d(aUVPnts,
+                                         aParsB,
+                                         3,
+                                         8,
+                                         GeomAbs_C2,
+                                         Precision::PConfusion());
+      if (anApprox2d.IsDone())
+      {
+        aPC = GeomAPI::To2d(anApprox2d.Curve(), gp_Pln(gp::XOY()));
+      }
+    }
   }
   BRepLib_MakeEdge aME(aNC, f, l);
   if (!aME.IsDone())
   {
     return aResult;
   }
-  aResult = aME.Edge();
-  occ::handle<Geom2d_Curve> aPC = GeomProjLib::Curve2d(aNC, f, l, theSurf);
+  aResult     = aME.Edge();
+  double aTol = Precision::Confusion();
+  if (aPC.IsNull())
+  {
+    aPC = GeomProjLib::Curve2d(aNC, f, l, theSurf);
+  }
+  else
+  {
+    // The curve and its pcurve go through the same points at the same
+    // parameters; between them they part by what the two fits differ.
+    for (int i = 0; i <= 50; ++i)
+    {
+      const double   u   = f + (l - f) * i / 50.;
+      const gp_Pnt2d aUV = aPC->Value(u);
+      aTol = std::max(aTol, 1.1 * aNC->Value(u).Distance(theSurf->Value(aUV.X(), aUV.Y())));
+    }
+  }
   if (!aPC.IsNull())
   {
-    BRep_Builder().UpdateEdge(aResult, aPC, theCap, Precision::Confusion());
+    BRep_Builder().UpdateEdge(aResult, aPC, theCap, aTol);
   }
   return aResult;
 }
@@ -5524,7 +5662,9 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
   }
   const int                  aNb = 21;
   NCollection_Array1<gp_Pnt> aPnts(1, aNb);
+  NCollection_Array1<gp_Pnt> aUVs(1, aNb);
   NCollection_Array1<double> aPars(1, aNb);
+  bool                       hasUVs = !theSurf->IsUPeriodic() && !theSurf->IsVPeriodic();
   for (int i = 1; i <= aNb; ++i)
   {
     const double aT = double(i - 1) / (aNb - 1);
@@ -5532,6 +5672,15 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
     if (i == 1 || i == aNb)
     {
       aPnts(i) = i == 1 ? aPA : aPB;
+      GeomAPI_ProjectPointOnSurf aPrE(aPnts(i), theSurf);
+      if (aPrE.NbPoints() == 0)
+      {
+        hasUVs = false;
+        continue;
+      }
+      double aUE, aVE;
+      aPrE.LowerDistanceParameters(aUE, aVE);
+      aUVs(i) = gp_Pnt(aUE, aVE, 0.);
       continue;
     }
     const gp_Vec aW = aDA * std::cos(aTheta * aT) + (aN ^ aDA) * std::sin(aTheta * aT);
@@ -5558,6 +5707,9 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
       return aResult;
     }
     aPnts(i) = anInt.Point(iBest);
+    double aUI, aVI, aWI;
+    anInt.Parameters(iBest, aUI, aVI, aWI);
+    aUVs(i) = gp_Pnt(aUI, aVI, 0.);
   }
   GeomAPI_PointsToBSpline anApprox(aPnts, aPars, 3, 8, GeomAbs_C2, Precision::Confusion());
   if (!anApprox.IsDone())
@@ -5570,11 +5722,32 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
   {
     return aResult;
   }
-  aResult                       = aME.Edge();
-  occ::handle<Geom2d_Curve> aPC = GeomProjLib::Curve2d(aL, 0., 1., theSurf);
+  aResult = aME.Edge();
+  // Its pcurve fitted through the points' parameters on the cap, as the
+  // tube's edge's: the projection onto a B-spline dome gave none, and the
+  // section was oriented on a null curve.
+  occ::handle<Geom2d_Curve> aPC;
+  double                    aTol = Precision::Confusion();
+  if (hasUVs)
+  {
+    GeomAPI_PointsToBSpline anApprox2d(aUVs, aPars, 3, 8, GeomAbs_C2, Precision::PConfusion());
+    if (anApprox2d.IsDone())
+    {
+      aPC = GeomAPI::To2d(anApprox2d.Curve(), gp_Pln(gp::XOY()));
+      for (int i = 0; i <= 50; ++i)
+      {
+        const gp_Pnt2d aUV = aPC->Value(i / 50.);
+        aTol = std::max(aTol, 1.1 * aL->Value(i / 50.).Distance(theSurf->Value(aUV.X(), aUV.Y())));
+      }
+    }
+  }
+  if (aPC.IsNull())
+  {
+    aPC = GeomProjLib::Curve2d(aL, 0., 1., theSurf);
+  }
   if (!aPC.IsNull())
   {
-    BRep_Builder().UpdateEdge(aResult, aPC, theCap, Precision::Confusion());
+    BRep_Builder().UpdateEdge(aResult, aPC, theCap, aTol);
   }
   return aResult;
 }
@@ -5638,7 +5811,12 @@ void BRepOffset_MakeOffset::ToContext(
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>                           aTangentV;
   if (myJoin == GeomAbs_Arc)
   {
-    const double aSinTol = std::abs(std::sin(Precision::Angular()));
+    // Tangent as the analysis takes it, as TreatTangentCaps does for the
+    // Intersection join: a B-spline fillet meets the face it rounds a few
+    // microradians off, and an angular-precision test left its edge without
+    // a tube -- the dome of a filleted B-spline top removed came back
+    // unhollowed.
+    const double aSinTol = std::abs(std::sin(analyseTolAngle(myTol, myOffset)));
     for (j = 1; j <= myFaces.Extent(); j++)
     {
       const TopoDS_Face& CF = TopoDS::Face(myFaces(j));
@@ -8092,6 +8270,7 @@ void BRepOffset_MakeOffset::SelectShells()
     }
     if (!aRim.IsEmpty())
     {
+      SHOW_TOPO_SHAPE(myOffsetShape, "BeforeDrop");
       myOffsetShape = DropHangingFaces(myOffsetShape, FreeEdges, aRim);
     }
   }
