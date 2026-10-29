@@ -2255,7 +2255,15 @@ static void InternalUpdateTolerances(const TopoDS_Shape& theOldShape,
         itcr.Next();
       }
     }
-    tol = std::max(tol, sqrt(aMaxDist));
+    // A tolerance that is the gap to an edge's end must still cover it after a
+    // BRep text round trip, which keeps the vertex's point and the edge's range
+    // to 15 digits: a few 1e-14 apart at coordinates of tens, and a vertex of
+    // the dome outward with the Intersection join came back invalid (the
+    // fork's tests/fork/thickness/models/Thickness.md sec 33). The gap is
+    // padded by 1e-13 for each unit of the point's distance from the origin,
+    // well above that and well below any tolerance; where an edge's own
+    // tolerance covers the gap and the padding, nothing changes.
+    tol = std::max(tol, sqrt(aMaxDist) + 1.e-13 * std::max(1., aPV.XYZ().Modulus()));
     // An Immutable vertex (a fork flag) that already covers what its edges
     // need is left alone: the padding below guards a tolerance just computed
     // against rounding, and would grow a frozen vertex by an epsilon on its
