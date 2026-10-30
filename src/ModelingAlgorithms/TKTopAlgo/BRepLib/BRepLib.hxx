@@ -354,6 +354,11 @@ public:
 //! parameters as they are -- for BRepLib_PutThawed to put in its place.
 Standard_EXPORT TopoDS_Vertex BRepLib_ThawedVertex(const TopoDS_Vertex& theV);
 
+//! (realthunder) BRepLib_ThawedVertex for a vertex, an edge or a face: a copy of
+//! <theS> -- its geometry, tolerance and children as they are -- marked a
+//! thawed copy of it, to change in its place where <theS> is Immutable.
+Standard_EXPORT TopoDS_Shape BRepLib_ThawedCopy(const TopoDS_Shape& theS);
+
 //! (realthunder) Puts each thawed copy of <theCopies> into <theRoot> in place of
 //! the TShape it was copied from (TopoDS_TShape::ThawedFrom), a frozen
 //! container on the way copied in turn and marked so too (BRepLib::
