@@ -1836,6 +1836,14 @@ constexpr double THE_ANGLE_TIE = 1.e-8;
 // Where the second order tie break samples: two edges leaving a vertex the
 // same way are told apart by the chord to a point this far along each.
 constexpr double THE_ANGLE_REFINE = 0.1;
+// Directions closer than this go by the chords as well: the end tangent of
+// an approximated pcurve can stray a few degrees, and where the edge is
+// tangent to another at the vertex that puts it on the wrong side of it (a
+// section of two tubes that touch at their ends, 3.9 deg off the end of
+// one and 0.9 off the edge of the other at a filleted dome's corner offset
+// 1 outward, 6.1 deg at 2.5), though the edge itself runs on the right
+// side of it.
+constexpr double THE_ANGLE_NEAR = 0.2;
 
 struct LoopDart
 {
@@ -1958,9 +1966,25 @@ static bool FindLoopsByAngle(
     const auto&       aCand = aOut[aArrivalVert(d)];
     int               aBest = -1;
     double            aBestA = 0.;
+    double            anIn   = 0.;
+    const bool        isIn   = aRefined(aBack, anIn);
+    // The turn to a way out; one leaving (all but) the way the walk came in
+    // is first or last of all, on the side its chord is.
+    auto aTurnOf = [&](int c) {
+      const double a = ClockWiseAngle(anAngle[aBack], anAngle[c]);
+      double       r = 0.;
+      if (c == aBack || (a > THE_ANGLE_NEAR && a < 2. * M_PI - THE_ANGLE_NEAR) || !isIn
+          || !aRefined(c, r))
+      {
+        return a;
+      }
+      r = ClockWiseAngle(anIn, r);
+      return r <= M_PI ? THE_ANGLE_NEAR * r / M_PI
+                       : 2. * M_PI - THE_ANGLE_NEAR * (2. * M_PI - r) / M_PI;
+    };
     for (int c : aCand)
     {
-      const double a = ClockWiseAngle(anAngle[aBack], anAngle[c]);
+      const double a = aTurnOf(c);
       if (aBest < 0 || a < aBestA)
       {
         aBest  = c;
@@ -1971,13 +1995,12 @@ static bool FindLoopsByAngle(
     std::vector<int> aTies;
     for (int c : aCand)
     {
-      if (c != aBest && ClockWiseAngle(anAngle[aBack], anAngle[c]) <= aBestA + THE_ANGLE_TIE)
+      if (c != aBest && c != aBack && aTurnOf(c) <= aBestA + THE_ANGLE_NEAR)
       {
         aTies.push_back(c);
       }
     }
-    double anIn = 0.;
-    if (!aTies.empty() && aRefined(aBack, anIn))
+    if (!aTies.empty() && isIn)
     {
       aTies.push_back(aBest);
       int    aRef  = -1;
