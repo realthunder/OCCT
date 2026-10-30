@@ -2466,13 +2466,22 @@ static bool RunsRoundPeriod(const TopoDS_Wire& theW, const TopoDS_Face& theFace)
 // (the loop keeps every piece, to find the edges of a concave removed face)
 // loses to a wire sharing an edge with it that stays inside: the corner of an
 // arc face cut off by the arc of the next face, closed by the arc's own end.
-// Alone, it is kept.
-static void DropOutsideWires(MapOfWire& theWires, const TopoDS_Face& theFace)
+// Alone, it is kept. A wire through the seam is left to the seam bands, but
+// not on a face walked in (u, v): there a piece of the seam is a border like
+// any other, the walk parting a region where it crosses the seam. A grooved
+// cylinder, a bottom removed on the side away from the side's seam: under
+// the other bottom's offset and the groove's the side's offset kept a piece
+// that ran through the seam, and with the removed face's plane under it the
+// groove's offset and the bottom's were dropped as hanging -- valid and
+// wrong, 2142.07 for 5600.58.
+static void DropOutsideWires(MapOfWire&         theWires,
+                             const TopoDS_Face& theFace,
+                             const bool         theIsWalkedInUV)
 {
   for (int iw = theWires.Extent(); iw >= 1; --iw)
   {
     const WireInfo& anInfo = theWires(iw);
-    if (!anInfo.Outside || anInfo.HasSeam)
+    if (!anInfo.Outside || (anInfo.HasSeam && !theIsWalkedInUV))
     {
       continue;
     }
@@ -2886,6 +2895,7 @@ void BRepAlgo_Loop::FindLoop()
   // only built on a rim that is one closed edge. The offset of such a dome
   // came out as a face of no area between its rim and nothing -- an invalid
   // solid where upstream is right. The face is walked in (u, v) instead.
+  bool isWalkedInUV = false;
   if (IsPeriodic && !isGivenUp)
   {
     bool hasRound = false;
@@ -2900,11 +2910,12 @@ void BRepAlgo_Loop::FindLoop()
     if (hasRound && FindLoopsInUV(MVE, DegenEdges, myFace, aUVWires, anOutsideEdges))
     {
       SHOW_TOPO_SHAPE(myFace, "LoopWalkedInUV");
-      NewWires = aUVWires;
+      NewWires     = aUVWires;
+      isWalkedInUV = true;
     }
   }
 
-  DropOutsideWires(NewWires, myFace);
+  DropOutsideWires(NewWires, myFace, isWalkedInUV);
 
   if (!IsPeriodic)
   {
