@@ -125,6 +125,9 @@
 #include <BOPAlgo_Builder.hxx>
 #include <BOPAlgo_MakerVolume.hxx>
 #include <BOPTools_AlgoTools.hxx>
+#include <BOPTools_AlgoTools3D.hxx>
+#include <BRepClass_FaceClassifier.hxx>
+#include <IntTools_Context.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 
 #include <algorithm>
@@ -290,6 +293,77 @@ static void normalizeSteps(const double theWhole, NCollection_Array1<double>& th
 }
 
 } // namespace
+
+//=======================================================================
+// Of the pieces an enlarged offset face is split into, the Intersection
+// join, the ones a point inside lies on the offset face itself (theOF, not
+// enlarged), or that a point inside the offset face lies on (a piece that
+// grew past the face, to meet its neighbours' offsets outward, may have its
+// own point there), are kept: the others are where the enlarged face was
+// closed off by sections that run past the face -- a cylinder's side with a
+// step cut off it, inward, its section with the bottom a whole circle, gave a
+// piece under the step, the side's and the bottom's both, and the solid came
+// out inside out. A face whose pieces are all off it, one or more, gets none:
+// its own piece was never made (a groove across a cylinder's end, the bottom
+// beside it given only the piece across the groove from it), and the shell
+// the rest close came out valid and wrong -- the solid less a pocket.
+//=======================================================================
+static NCollection_List<TopoDS_Shape> PiecesOnTheFace(const TopoDS_Face&                    theOF,
+                                                      const NCollection_List<TopoDS_Shape>& theLF)
+{
+  if (theLF.IsEmpty())
+  {
+    return theLF;
+  }
+  occ::handle<IntTools_Context>  aCtx = new IntTools_Context();
+  // A point inside the offset face, if one is found (PointInFace throws on
+  // the offset of a half dome's sphere).
+  gp_Pnt   aPOF;
+  gp_Pnt2d aP2dOF;
+  bool     hasPOF = false;
+  try
+  {
+    hasPOF = BOPTools_AlgoTools3D::PointInFace(theOF, aPOF, aP2dOF, aCtx) == 0;
+  }
+  catch (const Standard_Failure&)
+  {
+    hasPOF = false;
+  }
+  NCollection_List<TopoDS_Shape> aLOn;
+  for (NCollection_List<TopoDS_Shape>::Iterator it(theLF); it.More(); it.Next())
+  {
+    gp_Pnt   aP;
+    gp_Pnt2d aP2d;
+    if (BOPTools_AlgoTools3D::PointInFace(TopoDS::Face(it.Value()), aP, aP2d, aCtx) != 0)
+    {
+      return theLF;
+    }
+    BRepClass_FaceClassifier aClf(theOF, aP, Precision::Confusion());
+    bool                     isOn = aClf.State() != TopAbs_OUT;
+    if (!isOn && hasPOF)
+    {
+      try
+      {
+        isOn = BRepClass_FaceClassifier(TopoDS::Face(it.Value()), aPOF, Precision::Confusion())
+                 .State()
+               != TopAbs_OUT;
+      }
+      catch (const Standard_Failure&)
+      {
+        isOn = false;
+      }
+    }
+    if (isOn)
+    {
+      aLOn.Append(it.Value());
+    }
+    else
+    {
+      SHOW_TOPO_SHAPE(it.Value(), "PieceOffTheFace");
+    }
+  }
+  return aLOn;
+}
 
 //=======================================================================
 // static methods
@@ -4654,6 +4728,10 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
   Message_ProgressScope aPSHist(aPSOuter.Next(aSteps(BuildOffsetByInter_FillHistoryForOffsets)),
                                 "Fill history for offset faces",
                                 aLFaces.Extent());
+  // The edges of the pieces PiecesOnTheFace drops and of the ones it keeps:
+  // a section's piece only a dropped piece is bounded by bounds no removed
+  // face's rim either (the caps' history below).
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aEdgesDropped, aEdgesKept;
   for (NCollection_List<TopoDS_Shape>::Iterator it(aLFaces); it.More(); it.Next(), aPSHist.Next())
   {
     if (!aPSHist.More())
@@ -4679,9 +4757,36 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
       // otherwise, its edges recorded and nothing bound.
       if (IMOE.HasImage(OF) && !myFaces.Contains(FI))
       {
-        const NCollection_List<TopoDS_Shape>& LOFE = IMOE.Image(OF);
+        const NCollection_List<TopoDS_Shape> LOFE =
+          pOffset ? PiecesOnTheFace(pOffset->Face(), IMOE.Image(OF))
+                  : IMOE.Image(OF);
         myInitOffsetFace.Bind(FI, LOFE);
         SHOW_TOPO_SHAPE(FI, "FI1_", LOFE);
+        if (LOFE.Extent() < IMOE.Image(OF).Extent())
+        {
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMKept;
+          for (itLF.Initialize(LOFE); itLF.More(); itLF.Next())
+          {
+            aMKept.Add(itLF.Value());
+          }
+          for (itLF.Initialize(IMOE.Image(OF)); itLF.More(); itLF.Next())
+          {
+            if (!aMKept.Contains(itLF.Value()))
+            {
+              for (Exp2.Init(itLF.Value(), TopAbs_EDGE); Exp2.More(); Exp2.Next())
+              {
+                aEdgesDropped.Add(Exp2.Current());
+              }
+            }
+          }
+        }
+        for (itLF.Initialize(LOFE); itLF.More(); itLF.Next())
+        {
+          for (Exp2.Init(itLF.Value(), TopAbs_EDGE); Exp2.More(); Exp2.Next())
+          {
+            aEdgesKept.Add(Exp2.Current());
+          }
+        }
         for (itLF.Initialize(LOFE); itLF.More(); itLF.Next())
         {
           const TopoDS_Shape& OFE = itLF.Value();
@@ -4913,6 +5018,11 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
         for (; itLOE.More(); itLOE.Next())
         {
           const TopoDS_Edge& COE = TopoDS::Edge(itLOE.Value());
+          if (aEdgesDropped.Contains(COE) && !aEdgesKept.Contains(COE))
+          {
+            SHOW_TOPO_SHAPE(COE, "RimEdgeOfDropped");
+            continue;
+          }
           myAsDes->Add(Cork, COE.Oriented(OE.Orientation()));
 
           if (!myAsDes->HasDescendant(COE))
@@ -7171,6 +7281,59 @@ void BRepOffset_MakeOffset::MakeLoops(
     InSide = false;
   }
   myMakeLoops.BuildOnContext(LC, myAnalyse, myAsDes, myImageOffset, InSide, aPS.Next(LC.Extent()));
+  // The Intersection join extends a removed face too, and its rim may be
+  // built in two: the bottom of a cylinder with a step cut off it, removed,
+  // inward, gave a second piece under the step, out of the solid where the
+  // step was cut away. A rim may run past its face -- the step's wall
+  // removed, up its plane to the ceiling's offset, in the solid -- but not to
+  // the side of the solid away from the thickness: the piece is dropped, if
+  // another is kept.
+  // (A shape of one solid only.)
+  TopoDS_Shape aSolid;
+  for (TopExp_Explorer aExpSol(myInitialShape, TopAbs_SOLID); aExpSol.More(); aExpSol.Next())
+  {
+    aSolid = aSolid.IsNull() ? aExpSol.Current() : TopoDS_Shape();
+    if (aSolid.IsNull())
+    {
+      break;
+    }
+  }
+  if (myJoin == GeomAbs_Intersection && !aSolid.IsNull())
+  {
+    BRepClass3d_SolidClassifier   aSC(aSolid);
+    occ::handle<IntTools_Context> aCtx    = new IntTools_Context();
+    const TopAbs_State            aStAway = InSide ? TopAbs_OUT : TopAbs_IN;
+    for (NCollection_List<TopoDS_Shape>::Iterator itC(LC); itC.More(); itC.Next())
+    {
+      if (!myImageOffset.HasImage(itC.Value()) || myImageOffset.Image(itC.Value()).Extent() < 2)
+      {
+        continue;
+      }
+      const NCollection_List<TopoDS_Shape> aLIm = myImageOffset.Image(itC.Value());
+      NCollection_List<TopoDS_Shape>       aLAway;
+      for (NCollection_List<TopoDS_Shape>::Iterator itI(aLIm); itI.More(); itI.Next())
+      {
+        gp_Pnt   aP;
+        gp_Pnt2d aP2d;
+        if (BOPTools_AlgoTools3D::PointInFace(TopoDS::Face(itI.Value()), aP, aP2d, aCtx) == 0)
+        {
+          aSC.Perform(aP, Precision::Confusion());
+          if (aSC.State() == aStAway)
+          {
+            aLAway.Append(itI.Value());
+          }
+        }
+      }
+      if (aLAway.Extent() < aLIm.Extent())
+      {
+        for (NCollection_List<TopoDS_Shape>::Iterator itA(aLAway); itA.More(); itA.Next())
+        {
+          SHOW_TOPO_SHAPE(itA.Value(), "RimPieceAway");
+          myImageOffset.Remove(itA.Value());
+        }
+      }
+    }
+  }
 
   TopExp_Explorer                          Exp;
   NCollection_List<TopoDS_Shape>::Iterator itl;

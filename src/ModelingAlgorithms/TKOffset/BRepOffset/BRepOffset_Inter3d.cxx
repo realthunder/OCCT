@@ -644,6 +644,47 @@ static bool FaceTheSameWay(const TopoDS_Face& theF1, const TopoDS_Face& theF2)
   return isSameDir == isSameOri;
 }
 
+// Of <theEdges>, the one nearest the section edge <theSection>: the least
+// distance from points along each to the section's curve over its range.
+static TopoDS_Shape NearestEdge(const TopoDS_Shape&                   theSection,
+                                const NCollection_List<TopoDS_Shape>& theEdges)
+{
+  BRepAdaptor_Curve aSC(TopoDS::Edge(theSection));
+  const double      aF = aSC.FirstParameter(), aL = aSC.LastParameter();
+  TopoDS_Shape      aBest;
+  double            aBestD = RealLast();
+  for (NCollection_List<TopoDS_Shape>::Iterator it(theEdges); it.More(); it.Next())
+  {
+    const TopoDS_Edge& aE = TopoDS::Edge(it.Value());
+    if (BRep_Tool::Degenerated(aE))
+    {
+      continue;
+    }
+    BRepAdaptor_Curve aRC(aE);
+    double            aD = RealLast();
+    for (int j = 0; j <= 4; ++j)
+    {
+      const gp_Pnt aP =
+        aRC.Value(aRC.FirstParameter() + (aRC.LastParameter() - aRC.FirstParameter()) * j / 4.);
+      Extrema_ExtPC anExt(aP, aSC, aF, aL);
+      if (anExt.IsDone())
+      {
+        for (int k = 1; k <= anExt.NbExt(); ++k)
+        {
+          aD = std::min(aD, anExt.SquareDistance(k));
+        }
+      }
+      aD = std::min(aD, std::min(aP.SquareDistance(aSC.Value(aF)), aP.SquareDistance(aSC.Value(aL))));
+    }
+    if (aD < aBestD)
+    {
+      aBestD = aD;
+      aBest  = aE;
+    }
+  }
+  return aBest;
+}
+
 void BRepOffset_Inter3d::ConnexIntByInt(
   const TopoDS_Shape&                                                                  SI,
   const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
@@ -964,6 +1005,9 @@ void BRepOffset_Inter3d::ConnexIntByInt(
     }
   }
   //
+  // Edges given their own pieces of a section made for another edge the
+  // same two faces share.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aOwnPieces;
   aNb = VEmap.Extent();
   Message_ProgressScope aPSInter(aPSOuter.Next(8), "Intersecting offset faces", aNb);
   for (i = 1; i <= aNb; ++i, aPSInter.Next())
@@ -1145,7 +1189,36 @@ void BRepOffset_Inter3d::ConnexIntByInt(
           || (bEdge && (IsSphereCapWall(F1, Analyse) || IsSphereCapWall(F2, Analyse))))
       {
         NCollection_List<TopoDS_Shape> LInt1, LInt2;
-        BRepOffset_Tool::Inter3D(NF1, NF2, LInt1, LInt2, CurSide, E, F1, F2);
+        // Every edge of the same type the two faces share, and the piece of
+        // the section near each, as ConnexIntByArc gives them: a cylinder's
+        // side and the wall of a step cut off it, or a groove across its end,
+        // meet in two edges apart, and the pair is intersected once. (The
+        // wall on a sphere above takes its ends one by one.)
+        NCollection_List<TopoDS_Shape> aRefEdges;
+        if (bEdge && !IsSphereCapWall(F1, Analyse) && !IsSphereCapWall(F2, Analyse))
+        {
+          const ChFiDS_TypeOfConcavity aOT = Analyse.Type(E).First().Type();
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aRefMap;
+          for (TopExp_Explorer aExpE(F1, TopAbs_EDGE); aExpE.More(); aExpE.Next())
+          {
+            const TopoDS_Edge&                           aE    = TopoDS::Edge(aExpE.Current());
+            const NCollection_List<TopoDS_Shape>&        aAncE = Analyse.Ancestors(aE);
+            const NCollection_List<BRepOffset_Interval>& aLE   = Analyse.Type(aE);
+            if (aAncE.Extent() == 2 && !aLE.IsEmpty() && aLE.First().Type() == aOT
+                && (aAncE.First().IsSame(F2) || aAncE.Last().IsSame(F2)) && aRefMap.Add(aE))
+            {
+              aRefEdges.Append(aE);
+            }
+          }
+        }
+        if (aRefEdges.Extent() > 1)
+        {
+          BRepOffset_Tool::Inter3D(NF1, NF2, LInt1, LInt2, CurSide, aRefEdges, F1, F2);
+        }
+        else
+        {
+          BRepOffset_Tool::Inter3D(NF1, NF2, LInt1, LInt2, CurSide, E, F1, F2);
+        }
         SetDone(NF1, NF2);
         BRepOffset_Tool::StartSectionsFarFrom(bEdge ? TopoDS_Shape(E) : aS, NF1, NF2, LInt1, LInt2);
         if (!LInt1.IsEmpty())
@@ -1166,24 +1239,90 @@ void BRepOffset_Inter3d::ConnexIntByInt(
             }
           }
           //
-          it.Initialize(LInt1);
-          for (; it.More(); it.Next())
+          // With several edges shared, each takes the pieces nearest it, not
+          // all of them: the edges' images are what the faces' new edges are
+          // cut by (BRepOffset_Inter2d::ConnexIntByInt), and the side's offset
+          // cut by the far piece at both ends of the step loses its half.
+          NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> anOwner;
+          if (aRefEdges.Extent() > 1)
           {
-            const TopoDS_Shape& aNE = it.Value();
-            B.Add(C, aNE);
-            //
-            // keep connection from new edge to shape from which it was created
-            NCollection_List<TopoDS_Shape>* pLS =
-              &aDMIntE(aDMIntE.Add(aNE, NCollection_List<TopoDS_Shape>()));
-            pLS->Append(aS);
-            // keep connection to faces created the edge as well
-            NCollection_List<TopoDS_Shape>* pLFF =
-              aDMIntFF.Bound(aNE, NCollection_List<TopoDS_Shape>());
-            pLFF->Append(F1);
-            pLFF->Append(F2);
+            for (it.Initialize(LInt1); it.More(); it.Next())
+            {
+              const TopoDS_Shape aN = NearestEdge(it.Value(), aRefEdges);
+              anOwner.Bind(it.Value(), aN.IsNull() ? aS : aN);
+            }
+            // A section in one piece, the whole circle two arcs lie on, is
+            // all of theirs: shared out only if each edge has a piece.
+            NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aHas;
+            for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator
+                   itW(anOwner);
+                 itW.More();
+                 itW.Next())
+            {
+              aHas.Add(itW.Value());
+            }
+            if (aHas.Extent() < aRefEdges.Extent())
+            {
+              anOwner.Clear();
+            }
           }
-          //
-          Build.Bind(aS, C);
+          NCollection_List<TopoDS_Shape> anOwners;
+          anOwners.Append(aS);
+          for (NCollection_List<TopoDS_Shape>::Iterator itR(aRefEdges); itR.More(); itR.Next())
+          {
+            bool isOwner = false;
+            for (it.Initialize(LInt1); it.More() && !isOwner; it.Next())
+            {
+              isOwner = anOwner.IsBound(it.Value()) && anOwner(it.Value()).IsSame(itR.Value());
+            }
+            if (isOwner && !itR.Value().IsSame(aS))
+            {
+              anOwners.Append(itR.Value());
+              aOwnPieces.Add(itR.Value());
+            }
+          }
+          for (NCollection_List<TopoDS_Shape>::Iterator itO(anOwners); itO.More(); itO.Next())
+          {
+            const TopoDS_Shape& aO = itO.Value();
+            TopoDS_Compound     aC;
+            B.MakeCompound(aC);
+            if (!aO.IsSame(aS))
+            {
+              if (Build.IsBound(aO))
+              {
+                for (TopExp_Explorer aExp(Build(aO), TopAbs_EDGE); aExp.More(); aExp.Next())
+                {
+                  B.Add(aC, aExp.Current());
+                }
+              }
+            }
+            TopoDS_Compound& aCO = aO.IsSame(aS) ? C : aC;
+            for (it.Initialize(LInt1); it.More(); it.Next())
+            {
+              const TopoDS_Shape& aNE = it.Value();
+              if (anOwner.IsBound(aNE) ? !anOwner(aNE).IsSame(aO) : !aO.IsSame(aS))
+              {
+                continue;
+              }
+              B.Add(aCO, aNE);
+              //
+              // keep connection from new edge to shape from which it was created
+              NCollection_List<TopoDS_Shape>* pLS =
+                &aDMIntE(aDMIntE.Add(aNE, NCollection_List<TopoDS_Shape>()));
+              pLS->Append(aO);
+              // keep connection to faces created the edge as well
+              NCollection_List<TopoDS_Shape>* pLFF = aDMIntFF.ChangeSeek(aNE);
+              if (!pLFF)
+              {
+                pLFF = aDMIntFF.Bound(aNE, NCollection_List<TopoDS_Shape>());
+                pLFF->Append(F1);
+                pLFF->Append(F2);
+              }
+            }
+            SHOW_TOPO_SHAPE(aO, "OwnPiecesOf");
+            SHOW_TOPO_SHAPE(aCO, "OwnPieces");
+            Build.Bind(aO, aCO);
+          }
         }
         else
         {
@@ -1192,6 +1331,11 @@ void BRepOffset_Inter3d::ConnexIntByInt(
       }
       else
       { // IsDone(NF1,NF2)
+        // An edge given its own pieces with the first of the pair's edges.
+        if (aOwnPieces.Contains(aS))
+        {
+          continue;
+        }
         //  Modified by skv - Fri Dec 26 12:20:13 2003 OCC4455 Begin
         const NCollection_List<TopoDS_Shape>& aLInt1 = myAsDes->Descendant(NF1);
         const NCollection_List<TopoDS_Shape>& aLInt2 = myAsDes->Descendant(NF2);
@@ -1824,9 +1968,59 @@ void BRepOffset_Inter3d::ContextIntByInt(
           NCollection_List<TopoDS_Shape> LInt1, LInt2;
           NCollection_List<TopoDS_Shape> LOE;
           LOE.Append(OE);
-          BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, E, CF, F);
+          // Every edge the removed face shares with F, and the piece of the
+          // section near each, as ConnexIntByInt takes them: a step's wall
+          // removed meets the cylinder's side at both its ends, and the side's
+          // offset was cut by the removed wall at one only.
+          NCollection_List<TopoDS_Shape> aRefEdges;
+          if (bEdge)
+          {
+            NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aRefMap;
+            for (TopExp_Explorer aExpE(CF, TopAbs_EDGE); aExpE.More(); aExpE.Next())
+            {
+              const TopoDS_Edge& aE = TopoDS::Edge(aExpE.Current());
+              if (BRep_Tool::Degenerated(aE) || !Analyse.HasAncestor(aE) || aRefMap.Contains(aE))
+              {
+                continue;
+              }
+              for (NCollection_List<TopoDS_Shape>::Iterator itA(Analyse.Ancestors(aE)); itA.More();
+                   itA.Next())
+              {
+                if (itA.Value().IsSame(F))
+                {
+                  aRefMap.Add(aE);
+                  aRefEdges.Append(aE);
+                  break;
+                }
+              }
+            }
+          }
+          if (aRefEdges.Extent() > 1)
+          {
+            BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, aRefEdges, CF, F);
+          }
+          else
+          {
+            BRepOffset_Tool::Inter3D(WCF, NF, LInt1, LInt2, Side, E, CF, F);
+          }
           SetDone(NF, CF);
           BRepOffset_Tool::StartSectionsFarFrom(bEdge ? TopoDS_Shape(E) : aS, WCF, NF, LInt1, LInt2);
+          // Each piece to the edge it is nearest, if every edge has one.
+          NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> anOwner;
+          if (aRefEdges.Extent() > 1)
+          {
+            NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aHas;
+            for (it.Initialize(LInt1); it.More(); it.Next())
+            {
+              const TopoDS_Shape aN = NearestEdge(it.Value(), aRefEdges);
+              anOwner.Bind(it.Value(), aN.IsNull() ? TopoDS_Shape(E) : aN);
+              aHas.Add(anOwner(it.Value()));
+            }
+            if (aHas.Extent() < aRefEdges.Extent())
+            {
+              anOwner.Clear();
+            }
+          }
           // The section is oriented as if the removed face met the offset
           // one at a convex edge. At a concave one -- the floor of a blind
           // hole -- it comes out the wrong way round, and a band on the hole's
@@ -1835,27 +2029,31 @@ void BRepOffset_Inter3d::ContextIntByInt(
           // section must: where they disagree, the section is turned.
           if (bEdge && !OE.IsNull())
           {
-            TopoDS_Edge anOE;
-            for (TopExp_Explorer anExpE(OF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+            const bool isRevFace = OF.Orientation() == TopAbs_REVERSED;
+            NCollection_List<TopoDS_Shape>::Iterator anIt1(LInt1), anIt2(LInt2);
+            for (; anIt1.More() && anIt2.More(); anIt1.Next(), anIt2.Next())
             {
-              if (anExpE.Current().IsSame(OE))
+              // The offset of the edge the piece is for.
+              TopoDS_Shape anOEo = OE;
+              if (const TopoDS_Shape* pO = anOwner.Seek(anIt1.Value()))
               {
-                anOE = TopoDS::Edge(anExpE.Current());
-                break;
+                anOEo = MapSF(F).Generated(*pO);
               }
-            }
-            if (!anOE.IsNull())
-            {
-              const bool isRevFace = OF.Orientation() == TopAbs_REVERSED;
-              NCollection_List<TopoDS_Shape>::Iterator anIt1(LInt1), anIt2(LInt2);
-              for (; anIt1.More() && anIt2.More(); anIt1.Next(), anIt2.Next())
+              TopoDS_Edge anOE;
+              for (TopExp_Explorer anExpE(OF, TopAbs_EDGE); anExpE.More() && !anOEo.IsNull();
+                   anExpE.Next())
               {
-                if (RunTheSameWay(TopoDS::Edge(anIt2.Value()), anOE) == isRevFace)
+                if (anExpE.Current().IsSame(anOEo))
                 {
-                  anIt1.ChangeValue().Reverse();
-                  anIt2.ChangeValue().Reverse();
-                  SHOW_TOPO_SHAPE(anIt2.Value(), "ContextSectionTurned", anOE);
+                  anOE = TopoDS::Edge(anExpE.Current());
+                  break;
                 }
+              }
+              if (!anOE.IsNull() && RunTheSameWay(TopoDS::Edge(anIt2.Value()), anOE) == isRevFace)
+              {
+                anIt1.ChangeValue().Reverse();
+                anIt2.ChangeValue().Reverse();
+                SHOW_TOPO_SHAPE(anIt2.Value(), "ContextSectionTurned", anOE);
               }
             }
           }
@@ -1865,7 +2063,35 @@ void BRepOffset_Inter3d::ContextIntByInt(
             SHOW_TOPO_SHAPE(OF, "ExtentIntF", LInt1);
             // SHOW_TOPO_SHAPE(NF, "IntNF", LInt2);
             Store(CF, NF, LInt1, LInt2);
-            if ((LInt1.Extent() == 1) && !Build.IsBound(aS))
+            if (aRefEdges.Extent() > 1)
+            {
+              // Each edge its own pieces, added to what it has; all of them,
+              // a whole circle two arcs lie on, when they are not shared out.
+              for (NCollection_List<TopoDS_Shape>::Iterator itR(aRefEdges); itR.More(); itR.Next())
+              {
+                const TopoDS_Shape& aO = itR.Value();
+                TopoDS_Compound     aCO;
+                B.MakeCompound(aCO);
+                if (Build.IsBound(aO))
+                {
+                  for (exp.Init(Build(aO), TopAbs_EDGE); exp.More(); exp.Next())
+                  {
+                    B.Add(aCO, exp.Current());
+                  }
+                }
+                for (it.Initialize(LInt1); it.More(); it.Next())
+                {
+                  if (anOwner.IsEmpty() || anOwner(it.Value()).IsSame(aO))
+                  {
+                    B.Add(aCO, it.Value());
+                  }
+                }
+                SHOW_TOPO_SHAPE(aO, "ContextOwnPiecesOf");
+                SHOW_TOPO_SHAPE(aCO, "ContextOwnPieces");
+                Build.Bind(aO, aCO);
+              }
+            }
+            else if ((LInt1.Extent() == 1) && !Build.IsBound(aS))
             {
               Build.Bind(aS, LInt1.First());
             }
