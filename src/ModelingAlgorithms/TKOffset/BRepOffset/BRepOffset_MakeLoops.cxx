@@ -800,7 +800,19 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
     return;
   }
   BRep_Builder BB;
-  for (itr.Initialize(LF); itr.More(); itr.Next())
+  // The faces of the earlier passes as well (Build, BuildOnContext): a vertex
+  // replaced here can be on their edges too -- a tube's edge on the cap, cut
+  // there, its end merged here with the end of a neighbour's edge that
+  // shrank to nothing (a filleted dome's corner offset outward, the edge the
+  // two fillets meet on). Replaced on the edges of this pass's faces only,
+  // the tube's section kept the old one, and the tube's wire came apart.
+  NCollection_List<TopoDS_Shape> aToReplace(LF);
+  for (itl.Initialize(Image.Roots()); itl.More(); itl.Next())
+  {
+    aToReplace.Append(itl.Value());
+  }
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+  for (itr.Initialize(aToReplace); itr.More(); itr.Next())
   {
     TopoDS_Shape                   F = itr.Value();
     NCollection_List<TopoDS_Shape> LIF;
@@ -812,7 +824,11 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
       TopExp_Explorer     EdExp(IF, TopAbs_EDGE);
       for (; EdExp.More(); EdExp.Next())
       {
-        TopoDS_Shape                   E = EdExp.Current();
+        TopoDS_Shape E = EdExp.Current();
+        if (!aDone.Add(E))
+        {
+          continue;
+        }
         NCollection_List<TopoDS_Shape> VList;
         TopoDS_Iterator                VerExp(E);
         for (; VerExp.More(); VerExp.Next())
