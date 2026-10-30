@@ -347,4 +347,19 @@ public:
                                          TopoDS_Face&       theFExtended);
 };
 
+//! (realthunder) Copy-on-write for an algorithm whose result shares a vertex of
+//! its input that it would change in place, where the vertex is Immutable (a
+//! fork flag, TopoDS_TShape::Immutable): a copy of <theV> to change instead,
+//! marked a thawed copy of it (TopoDS_TShape::Thaw) -- its point, tolerance and
+//! parameters as they are -- for BRepLib_PutThawed to put in its place.
+Standard_EXPORT TopoDS_Vertex BRepLib_ThawedVertex(const TopoDS_Vertex& theV);
+
+//! (realthunder) Puts each thawed copy of <theCopies> into <theRoot> in place of
+//! the TShape it was copied from (TopoDS_TShape::ThawedFrom), a frozen
+//! container on the way copied in turn and marked so too (BRepLib::
+//! UpdateTolerances' copy-on-write). <theRoot> must not be Immutable; a copy of
+//! nothing <theRoot> holds is left out.
+Standard_EXPORT void BRepLib_PutThawed(const TopoDS_Shape&                   theRoot,
+                                       const NCollection_List<TopoDS_Shape>& theCopies);
+
 #endif // _BRepLib_HeaderFile
