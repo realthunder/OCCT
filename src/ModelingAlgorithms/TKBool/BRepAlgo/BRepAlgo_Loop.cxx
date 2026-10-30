@@ -3330,14 +3330,22 @@ void BRepAlgo_Loop::CutEdge(const TopoDS_Edge&                    E,
     }
   }
 
-  auto InsertVertex = [&](const TopoDS_Shape& V, double U) {
+  // The edge's first vertex goes before a vertex of the list at its very
+  // parameter, the last one after: the piece kept between them is of no
+  // length, and the one beyond starts or ends on the vertex the other
+  // edges were cut at (a section's end put on a tube's edge at the
+  // section's first parameter, a filleted dome's corner offset outward).
+  auto InsertVertex = [&](const TopoDS_Shape& V, double U, bool isFirst) {
     for (int ii = 1; ii <= SV.Length(); ++ii)
     {
       if (SV(ii).IsSame(V) && SU(ii) == U)
       {
         return;
       }
-      if (SU(ii) > U)
+    }
+    for (int ii = 1; ii <= SV.Length(); ++ii)
+    {
+      if (SU(ii) > U || (isFirst && SU(ii) == U))
       {
         SHOW_TOPO_SHAPE(V, "CuttingInsV1", 1);
         SU.InsertBefore(ii, U);
@@ -3365,13 +3373,13 @@ void BRepAlgo_Loop::CutEdge(const TopoDS_Edge&                    E,
       VF                   = TopoDS::Vertex(aLocalV);
       aLocalV              = VCEI.Oriented(TopAbs_REVERSED);
       VL                   = TopoDS::Vertex(aLocalV);
-      InsertVertex(VF, f);
-      InsertVertex(VL, l);
+      InsertVertex(VF, f, false);
+      InsertVertex(VL, l, false);
     }
     else if (!Extended)
     {
-      InsertVertex(VF, f);
-      InsertVertex(VL, l);
+      InsertVertex(VF, f, false);
+      InsertVertex(VL, l, false);
     }
   }
   else if (!Extended)
@@ -3381,11 +3389,11 @@ void BRepAlgo_Loop::CutEdge(const TopoDS_Edge&                    E,
     //-----------------------------------------
     if (!VF.IsNull())
     {
-      InsertVertex(VF, f);
+      InsertVertex(VF, f, true);
     }
     if (!VL.IsNull())
     {
-      InsertVertex(VL, l);
+      InsertVertex(VL, l, false);
     }
   }
 
