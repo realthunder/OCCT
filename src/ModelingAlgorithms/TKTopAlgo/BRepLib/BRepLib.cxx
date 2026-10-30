@@ -1032,11 +1032,18 @@ static void putThawed(const TopoDS_Shape& theRoot, ThawedMap& theThawed)
 
 //=================================================================================================
 
+TopoDS_Shape BRepLib_ThawedCopy(const TopoDS_Shape& theS)
+{
+  const TopoDS_Shape aCopy = copyForThaw(theS);
+  TopoDS_TShape::Thaw(aCopy.TShape(), theS.TShape());
+  return aCopy;
+}
+
+//=================================================================================================
+
 TopoDS_Vertex BRepLib_ThawedVertex(const TopoDS_Vertex& theV)
 {
-  const TopoDS_Shape aCopy = copyForThaw(theV);
-  TopoDS_TShape::Thaw(aCopy.TShape(), theV.TShape());
-  return TopoDS::Vertex(aCopy);
+  return TopoDS::Vertex(BRepLib_ThawedCopy(theV));
 }
 
 //=================================================================================================
