@@ -39,6 +39,7 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Edge.hxx>
 #include <BRepCheck_Vertex.hxx>
+#include <BRepCheck_Wire.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLib.hxx>
@@ -1401,6 +1402,57 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   //--------------
   SelectShells();
   SHOW_TOPO_SHAPE(myOffsetShape, "OffsetShape1_");
+  // A thick solid's offset meets the input on the faces built round the
+  // removed ones, or is closed on its own (a cavity sealed below a removed
+  // face). Without any of those faces, and open or bounded by a wire that
+  // does not close, it is what was left of an offset that came apart (a
+  // filleted dome's top removed, 3 inward, the fillets' radius: their
+  // offsets shrink to nothing, every face of the offset hangs, and the two
+  // kept, each bounded by one edge from a vertex back to it that did not
+  // close, made a solid with the input's skin).
+  if (!myFaces.IsEmpty())
+  {
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aRim;
+    for (int i = 1; i <= myFaces.Extent(); ++i)
+    {
+      if (myImageOffset.HasImage(myFaces(i)))
+      {
+        NCollection_List<TopoDS_Shape> aLI;
+        myImageOffset.LastImage(myFaces(i), aLI);
+        for (NCollection_List<TopoDS_Shape>::Iterator itI(aLI); itI.More(); itI.Next())
+        {
+          aRim.Add(itI.Value());
+        }
+      }
+    }
+    bool hasRim = aRim.IsEmpty();
+    for (TopExp_Explorer aExp(myOffsetShape, TopAbs_FACE); aExp.More() && !hasRim; aExp.Next())
+    {
+      hasRim = aRim.Contains(aExp.Current());
+    }
+    bool isBroken = false;
+    for (TopExp_Explorer aExp(myOffsetShape, TopAbs_SHELL); aExp.More() && !hasRim && !isBroken;
+         aExp.Next())
+    {
+      isBroken = !BRep_Tool::IsClosed(aExp.Current());
+    }
+    for (TopExp_Explorer aExp(myOffsetShape, TopAbs_FACE); aExp.More() && !hasRim && !isBroken;
+         aExp.Next())
+    {
+      const TopoDS_Face& aF = TopoDS::Face(aExp.Current());
+      for (TopoDS_Iterator aW(aF); aW.More() && !isBroken; aW.Next())
+      {
+        BRepCheck_Wire aChk(TopoDS::Wire(aW.Value()));
+        isBroken = aChk.Closed2d(aF) != BRepCheck_NoError;
+      }
+    }
+    if (!hasRim && isBroken)
+    {
+      SHOW_TOPO_SHAPE(myOffsetShape, "OffsetWithoutRim");
+      myError = BRepOffset_UnknownError;
+      return;
+    }
+  }
   //----------------------------------
   // Remove INTERNAL edges if necessary
   //----------------------------------
