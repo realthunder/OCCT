@@ -844,6 +844,14 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
             }
           }
         }
+        // Both ends at the one vertex: a fragment of the section where the
+        // tubes all but touch, within the snap of the vertex (3.4e-4 long
+        // beside the 1.72 of the section at a filleted dome's corner,
+        // outward). Moved onto it, it would be an edge of no length.
+        if (!anEnds[0].IsNull() && anEnds[0].IsSame(anEnds[1]))
+        {
+          continue;
+        }
         // The curve's end moved onto the vertex, its pcurves' with it: a
         // B-spline ends on its end pole. Otherwise the vertex covers it.
         occ::handle<Geom_BSplineCurve> aBS = occ::down_cast<Geom_BSplineCurve>(CI);

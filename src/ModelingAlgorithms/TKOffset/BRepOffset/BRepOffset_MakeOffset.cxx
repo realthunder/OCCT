@@ -6132,6 +6132,28 @@ void BRepOffset_MakeOffset::ToContext(
       {
         continue;
       }
+      // Not where another tangent edge of the cap ends too: the two tubes
+      // meet each other there, as inward. The convex edge between them is
+      // then the crease between the cap's two neighbours, fading out at V
+      // where both meet the cap tangentially (a filleted dome's corner, its
+      // fillets mitred): its tube closes to a point, and a sphere on its arc
+      // came out a sliver with an arc on the cap 1.1 off it.
+      bool isTubesMeet = false;
+      for (int iT2 = 1; iT2 <= aTangentE.Extent() && !isTubesMeet; ++iT2)
+      {
+        const TopoDS_Edge& E2 = TopoDS::Edge(aTangentE.FindKey(iT2));
+        if (E2.IsSame(E) || !aTangentE(iT2).IsSame(CF))
+        {
+          continue;
+        }
+        TopoDS_Vertex aW1, aW2;
+        TopExp::Vertices(E2, aW1, aW2);
+        isTubesMeet = V.IsSame(aW1) || V.IsSame(aW2);
+      }
+      if (isTubesMeet)
+      {
+        continue;
+      }
       // The tube round a convex edge ending here.
       TopoDS_Edge aConvexArc;
       for (itl.Initialize(myAnalyse.Ancestors(V)); itl.More(); itl.Next())
