@@ -72,7 +72,15 @@ BRepOffset_Inter3d::BRepOffset_Inter3d(const occ::handle<BRepAlgo_AsDes>& AsDes,
 
 //=================================================================================================
 
-static void ExtentEdge(const TopoDS_Face& /*F*/, const TopoDS_Edge& E, TopoDS_Edge& NE)
+// theIsOpenTurn: an arc of less than half a turn is taken round 0.45 of what
+// it leaves free each way, short of closing. Closed, the arc of a removed
+// face's edge -- the ceiling of a step cut off a cylinder's side, the Arc
+// join -- cut the side's offset all the way round, the removed face's rim
+// became a whole disc, and the solid came out inside out above it.
+static void ExtentEdge(const TopoDS_Face& /*F*/,
+                       const TopoDS_Edge& E,
+                       TopoDS_Edge&       NE,
+                       const bool         theIsOpenTurn = false)
 {
   TopoDS_Shape aLocalShape = E.EmptyCopied();
   NE                       = TopoDS::Edge(aLocalShape);
@@ -103,6 +111,18 @@ static void ExtentEdge(const TopoDS_Face& /*F*/, const TopoDS_Edge& E, TopoDS_Ed
     B.Add(NE, V.Oriented(TopAbs_FORWARD));
     B.Add(NE, V.Oriented(TopAbs_REVERSED));
     NE.Closed(true);
+  }
+  else if (CE.IsPeriodic() && l - f >= CE.Period() && theIsOpenTurn
+           && l0 - f0 < CE.Period() / 2. - Precision::Confusion())
+  {
+    const double aFree = CE.Period() - (l0 - f0);
+    f                  = f0 - 0.45 * aFree;
+    l                  = l0 + 0.45 * aFree;
+    B.Range(NE, f, l);
+    TopoDS_Vertex V1 = BRepLib_MakeVertex(CE.Value(f));
+    TopoDS_Vertex V2 = BRepLib_MakeVertex(CE.Value(l));
+    B.Add(NE, V1.Oriented(TopAbs_FORWARD));
+    B.Add(NE, V2.Oriented(TopAbs_REVERSED));
   }
   else if (CE.IsPeriodic() && l - f >= CE.Period())
   {
@@ -2475,7 +2495,7 @@ void BRepOffset_Inter3d::ContextIntByArc(
         double      f, l, Tol;
         BRep_Tool::Range(OE, f, l);
         Tol = BRep_Tool::Tolerance(OE);
-        ExtentEdge(CF, OE, NE);
+        ExtentEdge(CF, OE, NE, true);
         TopoDS_Vertex V1, V2;
         TopExp::Vertices(OE, V1, V2);
         if (const TurnShare* aShare = aShares.Seek(OE))
