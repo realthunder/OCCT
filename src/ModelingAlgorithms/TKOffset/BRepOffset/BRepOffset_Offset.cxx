@@ -462,6 +462,28 @@ void BRepOffset_Offset::Init(const TopoDS_Face&     Face,
 }
 
 //=================================================================================================
+// At a singular end of an offset surface (theIsMaxEnd: the end of greater
+// parameter), whether the generatrix leaving the end at thePFirst along
+// theDir meets the apex line at thePInt beyond the end -- the offset falls
+// short of the apex, a gap -- or before it, the offset crossing the apex
+// line, to be trimmed there. The side is taken for the offset's: a cone
+// point leaves a gap outwards and is crossed inwards. At a dimple (a
+// meridian reaching its axis going back down) it is the other way round,
+// and the trim inwards projected a point beyond the end of the surface:
+// nothing found, and a throw. With the Arc join such a gap is left open
+// now, for the sphere round the apex to close
+// (BRepOffset_MakeOffset::CorrectConicalFaces), as one is outwards.
+
+static bool IsApexBeyondEnd(const gp_Pnt& thePFirst,
+                            const gp_Pnt& thePInt,
+                            const gp_Vec& theDir,
+                            const bool    theIsMaxEnd)
+{
+  const double aDot = gp_Vec(thePFirst, thePInt).Dot(theDir);
+  return theIsMaxEnd ? aDot > 0. : aDot < 0.;
+}
+
+//=================================================================================================
 
 void BRepOffset_Offset::Init(
   const TopoDS_Face&                                                              Face,
@@ -654,7 +676,14 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            if (OffsetOutside)
+            // A gap at a dimple, inwards, is left open for the sphere round the
+            // apex (see IsApexBeyondEnd).
+            const bool isOpen =
+              JoinType == GeomAbs_Arc && IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false);
+            if (isOpen)
+            {
+            }
+            else if (OffsetOutside)
             {
               occ::handle<Geom_BoundedSurface> aSurf =
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
@@ -672,7 +701,7 @@ void BRepOffset_Offset::Init(
               TheSurf = new Geom_RectangularTrimmedSurface(TheSurf, NewFirstU, uf2, vf1, vf2);
               MinApex = TheSurf->Value(NewFirstU, vf1);
             }
-            HasSingularity = true;
+            HasSingularity = HasSingularity || !isOpen;
           }
         } // end of if (UminDegen)
         if (UmaxDegen)
@@ -695,7 +724,14 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            if (OffsetOutside)
+            // A gap at a dimple, inwards, is left open for the sphere round the
+            // apex (see IsApexBeyondEnd).
+            const bool isOpen =
+              JoinType == GeomAbs_Arc && IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true);
+            if (isOpen)
+            {
+            }
+            else if (OffsetOutside)
             {
               occ::handle<Geom_BoundedSurface> aSurf =
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
@@ -713,7 +749,7 @@ void BRepOffset_Offset::Init(
               TheSurf = new Geom_RectangularTrimmedSurface(TheSurf, uf1, NewLastU, vf1, vf2);
               MaxApex = TheSurf->Value(NewLastU, vf1);
             }
-            HasSingularity = true;
+            HasSingularity = HasSingularity || !isOpen;
           }
         } // end of if (UmaxDegen)
         if (VminDegen)
@@ -736,7 +772,14 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            if (OffsetOutside)
+            // A gap at a dimple, inwards, is left open for the sphere round the
+            // apex (see IsApexBeyondEnd).
+            const bool isOpen =
+              JoinType == GeomAbs_Arc && IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false);
+            if (isOpen)
+            {
+            }
+            else if (OffsetOutside)
             {
               occ::handle<Geom_BoundedSurface> aSurf =
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
@@ -756,7 +799,7 @@ void BRepOffset_Offset::Init(
               // TheSurf = new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1+length, vf2);
               // MinApex = TheSurf->Value( uf1, vf1+length );
             }
-            HasSingularity = true;
+            HasSingularity = HasSingularity || !isOpen;
           }
         } // end of if (VminDegen)
         if (VmaxDegen)
@@ -779,7 +822,14 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            if (OffsetOutside)
+            // A gap at a dimple, inwards, is left open for the sphere round the
+            // apex (see IsApexBeyondEnd).
+            const bool isOpen =
+              JoinType == GeomAbs_Arc && IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true);
+            if (isOpen)
+            {
+            }
+            else if (OffsetOutside)
             {
               occ::handle<Geom_BoundedSurface> aSurf =
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
@@ -799,7 +849,7 @@ void BRepOffset_Offset::Init(
               // TheSurf = new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2-length);
               // MaxApex = TheSurf->Value( uf1, vf2-length );
             }
-            HasSingularity = true;
+            HasSingularity = HasSingularity || !isOpen;
           }
         } // end of if (VmaxDegen)
       } // end of else (case of Geom_OffsetSurface)
@@ -1077,6 +1127,11 @@ void BRepOffset_Offset::Init(
             {
               UpdateEdge(OE, C2d_1, C2d, myFace, BRep_Tool::Tolerance(E));
             }
+            // The pair is a new representation, of no range: a seam re-trimmed
+            // at the apex ran from -2e100 to 2e100 on the face, and its face
+            // with it (the offset inwards of a surface of revolution coming to
+            // a point). The two lines run alike, from their ends at the side.
+            myBuilder.Range(OE, myFace, aRangeAtApex[0], aRangeAtApex[1]);
           }
           /*
           if (!BRep_Tool::Degenerated(E))

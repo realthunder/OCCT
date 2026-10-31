@@ -6668,7 +6668,9 @@ void BRepOffset_MakeOffset::CorrectConicalFaces()
         gp_Vec Xdir = Ydir ^ aNorm;
         // Xdir.Rotate(gp_Ax1(theApex, aNorm), -f);
         gp_Ax2 anAx2(theApex, gp_Dir(aNorm), gp_Dir(Xdir));
-        theSphere.SetRadius(myOffset);
+        // Inwards, at a dimple, the gap is on the inner side: the sphere
+        // round the apex is as large, its face reversed below.
+        theSphere.SetRadius(std::abs(myOffset));
         theSphere.SetPosition(gp_Ax3(anAx2) /*gp_Ax3(theApex, gp_Dir(aNorm))*/);
         aSphSurf       = new Geom_SphericalSurface(theSphere);
         FirstPoint     = fPnt;
@@ -6890,6 +6892,11 @@ void BRepOffset_MakeOffset::CorrectConicalFaces()
     {
       const NCollection_List<TopoDS_Shape>& listSh = theSubstitutor.Copy(NewSphericalFace);
       NewSphericalFace                             = TopoDS::Face(listSh.First());
+    }
+
+    if (myOffset < 0.)
+    {
+      NewSphericalFace.Reverse();
     }
 
     // Adding NewSphericalFace to the shell
