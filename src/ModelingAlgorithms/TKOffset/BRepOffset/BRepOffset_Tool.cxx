@@ -3786,6 +3786,31 @@ static void UpdatePCurves(const TopoDS_Face& F, TopoDS_Face& BF)
 
 //=================================================================================================
 
+// A face enlarged to a whole turn of a periodic surface (theP1 to theP2, one
+// period) whose start lies a hair off the surface's own seam (theFirst plus
+// periods) is started on the seam. CompactUVBounds samples the edges, and the
+// offset of a cone has its seam's pcurve 2.1e-8 off u = 0: an intersection
+// curve that runs round the whole turn -- a circle, the plane of a removed
+// face across the cone's offset -- starts at u = 0 as the surface has it, and
+// that point was outside the face by 2.1e-8, 5e-7 across a radius of 23.7.
+// The curve was given no bounding paves and no edge (BOPAlgo_PaveFiller), and
+// the offset was never cut to the removed face (#613, outward).
+static void SnapWholeTurnToSeam(double& theP1, double& theP2, const double theFirst, const double thePeriod)
+{
+  if (theP2 - theP1 < thePeriod - Precision::PConfusion())
+  {
+    return;
+  }
+  const double aSeam = theFirst + thePeriod * std::round((theP1 - theFirst) / thePeriod);
+  if (std::abs(theP1 - aSeam) < 1.e-6)
+  {
+    theP1 = aSeam;
+    theP2 = aSeam + thePeriod;
+  }
+}
+
+//=================================================================================================
+
 static void CompactUVBounds(const TopoDS_Face& F,
                             double&            UMin,
                             double&            UMax,
@@ -4753,6 +4778,7 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
     {
       UU2 = UU1 + Period;
     }
+    SnapWholeTurnToSeam(UU1, UU2, US1, Period);
   }
   if (S->IsVPeriodic())
   {
@@ -4766,6 +4792,7 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
     {
       VV2 = VV1 + Period;
     }
+    SnapWholeTurnToSeam(VV1, VV2, VS1, Period);
   }
 
   // Special treatment for conical surfaces
