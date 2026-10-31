@@ -1089,7 +1089,7 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         bool enlargeU      = true;
         bool enlargeVfirst = true, enlargeVlast = true;
         BRepOffset_Tool::CheckBounds(F1, Analyse, enlargeU, enlargeVfirst, enlargeVlast);
-        BRepOffset_Tool::EnLargeFace(OF1, NF1, true, true, enlargeU, enlargeVfirst, enlargeVlast);
+        BRepOffset_Tool::EnLargeFace(OF1, NF1, true, true, enlargeU, enlargeVfirst, enlargeVlast, 3);
         KeepWallInItsBand(F1, Analyse, NF1);
         MES.Bind(OF1, NF1);
       }
@@ -1103,7 +1103,7 @@ void BRepOffset_Inter3d::ConnexIntByInt(
         bool enlargeU      = true;
         bool enlargeVfirst = true, enlargeVlast = true;
         BRepOffset_Tool::CheckBounds(F2, Analyse, enlargeU, enlargeVfirst, enlargeVlast);
-        BRepOffset_Tool::EnLargeFace(OF2, NF2, true, true, enlargeU, enlargeVfirst, enlargeVlast);
+        BRepOffset_Tool::EnLargeFace(OF2, NF2, true, true, enlargeU, enlargeVfirst, enlargeVlast, 3);
         KeepWallInItsBand(F2, Analyse, NF2);
         MES.Bind(OF2, NF2);
       }
@@ -1783,7 +1783,7 @@ void BRepOffset_Inter3d::ContextIntByInt(
           OF                       = TopoDS::Face(MapSF(aWall).Face());
           if (!MES.IsBound(OF))
           {
-            BRepOffset_Tool::EnLargeFace(OF, NF, true, true);
+            BRepOffset_Tool::EnLargeFace(OF, NF, true, true, true, true, true, 3);
             KeepWallInItsBand(aWall, Analyse, NF);
             MES.Bind(OF, NF);
           }
@@ -1951,7 +1951,7 @@ void BRepOffset_Inter3d::ContextIntByInt(
         //      OE = TopoDS::Edge(MapSF(F).Generated(E));
         if (!MES.IsBound(OF))
         {
-          BRepOffset_Tool::EnLargeFace(OF, NF, true, true);
+          BRepOffset_Tool::EnLargeFace(OF, NF, true, true, true, true, true, 3);
           KeepWallInItsBand(F, Analyse, NF);
           MES.Bind(OF, NF);
           // SHOW_TOPO_SHAPE(OF, "OF");

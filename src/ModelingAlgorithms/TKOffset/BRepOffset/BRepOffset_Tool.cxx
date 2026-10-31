@@ -4632,6 +4632,9 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
   //---------------------------
   // extension de la geometrie.
   //---------------------------
+  // Mode 3 is mode 1 with a periodic face taken further round (below).
+  const bool isWideRound   = theExtensionMode == 3;
+  const int  anExtendMode  = isWideRound ? 1 : theExtensionMode;
   // On a sphere whose axis was turned off it already -- a removed face's
   // twin (TurnedOffPole) -- the old pole's edge has a pcurve that stays on
   // one point.
@@ -4648,7 +4651,7 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
         && aC2d->Value((aF + aL) / 2.).Distance(aC2d->Value(aF)) <= Precision::PConfusion();
     }
   }
-  if (!isTurned && CanExtentSurface && UpdatePCurve && theEnlargeU && theExtensionMode == 1)
+  if (!isTurned && CanExtentSurface && UpdatePCurve && theEnlargeU && anExtendMode == 1)
   {
     isTurned = TurnSphereOffPole(F);
   }
@@ -4673,7 +4676,7 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
 
   S->Bounds(US1, US2, VS1, VS2);
   double coeff;
-  if (theExtensionMode == 1)
+  if (anExtendMode == 1)
   {
     UU1 = VV1 = -TheInfini;
     UU2 = VV2 = TheInfini;
@@ -4731,7 +4734,19 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
     // a neighbour's offset was cut short at the face's end and met the next
     // section at its far crossing instead (three quarters of a dome, a side
     // removed outward: a valid solid on the wrong side, 89.196 for 260.937).
-    double alpha  = isTurned ? 0.45 : 0.1;
+    // So does the Intersection join's offset face (mode 3) that goes most of
+    // the way round: its neighbours' offsets may cross it farther round than
+    // its own ends, by up to the angle whose sine is the offset over its
+    // radius -- a three-quarter cylinder on a box's edge, the box's walls
+    // offset 0.5 in and the cylinder to r 1.5, crosses them 19.5 degrees past
+    // its ends, and a tenth of the quarter it leaves free reaches 9: the
+    // crossing found was the one on the far side, and the thickness was
+    // refused (#521). Such a face is taken round half of what it leaves free
+    // each way, a whole turn. A face of half a turn or less -- a groove of
+    // two quarters, or one, a hair over half a turn by its bounds -- taken so
+    // far round reaches into its neighbour's turn.
+    const bool isMostOfTurn = isWideRound && Delta < Period / 2. - Precision::Confusion();
+    double     alpha        = isTurned ? 0.45 : isMostOfTurn ? 0.5 : 0.1;
     UU1           = UF1 - alpha * Delta;
     UU2           = UF2 + alpha * Delta;
     if ((UU2 - UU1) > Period)

@@ -185,6 +185,9 @@ public:
   //! if <theExtensionMode> equals 2, potentially infinite surfaces are extended by
   //! 10*(correspondent size of face),
   //! and limited surfaces are extended by 100%.
+  //! if <theExtensionMode> equals 3, as 1, and a periodic face covering more
+  //! than half a turn is taken round by half of the period it leaves free on
+  //! each side, a whole turn, not 0.1 (the Intersection join's offset faces).
   //! <theLenBeforeUfirst>, <theLenAfterUlast>, <theLenBeforeVfirst>, <theLenAfterVlast>
   //! set the values of enlargement on correspondent directions.
   //! If some of them equals -1, the default value of enlargement is used.

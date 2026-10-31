@@ -3542,10 +3542,17 @@ void BRepAlgo_Loop::WiresToFaces()
     FR.Init(TopoDS::Face(aLocalS), false, true);
     //    FR.Init (TopoDS::Face(myFace.Oriented(TopAbs_FORWARD)),
     //	     false);
+    // The wires were made on myFace as it is oriented; on a reversed face
+    // they go to the forward one reversed, each edge's pcurve the one it had:
+    // an edge closed on the face -- two pcurves, a seam's end the face does
+    // not run round, the left-handed cylinder of #521 -- took its other one,
+    // and the face came out as the quarter its wire leaves free.
+    const bool isReversedFace = myFace.Orientation() == TopAbs_REVERSED;
     NCollection_List<TopoDS_Shape>::Iterator it(myNewWires);
     for (; it.More(); it.Next())
     {
-      FR.Add(TopoDS::Wire(it.ChangeValue()));
+      TopoDS_Wire aW = TopoDS::Wire(isReversedFace ? it.Value().Reversed() : it.Value());
+      FR.Add(aW);
     }
 
     FR.Perform();
