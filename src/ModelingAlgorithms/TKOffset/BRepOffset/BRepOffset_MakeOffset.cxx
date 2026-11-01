@@ -4002,6 +4002,27 @@ void BRepOffset_MakeOffset::MakeThickSolidOrRunaway(const Message_ProgressRange&
             isUnhollowed = std::abs(anImArea - aGF.Mass()) < 1.e-7 * std::max(aGF.Mass(), 1.);
           }
         }
+        // Or back in pieces: a skin outward reaches past the shape by the
+        // offset wherever a face stays, and the shape's own bounds are the
+        // shape's faces (#613's part, a blend at its top removed, 0.5 out
+        // with the Intersection join: the blend split in two, the input back).
+        if (!isUnhollowed && myOffset > 0.)
+        {
+          Bnd_Box aBRes, aBInit;
+          BRepBndLib::AddOptimal(myOffsetShape, aBRes, false, false);
+          BRepBndLib::AddOptimal(myInitialShape, aBInit, false, false);
+          if (!aBRes.IsVoid() && !aBInit.IsVoid())
+          {
+            double aR[6], aI[6];
+            aBRes.Get(aR[0], aR[1], aR[2], aR[3], aR[4], aR[5]);
+            aBInit.Get(aI[0], aI[1], aI[2], aI[3], aI[4], aI[5]);
+            isUnhollowed = true;
+            for (int k = 0; k < 6 && isUnhollowed; ++k)
+            {
+              isUnhollowed = std::abs(aR[k] - aI[k]) < 1.e-3 * myOffset;
+            }
+          }
+        }
       }
       if (aVInit > aVTol && isUnhollowed)
       {
