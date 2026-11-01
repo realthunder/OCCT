@@ -16,6 +16,17 @@
 #include <BRepGProp_Face.hxx>
 #include <BRepGProp_Domain.hxx>
 #include <BRepGProp_Gauss.hxx>
+#include <BRep_Tool.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_SurfaceOfLinearExtrusion.hxx>
+#include <Geom_SurfaceOfRevolution.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <NCollection_Vector.hxx>
+#include <TopoDS_Face.hxx>
+
+#include <algorithm>
 
 // If the following is defined the error of algorithm is calculated by static moments
 #define IS_MIN_DIM
@@ -152,6 +163,196 @@ static double MultInf(const double theA, const double theB)
   }
 
   return theA * theB;
+}
+
+//! The knots of a B-spline -- a face's surface in u or v, or an edge's curve
+//! on it -- strictly inside [theA, theB], when a rule of GPM points over the
+//! range cannot follow it: more spans of its degree than such a rule
+//! integrates. Nothing otherwise. Returns the order a span needs, 0 for none.
+static int spanKnots(const NCollection_Array1<double>& theKnots,
+                     const int                         theDegree,
+                     const double                      theA,
+                     const double                      theB,
+                     NCollection_Vector<double>&       theOut)
+{
+  if (2 * (theDegree + 1) * (theKnots.Length() - 1) <= GPM)
+  {
+    return 0;
+  }
+  const int    aNb   = theOut.Length();
+  const double anEps = EPS_PARAM * std::max(1., std::abs(theB - theA));
+  for (int i = theKnots.Lower(); i <= theKnots.Upper(); ++i)
+  {
+    if (theKnots(i) > theA + anEps && theKnots(i) < theB - anEps)
+    {
+      theOut.Append(theKnots(i));
+    }
+  }
+  return theOut.Length() == aNb ? 0 : 2 * (theDegree + 1);
+}
+
+//! The knots a face's surface has in u and in v that a rule of GPM points
+//! cannot follow (spanKnots): a B-spline surface's, or those of the B-spline
+//! curve an extrusion (u) or a revolution (v) is made of. Returns the order
+//! a span needs, 0 for none.
+static int surfaceSpanKnots(const TopoDS_Face&          theFace,
+                            const double                theU1,
+                            const double                theU2,
+                            const double                theV1,
+                            const double                theV2,
+                            NCollection_Vector<double>& theU,
+                            NCollection_Vector<double>& theV)
+{
+  occ::handle<Geom_Surface> aS = BRep_Tool::Surface(theFace);
+  while (!aS.IsNull() && aS->IsKind(STANDARD_TYPE(Geom_RectangularTrimmedSurface)))
+  {
+    aS = occ::down_cast<Geom_RectangularTrimmedSurface>(aS)->BasisSurface();
+  }
+  if (aS.IsNull())
+  {
+    return 0;
+  }
+  auto aBasis = [](occ::handle<Geom_Curve> theC) {
+    while (!theC.IsNull() && theC->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
+    {
+      theC = occ::down_cast<Geom_TrimmedCurve>(theC)->BasisCurve();
+    }
+    return occ::down_cast<Geom_BSplineCurve>(theC);
+  };
+  int anOrder = 0;
+  if (occ::handle<Geom_BSplineSurface> aBS = occ::down_cast<Geom_BSplineSurface>(aS))
+  {
+    anOrder = std::max(spanKnots(aBS->UKnots(), aBS->UDegree(), theU1, theU2, theU),
+                       spanKnots(aBS->VKnots(), aBS->VDegree(), theV1, theV2, theV));
+  }
+  else if (occ::handle<Geom_SurfaceOfLinearExtrusion> anExt =
+             occ::down_cast<Geom_SurfaceOfLinearExtrusion>(aS))
+  {
+    if (occ::handle<Geom_BSplineCurve> aC = aBasis(anExt->BasisCurve()))
+    {
+      anOrder = spanKnots(aC->Knots(), aC->Degree(), theU1, theU2, theU);
+    }
+  }
+  else if (occ::handle<Geom_SurfaceOfRevolution> aRev =
+             occ::down_cast<Geom_SurfaceOfRevolution>(aS))
+  {
+    if (occ::handle<Geom_BSplineCurve> aC = aBasis(aRev->BasisCurve()))
+    {
+      anOrder = spanKnots(aC->Knots(), aC->Degree(), theV1, theV2, theV);
+    }
+  }
+  return anOrder;
+}
+
+//! Where to break the integral along the edge loaded in theSurface, from
+//! theL1 to theL2: at its curve's own knots when a rule of GPM points cannot
+//! follow it, and where the curve crosses one of the surface's knots kept
+//! (surfaceSpanKnots) -- between them the integrand is a span's polynomial.
+//! theBreaks gets theL1, the breaks in order, and theL2. Returns the order a
+//! span of the edge's curve needs, 0 when it needs none.
+static int edgeBreaks(const BRepGProp_Face&             theSurface,
+                      const double                      theL1,
+                      const double                      theL2,
+                      const NCollection_Vector<double>& theU,
+                      const NCollection_Vector<double>& theV,
+                      NCollection_Vector<double>&       theBreaks)
+{
+  NCollection_Vector<double> aBreaks;
+  int                        anOrder = 0;
+  const int                  aNbSubs = theSurface.LIntSubs();
+  if (theSurface.IntegrationOrder() > GPM && aNbSubs > 1)
+  {
+    NCollection_Array1<double> aKnots(1, aNbSubs + 1);
+    theSurface.LKnots(aKnots);
+    // IntegrationOrder() is twice the degree plus one, times the spans
+    anOrder = spanKnots(aKnots,
+                        theSurface.IntegrationOrder() / (2 * aNbSubs) - 1,
+                        theL1,
+                        theL2,
+                        aBreaks);
+  }
+  // where the curve crosses a surface knot: found on a sampling of the
+  // curve, then by halving
+  const int aNbSamples = 64 + 8 * (theU.Length() + theV.Length() + aNbSubs);
+  for (int aDir = 0; aDir < 2; ++aDir)
+  {
+    const NCollection_Vector<double>& aKnots = aDir == 0 ? theU : theV;
+    if (aKnots.IsEmpty())
+    {
+      continue;
+    }
+    auto aCoord = [&](const double theL) {
+      const gp_Pnt2d aP = theSurface.Value2d(theL);
+      return aDir == 0 ? aP.X() : aP.Y();
+    };
+    double aLPrev = theL1, aPrev = aCoord(theL1);
+    for (int i = 1; i <= aNbSamples; ++i)
+    {
+      const double aL   = theL1 + (theL2 - theL1) * i / aNbSamples;
+      const double aCur = aCoord(aL);
+      for (int k = 0; k < aKnots.Length(); ++k)
+      {
+        const double aK = aKnots(k);
+        if ((aPrev - aK) * (aCur - aK) >= 0.)
+        {
+          continue;
+        }
+        double aA = aLPrev, aB = aL, aFA = aPrev - aK;
+        for (int it = 0; it < 60 && aB - aA > EPS_PARAM * std::abs(theL2 - theL1); ++it)
+        {
+          const double aM = 0.5 * (aA + aB), aFM = aCoord(aM) - aK;
+          if (aFA * aFM <= 0.)
+          {
+            aB = aM;
+          }
+          else
+          {
+            aA  = aM;
+            aFA = aFM;
+          }
+        }
+        aBreaks.Append(0.5 * (aA + aB));
+      }
+      aLPrev = aL;
+      aPrev  = aCur;
+    }
+  }
+  std::sort(aBreaks.begin(), aBreaks.end());
+  theBreaks.Clear();
+  theBreaks.Append(theL1);
+  const double anEps = EPS_PARAM * std::max(1., std::abs(theL2 - theL1));
+  for (int i = 0; i < aBreaks.Length(); ++i)
+  {
+    if (aBreaks(i) > theBreaks.Last() + anEps && aBreaks(i) < theL2 - anEps)
+    {
+      theBreaks.Append(aBreaks(i));
+    }
+  }
+  theBreaks.Append(theL2);
+  return anOrder;
+}
+
+//! The pieces [theA, theB] is cut into at the knots kept (surfaceSpanKnots),
+//! from theA to theB: theA, the knots between in that direction, theB.
+static void pieces(const double                      theA,
+                   const double                      theB,
+                   const NCollection_Vector<double>& theKnots,
+                   NCollection_Vector<double>&       theOut)
+{
+  theOut.Clear();
+  theOut.Append(theA);
+  const double aLo = std::min(theA, theB), aHi = std::max(theA, theB);
+  const double anEps = EPS_PARAM * std::max(1., aHi - aLo);
+  const int    aNb   = theKnots.Length();
+  for (int i = 0; i < aNb; ++i)
+  {
+    const double aK = theKnots(theA <= theB ? i : aNb - 1 - i);
+    if (aK > aLo + anEps && aK < aHi - anEps)
+    {
+      theOut.Append(aK);
+    }
+  }
+  theOut.Append(theB);
 }
 } // namespace
 
@@ -1148,12 +1349,96 @@ void BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
   math::GaussPoints(NbGaussgp_Pnts, GaussSPV);
   math::GaussWeights(NbGaussgp_Pnts, GaussSWV);
 
+  // A surface or an edge of more spans than a rule of GaussPointsMax()
+  // points follows is integrated span by span, each with a rule of its own
+  // (#617: an extrusion of a degree 8 B-spline of 29 spans, its knots
+  // bunched, came 30% off). Anything else is integrated as it was.
+  NCollection_Vector<double> aUKnots, aVKnots, aBreaks, aPieces;
+  const int aSurfOrder = surfaceSpanKnots(theSurface.GetFace(), u1, u2, v1, v2, aUKnots, aVKnots);
+
+  // the integral along the edge from theA to theB, of the integral across
+  // the face from u1, in pieces at theKnots
   BRepGProp_Gauss::Inertia anInertia;
+  auto anAlong = [&](const double                      theA,
+                     const double                      theB,
+                     const math_Vector&                theCP,
+                     const math_Vector&                theCW,
+                     const math_Vector&                theSP,
+                     const math_Vector&                theSW,
+                     const NCollection_Vector<double>& theKnots) {
+    const double lm = 0.5 * (theB + theA);
+    const double lr = 0.5 * (theB - theA);
+
+    BRepGProp_Gauss::Inertia aCInertia;
+    for (int i = theCP.Lower(); i <= theCP.Upper(); ++i)
+    {
+      const double l = lm + lr * theCP(i);
+
+      gp_Pnt2d Puv;
+      gp_Vec2d Vuv;
+      theSurface.D12d(l, Puv, Vuv);
+
+      const double v   = Puv.Y();
+      const double Dul = Vuv.Y() * theCW(i);
+
+      pieces(u1, Puv.X(), theKnots, aPieces);
+      for (int p = 1; p < aPieces.Length(); ++p)
+      {
+        const double um = 0.5 * (aPieces(p) + aPieces(p - 1));
+        const double ur = 0.5 * (aPieces(p) - aPieces(p - 1));
+
+        BRepGProp_Gauss::Inertia aLocalInertia;
+        for (int j = theSP.Lower(); j <= theSP.Upper(); ++j)
+        {
+          const double u       = add(um, mult(ur, theSP(j)));
+          const double aWeight = Dul * theSW(j);
+
+          gp_Pnt aPoint;
+          gp_Vec aNormal;
+          theSurface.Normal(u, v, aPoint, aNormal);
+
+          computeSInertiaOfElementaryPart(aPoint, aNormal, theLocation, aWeight, aLocalInertia);
+        }
+
+        multAndRestoreInertia(ur, aLocalInertia);
+        addAndRestoreInertia(aLocalInertia, aCInertia);
+      }
+    }
+
+    multAndRestoreInertia(lr, aCInertia);
+    addAndRestoreInertia(aCInertia, anInertia);
+  };
+
+  const NCollection_Vector<double> aNoKnots;
   for (; theDomain.More(); theDomain.Next())
   {
     if (!theSurface.Load(theDomain.Value()))
     {
       return;
+    }
+
+    const double l1 = theSurface.FirstParameter();
+    const double l2 = theSurface.LastParameter();
+
+    const int anEdgeOrder = edgeBreaks(theSurface, l1, l2, aUKnots, aVKnots, aBreaks);
+    if (aBreaks.Length() > 2 || !aUKnots.IsEmpty())
+    {
+      const int   aSpanOrder = std::min(std::max({8, aSurfOrder, anEdgeOrder}), GPM);
+      math_Vector aSP(1, aSpanOrder), aSW(1, aSpanOrder);
+      math::GaussPoints(aSpanOrder, aSP);
+      math::GaussWeights(aSpanOrder, aSW);
+      const bool isAcross = !aUKnots.IsEmpty();
+      for (int b = 1; b < aBreaks.Length(); ++b)
+      {
+        anAlong(aBreaks(b - 1),
+                aBreaks(b),
+                aSP,
+                aSW,
+                isAcross ? aSP : GaussSPV,
+                isAcross ? aSW : GaussSWV,
+                aUKnots);
+      }
+      continue;
     }
 
     int NbCGaussgp_Pnts = std::min(theSurface.IntegrationOrder(), math::GaussPointsMax());
@@ -1165,46 +1450,7 @@ void BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
     math::GaussPoints(NbCGaussgp_Pnts, GaussCP);
     math::GaussWeights(NbCGaussgp_Pnts, GaussCW);
 
-    const double l1 = theSurface.FirstParameter();
-    const double l2 = theSurface.LastParameter();
-    const double lm = 0.5 * (l2 + l1);
-    const double lr = 0.5 * (l2 - l1);
-
-    BRepGProp_Gauss::Inertia aCInertia;
-    for (int i = 1; i <= NbCGaussgp_Pnts; ++i)
-    {
-      const double l = lm + lr * GaussCP(i);
-
-      gp_Pnt2d Puv;
-      gp_Vec2d Vuv;
-      theSurface.D12d(l, Puv, Vuv);
-
-      const double v = Puv.Y();
-      u2             = Puv.X();
-
-      const double Dul = Vuv.Y() * GaussCW(i);
-      const double um  = 0.5 * (u2 + u1);
-      const double ur  = 0.5 * (u2 - u1);
-
-      BRepGProp_Gauss::Inertia aLocalInertia;
-      for (int j = 1; j <= NbGaussgp_Pnts; ++j)
-      {
-        const double u       = add(um, mult(ur, GaussSPV(j)));
-        const double aWeight = Dul * GaussSWV(j);
-
-        gp_Pnt aPoint;
-        gp_Vec aNormal;
-        theSurface.Normal(u, v, aPoint, aNormal);
-
-        computeSInertiaOfElementaryPart(aPoint, aNormal, theLocation, aWeight, aLocalInertia);
-      }
-
-      multAndRestoreInertia(ur, aLocalInertia);
-      addAndRestoreInertia(aLocalInertia, aCInertia);
-    }
-
-    multAndRestoreInertia(lr, aCInertia);
-    addAndRestoreInertia(aCInertia, anInertia);
+    anAlong(l1, l2, GaussCP, GaussCW, GaussSPV, GaussSWV, aNoKnots);
   }
 
   convert(anInertia, theOutGravityCenter, theOutInertia, theOutMass);
@@ -1229,13 +1475,83 @@ void BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
 
   double _u2 = u2; // OCC104
 
+  // In spans where a rule of GaussPointsMax() points cannot follow the
+  // surface or an edge, as for the area above (#617).
+  NCollection_Vector<double> aUKnots, aVKnots, aBreaks, aPieces;
+  const int aSurfOrder = surfaceSpanKnots(theSurface.GetFace(), u1, u2, v1, v2, aUKnots, aVKnots);
+
+  // the integral along the edge from theA to theB, of the integral across
+  // the face from u1, in pieces at theKnots
   BRepGProp_Gauss::Inertia anInertia;
+  auto anAlong = [&](const double                      theA,
+                     const double                      theB,
+                     const math_Vector&                theCP,
+                     const math_Vector&                theCW,
+                     const math_Vector&                theSP,
+                     const math_Vector&                theSW,
+                     const NCollection_Vector<double>& theKnots) {
+    const double lm = 0.5 * (theB + theA);
+    const double lr = 0.5 * (theB - theA);
+
+    BRepGProp_Gauss::Inertia aCInertia;
+    for (int i = theCP.Lower(); i <= theCP.Upper(); ++i)
+    {
+      const double l = lm + lr * theCP(i);
+
+      gp_Pnt2d Puv;
+      gp_Vec2d Vuv;
+
+      theSurface.D12d(l, Puv, Vuv);
+
+      const double aU2 = std::min(std::max(u1, Puv.X()), _u2); // OCC104
+      const double v   = std::min(std::max(Puv.Y(), v1), v2);
+      const double Dul = Vuv.Y() * theCW(i);
+
+      pieces(u1, aU2, theKnots, aPieces);
+      for (int p = 1; p < aPieces.Length(); ++p)
+      {
+        const double um = 0.5 * (aPieces(p) + aPieces(p - 1));
+        const double ur = 0.5 * (aPieces(p) - aPieces(p - 1));
+
+        BRepGProp_Gauss::Inertia aLocalInertia;
+        for (int j = theSP.Lower(); j <= theSP.Upper(); ++j)
+        {
+          const double u       = um + ur * theSP(j);
+          const double aWeight = Dul * theSW(j);
+
+          gp_Pnt aPoint;
+          gp_Vec aNormal;
+
+          theSurface.Normal(u, v, aPoint, aNormal);
+
+          computeVInertiaOfElementaryPart(aPoint,
+                                          aNormal,
+                                          theLocation,
+                                          aWeight,
+                                          theCoeff,
+                                          theIsByPoint,
+                                          aLocalInertia);
+        }
+
+        multAndRestoreInertia(ur, aLocalInertia);
+        addAndRestoreInertia(aLocalInertia, aCInertia);
+      }
+    }
+
+    multAndRestoreInertia(lr, aCInertia);
+    addAndRestoreInertia(aCInertia, anInertia);
+  };
+
+  const NCollection_Vector<double> aNoKnots;
   for (; theDomain.More(); theDomain.Next())
   {
     if (!theSurface.Load(theDomain.Value()))
     {
       return;
     }
+
+    const double l1 = theSurface.FirstParameter();
+    const double l2 = theSurface.LastParameter();
 
     const int aVNbCGaussgp_Pnts = theSurface.VIntegrationOrder();
 
@@ -1247,55 +1563,28 @@ void BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
     math::GaussPoints(aNbGaussgp_Pnts, GaussP);
     math::GaussWeights(aNbGaussgp_Pnts, GaussW);
 
-    const double l1 = theSurface.FirstParameter();
-    const double l2 = theSurface.LastParameter();
-    const double lm = 0.5 * (l2 + l1);
-    const double lr = 0.5 * (l2 - l1);
-
-    BRepGProp_Gauss::Inertia aCInertia;
-    for (int i = 1; i <= aNbGaussgp_Pnts; ++i)
+    const int anEdgeOrder = edgeBreaks(theSurface, l1, l2, aUKnots, aVKnots, aBreaks);
+    if (aBreaks.Length() > 2 || !aUKnots.IsEmpty())
     {
-      const double l = lm + lr * GaussP(i);
-
-      gp_Pnt2d Puv;
-      gp_Vec2d Vuv;
-
-      theSurface.D12d(l, Puv, Vuv);
-
-      u2             = Puv.X();
-      u2             = std::min(std::max(u1, u2), _u2); // OCC104
-      const double v = std::min(std::max(Puv.Y(), v1), v2);
-
-      const double Dul = Vuv.Y() * GaussW(i);
-      const double um  = 0.5 * (u2 + u1);
-      const double ur  = 0.5 * (u2 - u1);
-
-      BRepGProp_Gauss::Inertia aLocalInertia;
-      for (int j = 1; j <= aNbGaussgp_Pnts; ++j)
+      const int   aSpanOrder = std::min(std::max({8, aSurfOrder, anEdgeOrder}), GPM);
+      math_Vector aSP(1, aSpanOrder), aSW(1, aSpanOrder);
+      math::GaussPoints(aSpanOrder, aSP);
+      math::GaussWeights(aSpanOrder, aSW);
+      const bool isAcross = !aUKnots.IsEmpty();
+      for (int b = 1; b < aBreaks.Length(); ++b)
       {
-        const double u       = um + ur * GaussP(j);
-        const double aWeight = Dul * GaussW(j);
-
-        gp_Pnt aPoint;
-        gp_Vec aNormal;
-
-        theSurface.Normal(u, v, aPoint, aNormal);
-
-        computeVInertiaOfElementaryPart(aPoint,
-                                        aNormal,
-                                        theLocation,
-                                        aWeight,
-                                        theCoeff,
-                                        theIsByPoint,
-                                        aLocalInertia);
+        anAlong(aBreaks(b - 1),
+                aBreaks(b),
+                aSP,
+                aSW,
+                isAcross ? aSP : GaussP,
+                isAcross ? aSW : GaussW,
+                aUKnots);
       }
-
-      multAndRestoreInertia(ur, aLocalInertia);
-      addAndRestoreInertia(aLocalInertia, aCInertia);
+      continue;
     }
 
-    multAndRestoreInertia(lr, aCInertia);
-    addAndRestoreInertia(aCInertia, anInertia);
+    anAlong(l1, l2, GaussP, GaussW, GaussP, GaussW, aNoKnots);
   }
 
   convert(anInertia, theCoeff, theIsByPoint, theOutGravityCenter, theOutInertia, theOutMass);
