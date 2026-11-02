@@ -442,6 +442,11 @@ public: //! @name Methods for shape validation (correction)
   //! accepted for correction. If real value of the tolerance
   //! will be greater than <aTolMax>, the correction does not
   //! perform.
+  //!
+  //! For this and the three correctors below, a shape in <theMapToAvoid> is
+  //! not changed, and neither are its sub-shapes, which the map is expected to
+  //! hold too (a boolean's map holds every sub-shape of its arguments): such
+  //! a shape is not checked at all (realthunder).
   Standard_EXPORT static void CorrectTolerances(
     const TopoDS_Shape&                                                  theS,
     const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theMapToAvoid,

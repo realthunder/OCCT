@@ -319,6 +319,13 @@ void BOPTools_AlgoTools::CorrectTolerances(
 //
 //=================================================================================================
 
+// A shape in theMapToAvoid is never changed here (UpdateShape() refuses it), nor
+// is any of its sub-shapes, which are in the map too: a boolean's map holds
+// every sub-shape of its arguments. So nothing is checked for one -- in a
+// non-destructive boolean of a small tool on a large part, nearly every face
+// and edge of the result is an argument's, and each was checked again on every
+// join, its curves on planes projected anew (realthunder; fcad
+// docs/SheetMetal.md sec 4.4).
 void BOPTools_AlgoTools::CorrectPointOnCurve(
   const TopoDS_Shape&                                                  aS,
   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& aMapToAvoid,
@@ -331,8 +338,12 @@ void BOPTools_AlgoTools::CorrectPointOnCurve(
   aExp.Init(aS, TopAbs_EDGE);
   for (; aExp.More(); aExp.Next())
   {
-    const TopoDS_Edge& aE   = *((TopoDS_Edge*)&aExp.Current());
-    BOPTools_CPC&      aCPC = aVCPC.Appended();
+    const TopoDS_Edge& aE = *((TopoDS_Edge*)&aExp.Current());
+    if (aMapToAvoid.Contains(aE))
+    {
+      continue;
+    }
+    BOPTools_CPC& aCPC = aVCPC.Appended();
     aCPC.SetEdge(aE);
     aCPC.SetMaxTol(aMaxTol);
     aCPC.SetMapToAvoid(aMapToAvoid);
@@ -359,6 +370,11 @@ void BOPTools_AlgoTools::CorrectCurveOnSurface(
   for (; aExpF.More(); aExpF.Next())
   {
     const TopoDS_Face& aF = *((TopoDS_Face*)&aExpF.Current());
+    // an argument's face: its edges are the argument's too
+    if (aMapToAvoid.Contains(aF))
+    {
+      continue;
+    }
     //
     BOPTools_CWT& aCWT = aVCWT.Appended();
     aCWT.SetFace(aF);
@@ -368,6 +384,11 @@ void BOPTools_AlgoTools::CorrectCurveOnSurface(
     for (; aExpE.More(); aExpE.Next())
     {
       const TopoDS_Edge& aE = *((TopoDS_Edge*)&aExpE.Current());
+      // only the edge is updated, and an argument's never is
+      if (aMapToAvoid.Contains(aE))
+      {
+        continue;
+      }
       //
       BOPTools_CDT& aCDT = aVCDT.Appended();
       aCDT.SetEdge(aE);
@@ -398,8 +419,12 @@ void BOPTools_AlgoTools::CorrectShapeTolerances(
   aExp.Init(aShape, TopAbs_EDGE);
   for (; aExp.More(); aExp.Next())
   {
-    const TopoDS_Edge& aE   = *(TopoDS_Edge*)&aExp.Current();
-    BOPTools_CVT&      aCVT = aVCVT.Appended();
+    const TopoDS_Edge& aE = *(TopoDS_Edge*)&aExp.Current();
+    if (aMapToAvoid.Contains(aE))
+    {
+      continue;
+    }
+    BOPTools_CVT& aCVT = aVCVT.Appended();
     aCVT.SetEdge(aE);
     aCVT.SetMapToAvoid(aMapToAvoid);
   }
@@ -411,8 +436,12 @@ void BOPTools_AlgoTools::CorrectShapeTolerances(
   aExp.Init(aShape, TopAbs_FACE);
   for (; aExp.More(); aExp.Next())
   {
-    const TopoDS_Face& aF   = *(TopoDS_Face*)&aExp.Current();
-    BOPTools_CET&      aCET = aVCET.Appended();
+    const TopoDS_Face& aF = *(TopoDS_Face*)&aExp.Current();
+    if (aMapToAvoid.Contains(aF))
+    {
+      continue;
+    }
+    BOPTools_CET& aCET = aVCET.Appended();
     aCET.SetFace(aF);
     aCET.SetMapToAvoid(aMapToAvoid);
   }
