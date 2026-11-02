@@ -198,7 +198,8 @@ static int spanKnots(const NCollection_Array1<double>& theKnots,
   return theOut.Length() == aNb ? 0 : 2 * (theDegree + 1);
 }
 
-//! Where to cut the range of an offset surface in one parameter -- u (theIsU)
+//! Where to cut the range of an offset surface (or an extrusion or a
+//! revolution of a curve, surfaceSpanKnots) in one parameter -- u (theIsU)
 //! from theA to theB, on iso lines across theW1 to theW2, or v likewise --
 //! when its normal turns unevenly along it. An offset carries its basis's
 //! unit normal, and the integrands with it the square root of the basis's
@@ -338,6 +339,9 @@ static int surfaceSpanKnots(const TopoDS_Face&          theFace,
   // area element doubles there, and a rule across it follows nothing.
   const bool isAll = !anOffset.IsNull();
   int        anOrder = 0;
+  // the B-spline curve an extrusion (in u) or a revolution (in v) is made of
+  occ::handle<Geom_BSplineCurve> aCurve;
+  bool                           isCurveU = true;
   if (occ::handle<Geom_BSplineSurface> aBS = occ::down_cast<Geom_BSplineSurface>(aS))
   {
     anOrder = std::max(spanKnots(aBS->UKnots(), aBS->UDegree(), theU1, theU2, theU, isAll),
@@ -346,34 +350,57 @@ static int surfaceSpanKnots(const TopoDS_Face&          theFace,
   else if (occ::handle<Geom_SurfaceOfLinearExtrusion> anExt =
              occ::down_cast<Geom_SurfaceOfLinearExtrusion>(aS))
   {
-    if (occ::handle<Geom_BSplineCurve> aC = aBasis(anExt->BasisCurve()))
+    if ((aCurve = aBasis(anExt->BasisCurve())))
     {
-      anOrder = spanKnots(aC->Knots(), aC->Degree(), theU1, theU2, theU, isAll);
+      anOrder = spanKnots(aCurve->Knots(), aCurve->Degree(), theU1, theU2, theU, isAll);
     }
   }
   else if (occ::handle<Geom_SurfaceOfRevolution> aRev =
              occ::down_cast<Geom_SurfaceOfRevolution>(aS))
   {
-    if (occ::handle<Geom_BSplineCurve> aC = aBasis(aRev->BasisCurve()))
+    isCurveU = false;
+    if ((aCurve = aBasis(aRev->BasisCurve())))
     {
-      anOrder = spanKnots(aC->Knots(), aC->Degree(), theV1, theV2, theV, isAll);
+      anOrder = spanKnots(aCurve->Knots(), aCurve->Degree(), theV1, theV2, theV, isAll);
     }
   }
   if (isAll && anOrder > 0)
   {
     anOrder = std::max(anOrder, OFFSET_ORDER);
   }
+  // An offset, and an extrusion or a revolution of a curve: the area element
+  // of the latter carries the curve's speed under a square root as the
+  // offset's integrands do, its zeros off the axis where the curve turns
+  // fastest. For an offset it is the basis's normal that is sampled, the one
+  // the offset carries: the offset's own turns back where the offset folds
+  // (beyond a radius of curvature), the integrands smooth through it.
+  occ::handle<Geom_Surface> aTurning;
   if (!anOffset.IsNull())
   {
-    // the basis's normal, the one the offset carries: the offset's own turns
-    // back where the offset folds (beyond a radius of curvature), the
-    // integrands smooth through it
-    const occ::handle<Geom_Surface> aBasis =
-      occ::down_cast<Geom_OffsetSurface>(anOffset)->BasisSurface();
-    const int aU = turningBreaks(aBasis, true, theU1, theU2, theV1, theV2, theU);
-    const int aV = turningBreaks(aBasis, false, theV1, theV2, theU1, theU2, theV);
+    aTurning = occ::down_cast<Geom_OffsetSurface>(anOffset)->BasisSurface();
+  }
+  else if (aS->IsKind(STANDARD_TYPE(Geom_SurfaceOfLinearExtrusion))
+           || aS->IsKind(STANDARD_TYPE(Geom_SurfaceOfRevolution)))
+  {
+    aTurning = aS;
+  }
+  if (!aTurning.IsNull())
+  {
+    const int aU = turningBreaks(aTurning, true, theU1, theU2, theV1, theV2, theU);
+    const int aV = turningBreaks(aTurning, false, theV1, theV2, theU1, theU2, theV);
     if (aU > 0 || aV > 0)
     {
+      // cut in pieces, a B-spline curve is cut at all its knots as well, as
+      // an offset is: a piece across a knot follows nothing
+      if (!aCurve.IsNull() && anOrder == 0)
+      {
+        spanKnots(aCurve->Knots(),
+                  aCurve->Degree(),
+                  isCurveU ? theU1 : theV1,
+                  isCurveU ? theU2 : theV2,
+                  isCurveU ? theU : theV,
+                  true);
+      }
       anOrder = std::max({anOrder, aU, aV});
       for (NCollection_Vector<double>* aKnots : {&theU, &theV})
       {
