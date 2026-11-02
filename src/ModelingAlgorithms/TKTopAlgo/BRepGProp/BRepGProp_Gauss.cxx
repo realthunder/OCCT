@@ -17,6 +17,8 @@
 #include <BRepGProp_Domain.hxx>
 #include <BRepGProp_Gauss.hxx>
 #include <BRep_Tool.hxx>
+#include <Geom2d_BSplineCurve.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_OffsetSurface.hxx>
@@ -27,6 +29,7 @@
 #include <NCollection_Vector.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <gp_Dir.hxx>
 
@@ -170,32 +173,55 @@ static double MultInf(const double theA, const double theB)
   return theA * theB;
 }
 
+//! The points a rational span takes beyond a polynomial one's: the
+//! integrands divide by a power of the weights, and a conic's span of a
+//! third of a turn (weights down to a half) wants 16 points at degree 2 --
+//! 6 leave 2e-7 of an ellipse's area.
+static const int RATIONAL_EXTRA = 10;
+
 //! The knots of a B-spline -- a face's surface in u or v, or an edge's curve
-//! on it -- strictly inside [theA, theB], when a rule of GPM points over the
-//! range cannot follow it: more spans of its degree than such a rule
-//! integrates. Nothing otherwise, unless theIsAll: every knot inside. Returns
-//! the order a span needs, 0 for none.
+//! on it -- strictly inside [theA, theB], every period of a periodic one
+//! (thePeriod > 0). A rule across a knot follows nothing: the integrand's
+//! derivatives jump there, and the rule converges only as a power of its
+//! points (an ellipse's rational B-spline, a rule of 61 points over its three
+//! spans: 1e-4 of its area). Returns the order a span needs -- twice the
+//! degree plus one, more for a rational one -- 0 when no knot is inside.
 static int spanKnots(const NCollection_Array1<double>& theKnots,
                      const int                         theDegree,
+                     const bool                        theIsRational,
+                     const double                      thePeriod,
                      const double                      theA,
                      const double                      theB,
-                     NCollection_Vector<double>&       theOut,
-                     const bool                        theIsAll = false)
+                     NCollection_Vector<double>&       theOut)
 {
-  if (!theIsAll && 2 * (theDegree + 1) * (theKnots.Length() - 1) <= GPM)
+  const int    aNb   = theOut.Length();
+  const double aLo = std::min(theA, theB), aHi = std::max(theA, theB);
+  const double anEps = EPS_PARAM * std::max(1., aHi - aLo);
+  const double aK1 = theKnots(theKnots.Lower()), aK2 = theKnots(theKnots.Upper());
+  int          aN1 = 0, aN2 = 0;
+  if (thePeriod > 0. && !Precision::IsInfinite(aHi - aLo))
+  {
+    aN1 = static_cast<int>(std::floor((aLo - aK2) / thePeriod));
+    aN2 = static_cast<int>(std::ceil((aHi - aK1) / thePeriod));
+  }
+  for (int n = aN1; n <= aN2; ++n)
+  {
+    // a period's last knot is the next one's first
+    const int anUpper = thePeriod > 0. ? theKnots.Upper() - 1 : theKnots.Upper();
+    for (int i = theKnots.Lower(); i <= anUpper; ++i)
+    {
+      const double aK = theKnots(i) + n * thePeriod;
+      if (aK > aLo + anEps && aK < aHi - anEps)
+      {
+        theOut.Append(aK);
+      }
+    }
+  }
+  if (theOut.Length() == aNb)
   {
     return 0;
   }
-  const int    aNb   = theOut.Length();
-  const double anEps = EPS_PARAM * std::max(1., std::abs(theB - theA));
-  for (int i = theKnots.Lower(); i <= theKnots.Upper(); ++i)
-  {
-    if (theKnots(i) > theA + anEps && theKnots(i) < theB - anEps)
-    {
-      theOut.Append(theKnots(i));
-    }
-  }
-  return theOut.Length() == aNb ? 0 : 2 * (theDegree + 1);
+  return 2 * (theDegree + 1) + (theIsRational ? RATIONAL_EXTRA : 0);
 }
 
 //! Where to cut the range of an offset surface (or an extrusion or a
@@ -295,10 +321,11 @@ static int turningBreaks(const occ::handle<Geom_Surface>& theS,
   return aNbPieces > 1 ? OFFSET_ORDER : 0;
 }
 
-//! The knots a face's surface has in u and in v that a rule of GPM points
-//! cannot follow (spanKnots): a B-spline surface's, or those of the B-spline
-//! curve an extrusion (u) or a revolution (v) is made of. Returns the order
-//! a span needs, 0 for none.
+//! The knots a face's surface has in u and in v (spanKnots): a B-spline
+//! surface's, or those of the B-spline curve an extrusion (u) or a
+//! revolution (v) is made of; and for an offset, an extrusion or a
+//! revolution, where its normal turns unevenly (turningBreaks). Returns the
+//! order a piece needs, 0 for none.
 static int surfaceSpanKnots(const TopoDS_Face&          theFace,
                             const double                theU1,
                             const double                theU2,
@@ -333,38 +360,56 @@ static int surfaceSpanKnots(const TopoDS_Face&          theFace,
     }
     return occ::down_cast<Geom_BSplineCurve>(theC);
   };
-  // An offset is cut at every knot of its basis: the offset's derivatives
-  // take in the basis's next ones, which jump at a knot -- a degree 2 basis
-  // curved on one side of a knot and flat on the other has an offset whose
-  // area element doubles there, and a rule across it follows nothing.
-  const bool isAll = !anOffset.IsNull();
-  int        anOrder = 0;
-  // the B-spline curve an extrusion (in u) or a revolution (in v) is made of
-  occ::handle<Geom_BSplineCurve> aCurve;
-  bool                           isCurveU = true;
+  auto aCurveKnots = [&](const occ::handle<Geom_BSplineCurve>& theC,
+                         const double                          theA,
+                         const double                          theB,
+                         NCollection_Vector<double>&           theOut) {
+    return spanKnots(theC->Knots(),
+                     theC->Degree(),
+                     theC->IsRational(),
+                     theC->IsPeriodic() ? theC->Period() : 0.,
+                     theA,
+                     theB,
+                     theOut);
+  };
+  int anOrder = 0;
   if (occ::handle<Geom_BSplineSurface> aBS = occ::down_cast<Geom_BSplineSurface>(aS))
   {
-    anOrder = std::max(spanKnots(aBS->UKnots(), aBS->UDegree(), theU1, theU2, theU, isAll),
-                       spanKnots(aBS->VKnots(), aBS->VDegree(), theV1, theV2, theV, isAll));
+    anOrder = std::max(spanKnots(aBS->UKnots(),
+                                 aBS->UDegree(),
+                                 aBS->IsURational(),
+                                 aBS->IsUPeriodic() ? aBS->UPeriod() : 0.,
+                                 theU1,
+                                 theU2,
+                                 theU),
+                       spanKnots(aBS->VKnots(),
+                                 aBS->VDegree(),
+                                 aBS->IsVRational(),
+                                 aBS->IsVPeriodic() ? aBS->VPeriod() : 0.,
+                                 theV1,
+                                 theV2,
+                                 theV));
   }
   else if (occ::handle<Geom_SurfaceOfLinearExtrusion> anExt =
              occ::down_cast<Geom_SurfaceOfLinearExtrusion>(aS))
   {
-    if ((aCurve = aBasis(anExt->BasisCurve())))
+    if (occ::handle<Geom_BSplineCurve> aC = aBasis(anExt->BasisCurve()))
     {
-      anOrder = spanKnots(aCurve->Knots(), aCurve->Degree(), theU1, theU2, theU, isAll);
+      anOrder = aCurveKnots(aC, theU1, theU2, theU);
     }
   }
   else if (occ::handle<Geom_SurfaceOfRevolution> aRev =
              occ::down_cast<Geom_SurfaceOfRevolution>(aS))
   {
-    isCurveU = false;
-    if ((aCurve = aBasis(aRev->BasisCurve())))
+    if (occ::handle<Geom_BSplineCurve> aC = aBasis(aRev->BasisCurve()))
     {
-      anOrder = spanKnots(aCurve->Knots(), aCurve->Degree(), theV1, theV2, theV, isAll);
+      anOrder = aCurveKnots(aC, theV1, theV2, theV);
     }
   }
-  if (isAll && anOrder > 0)
+  // an offset's derivatives take in the basis's next ones: a degree 2 basis
+  // curved on one side of a knot and flat on the other has an offset whose
+  // area element doubles there
+  if (!anOffset.IsNull() && anOrder > 0)
   {
     anOrder = std::max(anOrder, OFFSET_ORDER);
   }
@@ -388,36 +433,22 @@ static int surfaceSpanKnots(const TopoDS_Face&          theFace,
   {
     const int aU = turningBreaks(aTurning, true, theU1, theU2, theV1, theV2, theU);
     const int aV = turningBreaks(aTurning, false, theV1, theV2, theU1, theU2, theV);
-    if (aU > 0 || aV > 0)
-    {
-      // cut in pieces, a B-spline curve is cut at all its knots as well, as
-      // an offset is: a piece across a knot follows nothing
-      if (!aCurve.IsNull() && anOrder == 0)
-      {
-        spanKnots(aCurve->Knots(),
-                  aCurve->Degree(),
-                  isCurveU ? theU1 : theV1,
-                  isCurveU ? theU2 : theV2,
-                  isCurveU ? theU : theV,
-                  true);
-      }
-      anOrder = std::max({anOrder, aU, aV});
-      for (NCollection_Vector<double>* aKnots : {&theU, &theV})
-      {
-        std::sort(aKnots->begin(), aKnots->end());
-      }
-    }
+    anOrder = std::max({anOrder, aU, aV});
+  }
+  for (NCollection_Vector<double>* aKnots : {&theU, &theV})
+  {
+    std::sort(aKnots->begin(), aKnots->end());
   }
   return anOrder;
 }
 
-//! Where to break the integral along the edge loaded in theSurface, from
-//! theL1 to theL2: at its curve's own knots when a rule of GPM points cannot
-//! follow it, and where the curve crosses one of the surface's knots kept
-//! (surfaceSpanKnots) -- between them the integrand is a span's polynomial.
-//! theBreaks gets theL1, the breaks in order, and theL2. Returns the order a
-//! span of the edge's curve needs, 0 when it needs none.
+//! Where to break the integral along theEdge, loaded in theSurface, from
+//! theL1 to theL2: at the knots of its curve on the face, a B-spline's
+//! (spanKnots), and where the curve crosses one of the surface's knots kept
+//! (surfaceSpanKnots). theBreaks gets theL1, the breaks in order, and theL2.
+//! Returns the order a span of the edge's curve needs, 0 when it needs none.
 static int edgeBreaks(const BRepGProp_Face&             theSurface,
+                      const TopoDS_Edge&                theEdge,
                       const double                      theL1,
                       const double                      theL2,
                       const NCollection_Vector<double>& theU,
@@ -427,16 +458,35 @@ static int edgeBreaks(const BRepGProp_Face&             theSurface,
   NCollection_Vector<double> aBreaks;
   int                        anOrder = 0;
   const int                  aNbSubs = theSurface.LIntSubs();
-  if (theSurface.IntegrationOrder() > GPM && aNbSubs > 1)
   {
-    NCollection_Array1<double> aKnots(1, aNbSubs + 1);
-    theSurface.LKnots(aKnots);
-    // IntegrationOrder() is twice the degree plus one, times the spans
-    anOrder = spanKnots(aKnots,
-                        theSurface.IntegrationOrder() / (2 * aNbSubs) - 1,
-                        theL1,
-                        theL2,
-                        aBreaks);
+    double                    aF, aL;
+    occ::handle<Geom2d_Curve> aPC =
+      BRep_Tool::CurveOnSurface(theEdge, theSurface.GetFace(), aF, aL);
+    while (!aPC.IsNull() && aPC->IsKind(STANDARD_TYPE(Geom2d_TrimmedCurve)))
+    {
+      aPC = occ::down_cast<Geom2d_TrimmedCurve>(aPC)->BasisCurve();
+    }
+    if (occ::handle<Geom2d_BSplineCurve> aBC = occ::down_cast<Geom2d_BSplineCurve>(aPC))
+    {
+      // a reversed edge is loaded reversed (BRepGProp_Face::Load), its
+      // parameter mirrored
+      NCollection_Array1<double> aKnots(aBC->Knots());
+      if (theEdge.Orientation() == TopAbs_REVERSED)
+      {
+        const int aNbK = aKnots.Length();
+        for (int i = 0; i < aNbK; ++i)
+        {
+          aKnots(aKnots.Lower() + i) = aBC->ReversedParameter(aBC->Knot(aBC->LastUKnotIndex() - i));
+        }
+      }
+      anOrder = spanKnots(aKnots,
+                          aBC->Degree(),
+                          aBC->IsRational(),
+                          aBC->IsPeriodic() ? aBC->Period() : 0.,
+                          theL1,
+                          theL2,
+                          aBreaks);
+    }
   }
   // where the curve crosses a surface knot: found on a sampling of the
   // curve, then by halving
@@ -460,6 +510,14 @@ static int edgeBreaks(const BRepGProp_Face&             theSurface,
       for (int k = 0; k < aKnots.Length(); ++k)
       {
         const double aK = aKnots(k);
+        // a sample on the knot is the crossing (an edge across an iso line,
+        // the knot at a simple fraction of its range); the next one, starting
+        // there, has nothing to add, nor an edge along the knot's iso line
+        if (aCur == aK && aPrev != aK)
+        {
+          aBreaks.Append(aL);
+          continue;
+        }
         if ((aPrev - aK) * (aCur - aK) >= 0.)
         {
           continue;
@@ -1596,7 +1654,8 @@ void BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
     math::GaussPoints(NbCGaussgp_Pnts, GaussCP);
     math::GaussWeights(NbCGaussgp_Pnts, GaussCW);
 
-    const int anEdgeOrder = edgeBreaks(theSurface, l1, l2, aUKnots, aVKnots, aBreaks);
+    const int anEdgeOrder =
+      edgeBreaks(theSurface, theDomain.Value(), l1, l2, aUKnots, aVKnots, aBreaks);
     if (aBreaks.Length() > 2 || !aUKnots.IsEmpty())
     {
       const int   aSpanOrder = std::min(std::max({8, aSurfOrder, anEdgeOrder}), GPM);
@@ -1733,7 +1792,8 @@ void BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
     math::GaussPoints(aNbGaussgp_Pnts, GaussP);
     math::GaussWeights(aNbGaussgp_Pnts, GaussW);
 
-    const int anEdgeOrder = edgeBreaks(theSurface, l1, l2, aUKnots, aVKnots, aBreaks);
+    const int anEdgeOrder =
+      edgeBreaks(theSurface, theDomain.Value(), l1, l2, aUKnots, aVKnots, aBreaks);
     if (aBreaks.Length() > 2 || !aUKnots.IsEmpty())
     {
       const int   aSpanOrder = std::min(std::max({8, aSurfOrder, anEdgeOrder}), GPM);
