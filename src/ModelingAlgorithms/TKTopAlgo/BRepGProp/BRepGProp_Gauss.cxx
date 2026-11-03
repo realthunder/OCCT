@@ -1044,6 +1044,31 @@ double BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
   NCollection_Array1<double> UKnots(1, aNbUSubs + 1);
   theSurface.UKnots(UKnots);
 
+  // The refinement starts from the breaks the plain integral takes as well
+  // (surfaceSpanKnots): an extrusion's or a revolution's B-spline curve's
+  // knots, an offset's basis's, where the normal turns unevenly -- not one
+  // interval over all of them, which the refinement's bisections (32 a
+  // starting interval at most) could not resolve.
+  NCollection_Vector<double> aSpanU, aSpanV;
+  surfaceSpanKnots(theSurface.GetFace(), BU1, BU2, BV1, BV2, aSpanU, aSpanV);
+  auto aMerge = [](NCollection_Array1<double>&       theKnots,
+                   const NCollection_Vector<double>& theAdd) {
+    if (theAdd.IsEmpty())
+    {
+      return;
+    }
+    std::vector<double> anAll(theKnots.begin(), theKnots.end());
+    anAll.insert(anAll.end(), theAdd.begin(), theAdd.end());
+    std::sort(anAll.begin(), anAll.end());
+    anAll.erase(std::unique(anAll.begin(), anAll.end()), anAll.end());
+    theKnots.Resize(1, static_cast<int>(anAll.size()), false);
+    for (int k = 0; k < static_cast<int>(anAll.size()); ++k)
+    {
+      theKnots(k + 1) = anAll[k];
+    }
+  };
+  aMerge(UKnots, aSpanU);
+
   while (isNaturalRestriction || theDomain.More())
   {
     if (isNaturalRestriction)
@@ -1072,6 +1097,7 @@ double BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
     if (isNaturalRestriction)
     {
       theSurface.VKnots(LKnots);
+      aMerge(LKnots, aSpanV);
       l1 = BV1;
       l2 = BV2;
     }
@@ -1249,8 +1275,10 @@ double BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
                     {
                       BRepGProp_Gauss::Inertia aLocal[2];
 
-                      int       iUS     = URange[kU];
-                      const int aLength = iGLEnd - iGL;
+                      int iUS = URange[kU];
+                      // both rules where u is refined: the error estimate
+                      // steers it on either rule along the edge
+                      const int aLength = isVerifyComputation ? 2 : iGLEnd - iGL;
 
                       const double um = 0.5 * (U2->Value(iUS) + U1->Value(iUS));
                       const double ur = 0.5 * (U2->Value(iUS) - U1->Value(iUS));
@@ -1305,6 +1333,11 @@ double BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
 
                       if (iGL > 0)
                       {
+                        if (aLength == 2)
+                        {
+                          ErrU->Value(iUS) =
+                            mult(std::abs(aLocal[1].Mass - aLocal[0].Mass), ur);
+                        }
                         continue;
                       }
 
@@ -1347,9 +1380,29 @@ double BRepGProp_Gauss::Compute(BRepGProp_Face&   theSurface,
                     }
                   }
 
+                  // The integral across u is refined to the precision asked,
+                  // relative to its own size, as the one along the edge is:
+                  // EpsU was never set but where the refinement gave up, and
+                  // ErrorU never updated after the first pass, so one rule
+                  // over the surface's spans (the whole range of an
+                  // extrusion, a revolution, an offset) was all it took --
+                  // #617's prisms 80% short in volume, the error reported
+                  // 1e-13.
                   if (JU == iUSubEnd)
                   {
-                    kUEnd  = 2;
+                    kUEnd = 2;
+                    if (isVerifyComputation)
+                    {
+                      double aDimU = 0.0;
+                      for (i = 1; i <= JU; ++i)
+                      {
+                        aDimU += std::abs(anInertiaU->Value(i).Mass);
+                      }
+                      EpsU = anEpsilon * aDimU;
+                    }
+                  }
+                  if (kUEnd == 2)
+                  {
                     ErrorU = ErrU->Value(ErrU->Max());
                   }
                 } while ((ErrorU - EpsU > 0.0 && EpsU != 0.0) || kUEnd == 1);
