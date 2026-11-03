@@ -6570,7 +6570,8 @@ void BRepOffset_MakeOffset::CorrectConicalFaces()
     FacesOfCone;
   // NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> DegEdges;
   TopExp_Explorer Explo(myOffsetShape, TopAbs_FACE);
-  if (myJoin == GeomAbs_Arc)
+  // Either join: the Intersection join too leaves a dimple's apex open
+  // (BRepOffset_Offset::Init), for the sphere.
   {
     for (; Explo.More(); Explo.Next())
     {
@@ -6622,7 +6623,7 @@ void BRepOffset_MakeOffset::CorrectConicalFaces()
         }
       } // for (i = 1; i <= Emap.Extent(); i++)
     } // for (; fexp.More(); fexp.Next())
-  } // if (myJoin == GeomAbs_Arc)
+  }
 
   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>::
     Iterator      Cone(FacesOfCone);
@@ -6665,6 +6666,19 @@ void BRepOffset_MakeOffset::CorrectConicalFaces()
       BB.SameParameter(CurEdge, false);
       gp_Pnt fPnt, lPnt, mPnt;
       GetEdgePoints(CurEdge, aFace, fPnt, mPnt, lPnt);
+      {
+        // A circle on one vertex ends where it starts. Taken off the face's
+        // surface at both ends of the pole's iso, the two can stand apart --
+        // a B-spline offset is unstable at its pole (issue #346's dome with
+        // the Intersection join, 3e-5): the sphere then stopped short of a
+        // whole turn, its seam two edges each on one face.
+        TopoDS_Vertex aV1, aV2;
+        TopExp::Vertices(CurEdge, aV1, aV2);
+        if (!aV1.IsNull() && aV1.IsSame(aV2))
+        {
+          lPnt = fPnt;
+        }
+      }
       double f, l;
       BRep_Tool::Range(CurEdge, f, l);
       if (isFirstFace)

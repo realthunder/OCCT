@@ -509,8 +509,11 @@ void TopTools_ShapeSet::Write(Standard_OStream& OS, const Message_ProgressRange&
   // always use C locale for writing shapes
   std::locale anOldLocale = OS.imbue(std::locale::classic());
 
-  // use 15-digit precision
-  std::streamsize prec = OS.precision(15);
+  // 17 digits, as the curves and surfaces are written (GeomTools): every
+  // double read back as it was. At 15 an edge's range ending on a pole came
+  // back 1.5e-15 past it, where the offset of a B-spline dome turns over
+  // (issue #346, the Intersection join): valid in memory, invalid read back.
+  std::streamsize prec = OS.precision(17);
 
   // write the copyright
   OS << "\n" << THE_ASCII_VERSIONS[myFormatNb] << "\n";

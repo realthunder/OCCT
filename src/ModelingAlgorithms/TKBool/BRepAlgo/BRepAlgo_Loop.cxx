@@ -574,6 +574,41 @@ static bool IsInOnePeriod(
 
 //=================================================================================================
 
+// A degenerated edge is the pole of its face, a point. One that has been
+// left open round its pole is not: an offset that stops short of the axis it
+// would meet at a dimple (BRepOffset_Offset leaves the gap for
+// BRepOffset_MakeOffset::CorrectConicalFaces' sphere) keeps the flag on a
+// small circle. That circle bounds the face as any closed edge does.
+
+static bool IsPole(const TopoDS_Edge& theE, const TopoDS_Face& theF)
+{
+  if (!BRep_Tool::Degenerated(theE))
+  {
+    return false;
+  }
+  double                          aF, aL;
+  const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, theF, aF, aL);
+  if (aC2d.IsNull())
+  {
+    return true;
+  }
+  const occ::handle<Geom_Surface> aS   = BRep_Tool::Surface(theF);
+  const double                    aTol = std::max(BRep_Tool::Tolerance(theE), Precision::Confusion());
+  const gp_Pnt2d                  aUV1 = aC2d->Value(aF);
+  const gp_Pnt                    aP1  = aS->Value(aUV1.X(), aUV1.Y());
+  for (int i = 1; i <= 3; ++i)
+  {
+    const gp_Pnt2d aUV = aC2d->Value(aF + i * (aL - aF) / 4.);
+    if (aP1.Distance(aS->Value(aUV.X(), aUV.Y())) > aTol)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//=================================================================================================
+
 static void StoreInMVE(
   const TopoDS_Face& F,
   TopoDS_Edge&       E,
@@ -2635,7 +2670,7 @@ void BRepAlgo_Loop::FindLoop()
       TopoDS_Edge& E = TopoDS::Edge(itl1.ChangeValue());
       if (!aDuplicates.Contains(E) && Emap.Add(E))
       {
-        if (BRep_Tool::Degenerated(E))
+        if (IsPole(E, myFace))
         {
           if (hasPCurve(E))
           {
@@ -2657,7 +2692,7 @@ void BRepAlgo_Loop::FindLoop()
     TopoDS_Edge& E = TopoDS::Edge(itl.ChangeValue());
     if (!aDuplicates.Contains(E) && DejaVu.Add(E))
     {
-      if (BRep_Tool::Degenerated(E))
+      if (IsPole(E, myFace))
       {
         if (hasPCurve(E))
         {

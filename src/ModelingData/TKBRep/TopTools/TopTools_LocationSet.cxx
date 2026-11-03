@@ -182,7 +182,8 @@ void TopTools_LocationSet::Write(Standard_OStream&            OS,
                                  const Message_ProgressRange& theProgress) const
 {
 
-  std::streamsize prec = OS.precision(15);
+  // 17 digits: every double read back as it was (TopTools_ShapeSet::Write).
+  std::streamsize prec = OS.precision(17);
 
   int i, nbLoc = myMap.Extent();
   OS << "Locations " << nbLoc << "\n";

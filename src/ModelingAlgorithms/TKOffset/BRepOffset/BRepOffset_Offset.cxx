@@ -470,9 +470,11 @@ void BRepOffset_Offset::Init(const TopoDS_Face&     Face,
 // point leaves a gap outwards and is crossed inwards. At a dimple (a
 // meridian reaching its axis going back down) it is the other way round,
 // and the trim inwards projected a point beyond the end of the surface:
-// nothing found, and a throw. With the Arc join such a gap is left open
-// now, for the sphere round the apex to close
-// (BRepOffset_MakeOffset::CorrectConicalFaces), as one is outwards.
+// nothing found, and a throw. At a dimple the end is left open now, for the
+// sphere round the apex to close (BRepOffset_MakeOffset::CorrectConicalFaces):
+// the gap inwards, and with the Intersection join the crossing outwards too,
+// as the Arc join leaves every end outwards (its extension ran on through
+// the axis, and the offset came out folded over the apex).
 
 static bool IsApexBeyondEnd(const gp_Pnt& thePFirst,
                             const gp_Pnt& thePInt,
@@ -676,10 +678,10 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            // A gap at a dimple, inwards, is left open for the sphere round the
-            // apex (see IsApexBeyondEnd).
+            // At a dimple the end is left open for the sphere round the apex
+            // (see IsApexBeyondEnd).
             const bool isOpen =
-              JoinType == GeomAbs_Arc && IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false);
+              IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false) != OffsetOutside;
             if (isOpen)
             {
             }
@@ -724,10 +726,10 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            // A gap at a dimple, inwards, is left open for the sphere round the
-            // apex (see IsApexBeyondEnd).
+            // At a dimple the end is left open for the sphere round the apex
+            // (see IsApexBeyondEnd).
             const bool isOpen =
-              JoinType == GeomAbs_Arc && IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true);
+              IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true) != OffsetOutside;
             if (isOpen)
             {
             }
@@ -772,10 +774,10 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            // A gap at a dimple, inwards, is left open for the sphere round the
-            // apex (see IsApexBeyondEnd).
+            // At a dimple the end is left open for the sphere round the apex
+            // (see IsApexBeyondEnd).
             const bool isOpen =
-              JoinType == GeomAbs_Arc && IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false);
+              IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false) != OffsetOutside;
             if (isOpen)
             {
             }
@@ -822,10 +824,10 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            // A gap at a dimple, inwards, is left open for the sphere round the
-            // apex (see IsApexBeyondEnd).
+            // At a dimple the end is left open for the sphere round the apex
+            // (see IsApexBeyondEnd).
             const bool isOpen =
-              JoinType == GeomAbs_Arc && IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true);
+              IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true) != OffsetOutside;
             if (isOpen)
             {
             }
