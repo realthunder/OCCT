@@ -1705,6 +1705,108 @@ static void MapFreeBounds(
   }
 }
 
+namespace
+{
+struct TurnShare
+{
+  double        First, Last;
+  TopoDS_Vertex V1, V2;
+};
+} // namespace
+
+static void ShareArcs(
+  const NCollection_IndexedDataMap<TopoDS_Shape,
+                                   NCollection_List<TopoDS_Shape>,
+                                   TopTools_ShapeMapHasher>&                       aByFace,
+  NCollection_DataMap<TopoDS_Shape, TurnShare, TopTools_ShapeMapHasher>&           theShares,
+  const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theCapOf = nullptr);
+
+//=======================================================================
+// function : ShareSection
+// purpose  : A cap's section with an offset face that is one closed edge --
+//            the whole circle the offsets of the caps' arcs lie on (a groove
+//            across a cylinder's end, both sides of it removed) -- given out
+//            to <theOwners>, the cap's edges on that face: each the piece of
+//            the circle from the gap before its arc to the gap after it
+//            (ShareArcs), ending on the vertices the caps beyond take too.
+//            Given whole, the circle lay on the other caps' pieces and the
+//            offset face's loops took the slivers between them.
+//=======================================================================
+static bool ShareSection(
+  const TopoDS_Edge&                                                                   theSec,
+  const NCollection_List<TopoDS_Shape>&                                                theOwners,
+  const TopoDS_Shape&                                                                  theF,
+  const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& theMapSF,
+  const NCollection_DataMap<TopoDS_Shape, TurnShare, TopTools_ShapeMapHasher>&         theShares,
+  NCollection_List<TopoDS_Shape>&                                                      thePieces)
+{
+  double                        aF, aL;
+  const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(theSec, aF, aL);
+  if (aC.IsNull() || !aC->IsPeriodic() || theOwners.IsEmpty())
+  {
+    return false;
+  }
+  const double aP     = aC->Period();
+  const double aTolPC = GeomAdaptor_Curve(aC).Resolution(BRep_Tool::Tolerance(theSec) + 1.e-7);
+  if (std::abs(aL - aF - aP) > aTolPC)
+  {
+    return false;
+  }
+  auto aMod = [aP](double theU) {
+    double aU = std::fmod(theU, aP);
+    return aU < 0. ? aU + aP : aU;
+  };
+  auto aParam = [&aC](const gp_Pnt& theP, double& theU) {
+    GeomAPI_ProjectPointOnCurve aProj(theP, aC);
+    if (aProj.NbPoints() == 0)
+    {
+      return false;
+    }
+    theU = aProj.LowerDistanceParameter();
+    return true;
+  };
+  NCollection_List<TopoDS_Shape> aPieces;
+  for (NCollection_List<TopoDS_Shape>::Iterator it(theOwners); it.More(); it.Next())
+  {
+    const TopoDS_Shape aOE  = theMapSF(theF).Generated(it.Value());
+    const TurnShare*   aShr = aOE.IsNull() ? nullptr : theShares.Seek(aOE);
+    if (aShr == nullptr)
+    {
+      return false;
+    }
+    BRepAdaptor_Curve aCO(TopoDS::Edge(aOE));
+    double            u1, u2, um;
+    if (!aParam(BRep_Tool::Pnt(aShr->V1), u1) || !aParam(BRep_Tool::Pnt(aShr->V2), u2)
+        || !aParam(aCO.Value(0.5 * (aCO.FirstParameter() + aCO.LastParameter())), um))
+    {
+      return false;
+    }
+    // The piece holding the arc's middle, the way the section runs.
+    TopoDS_Vertex aV1 = aShr->V1, aV2 = aShr->V2;
+    double        aS  = aF + aMod(u1 - aF), aLen = aMod(u2 - u1);
+    if (aMod(um - u1) > aLen)
+    {
+      std::swap(aV1, aV2);
+      aS   = aF + aMod(u2 - aF);
+      aLen = aMod(u1 - u2);
+    }
+    if (aLen < aTolPC)
+    {
+      return false;
+    }
+    TopoDS_Edge aNE = TopoDS::Edge(theSec.EmptyCopied().Oriented(TopAbs_FORWARD));
+    BRep_Builder aBB;
+    aBB.Range(aNE, aS, aS + aLen);
+    aBB.Add(aNE, aV1.Oriented(TopAbs_FORWARD));
+    aBB.Add(aNE, aV2.Oriented(TopAbs_REVERSED));
+    aBB.UpdateVertex(aV1, aS, aNE, BRep_Tool::Tolerance(aV1));
+    aBB.UpdateVertex(aV2, aS + aLen, aNE, BRep_Tool::Tolerance(aV2));
+    aPieces.Append(aNE);
+  }
+  thePieces = aPieces;
+  return true;
+}
+
 //=================================================================================================
 
 void BRepOffset_Inter3d::ContextIntByInt(
@@ -1735,6 +1837,53 @@ void BRepOffset_Inter3d::ContextIntByInt(
 
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFree;
   MapFreeBounds(ContextFaces, Analyse, aFree);
+
+  // The offsets of the caps' arcs, by the offset face they lie on, shared
+  // out as ContextIntByArc shares them (ShareTurns).
+  NCollection_DataMap<TopoDS_Shape, TurnShare, TopTools_ShapeMapHasher> aShares;
+  {
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+                                                           aByFace;
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>                   aSeen;
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aCapOf;
+    for (i = 1; i <= ContextFaces.Extent(); ++i)
+    {
+      const TopoDS_Face& aCF = TopoDS::Face(ContextFaces(i));
+      for (exp.Init(aCF, TopAbs_EDGE); exp.More(); exp.Next())
+      {
+        const TopoDS_Edge& aE = TopoDS::Edge(exp.Current());
+        if (!Analyse.HasAncestor(aE) || !Analyse.EdgeReplacement(aCF, aE).IsSame(aE))
+        {
+          continue;
+        }
+        const TopoDS_Shape& aF = Analyse.Ancestors(aE).First();
+        if (!MapSF.IsBound(aF))
+        {
+          continue;
+        }
+        const TopoDS_Shape aOE = MapSF(aF).Generated(aE);
+        if (aOE.IsNull() || aOE.ShapeType() != TopAbs_EDGE || !aSeen.Add(aOE))
+        {
+          continue;
+        }
+        TopoDS_Vertex aV1, aV2;
+        TopExp::Vertices(TopoDS::Edge(aOE), aV1, aV2);
+        if (aV1.IsNull() || aV2.IsNull() || aV1.IsSame(aV2)
+            || !BRepAdaptor_Curve(TopoDS::Edge(aOE)).IsPeriodic())
+        {
+          continue;
+        }
+        const TopoDS_Shape& aOF = MapSF(aF).Face();
+        if (!aByFace.Contains(aOF))
+        {
+          aByFace.Add(aOF, NCollection_List<TopoDS_Shape>());
+        }
+        aByFace.ChangeFromKey(aOF).Append(aOE);
+        aCapOf.Bind(aOE, aCF);
+      }
+    }
+    ShareArcs(aByFace, aShares, &aCapOf);
+  }
 
   aNb = ContextFaces.Extent();
   for (i = 1; i <= aNb; i++)
@@ -2025,6 +2174,33 @@ void BRepOffset_Inter3d::ContextIntByInt(
           }
           SetDone(NF, CF);
           BRepOffset_Tool::StartSectionsFarFrom(bEdge ? TopoDS_Shape(E) : aS, WCF, NF, LInt1, LInt2);
+          // A whole circle the arcs of other caps lie on too: each edge of
+          // the cap its share of it.
+          if (bEdge && LInt1.Extent() == 1 && !aShares.IsEmpty())
+          {
+            NCollection_List<TopoDS_Shape> aOwners, aPieces;
+            if (aRefEdges.Extent() > 1)
+            {
+              aOwners = aRefEdges;
+            }
+            else
+            {
+              aOwners.Append(E);
+            }
+            if (ShareSection(TopoDS::Edge(LInt1.First()), aOwners, F, MapSF, aShares, aPieces))
+            {
+              const TopAbs_Orientation aO1 = LInt1.First().Orientation();
+              const TopAbs_Orientation aO2 = LInt2.First().Orientation();
+              LInt1.Clear();
+              LInt2.Clear();
+              for (it.Initialize(aPieces); it.More(); it.Next())
+              {
+                LInt1.Append(it.Value().Oriented(aO1));
+                LInt2.Append(it.Value().Oriented(aO2));
+              }
+              SHOW_TOPO_SHAPE(CF, "ContextSectionShared", LInt1);
+            }
+          }
           // Each piece to the edge it is nearest, if every edge has one.
           NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> anOwner;
           if (aRefEdges.Extent() > 1)
@@ -2161,15 +2337,6 @@ void BRepOffset_Inter3d::ContextIntByInt(
 //            <theShares> gets, for each such offset edge, its stretched range
 //            on its own curve and the vertices at its new ends.
 //=======================================================================
-namespace
-{
-struct TurnShare
-{
-  double        First, Last;
-  TopoDS_Vertex V1, V2;
-};
-} // namespace
-
 static void ShareTurns(
   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>&   theContextFaces,
   const BRepOffset_Analyse&                                              theAnalyse,
@@ -2217,6 +2384,22 @@ static void ShareTurns(
       aByFace.ChangeFromKey(aOF).Append(aOE);
     }
   }
+  ShareArcs(aByFace, theShares);
+}
+
+//=======================================================================
+// function : ShareArcs
+// purpose  : ShareTurns' sharing, over the offset edges of the caps' edges
+//            by the offset face they lie on: arcs of one circle each
+//            stretched to the middle of the gaps either side of it.
+//=======================================================================
+static void ShareArcs(
+  const NCollection_IndexedDataMap<TopoDS_Shape,
+                                   NCollection_List<TopoDS_Shape>,
+                                   TopTools_ShapeMapHasher>&                       aByFace,
+  NCollection_DataMap<TopoDS_Shape, TurnShare, TopTools_ShapeMapHasher>&           theShares,
+  const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>* theCapOf)
+{
   for (int i = 1; i <= aByFace.Extent(); ++i)
   {
     NCollection_List<TopoDS_Shape> aRest = aByFace(i);
@@ -2280,6 +2463,23 @@ static void ShareTurns(
       if (aOn.Extent() < 2)
       {
         continue;
+      }
+      // With <theCapOf>, only a circle the arcs of two caps or more lie on:
+      // one cap's arc that the seam splits keeps the whole circle.
+      if (theCapOf != nullptr)
+      {
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aCaps;
+        for (NCollection_List<TopoDS_Shape>::Iterator it(aOn); it.More(); it.Next())
+        {
+          if (const TopoDS_Shape* aCap = theCapOf->Seek(it.Value()))
+          {
+            aCaps.Add(*aCap);
+          }
+        }
+        if (aCaps.Extent() < 2)
+        {
+          continue;
+        }
       }
       // The middle of the gap after each arc's end, a vertex there.
       const size_t               aN = aStart.size();
