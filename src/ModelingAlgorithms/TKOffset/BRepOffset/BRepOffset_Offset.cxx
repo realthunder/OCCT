@@ -487,6 +487,56 @@ static bool IsApexBeyondEnd(const gp_Pnt& thePFirst,
 
 //=================================================================================================
 
+// The offset of a face ending at a point, carried on to the apex by an
+// extension (the end opposite a dimple's, see IsApexBeyondEnd): the extension
+// is an approximation, and its end ran round a loop where the face ends at the
+// apex -- 1.3e-3 across on a dome with a peaked top, offset outwards with the
+// Intersection join -- that BRepOffset_MakeOffset::CorrectConicalFaces took
+// for an open end and closed by a sphere the dome's edge did not lie on. The
+// end row of a clamped B-spline's poles is its end: made the apex, the end is
+// that point.
+static gp_Pnt EndAtApex(const occ::handle<Geom_Surface>& theSurf,
+                        const bool                       theIsU,
+                        const bool                       theIsLast,
+                        const double                     theOther)
+{
+  double aU1, aU2, aV1, aV2;
+  theSurf->Bounds(aU1, aU2, aV1, aV2);
+  const double aEnd  = theIsU ? (theIsLast ? aU2 : aU1) : (theIsLast ? aV2 : aV1);
+  const gp_Pnt anApex = theIsU ? theSurf->Value(aEnd, theOther) : theSurf->Value(theOther, aEnd);
+  const occ::handle<Geom_BSplineSurface> aBS = occ::down_cast<Geom_BSplineSurface>(theSurf);
+  if (aBS.IsNull() || (theIsU ? aBS->IsUPeriodic() : aBS->IsVPeriodic()))
+  {
+    return anApex;
+  }
+  const int aNbK = theIsU ? aBS->NbUKnots() : aBS->NbVKnots();
+  const int aMult =
+    theIsU ? aBS->UMultiplicity(theIsLast ? aNbK : 1) : aBS->VMultiplicity(theIsLast ? aNbK : 1);
+  if (aMult != (theIsU ? aBS->UDegree() : aBS->VDegree()) + 1)
+  {
+    return anApex;
+  }
+  if (theIsU)
+  {
+    const int i = theIsLast ? aBS->NbUPoles() : 1;
+    for (int j = 1; j <= aBS->NbVPoles(); ++j)
+    {
+      aBS->SetPole(i, j, anApex);
+    }
+  }
+  else
+  {
+    const int j = theIsLast ? aBS->NbVPoles() : 1;
+    for (int i = 1; i <= aBS->NbUPoles(); ++i)
+    {
+      aBS->SetPole(i, j, anApex);
+    }
+  }
+  return anApex;
+}
+
+//=================================================================================================
+
 void BRepOffset_Offset::Init(
   const TopoDS_Face&                                                              Face,
   const double                                                                    Offset,
@@ -691,9 +741,7 @@ void BRepOffset_Offset::Init(
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
               GeomLib::ExtendSurfByLength(aSurf, length, 1, true, false);
               TheSurf = aSurf;
-              double u1, u2, v1, v2;
-              TheSurf->Bounds(u1, u2, v1, v2);
-              MinApex = TheSurf->Value(u1, vf1);
+              MinApex = EndAtApex(TheSurf, true, false, vf1);
             }
             else
             {
@@ -739,9 +787,7 @@ void BRepOffset_Offset::Init(
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
               GeomLib::ExtendSurfByLength(aSurf, length, 1, true, true);
               TheSurf = aSurf;
-              double u1, u2, v1, v2;
-              TheSurf->Bounds(u1, u2, v1, v2);
-              MaxApex = TheSurf->Value(u2, vf1);
+              MaxApex = EndAtApex(TheSurf, true, true, vf1);
             }
             else
             {
@@ -787,9 +833,7 @@ void BRepOffset_Offset::Init(
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
               GeomLib::ExtendSurfByLength(aSurf, length, 1, false, false);
               TheSurf = aSurf;
-              double u1, u2, v1, v2;
-              TheSurf->Bounds(u1, u2, v1, v2);
-              MinApex = TheSurf->Value(uf1, v1);
+              MinApex = EndAtApex(TheSurf, false, false, uf1);
             }
             else
             {
@@ -837,9 +881,7 @@ void BRepOffset_Offset::Init(
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
               GeomLib::ExtendSurfByLength(aSurf, length, 1, false, true);
               TheSurf = aSurf;
-              double u1, u2, v1, v2;
-              TheSurf->Bounds(u1, u2, v1, v2);
-              MaxApex = TheSurf->Value(uf1, v2);
+              MaxApex = EndAtApex(TheSurf, false, true, uf1);
             }
             else
             {

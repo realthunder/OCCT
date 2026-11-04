@@ -522,6 +522,33 @@ static bool IsClosedInUV(const TopoDS_Wire& theWire, const TopoDS_Face& theFace)
 
 //=================================================================================================
 
+// Whether one of the edges is a seam of the face running from one vertex to
+// another -- a meridian, from a rim to a pole or between two rims -- not a
+// closed edge lying on the seam.
+static bool HasSeamAcross(
+  const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+                     theMVE,
+  const TopoDS_Face& theFace)
+{
+  for (int i = 1; i <= theMVE.Extent(); ++i)
+  {
+    for (NCollection_List<TopoDS_Shape>::Iterator it(theMVE(i)); it.More(); it.Next())
+    {
+      const TopoDS_Edge& anEdge = TopoDS::Edge(it.Value());
+      TopoDS_Vertex      aV1, aV2;
+      TopExp::Vertices(anEdge, aV1, aV2);
+      if (!aV1.IsNull() && !aV2.IsNull() && !aV1.IsSame(aV2)
+          && BRep_Tool::IsClosed(anEdge, theFace))
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+//=================================================================================================
+
 // Whether the edges of a periodic face all lie within one period, none of
 // them a seam: then its (u, v) is a chart of the whole network, as a plane's
 // is, and the network's minimal wires are found the same way -- a fillet
@@ -2723,6 +2750,18 @@ void BRepAlgo_Loop::FindLoop()
   TopLoc_Location           L;
   occ::handle<Geom_Surface> S          = BRep_Tool::Surface(myFace, L);
   bool                      IsPeriodic = S->IsUPeriodic() || S->IsVPeriodic();
+  // A seam across the face makes its search a periodic one, whether or not
+  // the surface says it is periodic: the walk by angle takes an edge's one
+  // pcurve both ways, and a seam's other side is its other pcurve. A dome
+  // offset with the Intersection join is a B-spline closed in u, not
+  // periodic: its face came out of the walk with the seam's two sides each
+  // where the other should be, a wire open in (u, v), or -- the dome ending
+  // at a pole -- with no wire at all.
+  if (!IsPeriodic && YaCouture && HasSeamAcross(MVE, myFace))
+  {
+    IsPeriodic = true;
+    SHOW_TOPO_SHAPE(myFace, "LoopSeamAcross");
+  }
   if (IsPeriodic && DegenEdges.IsEmpty() && IsInOnePeriod(MVE, myFace, S))
   {
     IsPeriodic = false;
