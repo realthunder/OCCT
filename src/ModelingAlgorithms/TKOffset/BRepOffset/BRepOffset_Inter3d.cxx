@@ -1892,7 +1892,9 @@ void BRepOffset_Inter3d::ContextIntByInt(
     myTouched.Add(CF);
     if (ExtentContext)
     {
-      BRepOffset_Tool::EnLargeFace(CF, NF, false, false);
+      // Taken round as far as the Arc join's stop face is
+      // (BRepOffset_Tool::ExtentFace): #521's cylinder removed.
+      BRepOffset_Tool::EnLargeFace(CF, NF, false, false, true, true, true, 3);
       MES.Bind(CF, NF);
     }
   }

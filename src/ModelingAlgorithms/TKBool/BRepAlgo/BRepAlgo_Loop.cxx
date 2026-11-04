@@ -587,12 +587,15 @@ static bool IsInOnePeriod(
       }
     }
   }
-  // Short of a whole period by more than the sampling can miss.
-  if (theSurf->IsUPeriodic() && aUMax - aUMin > 0.9 * theSurf->UPeriod())
+  // Short of a whole period by more than the sampling can miss: a hundredth.
+  // Nine tenths was too little -- the lips of #521's three-quarter cylinder,
+  // removed from a thickness of half its radius, reach 30 degrees past each
+  // of its ends, 330 degrees in all.
+  if (theSurf->IsUPeriodic() && aUMax - aUMin > 0.99 * theSurf->UPeriod())
   {
     return false;
   }
-  if (theSurf->IsVPeriodic() && aVMax - aVMin > 0.9 * theSurf->VPeriod())
+  if (theSurf->IsVPeriodic() && aVMax - aVMin > 0.99 * theSurf->VPeriod())
   {
     return false;
   }
@@ -2684,6 +2687,57 @@ void BRepAlgo_Loop::FindLoop()
     return !aC2d.IsNull() && aC2d->Value(aF).Distance(aC2d->Value(aL)) > Precision::PConfusion();
   };
 
+  // A piece of an edge closed on the face's surface, its two pcurves a
+  // period apart, of which the face reaches only one: the face is taken at
+  // most a period round, and the piece is no seam of it. #521's three-quarter
+  // cylinder has its edge at 2 pi closed so, used once; its pieces on the
+  // removed cylinder, enlarged a whole turn from 45 degrees, made the face a
+  // seamed one and its search a periodic one, which found ten faces lying
+  // over each other where the lips are four.
+  auto keepFacesSide = [this](const TopoDS_Edge& theE) {
+    if (!BRep_Tool::IsClosed(theE, myFace))
+    {
+      return;
+    }
+    const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(myFace);
+    double                          aU1, aU2, aV1, aV2;
+    BRepTools::UVBounds(myFace, aU1, aU2, aV1, aV2);
+    const TopoDS_Edge aFwd = TopoDS::Edge(theE.Oriented(TopAbs_FORWARD));
+    const TopoDS_Edge aRev = TopoDS::Edge(theE.Oriented(TopAbs_REVERSED));
+    double            aF1, aL1, aF2, aL2;
+    const occ::handle<Geom2d_Curve> aC1 = BRep_Tool::CurveOnSurface(aFwd, myFace, aF1, aL1);
+    const occ::handle<Geom2d_Curve> aC2 = BRep_Tool::CurveOnSurface(aRev, myFace, aF2, aL2);
+    if (aC1.IsNull() || aC2.IsNull())
+    {
+      return;
+    }
+    const gp_Pnt2d aM1 = aC1->Value((aF1 + aL1) / 2.), aM2 = aC2->Value((aF2 + aL2) / 2.);
+    const double   aTol = Precision::PConfusion();
+    for (int k = 0; k < 2; ++k)
+    {
+      const bool isU = k == 0;
+      if (!(isU ? aSurf->IsUPeriodic() : aSurf->IsVPeriodic()))
+      {
+        continue;
+      }
+      const double aP = isU ? aSurf->UPeriod() : aSurf->VPeriod();
+      const double aLo = isU ? aU1 : aV1, aHi = isU ? aU2 : aV2;
+      if (aHi - aLo > aP + aTol)
+      {
+        continue;
+      }
+      const double aX1 = isU ? aM1.X() : aM1.Y(), aX2 = isU ? aM2.X() : aM2.Y();
+      const bool   isIn1 = aX1 > aLo - aTol && aX1 < aHi + aTol;
+      const bool   isIn2 = aX2 > aLo - aTol && aX2 < aHi + aTol;
+      if (isIn1 != isIn2)
+      {
+        BRep_Builder().UpdateEdge(aFwd, isIn1 ? aC1 : aC2, myFace, BRep_Tool::Tolerance(aFwd));
+        SHOW_TOPO_SHAPE(theE, "KeepFacesSide");
+        return;
+      }
+    }
+  };
+
   // add cut edges (in the order the edges were cut - hash order here would
   // make vertex canonicalization and loop discovery nondeterministic).
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> Emap;
@@ -2704,6 +2758,10 @@ void BRepAlgo_Loop::FindLoop()
             DegenEdges.Append(E);
           }
           continue;
+        }
+        if (!E.IsSame(itM.Key()))
+        {
+          keepFacesSide(E);
         }
         StoreInMVE(myFace, E, MVE, YaCouture, myVerticesForSubstitute, myTolConf);
       }

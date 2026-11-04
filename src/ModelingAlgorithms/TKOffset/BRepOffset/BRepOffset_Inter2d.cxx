@@ -993,6 +993,49 @@ static void RefEdgeInter(
   }
 
   Geom2dInt_GInter Inter2d(GAC1, GAC2, TolDub, TolDub);
+  // On a periodic surface the two may cross a period off: #521's cylinder,
+  // removed from a thickness and taken round a whole turn from 45 degrees,
+  // has the inner top's section from 75 degrees on to 375, and the cylinder's
+  // edge at 2 pi -- closed, with a pcurve at 0 as well -- read at 0 was not
+  // met. The section was never cut there, and the lip past the edge never
+  // closed (the Intersection join refused inwards). Only crossings inside
+  // both are taken: one a period off at an end is the two's common vertex
+  // read across the seam -- #363's Thickness001, both bottoms removed, its
+  // bottoms' quarter arcs at the side's seam line -- and cutting there lost
+  // the shell.
+  Geom2dAdaptor_Curve aGAC2Shifted;
+  if (Inter2d.IsDone() && !Inter2d.NbPoints() && !Inter2d.NbSegments()
+      && (BAsurf.IsUPeriodic() || BAsurf.IsVPeriodic()))
+  {
+    const double aTolT1  = GAC1.Resolution(Precision::Confusion());
+    const double aTolT2  = GAC2.Resolution(Precision::Confusion());
+    bool         isFound = false;
+    for (int k = 0; k < 4 && !isFound; ++k)
+    {
+      const bool isU = k < 2;
+      if (!(isU ? BAsurf.IsUPeriodic() : BAsurf.IsVPeriodic()))
+      {
+        continue;
+      }
+      const double aP = (k % 2 ? -1. : 1.) * (isU ? BAsurf.UPeriod() : BAsurf.VPeriod());
+      occ::handle<Geom2d_Curve> aShifted = occ::down_cast<Geom2d_Curve>(
+        pcurve2->Translated(isU ? gp_Vec2d(aP, 0.) : gp_Vec2d(0., aP)));
+      aGAC2Shifted.Load(aShifted, f[2], l[2]);
+      Inter2d.Perform(GAC1, aGAC2Shifted, TolDub, TolDub);
+      isFound = Inter2d.IsDone() && Inter2d.NbPoints() > 0;
+      for (int q = 1; isFound && q <= Inter2d.NbPoints(); ++q)
+      {
+        const double aT1 = Inter2d.Point(q).ParamOnFirst();
+        const double aT2 = Inter2d.Point(q).ParamOnSecond();
+        isFound          = aT1 > f[1] + aTolT1 && aT1 < l[1] - aTolT1 && aT2 > f[2] + aTolT2
+                  && aT2 < l[2] - aTolT2;
+      }
+    }
+    if (!isFound)
+    {
+      Inter2d.Perform(GAC1, GAC2, TolDub, TolDub);
+    }
+  }
   //
   if (!Inter2d.IsDone() || !Inter2d.NbPoints())
   {

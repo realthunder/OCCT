@@ -5279,7 +5279,14 @@ void BRepOffset_Tool::ExtentFace(
       if (ToBuild.IsBound(E))
       {
         const TopoDS_Shape& FTB = ToBuild(E);
-        EnLargeFace(TopoDS::Face(FTB), StopFace, false);
+        // Taken round as the Intersection join's offset faces are (mode 3):
+        // a removed face going most of the way round is crossed by its
+        // neighbours' offsets past its ends by up to the angle whose sine is
+        // the offset over its radius -- #521's three-quarter cylinder, the
+        // box's walls 0.5 in, 14.5 degrees -- and a tenth of what it leaves
+        // free, 9 degrees, took the crossing on the far side: the inner wall
+        // ran on across the cylinder.
+        EnLargeFace(TopoDS::Face(FTB), StopFace, false, true, true, true, true, 3);
         TopoDS_Face NullFace;
         BRepOffset_Tool::Inter3D(EF, StopFace, LInt1, LInt2, Side, E, NullFace, NullFace);
         StartSectionsFarFrom(E, EF, StopFace, LInt1, LInt2, false, true);
