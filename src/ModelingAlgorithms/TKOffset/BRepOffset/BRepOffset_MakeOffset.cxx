@@ -7477,79 +7477,93 @@ void BRepOffset_MakeOffset::MakeFaces(
   for (itr.Initialize(Roots); itr.More(); itr.Next())
   {
     SHOW_TOPO_SHAPE(itr.Value(), "BuildFacesRoot");
-    TopoDS_Face FI = TopoDS::Face(myInitOffsetFace.Image(itr.Value()).First());
-    if (!myImageOffset.HasImage(FI))
+    // Each of the face's pieces, not the first alone: the side of a cylinder
+    // with a slot along its bottom, the left wall removed inward with the
+    // Intersection join, comes in two -- the ceiling's closed section with
+    // it trimmed to one span over the far side -- and the second piece holds
+    // the lip's edges, cut where the lip meets the ceiling. Left as built, it
+    // kept them whole, the lip had a free edge there, and the offset was
+    // refused (the right wall, whose lip edges the first piece holds, came
+    // out right).
+    for (NCollection_List<TopoDS_Shape>::Iterator itFI(myInitOffsetFace.Image(itr.Value()));
+         itFI.More();
+         itFI.Next())
     {
-      LOF.Append(FI);
-      SHOW_TOPO_SHAPE(FI, "BuildFacesImage");
-    }
-    else
-    {
-      SHOW_TOPO_SHAPE(FI, "BuildFacesImage", myImageOffset.Image(FI));
-      // A face built before a later loop cut one of its edges still holds the
-      // edge whole: the tube closing a removed face's tangent edge, its edge
-      // on the removed face cut where the face's own outline crosses it. The
-      // rim took the pieces, the tube kept the edge, and the shell had a free
-      // edge there. Such a face takes the pieces too.
-      const NCollection_List<TopoDS_Shape> aLIm = myImageOffset.Image(FI);
-      for (NCollection_List<TopoDS_Shape>::Iterator itIm(aLIm); itIm.More(); itIm.Next())
+      TopoDS_Face FI = TopoDS::Face(itFI.Value());
+      if (!myImageOffset.HasImage(FI))
       {
-        const TopoDS_Face& aBuilt = TopoDS::Face(itIm.Value());
-        auto               isCut  = [this](const TopoDS_Shape& theE) {
-          if (!myImageOffset.HasImage(theE))
+        LOF.Append(FI);
+        SHOW_TOPO_SHAPE(FI, "BuildFacesImage");
+      }
+      else
+      {
+        SHOW_TOPO_SHAPE(FI, "BuildFacesImage", myImageOffset.Image(FI));
+        // A face built before a later loop cut one of its edges still holds the
+        // edge whole: the tube closing a removed face's tangent edge, its edge
+        // on the removed face cut where the face's own outline crosses it. The
+        // rim took the pieces, the tube kept the edge, and the shell had a free
+        // edge there. Such a face takes the pieces too.
+        const NCollection_List<TopoDS_Shape> aLIm = myImageOffset.Image(FI);
+        for (NCollection_List<TopoDS_Shape>::Iterator itIm(aLIm); itIm.More(); itIm.Next())
+        {
+          const TopoDS_Face& aBuilt = TopoDS::Face(itIm.Value());
+          auto               isCut  = [this](const TopoDS_Shape& theE) {
+            if (!myImageOffset.HasImage(theE))
+            {
+              return false;
+            }
+            const NCollection_List<TopoDS_Shape>& aLCE = myImageOffset.Image(theE);
+            return !(aLCE.Extent() == 1 && aLCE.First().IsSame(theE));
+          };
+          bool hasCut = false;
+          for (TopExp_Explorer anExpE(aBuilt, TopAbs_EDGE); anExpE.More() && !hasCut; anExpE.Next())
           {
-            return false;
+            hasCut = isCut(anExpE.Current());
           }
-          const NCollection_List<TopoDS_Shape>& aLCE = myImageOffset.Image(theE);
-          return !(aLCE.Extent() == 1 && aLCE.First().IsSame(theE));
-        };
-        bool hasCut = false;
-        for (TopExp_Explorer anExpE(aBuilt, TopAbs_EDGE); anExpE.More() && !hasCut; anExpE.Next())
-        {
-          hasCut = isCut(anExpE.Current());
-        }
-        if (!hasCut)
-        {
-          continue;
-        }
-        BRep_Builder aBB;
-        TopoDS_Face  aNew = TopoDS::Face(aBuilt.EmptyCopied().Oriented(TopAbs_FORWARD));
-        for (TopoDS_Iterator itW(aBuilt.Oriented(TopAbs_FORWARD)); itW.More(); itW.Next())
-        {
-          if (itW.Value().ShapeType() != TopAbs_WIRE)
+          if (!hasCut)
           {
-            aBB.Add(aNew, itW.Value());
             continue;
           }
-          TopoDS_Wire aNW;
-          aBB.MakeWire(aNW);
-          for (TopoDS_Iterator itE(itW.Value().Oriented(TopAbs_FORWARD)); itE.More(); itE.Next())
+          BRep_Builder aBB;
+          TopoDS_Face  aNew = TopoDS::Face(aBuilt.EmptyCopied().Oriented(TopAbs_FORWARD));
+          for (TopoDS_Iterator itW(aBuilt.Oriented(TopAbs_FORWARD)); itW.More(); itW.Next())
           {
-            const TopoDS_Shape& aE = itE.Value();
-            if (!isCut(aE))
+            if (itW.Value().ShapeType() != TopAbs_WIRE)
             {
-              aBB.Add(aNW, aE);
+              aBB.Add(aNew, itW.Value());
               continue;
             }
-            for (NCollection_List<TopoDS_Shape>::Iterator itP(myImageOffset.Image(aE)); itP.More();
-                 itP.Next())
+            TopoDS_Wire aNW;
+            aBB.MakeWire(aNW);
+            for (TopoDS_Iterator itE(itW.Value().Oriented(TopAbs_FORWARD)); itE.More(); itE.Next())
             {
-              aBB.Add(aNW, itP.Value().Oriented(aE.Orientation()));
+              const TopoDS_Shape& aE = itE.Value();
+              if (!isCut(aE))
+              {
+                aBB.Add(aNW, aE);
+                continue;
+              }
+              for (NCollection_List<TopoDS_Shape>::Iterator itP(myImageOffset.Image(aE));
+                   itP.More();
+                   itP.Next())
+              {
+                aBB.Add(aNW, itP.Value().Oriented(aE.Orientation()));
+              }
             }
+            aNW.Closed(itW.Value().Closed());
+            aBB.Add(aNew, aNW.Oriented(itW.Value().Orientation()));
           }
-          aNW.Closed(itW.Value().Closed());
-          aBB.Add(aNew, aNW.Oriented(itW.Value().Orientation()));
-        }
-        aNew.Orientation(aBuilt.Orientation());
-        SHOW_TOPO_SHAPE(aBuilt, "BuiltFaceTakesPieces", aNew);
-        myImageOffset.Remove(aBuilt);
-        if (myImageOffset.HasImage(FI))
-        {
-          myImageOffset.Add(FI, aNew);
-        }
-        else
-        {
-          myImageOffset.Bind(FI, aNew);
+          aNew.Orientation(aBuilt.Orientation());
+          SHOW_TOPO_SHAPE(aBuilt, "BuiltFaceTakesPieces", aNew);
+          myImageOffset.Remove(aBuilt);
+          if (myImageOffset.HasImage(FI))
+          {
+            myImageOffset.Add(FI, aNew);
+          }
+          else
+          {
+            myImageOffset.Bind(FI, aNew);
+          }
         }
       }
     }
