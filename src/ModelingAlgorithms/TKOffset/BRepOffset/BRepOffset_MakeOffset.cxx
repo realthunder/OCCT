@@ -9574,11 +9574,19 @@ bool TrimEdges(
           auto isCrossed = [&](const TopoDS_Shape& thePiece) {
             TopoDS_Vertex aV1, aV2;
             TopExp::Vertices(TopoDS::Edge(thePiece), aV1, aV2);
+            // a vertex at one of its ends, if not the same, counts as that end
+            auto isAt = [](const TopoDS_Vertex& theV, const TopoDS_Vertex& theEnd) {
+              return !theEnd.IsNull()
+                     && (theV.IsSame(theEnd)
+                         || BRep_Tool::Pnt(theV).Distance(BRep_Tool::Pnt(theEnd))
+                              <= BRep_Tool::Tolerance(theV) + BRep_Tool::Tolerance(theEnd));
+            };
             for (NCollection_List<TopoDS_Shape>::Iterator itD(theAsDes2d->Descendant(thePiece));
                  itD.More();
                  itD.Next())
             {
-              if (!itD.Value().IsSame(aV1) && !itD.Value().IsSame(aV2))
+              const TopoDS_Vertex& aV = TopoDS::Vertex(itD.Value());
+              if (!isAt(aV, aV1) && !isAt(aV, aV2))
               {
                 return true;
               }
@@ -9625,8 +9633,21 @@ bool TrimEdges(
               }
             }
           };
+          // A piece not crossed at all beyond the shared end runs on past
+          // its face: a groove of two quarter cylinders, each one's loop with
+          // the side split where the quarters meet, the piece over the other
+          // quarter crossed by nothing. The crossed piece is trimmed to that
+          // end too, and the other dropped -- kept, it lay on the other
+          // quarter's own piece.
+          SHOW_TOPO_SHAPE(NE, "TrimPieces");
           NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aJoints;
-          for (TopExp_Explorer aP(NE, TopAbs_EDGE); aP.More(); aP.Next())
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>                   aRunOn;
+          // Only the section of an edge between two kept faces: one beside a
+          // removed face is a lip's, and the two quarters of a groove removed
+          // took the lips inside out.
+          const bool isKeptBoth =
+            Analyse.HasAncestor(aS) && Analyse.Ancestors(aS).Extent() > 1;
+          for (TopExp_Explorer aP(NE, TopAbs_EDGE); isKeptBoth && aP.More(); aP.Next())
           {
             TopoDS_Vertex aP1, aP2;
             TopExp::Vertices(TopoDS::Edge(aP.Current()), aP1, aP2);
@@ -9634,26 +9655,49 @@ bool TrimEdges(
             {
               continue;
             }
-            TopoDS_Shape aJoint;
+            TopoDS_Shape aJoint, aBeyond;
             int          aNbJoints = 0;
             for (TopExp_Explorer aQ(NE, TopAbs_EDGE); aQ.More(); aQ.Next())
             {
-              if (aQ.Current().IsSame(aP.Current()) || !isCrossed(aQ.Current()))
+              if (aQ.Current().IsSame(aP.Current()))
               {
                 continue;
               }
+              const bool isQCrossed = isCrossed(aQ.Current());
               for (TopoDS_Iterator aQV(aQ.Current()); aQV.More(); aQV.Next())
               {
-                if ((aQV.Value().IsSame(aP1) || aQV.Value().IsSame(aP2))
-                    && isSeamJoint(TopoDS::Edge(aP.Current()),
-                                   TopoDS::Edge(aQ.Current()),
-                                   TopoDS::Vertex(aQV.Value())))
+                // The end the two share: one vertex, or with a piece run on,
+                // two at one point -- the piece's own is the one trimmed to.
+                TopoDS_Shape aAt;
+                if (aQV.Value().IsSame(aP1) || aQV.Value().IsSame(aP2))
                 {
-                  if (!aQV.Value().IsSame(aJoint))
+                  aAt = aQV.Value();
+                }
+                else if (!isQCrossed)
+                {
+                  const TopoDS_Vertex& aQVx = TopoDS::Vertex(aQV.Value());
+                  const gp_Pnt         aQP  = BRep_Tool::Pnt(aQVx);
+                  for (const TopoDS_Vertex& aPV : {aP1, aP2})
+                  {
+                    if (aQP.Distance(BRep_Tool::Pnt(aPV))
+                        <= BRep_Tool::Tolerance(aPV) + BRep_Tool::Tolerance(aQVx))
+                    {
+                      aAt = aPV;
+                    }
+                  }
+                }
+                if (!aAt.IsNull()
+                    && (!isQCrossed
+                        || isSeamJoint(TopoDS::Edge(aP.Current()),
+                                       TopoDS::Edge(aQ.Current()),
+                                       TopoDS::Vertex(aAt))))
+                {
+                  if (!aAt.IsSame(aJoint))
                   {
                     ++aNbJoints;
                   }
-                  aJoint = aQV.Value();
+                  aJoint  = aAt;
+                  aBeyond = isQCrossed ? TopoDS_Shape() : aQ.Current();
                 }
               }
             }
@@ -9661,11 +9705,22 @@ bool TrimEdges(
             {
               aJoints.Bind(aP.Current(), aJoint);
               SHOW_TOPO_SHAPE(aP.Current(), "TrimJoint", aJoint);
+              if (!aBeyond.IsNull())
+              {
+                aRunOn.Add(aBeyond);
+              }
             }
           }
           for (ExpC.Init(NE, TopAbs_EDGE); ExpC.More(); ExpC.Next())
           {
             TopoDS_Edge NEC = TopoDS::Edge(ExpC.Current());
+            if (aRunOn.Contains(NEC) && !aJoints.IsBound(NEC) && theAsDes->HasAscendant(NEC)
+                && !theAsDes->HasDescendant(NEC))
+            {
+              SHOW_TOPO_SHAPE(NEC, "TrimRunOn");
+              theAsDes->Remove(NEC);
+              continue;
+            }
             if (AddNew(theNewEdges, NEC))
             {
               if (!theAsDes2d->Descendant(NEC).IsEmpty())
