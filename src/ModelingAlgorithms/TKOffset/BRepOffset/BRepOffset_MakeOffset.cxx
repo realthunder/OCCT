@@ -621,6 +621,26 @@ static bool FindParameter(const TopoDS_Vertex& V, const TopoDS_Edge& E, double& 
                 }
               }
             }
+            // A curve two edges share, periodic: the vertex at the end
+            // they share has its parameter on the curve from the other one,
+            // a period off this one's range -- a section circle split at
+            // the side's seam, the second half's range from 0, the seam's
+            // vertex at 2 pi from the first. Taken as it was, the half was
+            // trimmed the long way round, over the first: a groove of two
+            // faces, both bottoms removed, the Intersection join, invalid.
+            else if (C->IsPeriodic())
+            {
+              const double aEps = Precision::PConfusion();
+              if (res < f - aEps || res > l + aEps)
+              {
+                const double aP = C->Period();
+                const double aR = res + std::ceil((f - aEps - res) / aP) * aP;
+                if (aR <= l + aEps)
+                {
+                  res = aR;
+                }
+              }
+            }
           }
           // return res;//p;
           U = res;
