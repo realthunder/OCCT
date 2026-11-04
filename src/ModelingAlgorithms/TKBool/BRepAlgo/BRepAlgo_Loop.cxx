@@ -522,6 +522,69 @@ static bool IsClosedInUV(const TopoDS_Wire& theWire, const TopoDS_Face& theFace)
 
 //=================================================================================================
 
+// Whether an edge closed on the face's surface is a seam of the face. Not
+// when it is one of the face's own edges and the face, at most a period
+// round, reaches only one of its two pcurves: #521's three-quarter cylinder,
+// its edge at 2 pi closed with a pcurve at 0 the face never reaches; the two
+// quarter cylinders of a groove, each using one pcurve of the edge between
+// them. Its pieces, cut by a later loop, keep the reachable pcurve
+// (keepFacesSide) and are left to that.
+static bool IsSeamOfFace(const TopoDS_Edge& theE, const TopoDS_Face& theF)
+{
+  if (!BRep_Tool::IsClosed(theE, theF))
+  {
+    return false;
+  }
+  bool isOwn = false;
+  for (TopExp_Explorer anExp(theF, TopAbs_EDGE); anExp.More() && !isOwn; anExp.Next())
+  {
+    isOwn = anExp.Current().IsSame(theE);
+  }
+  if (!isOwn)
+  {
+    return true;
+  }
+  const TopoDS_Face               aFace = TopoDS::Face(theF.Oriented(TopAbs_FORWARD));
+  const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(aFace);
+  double                          aU1, aU2, aV1, aV2;
+  BRepTools::UVBounds(aFace, aU1, aU2, aV1, aV2);
+  double                          aF1, aL1, aF2, aL2;
+  const occ::handle<Geom2d_Curve> aC1 =
+    BRep_Tool::CurveOnSurface(TopoDS::Edge(theE.Oriented(TopAbs_FORWARD)), theF, aF1, aL1);
+  const occ::handle<Geom2d_Curve> aC2 =
+    BRep_Tool::CurveOnSurface(TopoDS::Edge(theE.Oriented(TopAbs_REVERSED)), theF, aF2, aL2);
+  if (aSurf.IsNull() || aC1.IsNull() || aC2.IsNull())
+  {
+    return true;
+  }
+  const gp_Pnt2d aM1 = aC1->Value((aF1 + aL1) / 2.), aM2 = aC2->Value((aF2 + aL2) / 2.);
+  const double   aTol = Precision::PConfusion();
+  for (int k = 0; k < 2; ++k)
+  {
+    const bool isU = k == 0;
+    if (!(isU ? aSurf->IsUPeriodic() : aSurf->IsVPeriodic()))
+    {
+      continue;
+    }
+    const double aP  = isU ? aSurf->UPeriod() : aSurf->VPeriod();
+    const double aLo = isU ? aU1 : aV1, aHi = isU ? aU2 : aV2;
+    if (aHi - aLo > aP + aTol)
+    {
+      continue;
+    }
+    const double aX1 = isU ? aM1.X() : aM1.Y(), aX2 = isU ? aM2.X() : aM2.Y();
+    const bool   isIn1 = aX1 > aLo - aTol && aX1 < aHi + aTol;
+    const bool   isIn2 = aX2 > aLo - aTol && aX2 < aHi + aTol;
+    if (isIn1 != isIn2)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//=================================================================================================
+
 // Whether one of the edges is a seam of the face running from one vertex to
 // another -- a meridian, from a rim to a pole or between two rims -- not a
 // closed edge lying on the seam.
@@ -566,7 +629,7 @@ static bool IsInOnePeriod(
     for (NCollection_List<TopoDS_Shape>::Iterator it(theMVE(i)); it.More(); it.Next())
     {
       const TopoDS_Edge& anEdge = TopoDS::Edge(it.Value());
-      if (BRep_Tool::IsClosed(anEdge, theFace))
+      if (IsSeamOfFace(anEdge, theFace))
       {
         return false;
       }
@@ -736,7 +799,7 @@ static void StoreInMVE(
   }
   TopLoc_Location           L;
   occ::handle<Geom_Surface> S = BRep_Tool::Surface(F, L);
-  if (BRep_Tool::IsClosed(E, S, L))
+  if (BRep_Tool::IsClosed(E, S, L) && IsSeamOfFace(E, F))
   {
     MVE.ChangeFromKey(V2).Append(E.Reversed());
     SHOW_TOPO_SHAPE(V2, "MVE_ClosedV2_");
@@ -1704,9 +1767,54 @@ void SplitWires(NCollection_List<TopoDS_Shape>& OutputWires,
       }
       else
       {
-        aWire.Reverse();
-        B.Add(aNF, aWire);
-        SHOW_TOPO_SHAPE(aWire, "MakeTestReverseWire");
+        // An edge closed on the surface and no seam of the face (IsSeamOfFace)
+        // takes its other pcurve when reversed, a period over: the test face
+        // of the wire reversed ran round the whole surface -- a groove's
+        // quarter cylinder removed inward, its lip. The test face takes a copy
+        // whose such edges have the face's pcurve on both sides, and the wire
+        // itself is kept as walked.
+        TopoDS_Wire aTW = aWire;
+        bool        hasOwnClosed = false;
+        for (TopoDS_Iterator itE(aWire); itE.More() && !hasOwnClosed; itE.Next())
+        {
+          const TopoDS_Edge& aE = TopoDS::Edge(itE.Value());
+          hasOwnClosed = BRep_Tool::IsClosed(aE, aFace) && !IsSeamOfFace(aE, aFace);
+        }
+        if (hasOwnClosed)
+        {
+          BRepBuilderAPI_Copy aCopy(aWire, true);
+          aTW = TopoDS::Wire(aCopy.Shape());
+          TopLoc_Location                  aSL;
+          const occ::handle<Geom_Surface>& aS = BRep_Tool::Surface(aFace, aSL);
+          for (TopoDS_Iterator itE(aWire); itE.More(); itE.Next())
+          {
+            const TopoDS_Edge& aE = TopoDS::Edge(itE.Value());
+            if (!BRep_Tool::IsClosed(aE, aFace) || IsSeamOfFace(aE, aFace))
+            {
+              continue;
+            }
+            double                          aF, aL;
+            const occ::handle<Geom2d_Curve> aPC = BRep_Tool::CurveOnSurface(aE, aFace, aF, aL);
+            const TopoDS_Edge aCE = TopoDS::Edge(aCopy.ModifiedShape(aE));
+            if (aPC.IsNull())
+            {
+              continue;
+            }
+            B.UpdateEdge(aCE,
+                         occ::handle<Geom2d_Curve>::DownCast(aPC->Copy()),
+                         occ::handle<Geom2d_Curve>::DownCast(aPC->Copy()),
+                         aS,
+                         aSL,
+                         BRep_Tool::Tolerance(aCE));
+          }
+        }
+        else
+        {
+          aWire.Reverse();
+        }
+        aTW.Reverse();
+        B.Add(aNF, aTW);
+        SHOW_TOPO_SHAPE(aTW, "MakeTestReverseWire");
       }
       B.NaturalRestriction(aNF, false);
 
