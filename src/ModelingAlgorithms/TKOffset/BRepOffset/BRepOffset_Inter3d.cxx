@@ -2466,28 +2466,11 @@ static void ShareArcs(
       {
         continue;
       }
-      // With <theCapOf>, only a circle the arcs of two caps or more lie on:
-      // one cap's arc that the seam splits keeps the whole circle.
-      if (theCapOf != nullptr)
-      {
-        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aCaps;
-        for (NCollection_List<TopoDS_Shape>::Iterator it(aOn); it.More(); it.Next())
-        {
-          if (const TopoDS_Shape* aCap = theCapOf->Seek(it.Value()))
-          {
-            aCaps.Add(*aCap);
-          }
-        }
-        if (aCaps.Extent() < 2)
-        {
-          continue;
-        }
-      }
       // The middle of the gap after each arc's end, a vertex there.
       const size_t               aN = aStart.size();
       std::vector<TopoDS_Vertex> aGapV(aN);
       std::vector<gp_Pnt>        aGapP(aN);
-      bool                       isOverlap = false;
+      bool                       isOverlap = false, isTouching = false;
       // Arcs that touch -- a cap's arc split by the cylinder's seam -- have a
       // gap of nothing between them, a hair either way round.
       const double aTolP = GeomAdaptor_Curve(aRC).Resolution(aTol);
@@ -2510,12 +2493,33 @@ static void ShareArcs(
             isOverlap = true;
           }
         }
-        aGapP[a] = aRC->Value(aEnd[a] + aGap / 2.);
+        isTouching = isTouching || aGap < aTolP;
+        aGapP[a]   = aRC->Value(aEnd[a] + aGap / 2.);
         BRep_Builder().MakeVertex(aGapV[a], aGapP[a], aTol);
       }
       if (isOverlap)
       {
         continue;
+      }
+      // With <theCapOf>, a circle the arcs of two caps or more lie on, or of
+      // one cap apart from each other -- a slot's ceiling removed, meeting
+      // the side at either end of the slot, its section with the side the
+      // whole circle -- but not one cap's arc that the seam splits, which
+      // keeps the whole circle (the step cut off a cylinder, sec 37).
+      if (theCapOf != nullptr)
+      {
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aCaps;
+        for (NCollection_List<TopoDS_Shape>::Iterator it(aOn); it.More(); it.Next())
+        {
+          if (const TopoDS_Shape* aCap = theCapOf->Seek(it.Value()))
+          {
+            aCaps.Add(*aCap);
+          }
+        }
+        if (aCaps.Extent() < 2 && isTouching)
+        {
+          continue;
+        }
       }
       // Each arc from the gap before it to the gap after it, on its own curve.
       size_t a = 0;

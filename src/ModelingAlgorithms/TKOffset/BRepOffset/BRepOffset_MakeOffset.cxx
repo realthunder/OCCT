@@ -353,6 +353,41 @@ static NCollection_List<TopoDS_Shape> PiecesOnTheFace(const TopoDS_Face&        
         isOn = false;
       }
     }
+    // A piece the offset face overlaps only in part, neither one's point
+    // inside the other: the chamfer of #363's Thickness001 at 1, its top
+    // removed (the Intersection join), the piece from the side's offset up
+    // to the top's plane, 14.41 to 15, the chamfer's offset 14.71 to 15.71.
+    // Points over the piece, any of them on the face.
+    if (!isOn)
+    {
+      const TopoDS_Face& aPF = TopoDS::Face(it.Value());
+      double             aU1, aU2, aV1, aV2;
+      BRepTools::UVBounds(aPF, aU1, aU2, aV1, aV2);
+      const occ::handle<Geom_Surface> aS = BRep_Tool::Surface(aPF);
+      constexpr int                   aNbS = 5;
+      for (int i = 0; i < aNbS && !isOn && !aS.IsNull(); ++i)
+      {
+        for (int j = 0; j < aNbS && !isOn; ++j)
+        {
+          const gp_Pnt2d aUV(aU1 + (i + 0.5) * (aU2 - aU1) / aNbS,
+                             aV1 + (j + 0.5) * (aV2 - aV1) / aNbS);
+          try
+          {
+            if (BRepClass_FaceClassifier(aPF, aUV, Precision::PConfusion()).State() == TopAbs_IN)
+            {
+              isOn = BRepClass_FaceClassifier(theOF,
+                                              aS->Value(aUV.X(), aUV.Y()),
+                                              Precision::Confusion())
+                       .State()
+                     == TopAbs_IN;
+            }
+          }
+          catch (const Standard_Failure&)
+          {
+          }
+        }
+      }
+    }
     if (isOn)
     {
       aLOn.Append(it.Value());
@@ -405,7 +440,9 @@ static bool TrimEdge(
   TopoDS_Edge&                                                              NE,
   const occ::handle<BRepAlgo_AsDes>&                                        AsDes2d,
   occ::handle<BRepAlgo_AsDes>&                                              AsDes,
-  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theETrimEInf);
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theETrimEInf,
+  const TopoDS_Vertex&                  theJoint   = TopoDS_Vertex(),
+  const NCollection_List<TopoDS_Shape>* theOrigins = nullptr);
 
 static bool TrimEdges(
   const NCollection_List<TopoDS_Shape>&                                          theLFaces,
@@ -9450,6 +9487,27 @@ bool TrimEdges(
         continue;
       }
       SHOW_TOPO_SHAPE(aS, "Trimming");
+      // The face's edges a section is the image of, or a piece of (a closed
+      // section: TrimEdge).
+      auto anOriginsOf = [&](const TopoDS_Shape& theSec) {
+        NCollection_List<TopoDS_Shape> aList;
+        for (int j = 1; j <= aNb; ++j)
+        {
+          if (VEmap(j).ShapeType() != TopAbs_EDGE || !theBuild.IsBound(VEmap(j)))
+          {
+            continue;
+          }
+          for (TopExp_Explorer aX(theBuild(VEmap(j)), TopAbs_EDGE); aX.More(); aX.Next())
+          {
+            if (aX.Current().IsSame(theSec))
+            {
+              aList.Append(VEmap(j));
+              break;
+            }
+          }
+        }
+        return aList;
+      };
       // An edge the face holds through another (BRepOffset_Analyse::
       // EdgeReplacement) and no section of its own: its image is the other's,
       // trimmed with the face owning it -- the tangent edge of a planar face
@@ -9482,7 +9540,13 @@ bool TrimEdges(
         {
           if (AddNew(theNewEdges, NE))
           {
-            if (!TrimEdge(TopoDS::Edge(NE), theAsDes2d, theAsDes, theETrimEInf))
+            const NCollection_List<TopoDS_Shape> aOrigins = anOriginsOf(NE);
+            if (!TrimEdge(TopoDS::Edge(NE),
+                          theAsDes2d,
+                          theAsDes,
+                          theETrimEInf,
+                          TopoDS_Vertex(),
+                          &aOrigins))
             {
               SHOW_TOPO_SHAPE(NE, "NoTrim");
               return false;
@@ -9496,6 +9560,109 @@ bool TrimEdges(
           // The pieces without intersections with neighbors
           // are removed from AsDes.
           //------------------------------------------------------------
+          // A section split in two at a seam of the surface it lies on, each
+          // piece crossed once, runs on through the end the two share: the
+          // side and the groove of #363's Thickness001 offset outward with
+          // the Intersection join, the loop they cross in split at the
+          // groove's seam, the bottoms' offset crossing it once on each side.
+          // Trimmed each to its one vertex alone, neither was, and the side
+          // lost its notch over the groove (the offset a null shape).
+          // Both pieces crossed, a vertex on each besides its ends: one with
+          // none runs on past its face, and a piece trimmed to it lay on it --
+          // a groove of two quarter cylinders, each one's section with the
+          // side running on over the other's, cut at thousands of points.
+          auto isCrossed = [&](const TopoDS_Shape& thePiece) {
+            TopoDS_Vertex aV1, aV2;
+            TopExp::Vertices(TopoDS::Edge(thePiece), aV1, aV2);
+            for (NCollection_List<TopoDS_Shape>::Iterator itD(theAsDes2d->Descendant(thePiece));
+                 itD.More();
+                 itD.Next())
+            {
+              if (!itD.Value().IsSame(aV1) && !itD.Value().IsSame(aV2))
+              {
+                return true;
+              }
+            }
+            return false;
+          };
+          // The two split at a seam: on a periodic surface both lie on, a
+          // period apart at the end they share. Two quarter cylinders' sections
+          // meet at the edge between the quarters, not at a seam, and are not
+          // one section.
+          auto isSeamJoint = [](const TopoDS_Edge&   theP,
+                                const TopoDS_Edge&   theQ,
+                                const TopoDS_Vertex& theV) {
+            double aTP, aTQ;
+            if (!BRep_Tool::Parameter(theV, theP, aTP) || !BRep_Tool::Parameter(theV, theQ, aTQ))
+            {
+              return false;
+            }
+            for (int i = 1;; ++i)
+            {
+              occ::handle<Geom2d_Curve> aCP;
+              occ::handle<Geom_Surface> aS;
+              TopLoc_Location           aL;
+              double                    aF, aLst;
+              BRep_Tool::CurveOnSurface(theP, aCP, aS, aL, aF, aLst, i);
+              if (aCP.IsNull())
+              {
+                return false;
+              }
+              if (!aS->IsUPeriodic() && !aS->IsVPeriodic())
+              {
+                continue;
+              }
+              const occ::handle<Geom2d_Curve> aCQ = BRep_Tool::CurveOnSurface(theQ, aS, aL, aF, aLst);
+              if (aCQ.IsNull())
+              {
+                continue;
+              }
+              const gp_Vec2d aD(aCP->Value(aTP), aCQ->Value(aTQ));
+              if ((aS->IsUPeriodic() && std::abs(std::abs(aD.X()) - aS->UPeriod()) < 1.e-6)
+                  || (aS->IsVPeriodic() && std::abs(std::abs(aD.Y()) - aS->VPeriod()) < 1.e-6))
+              {
+                return true;
+              }
+            }
+          };
+          NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aJoints;
+          for (TopExp_Explorer aP(NE, TopAbs_EDGE); aP.More(); aP.Next())
+          {
+            TopoDS_Vertex aP1, aP2;
+            TopExp::Vertices(TopoDS::Edge(aP.Current()), aP1, aP2);
+            if (aP1.IsNull() || aP2.IsNull() || aP1.IsSame(aP2) || !isCrossed(aP.Current()))
+            {
+              continue;
+            }
+            TopoDS_Shape aJoint;
+            int          aNbJoints = 0;
+            for (TopExp_Explorer aQ(NE, TopAbs_EDGE); aQ.More(); aQ.Next())
+            {
+              if (aQ.Current().IsSame(aP.Current()) || !isCrossed(aQ.Current()))
+              {
+                continue;
+              }
+              for (TopoDS_Iterator aQV(aQ.Current()); aQV.More(); aQV.Next())
+              {
+                if ((aQV.Value().IsSame(aP1) || aQV.Value().IsSame(aP2))
+                    && isSeamJoint(TopoDS::Edge(aP.Current()),
+                                   TopoDS::Edge(aQ.Current()),
+                                   TopoDS::Vertex(aQV.Value())))
+                {
+                  if (!aQV.Value().IsSame(aJoint))
+                  {
+                    ++aNbJoints;
+                  }
+                  aJoint = aQV.Value();
+                }
+              }
+            }
+            if (aNbJoints == 1)
+            {
+              aJoints.Bind(aP.Current(), aJoint);
+              SHOW_TOPO_SHAPE(aP.Current(), "TrimJoint", aJoint);
+            }
+          }
           for (ExpC.Init(NE, TopAbs_EDGE); ExpC.More(); ExpC.Next())
           {
             TopoDS_Edge NEC = TopoDS::Edge(ExpC.Current());
@@ -9503,7 +9670,14 @@ bool TrimEdges(
             {
               if (!theAsDes2d->Descendant(NEC).IsEmpty())
               {
-                if (!TrimEdge(NEC, theAsDes2d, theAsDes, theETrimEInf))
+                const TopoDS_Shape*                  aJoint   = aJoints.Seek(NEC);
+                const NCollection_List<TopoDS_Shape> aOrigins = anOriginsOf(NEC);
+                if (!TrimEdge(NEC,
+                              theAsDes2d,
+                              theAsDes,
+                              theETrimEInf,
+                              aJoint ? TopoDS::Vertex(*aJoint) : TopoDS_Vertex(),
+                              &aOrigins))
                 {
                   SHOW_TOPO_SHAPE(NEC, "NoTrim1_");
                   return false;
@@ -9608,7 +9782,9 @@ bool TrimEdge(
   TopoDS_Edge&                                                              NE,
   const occ::handle<BRepAlgo_AsDes>&                                        AsDes2d,
   occ::handle<BRepAlgo_AsDes>&                                              AsDes,
-  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theETrimEInf)
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theETrimEInf,
+  const TopoDS_Vertex&                                                      theJoint,
+  const NCollection_List<TopoDS_Shape>*                                     theOrigins)
 {
   TopoDS_Edge   aSourceEdge;
   TopoDS_Vertex V1, V2;
@@ -9631,7 +9807,7 @@ bool TrimEdge(
   //
   bool bTrim = false;
   //
-  if (LE.Extent() > 1)
+  if (LE.Extent() > 1 || (LE.Extent() == 1 && !theJoint.IsNull()))
   {
     // the edge's own ends are skipped -- those, not the ends the vertices
     // taken so far moved V1 and V2 to, or the trim would depend on the
@@ -9674,6 +9850,161 @@ bool TrimEdge(
         V2   = V;
       }
     }
+    // One vertex of its own: the other end is the one the piece shares with
+    // the rest of its section (TrimEdges).
+    if (UMin == UMax && !theJoint.IsNull())
+    {
+      TopoDS_Vertex aJ = theJoint;
+      if (NE.Orientation() == TopAbs_REVERSED)
+      {
+        aJ.Reverse();
+      }
+      if (FindParameter(aJ, NE, U))
+      {
+        if (U < UMin)
+        {
+          UMin = U;
+          V1   = aJ;
+        }
+        if (U > UMax)
+        {
+          UMax = U;
+          V2   = aJ;
+        }
+      }
+    }
+    // A closed section, the image of the edges <theOrigins>: the span from
+    // the least parameter to the greatest is all of it when a vertex lies at
+    // its start, and the edges may lie across its start. Kept: the run of
+    // the spans between its vertices that the edges lie on. #363's
+    // Thickness001 offset with the Intersection join: the right bottom's
+    // section with the side is the whole circle, starting on the side's seam
+    // where the bottom's two arcs meet, and kept whole it ran on under the
+    // groove and over the left bottom's.
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aOffSpan;
+    NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aShifted;
+    double                                                             aCF0, aCL0;
+    const occ::handle<Geom_Curve> aCC = BRep_Tool::Curve(NE, aCF0, aCL0);
+    if (theOrigins != nullptr && !theOrigins->IsEmpty() && UMin < UMax && aVF.IsSame(aVL)
+        && !aCC.IsNull() && aCC->IsPeriodic())
+    {
+      const double aP     = aCC->Period();
+      const double aTolPC = GeomAdaptor_Curve(aCC).Resolution(BRep_Tool::Tolerance(NE) + 1.e-7);
+      auto         aFrom  = [&](double theU) {
+        double aU = std::fmod(theU - aT1, aP);
+        aU        = aU < 0. ? aU + aP : aU;
+        return aP - aU < aTolPC ? 0. : aU;
+      };
+      std::vector<std::pair<double, TopoDS_Vertex>> aVs, aAll;
+      // Only when the least to the greatest is all of it: one starting inside
+      // the span kept (#521's circle round the removed cylinder, from 45
+      // degrees) is trimmed right by them.
+      if (std::abs(aT2 - aT1 - aP) < aTolPC && UMax - UMin > aP - aTolPC)
+      {
+        for (NCollection_List<TopoDS_Shape>::Iterator it(LE); it.More(); it.Next())
+        {
+          TopoDS_Vertex V = TopoDS::Vertex(it.Value());
+          if (V.IsSame(aVF) || V.IsSame(aVL))
+          {
+            continue;
+          }
+          if (NE.Orientation() == TopAbs_REVERSED)
+          {
+            V.Reverse();
+          }
+          if (!FindParameter(V, NE, U))
+          {
+            aVs.clear();
+            break;
+          }
+          const double aU    = aFrom(U);
+          aAll.emplace_back(aU, V);
+          bool         isNew = true;
+          for (const auto& aV : aVs)
+          {
+            isNew = isNew && std::abs(aV.first - aU) > aTolPC;
+          }
+          if (isNew)
+          {
+            aVs.emplace_back(aU, V);
+          }
+        }
+      }
+      std::sort(aVs.begin(), aVs.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+      });
+      const int         aN = static_cast<int>(aVs.size());
+      std::vector<bool> aOn(aN, false);
+      for (NCollection_List<TopoDS_Shape>::Iterator it(*theOrigins); aN > 1 && it.More();
+           it.Next())
+      {
+        BRepAdaptor_Curve aCE(TopoDS::Edge(it.Value()));
+        for (int k = 1; k < 8; ++k)
+        {
+          const double aT =
+            aCE.FirstParameter() + k * (aCE.LastParameter() - aCE.FirstParameter()) / 8.;
+          GeomAPI_ProjectPointOnCurve aProj(aCE.Value(aT), aCC);
+          if (aProj.NbPoints() == 0)
+          {
+            continue;
+          }
+          const double aU = aFrom(aProj.LowerDistanceParameter());
+          int          i  = aN - 1; // the span from the last vertex round to the first
+          for (int j = 0; j + 1 < aN; ++j)
+          {
+            if (aU > aVs[j].first && aU < aVs[j + 1].first)
+            {
+              i = j;
+            }
+          }
+          aOn[i] = true;
+        }
+      }
+      int aNbOn = 0, aStart = -1;
+      for (int i = 0; i < aN; ++i)
+      {
+        aNbOn += aOn[i] ? 1 : 0;
+        if (aOn[i] && !aOn[(i + aN - 1) % aN])
+        {
+          aStart = i;
+        }
+      }
+      bool isRun = aNbOn > 0 && aNbOn < aN && aStart >= 0;
+      for (int k = 0; isRun && k < aNbOn; ++k)
+      {
+        isRun = aOn[(aStart + k) % aN];
+      }
+      if (isRun)
+      {
+        const int anEnd = aStart + aNbOn; // the vertex closing the run
+        UMin            = aT1 + aVs[aStart].first;
+        V1              = aVs[aStart].second;
+        UMax            = aT1 + aVs[anEnd % aN].first + (anEnd >= aN ? aP : 0.);
+        V2              = aVs[anEnd % aN].second;
+        // Each vertex (those at one point alike) inside the run or off it;
+        // past the start of the curve, a period on.
+        for (const auto& aV : aAll)
+        {
+          int i = 0;
+          for (int j = 0; j < aN; ++j)
+          {
+            if (std::abs(aVs[j].first - aV.first) <= aTolPC)
+            {
+              i = j;
+            }
+          }
+          if ((i - aStart + aN) % aN > aNbOn)
+          {
+            aOffSpan.Add(aV.second);
+          }
+          else
+          {
+            aShifted.Bind(aV.second, aT1 + aVs[i].first + (i < aStart ? aP : 0.));
+          }
+        }
+        SHOW_TOPO_SHAPE(NE, "TrimClosedRun");
+      }
+    }
     //
     if (UMin < UMax)
     {
@@ -9696,11 +10027,11 @@ bool TrimEdge(
       // outward (Thickness.md sec 31), put on the edge where its neighbours
       // pass through it, and one end of the edge.
       double aTE;
-      if (!BRep_Tool::Parameter(V1, NE, aTE))
+      if (!BRep_Tool::Parameter(V1, NE, aTE) || aShifted.IsBound(V1))
       {
         B.UpdateVertex(V1, UMin, NE, BRep_Tool::Tolerance(V1));
       }
-      if (!BRep_Tool::Parameter(V2, NE, aTE))
+      if (!BRep_Tool::Parameter(V2, NE, aTE) || aShifted.IsBound(V2))
       {
         B.UpdateVertex(V2, UMax, NE, BRep_Tool::Tolerance(V2));
       }
@@ -9744,6 +10075,17 @@ bool TrimEdge(
         for (it.Initialize(LE); it.More(); it.Next())
         {
           TopoDS_Vertex V = TopoDS::Vertex(it.Value());
+          if (aOffSpan.Contains(V))
+          {
+            continue;
+          }
+          if (const double* aTS = aShifted.Seek(V))
+          {
+            if (!V.IsSame(V1) && !V.IsSame(V2))
+            {
+              B.UpdateVertex(V, *aTS, NE, BRep_Tool::Tolerance(V));
+            }
+          }
           if (!V.IsSame(V1) && !V.IsSame(V2))
           {
             // A vertex found on the edge by projection (above) has no
