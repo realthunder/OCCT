@@ -8938,6 +8938,55 @@ void UpdateTolerance(TopoDS_Shape&                                              
     }
   }
 
+  // Nor is a piece of a cap's edge: a face beyond the cap cut short (the
+  // tangent caps' strip ending on it, Thickness.md sec 52) has the edge's
+  // curve copied and trimmed, and measured again over the shorter range its
+  // samples fall elsewhere and find the gap a few 1e-8 wider than the cap's
+  // edge says -- and the vertex the piece shares with the input, at the
+  // cap's corner, was grown to it: the input edited. The piece keeps the
+  // tolerance it was copied with, as the edge it is cut from does.
+  NCollection_List<TopoDS_Edge> aCapEdges;
+  for (j = 1; j <= Faces.Extent(); j++)
+  {
+    for (TopExp_Explorer Exp(Faces(j), TopAbs_EDGE); Exp.More(); Exp.Next())
+    {
+      if (!BRep_Tool::Degenerated(TopoDS::Edge(Exp.Current())))
+      {
+        aCapEdges.Append(TopoDS::Edge(Exp.Current()));
+      }
+    }
+  }
+  auto aPieceOfCapEdge = [&aCapEdges](const TopoDS_Edge& theE) {
+    double                  aF, aL;
+    occ::handle<Geom_Curve> aC = BRep_Tool::Curve(theE, aF, aL);
+    if (aC.IsNull())
+    {
+      return false;
+    }
+    for (NCollection_List<TopoDS_Edge>::Iterator anIt(aCapEdges); anIt.More(); anIt.Next())
+    {
+      double                  aFC, aLC;
+      occ::handle<Geom_Curve> aCC = BRep_Tool::Curve(anIt.Value(), aFC, aLC);
+      if (aCC.IsNull() || aCC->DynamicType() != aC->DynamicType()
+          || aF < aFC - Precision::PConfusion() || aL > aLC + Precision::PConfusion())
+      {
+        continue;
+      }
+      // the same parameters giving the same points: the cap edge's curve
+      bool isSame = true;
+      for (int k = 0; k <= 4 && isSame; k++)
+      {
+        const double aT = aF + 0.25 * k * (aL - aF);
+        isSame          = aC->Value(aT).Distance(aCC->Value(aT)) <= Precision::Confusion();
+      }
+      if (isSame)
+      {
+        return true;
+      }
+    }
+    return false;
+  };
+
   double          Tol;
   TopExp_Explorer anExpF(S, TopAbs_FACE);
   for (; anExpF.More(); anExpF.Next())
@@ -8966,6 +9015,10 @@ void UpdateTolerance(TopoDS_Shape&                                              
           B.UpdateEdge(E, aMaxDist);
           isUpdated = true;
         }
+      }
+      if (!View.Contains(E) && aPieceOfCapEdge(E))
+      {
+        View.Add(E);
       }
       if (View.Add(E))
       {
