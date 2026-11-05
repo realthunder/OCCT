@@ -5277,6 +5277,98 @@ static std::vector<TopoDS_Shape> orderedKeys(
 
 //=================================================================================================
 
+//! True when every piece of <theE> runs on its curve under its parameters,
+//! within the tolerances (ToContext's new edge for a face's offset edge, the
+//! same section approximated again); each piece without a pcurve on <theF>
+//! -- the tube of <theE> -- is then given theE's, its tolerance grown to
+//! cover the two curves' gap.
+static bool piecesOnTheEdgeCurve(const TopoDS_Edge&                    theE,
+                                 const NCollection_List<TopoDS_Shape>& thePieces,
+                                 const TopoDS_Face&                    theF)
+{
+  double                  aF, aL;
+  occ::handle<Geom_Curve> aC = BRep_Tool::Curve(theE, aF, aL);
+  if (aC.IsNull() || thePieces.IsEmpty())
+  {
+    return false;
+  }
+  const double         aTolE = BRep_Tool::Tolerance(theE);
+  NCollection_List<double> aTols;
+  for (NCollection_List<TopoDS_Shape>::Iterator anIt(thePieces); anIt.More(); anIt.Next())
+  {
+    if (anIt.Value().ShapeType() != TopAbs_EDGE)
+    {
+      return false;
+    }
+    const TopoDS_Edge&      aP = TopoDS::Edge(anIt.Value());
+    double                  aFP, aLP;
+    occ::handle<Geom_Curve> aCP = BRep_Tool::Curve(aP, aFP, aLP);
+    if (aCP.IsNull() || aFP < aF - Precision::PConfusion() || aLP > aL + Precision::PConfusion())
+    {
+      return false;
+    }
+    const double aTolP = BRep_Tool::Tolerance(aP);
+    double       aGap  = 0.;
+    for (int k = 0; k <= 8; k++)
+    {
+      const double aT = aFP + 0.125 * k * (aLP - aFP);
+      aGap            = std::max(aGap, aCP->Value(aT).Distance(aC->Value(aT)));
+    }
+    if (aGap > std::max(aTolP, aTolE))
+    {
+      return false;
+    }
+    aTols.Append(std::max(aTolP, aGap + aTolE));
+  }
+  double                    aFC, aLC;
+  occ::handle<Geom2d_Curve> aPC = BRep_Tool::CurveOnSurface(theE, theF, aFC, aLC);
+  if (aPC.IsNull())
+  {
+    return false;
+  }
+  occ::handle<Geom2d_Curve> aPC2;
+  if (BRep_Tool::IsClosed(theE, theF))
+  {
+    aPC2 = BRep_Tool::CurveOnSurface(TopoDS::Edge(theE.Reversed()), theF, aFC, aLC);
+  }
+  BRep_Builder                       aBB;
+  NCollection_List<double>::Iterator aTolIt(aTols);
+  for (NCollection_List<TopoDS_Shape>::Iterator anIt(thePieces); anIt.More();
+       anIt.Next(), aTolIt.Next())
+  {
+    TopoDS_Edge aP       = TopoDS::Edge(anIt.Value());
+    bool        isStored = false;
+    double      aF2, aL2;
+    if (!BRep_Tool::CurveOnSurface(aP, theF, aF2, aL2, &isStored).IsNull() && isStored)
+    {
+      continue;
+    }
+    // the piece's curve runs the edge's way: its pcurves go the same way round
+    aP.Orientation(theE.Orientation());
+    if (aPC2.IsNull())
+    {
+      aBB.UpdateEdge(aP, aPC, theF, aTolIt.Value());
+    }
+    else
+    {
+      aBB.UpdateEdge(aP, aPC, aPC2, theF, aTolIt.Value());
+    }
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(aP, aV1, aV2);
+    if (!aV1.IsNull())
+    {
+      aBB.UpdateVertex(aV1, aTolIt.Value());
+    }
+    if (!aV2.IsNull())
+    {
+      aBB.UpdateVertex(aV2, aTolIt.Value());
+    }
+  }
+  return true;
+}
+
+//=================================================================================================
+
 void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRange)
 {
 #ifdef OCCT_DEBUG
@@ -5559,6 +5651,30 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
     {
       for (Exp.Init(OF.Oriented(TopAbs_FORWARD), TopAbs_EDGE); Exp.More(); Exp.Next())
       {
+        // A tube's edge is a face's offset edge too: where ToContext rebuilt
+        // that face, the tube has the edge as the face has it. A tube ending
+        // at a removed face's tangent edge is not rebuilt, and kept the
+        // edge whole beside the face's new one -- the side of #363's grooved
+        // cylinder against the kept quarter's tube, its quarter removed
+        // outward with the Arc join: each copy free, every face hanging.
+        // Only pieces on the edge's own curve, under its parameters, are
+        // taken, and given the tube's pcurve of the edge: the face made them
+        // with a pcurve on its own surface only.
+        const TopAbs_Orientation OO = Exp.Current().Orientation();
+        if (aCutEdges.IsBound(Exp.Current())
+            && piecesOnTheEdgeCurve(TopoDS::Edge(Exp.Current()), aCutEdges(Exp.Current()), OF))
+        {
+          for (NCollection_List<TopoDS_Shape>::Iterator aCutIt(aCutEdges(Exp.Current()));
+               aCutIt.More();
+               aCutIt.Next())
+          {
+            myAsDes->Add(OF,
+                         aCutIt.Value().Oriented(aCutIt.Value().Orientation() == TopAbs_REVERSED
+                                                   ? TopAbs::Reverse(OO)
+                                                   : OO));
+          }
+          continue;
+        }
         myAsDes->Add(OF, Exp.Current());
       }
     }

@@ -35,6 +35,9 @@
 #include <BRepTools.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomAdaptor_Curve.hxx>
+#include <Geom2dAPI_InterCurveCurve.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <IntRes2d_IntersectionPoint.hxx>
 #include <Precision.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -59,6 +62,7 @@
 //
 #include <BOPTools_AlgoTools.hxx>
 
+#include <algorithm>
 #include <vector>
 
 //=================================================================================================
@@ -2693,6 +2697,106 @@ static void ShareArcs(
   }
 }
 
+//=======================================================================
+// function : CutAtCapEdgeCrossings
+// purpose  : A tube closing a tangent edge <theE> of the cap <theCF>
+//            (BRepOffset_MakeOffset::ToContext) has its edge on the cap,
+//            <theOE>, a thickness off <theE> and square-ended at <theE>'s
+//            ends. Where the face beside the cap there is square to <theE>
+//            (a box's side) the cap's edge at that end runs through the
+//            edge's end; where it is curved (#363's grooved cylinder, its
+//            side round the groove's crown) the cap's edge bends in and
+//            crosses <theOE> short of its end, and nothing put a vertex there:
+//            the cap's loop, its own edges taken whole, left them hanging and
+//            closed the cap over the opening. The crossings go on the section
+//            <theNE> -- <theOE> stretched -- as its ends do, and the cap and
+//            the tube are cut there; the loop then cuts the cap's edge at the
+//            vertex, as where a section ends on it.
+//=======================================================================
+static void CutAtCapEdgeCrossings(const TopoDS_Face&                 theCF,
+                                  const TopoDS_Edge&                 theE,
+                                  const TopoDS_Edge&                 theOE,
+                                  const TopoDS_Edge&                 theNE,
+                                  const occ::handle<BRepAlgo_AsDes>& theAsDes)
+{
+  double                    aF, aL;
+  occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theOE, theCF, aF, aL);
+  double                    aF3, aL3;
+  occ::handle<Geom_Curve>   aC3d = BRep_Tool::Curve(theOE, aF3, aL3);
+  if (aC2d.IsNull() || aC3d.IsNull())
+  {
+    return;
+  }
+  TopoDS_Vertex aV1, aV2, aO1, aO2;
+  TopExp::Vertices(theE, aV1, aV2);
+  TopExp::Vertices(theOE, aO1, aO2);
+  if (aO1.IsNull() || aO2.IsNull())
+  {
+    return;
+  }
+  const double            aTolOE = BRep_Tool::Tolerance(theOE);
+  double                  aNF, aNL;
+  occ::handle<Geom_Curve> aNC = BRep_Tool::Curve(theNE, aNF, aNL);
+  if (aNC.IsNull())
+  {
+    return;
+  }
+  BRep_Builder                                           aBB;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+  for (TopExp_Explorer anExp(theCF, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Edge& aCE = TopoDS::Edge(anExp.Current());
+    if (aCE.IsSame(theE) || BRep_Tool::Degenerated(aCE) || !aDone.Add(aCE))
+    {
+      continue;
+    }
+    TopoDS_Vertex aC1, aC2;
+    TopExp::Vertices(aCE, aC1, aC2);
+    if (!aC1.IsSame(aV1) && !aC1.IsSame(aV2) && !aC2.IsSame(aV1) && !aC2.IsSame(aV2))
+    {
+      continue;
+    }
+    double                    aCF, aCL;
+    occ::handle<Geom2d_Curve> aCC2d = BRep_Tool::CurveOnSurface(aCE, theCF, aCF, aCL);
+    double                    aCF3, aCL3;
+    occ::handle<Geom_Curve>   aCC3d = BRep_Tool::Curve(aCE, aCF3, aCL3);
+    if (aCC2d.IsNull() || aCC3d.IsNull())
+    {
+      continue;
+    }
+    Geom2dAPI_InterCurveCurve anInter(new Geom2d_TrimmedCurve(aC2d, aF, aL),
+                                      new Geom2d_TrimmedCurve(aCC2d, aCF, aCL),
+                                      Precision::PConfusion());
+    const double aTolCE = BRep_Tool::Tolerance(aCE);
+    for (int i = 1; i <= anInter.Intersector().NbPoints(); ++i)
+    {
+      const IntRes2d_IntersectionPoint& anIP = anInter.Intersector().Point(i);
+      const gp_Pnt                      aP   = aC3d->Value(anIP.ParamOnFirst());
+      const gp_Pnt                      aQ   = aCC3d->Value(anIP.ParamOnSecond());
+      // not at the edge's ends: there the square-cut side's edge meets it
+      if (aP.Distance(BRep_Tool::Pnt(aO1)) <= BRep_Tool::Tolerance(aO1) + aTolOE
+          || aP.Distance(BRep_Tool::Pnt(aO2)) <= BRep_Tool::Tolerance(aO2) + aTolOE)
+      {
+        continue;
+      }
+      GeomAPI_ProjectPointOnCurve aProj(aP, aNC, aNF, aNL);
+      if (aProj.NbPoints() == 0)
+      {
+        continue;
+      }
+      const double  aTol = std::max({aP.Distance(aQ), aTolOE, aTolCE, Precision::Confusion()});
+      TopoDS_Vertex aV   = BRepLib_MakeVertex(aP);
+      aBB.UpdateVertex(aV, aTol);
+      TopoDS_Shape aLocalShape = aV.Oriented(TopAbs_INTERNAL);
+      aBB.UpdateVertex(TopoDS::Vertex(aLocalShape), aProj.LowerDistanceParameter(), theNE, aTol);
+      TopoDS_Edge aNE = theNE; // the same edge: a vertex added to it is the section's
+      aBB.Add(aNE, aLocalShape);
+      theAsDes->Add(theNE, aV);
+      SHOW_TOPO_SHAPE(aV, "TubeEdgeCrossesCapEdge");
+    }
+  }
+}
+
 //=================================================================================================
 
 void BRepOffset_Inter3d::ContextIntByArc(
@@ -2884,6 +2988,10 @@ void BRepOffset_Inter3d::ContextIntByArc(
         B.Add(NE, aLocalShape);
         //            B.UpdateVertex(TopoDS::Vertex(V1.Oriented(TopAbs_INTERNAL)),f,NE,Tol);
         //            B.UpdateVertex(TopoDS::Vertex(V2.Oriented(TopAbs_INTERNAL)),l,NE,Tol);
+        if (isTangentTube)
+        {
+          CutAtCapEdgeCrossings(CF, E, anOEOnTube, NE, myAsDes);
+        }
         NE.Orientation(OE.Orientation());
         InitOffsetEdge.Add(E, NE);
         OE = NE;
