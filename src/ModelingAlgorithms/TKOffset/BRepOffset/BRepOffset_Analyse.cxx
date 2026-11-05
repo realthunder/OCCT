@@ -1316,6 +1316,52 @@ void BRepOffset_Analyse::TreatTangentCaps(
         myMapEdgeType(aEC).Clear();
         EdgeAnalyse(TopoDS::Edge(anInFace(aEC, aStrip)), aN, aStrip, aSinTol, myMapEdgeType(aEC));
       }
+      // The strip's end edge and the wall's are lines, and lie on the face at
+      // the end only where that face is a plane. On a curved one -- the
+      // sphere of half a dome, the tangent edge ending at its pole; the side
+      // of a cylinder a groove runs across the end of -- they have no pcurve
+      // to be analysed by: an edge is convex or concave as the strip or the
+      // wall runs behind the face or in front of it, seen from where the
+      // edge's middle falls on the face.
+      auto aTypeOnCurvedEnd = [&](const TopoDS_Edge&   theE,
+                                  const TopoDS_Face&   theFV,
+                                  const TopoDS_Vertex& theV1,
+                                  const TopoDS_Vertex& theV2,
+                                  const int            theI) {
+        if (BRepAdaptor_Surface(theFV, false).GetType() == GeomAbs_Plane)
+        {
+          return;
+        }
+        const gp_Pnt aMid =
+          BRep_Tool::Pnt(theV1).XYZ() * 0.5 + BRep_Tool::Pnt(theV2).XYZ() * 0.5;
+        const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(theFV);
+        GeomAPI_ProjectPointOnSurf      aProj(aMid, aSurf);
+        if (aProj.NbPoints() == 0)
+        {
+          return;
+        }
+        double aU, aVv;
+        aProj.LowerDistanceParameters(aU, aVv);
+        GeomLProp_SLProps aProps(aSurf, aU, aVv, 1, Precision::Confusion());
+        if (!aProps.IsNormalDefined())
+        {
+          return;
+        }
+        gp_Dir aNF = aProps.Normal();
+        if (theFV.Orientation() == TopAbs_REVERSED)
+        {
+          aNF.Reverse();
+        }
+        const gp_Vec aAlong(BRep_Tool::Pnt(aV[theI]), BRep_Tool::Pnt(aV[1 - theI]));
+        double       aF1, aL1;
+        BRep_Tool::Range(theE, aF1, aL1);
+        NCollection_List<BRepOffset_Interval>& aLI = myMapEdgeType(theE);
+        aLI.Clear();
+        aLI.Append(BRepOffset_Interval(aF1,
+                                       aL1,
+                                       aAlong.Dot(gp_Vec(aNF)) < 0. ? ChFiDS_Convex
+                                                                    : ChFiDS_Concave));
+      };
       // The strip's ends and the wall's: each with the face at its end.
       for (int i = 0; i < 2; ++i)
       {
@@ -1329,6 +1375,7 @@ void BRepOffset_Analyse::TreatTangentCaps(
           myAncestors.Add(aSi, aLS);
           myMapEdgeType.Bind(aSi, NCollection_List<BRepOffset_Interval>());
           EdgeAnalyse(aSi, aStrip, aFV[i], aSinTol, myMapEdgeType(aSi));
+          aTypeOnCurvedEnd(aSi, aFV[i], aV[i], aVp[i], i);
           myAncestors.ChangeFromKey(aV[i]).Append(aSi);
           aLVp.Append(aSi);
         }
@@ -1340,42 +1387,7 @@ void BRepOffset_Analyse::TreatTangentCaps(
         myAncestors.Add(aTi, aLT);
         myMapEdgeType.Bind(aTi, NCollection_List<BRepOffset_Interval>());
         EdgeAnalyse(aTi, aWall, aFV[i], aSinTol, myMapEdgeType(aTi));
-        // The wall's end edge is a line square to the kept face, and lies on
-        // the face at the end only where that face is a plane. On a curved
-        // one -- the sphere of half a dome, the tangent edge ending at its
-        // pole -- it has no pcurve to be analysed by: the edge is convex or
-        // concave as the wall runs behind the face or in front of it, seen
-        // from where the edge's middle falls on the face.
-        if (BRepAdaptor_Surface(aFV[i], false).GetType() != GeomAbs_Plane)
-        {
-          const gp_Pnt aPi  = BRep_Tool::Pnt(aVp[i]), aPn = BRep_Tool::Pnt(aVpn[i]);
-          const gp_Pnt aMid = aPi.XYZ() * 0.5 + aPn.XYZ() * 0.5;
-          const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(aFV[i]);
-          GeomAPI_ProjectPointOnSurf      aProj(aMid, aSurf);
-          if (aProj.NbPoints() > 0)
-          {
-            double aU, aVv;
-            aProj.LowerDistanceParameters(aU, aVv);
-            GeomLProp_SLProps aProps(aSurf, aU, aVv, 1, Precision::Confusion());
-            if (aProps.IsNormalDefined())
-            {
-              gp_Dir aNF = aProps.Normal();
-              if (aFV[i].Orientation() == TopAbs_REVERSED)
-              {
-                aNF.Reverse();
-              }
-              const gp_Vec aAlong(BRep_Tool::Pnt(aV[i]), BRep_Tool::Pnt(aV[1 - i]));
-              double aF1, aL1;
-              BRep_Tool::Range(aTi, aF1, aL1);
-              NCollection_List<BRepOffset_Interval>& aLI = myMapEdgeType(aTi);
-              aLI.Clear();
-              aLI.Append(BRepOffset_Interval(aF1,
-                                             aL1,
-                                             aAlong.Dot(gp_Vec(aNF)) < 0. ? ChFiDS_Convex
-                                                                          : ChFiDS_Concave));
-            }
-          }
-        }
+        aTypeOnCurvedEnd(aTi, aFV[i], aVp[i], aVpn[i], i);
 
         aLVp.Append(anInFace(aEp, aWall));
         aLVp.Append(aTi);

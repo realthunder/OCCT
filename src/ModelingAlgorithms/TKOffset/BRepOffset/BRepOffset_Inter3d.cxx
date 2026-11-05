@@ -24,6 +24,7 @@
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_Image.hxx>
 #include <BRepLib_MakeFace.hxx>
+#include <BRepLib_MakePolygon.hxx>
 #include <BRepLib_MakeVertex.hxx>
 #include <BRepOffset_Analyse.hxx>
 #include <BRepOffset_Inter3d.hxx>
@@ -44,6 +45,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopTools.hxx>
+#include <ElSLib.hxx>
 #include <Extrema_ExtPC.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
@@ -181,10 +183,135 @@ static bool IsSphereCapWall(const TopoDS_Shape& theF, const BRepOffset_Analyse& 
   return false;
 }
 
+// The strip closing a tangent edge (TreatTangentCaps) is a plane, and grown
+// it runs on across the whole shape. Where both its ends meet one face --
+// a groove across a cylinder's end, the side at both ends -- the section
+// with that face's offset is one closed curve, a circle round the side, and
+// one end took it all: the other was left with nothing, and the side's
+// offset cut all round. The strip stands in its band one thickness wide,
+// as the wall does: grown across it by a tenth of the band, along it by its
+// length and a hundred bands. The band is a polygon on the strip's own
+// surface, whose frame need not run along the edge.
+static void KeepStripInItsBand(const TopoDS_Face&        theF,
+                               const BRepOffset_Analyse& theAnalyse,
+                               TopoDS_Face&              theNF)
+{
+  if (theNF.IsNull() || theF.ShapeType() != TopAbs_FACE
+      || BRepAdaptor_Surface(theF, false).GetType() != GeomAbs_Plane
+      || theAnalyse.NewFaceOffset(theF) == 0.)
+  {
+    return;
+  }
+  bool isNew = false;
+  for (NCollection_List<TopoDS_Shape>::Iterator itNF(theAnalyse.NewFaces()); itNF.More() && !isNew;
+       itNF.Next())
+  {
+    isNew = itNF.Value().IsSame(theF);
+  }
+  if (!isNew)
+  {
+    return;
+  }
+  // The tangent edge: along the band; the strip's other vertices: across it.
+  TopoDS_Edge aTanE;
+  for (TopExp_Explorer anExp(theF, TopAbs_EDGE); anExp.More() && aTanE.IsNull(); anExp.Next())
+  {
+    const TopoDS_Edge& aE = TopoDS::Edge(anExp.Current());
+    if (theAnalyse.HasAncestor(aE) && !theAnalyse.Type(aE).IsEmpty()
+        && theAnalyse.Type(aE).First().Type() == ChFiDS_Tangential)
+    {
+      aTanE = aE;
+    }
+  }
+  if (aTanE.IsNull())
+  {
+    return;
+  }
+  TopoDS_Vertex aV1, aV2;
+  TopExp::Vertices(aTanE, aV1, aV2);
+  if (aV1.IsNull() || aV2.IsNull() || aV1.IsSame(aV2))
+  {
+    return;
+  }
+  const gp_Pnt anO = BRep_Tool::Pnt(aV1);
+  gp_Vec       aT(anO, BRep_Tool::Pnt(aV2));
+  const double aL = aT.Magnitude();
+  if (aL < Precision::Confusion())
+  {
+    return;
+  }
+  aT /= aL;
+  gp_Vec aD;
+  for (TopExp_Explorer anExp(theF, TopAbs_VERTEX); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Vertex& aV = TopoDS::Vertex(anExp.Current());
+    if (aV.IsSame(aV1) || aV.IsSame(aV2))
+    {
+      continue;
+    }
+    gp_Vec aDV(anO, BRep_Tool::Pnt(aV));
+    aDV -= aT * aDV.Dot(aT);
+    if (aDV.Magnitude() > aD.Magnitude())
+    {
+      aD = aDV;
+    }
+  }
+  const double aW = aD.Magnitude();
+  if (aW < Precision::Confusion())
+  {
+    return;
+  }
+  aD /= aW;
+  BRepAdaptor_Surface aBAS(theNF, false);
+  if (aBAS.GetType() != GeomAbs_Plane)
+  {
+    return;
+  }
+  const gp_Pln aPln = aBAS.Plane();
+  double       aU1, aU2, aVv1, aVv2;
+  BRepTools::UVBounds(theNF, aU1, aU2, aVv1, aVv2);
+  // Along the band, far enough for any face at its ends, not as far as the
+  // grown face: a polygon's edges forty million long are lost by the
+  // section (none found with the side of a cylinder).
+  const double aGrow = std::min(std::max(aU2 - aU1, aVv2 - aVv1), aL + 100. * aW);
+  // The strip's origin on the grown face's plane.
+  double aPU, aPV;
+  ElSLib::Parameters(aPln, anO, aPU, aPV);
+  const gp_Pnt anOn = ElSLib::Value(aPU, aPV, aPln);
+  const double aS[2] = {-aGrow, aL + aGrow}, aTt[2] = {-0.1 * aW, 1.1 * aW};
+  const bool   isCCW =
+    (aT ^ aD).Dot(gp_Vec(aPln.Axis().Direction())) > 0.;
+  TopLoc_Location                  aLoc;
+  const occ::handle<Geom_Surface>& aSurf = BRep_Tool::Surface(theNF, aLoc);
+  const gp_Trsf                    aToLocal = aLoc.Transformation().Inverted();
+  BRepLib_MakePolygon              aMP;
+  const int aI[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  for (int k = 0; k < 4; ++k)
+  {
+    const int* aIJ = aI[isCCW ? k : 3 - k];
+    aMP.Add(anOn.Translated(aT * aS[aIJ[0]] + aD * aTt[aIJ[1]]).Transformed(aToLocal));
+  }
+  aMP.Close();
+  if (!aMP.IsDone())
+  {
+    return;
+  }
+  BRepLib_MakeFace aMF(aSurf, aMP.Wire(), true);
+  if (!aMF.IsDone())
+  {
+    return;
+  }
+  TopoDS_Face aNF = aMF.Face();
+  aNF.Location(aLoc);
+  aNF.Orientation(theNF.Orientation());
+  theNF = aNF;
+}
+
 static void KeepWallInItsBand(const TopoDS_Face&        theF,
                               const BRepOffset_Analyse& theAnalyse,
                               TopoDS_Face&              theNF)
 {
+  KeepStripInItsBand(theF, theAnalyse, theNF);
   if (theNF.IsNull() || !IsSphereCapWall(theF, theAnalyse))
   {
     return;
