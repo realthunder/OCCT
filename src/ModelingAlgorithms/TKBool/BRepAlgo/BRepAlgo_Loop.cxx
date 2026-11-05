@@ -35,6 +35,8 @@
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <IntTools_FClass2d.hxx>
 #include <BRepTools.hxx>
+#include <BndLib_Add2dCurve.hxx>
+#include <Bnd_Box2d.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom2d_Line.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
@@ -522,28 +524,12 @@ static bool IsClosedInUV(const TopoDS_Wire& theWire, const TopoDS_Face& theFace)
 
 //=================================================================================================
 
-// Whether an edge closed on the face's surface is a seam of the face. Not
-// when it is one of the face's own edges and the face, at most a period
-// round, reaches only one of its two pcurves: #521's three-quarter cylinder,
-// its edge at 2 pi closed with a pcurve at 0 the face never reaches; the two
-// quarter cylinders of a groove, each using one pcurve of the edge between
-// them. Its pieces, cut by a later loop, keep the reachable pcurve
-// (keepFacesSide) and are left to that.
-static bool IsSeamOfFace(const TopoDS_Edge& theE, const TopoDS_Face& theF)
+// Which of the two pcurves of an edge closed on the face's surface the face
+// reaches, the face at most a period round: 1 the one the edge takes FORWARD
+// on the face (BRep_Tool::CurveOnSurface, the face's orientation counted), 2
+// the one it takes REVERSED, 0 both or neither.
+static int ReachedPCurve(const TopoDS_Edge& theE, const TopoDS_Face& theF)
 {
-  if (!BRep_Tool::IsClosed(theE, theF))
-  {
-    return false;
-  }
-  bool isOwn = false;
-  for (TopExp_Explorer anExp(theF, TopAbs_EDGE); anExp.More() && !isOwn; anExp.Next())
-  {
-    isOwn = anExp.Current().IsSame(theE);
-  }
-  if (!isOwn)
-  {
-    return true;
-  }
   const TopoDS_Face               aFace = TopoDS::Face(theF.Oriented(TopAbs_FORWARD));
   const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(aFace);
   double                          aU1, aU2, aV1, aV2;
@@ -555,7 +541,7 @@ static bool IsSeamOfFace(const TopoDS_Edge& theE, const TopoDS_Face& theF)
     BRep_Tool::CurveOnSurface(TopoDS::Edge(theE.Oriented(TopAbs_REVERSED)), theF, aF2, aL2);
   if (aSurf.IsNull() || aC1.IsNull() || aC2.IsNull())
   {
-    return true;
+    return 0;
   }
   const gp_Pnt2d aM1 = aC1->Value((aF1 + aL1) / 2.), aM2 = aC2->Value((aF2 + aL2) / 2.);
   const double   aTol = Precision::PConfusion();
@@ -577,10 +563,31 @@ static bool IsSeamOfFace(const TopoDS_Edge& theE, const TopoDS_Face& theF)
     const bool   isIn2 = aX2 > aLo - aTol && aX2 < aHi + aTol;
     if (isIn1 != isIn2)
     {
-      return false;
+      return isIn1 ? 1 : 2;
     }
   }
-  return true;
+  return 0;
+}
+
+// Whether an edge closed on the face's surface is a seam of the face. Not
+// when it is one of the face's own edges and the face, at most a period
+// round, reaches only one of its two pcurves: #521's three-quarter cylinder,
+// its edge at 2 pi closed with a pcurve at 0 the face never reaches; the two
+// quarter cylinders of a groove, each using one pcurve of the edge between
+// them. Its pieces, cut by a later loop, keep the reachable pcurve
+// (keepFacesSide) and are left to that.
+static bool IsSeamOfFace(const TopoDS_Edge& theE, const TopoDS_Face& theF)
+{
+  if (!BRep_Tool::IsClosed(theE, theF))
+  {
+    return false;
+  }
+  bool isOwn = false;
+  for (TopExp_Explorer anExp(theF, TopAbs_EDGE); anExp.More() && !isOwn; anExp.Next())
+  {
+    isOwn = anExp.Current().IsSame(theE);
+  }
+  return !isOwn || ReachedPCurve(theE, theF) == 0;
 }
 
 //=================================================================================================
@@ -2104,6 +2111,17 @@ static bool FindLoopsByAngle(
   {
     const TopoDS_Edge& E = TopoDS::Edge(anEdges(e));
     aC2d[e]              = BRep_Tool::CurveOnSurface(E, theFace, aF[e], aL[e]);
+    // An edge closed on the surface and no seam of the face is walked with
+    // the pcurve the face reaches. Its direction is the same on either, but
+    // the area is not: on a groove quarter's offset, the face reversed, the
+    // edge FORWARD gave the pcurve at 0 where the face lies by 2 pi; the
+    // strip into the removed quarter came out of negative area, dropped, and
+    // the outline round it and the face beyond positive -- one face of both.
+    if (BRep_Tool::IsClosed(E, theFace) && !IsSeamOfFace(E, theFace)
+        && ReachedPCurve(E, theFace) == 2)
+    {
+      aC2d[e] = BRep_Tool::CurveOnSurface(TopoDS::Edge(E.Reversed()), theFace, aF[e], aL[e]);
+    }
     TopoDS_Vertex V1, V2;
     TopExp::Vertices(E, V1, V2);
     aV1[e] = V1.IsNull() ? 0 : MVE.FindIndex(V1);
@@ -3799,9 +3817,54 @@ void BRepAlgo_Loop::WiresToFaces()
 
     if (FR.IsDone())
     {
+      // A face running further round a period than its wires do, measured
+      // as walked, was made with the pcurve the face does not reach of an
+      // edge closed on the surface and no seam of it. The groove of two
+      // quarters on #363's cylinder, a quarter removed outward: the removed
+      // quarter came out a three-quarter cylinder, the only face left of the
+      // offset, and the thickness made of it was invalid where the mirror is
+      // refused.
+      const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(myFace);
+      Bnd_Box2d                       aWB;
+      for (it.Initialize(myNewWires); it.More(); it.Next())
+      {
+        for (TopoDS_Iterator itE(it.Value()); itE.More(); itE.Next())
+        {
+          const TopoDS_Edge& aE = TopoDS::Edge(itE.Value());
+          TopoDS_Edge        aLook = aE;
+          if (BRep_Tool::IsClosed(aE, myFace) && !IsSeamOfFace(aE, myFace))
+          {
+            aLook = TopoDS::Edge(
+              aE.Oriented(ReachedPCurve(aE, myFace) == 2 ? TopAbs_REVERSED : TopAbs_FORWARD));
+          }
+          double                          aF, aL;
+          const occ::handle<Geom2d_Curve> aC = BRep_Tool::CurveOnSurface(aLook, myFace, aF, aL);
+          if (!aC.IsNull())
+          {
+            BndLib_Add2dCurve::Add(aC, aF, aL, 0., aWB);
+          }
+        }
+      }
+      auto goesRound = [&](const TopoDS_Face& theNF) {
+        if (aWB.IsVoid())
+        {
+          return false;
+        }
+        double aWU1, aWV1, aWU2, aWV2, aNU1, aNU2, aNV1, aNV2;
+        aWB.Get(aWU1, aWV1, aWU2, aWV2);
+        BRepTools::UVBounds(theNF, aNU1, aNU2, aNV1, aNV2);
+        const double aTol = 1.e-6;
+        return (aSurf->IsUPeriodic() && aNU2 - aNU1 > aWU2 - aWU1 + aTol)
+               || (aSurf->IsVPeriodic() && aNV2 - aNV1 > aWV2 - aWV1 + aTol);
+      };
       TopAbs_Orientation OriF = myFace.Orientation();
       for (; FR.More(); FR.Next())
       {
+        if (goesRound(FR.Current()))
+        {
+          SHOW_TOPO_SHAPE(FR.Current(), "NewFaceRound");
+          continue;
+        }
         SHOW_TOPO_SHAPE(FR.Current(), "NewFace");
         myNewFaces.Append(FR.Current().Oriented(OriF));
       }
