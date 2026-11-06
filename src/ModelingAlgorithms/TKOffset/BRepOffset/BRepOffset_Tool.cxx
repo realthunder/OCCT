@@ -38,6 +38,7 @@
 #include <BRepLib_MakeEdge.hxx>
 #include <BRepLib_MakeFace.hxx>
 #include <BRepLib_MakeVertex.hxx>
+#include <BRepOffset.hxx>
 #include <BRepOffset_Analyse.hxx>
 #include <BRepOffset_Interval.hxx>
 #include <NCollection_List.hxx>
@@ -50,6 +51,7 @@
 #include <Extrema_ExtPC2d.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
+#include <GeomAdaptor_Curve.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <Geom2d_BezierCurve.hxx>
 #include <Geom2dAPI_Interpolate.hxx>
@@ -3601,7 +3603,85 @@ static bool EnlargeGeometry(occ::handle<Geom_Surface>& S,
         IsV2degen    = true;
       }
     }
-    occ::handle<Geom_BoundedSurface> aSurf = new Geom_RectangularTrimmedSurface(S, u1, u2, v1, v2);
+    // A revolution whose meridian is a piece of a conic or a line goes on
+    // along that curve: stretched by GeomLib, as a B-spline, its meridian
+    // left the circle, and #346's dome offset outward met its removed cone
+    // 5e-4 off the corner, under a tolerance of 2e-7. Trimmed wider on the
+    // same curve now, from the fork's offset fix level 2 (a shape some input
+    // already had moves).
+    occ::handle<Geom_Surface> aRevol = S;
+    double                    aV1 = v1, aV2 = v2;
+    if (enlargeV && BRepOffset_FixLevel() >= 2
+        && S->DynamicType() == STANDARD_TYPE(Geom_SurfaceOfRevolution))
+    {
+      const occ::handle<Geom_SurfaceOfRevolution> aRev =
+        occ::down_cast<Geom_SurfaceOfRevolution>(S);
+      const occ::handle<Geom_TrimmedCurve> aTrim =
+        occ::down_cast<Geom_TrimmedCurve>(aRev->BasisCurve());
+      const occ::handle<Geom_Curve> aBasis = aTrim.IsNull() ? occ::handle<Geom_Curve>()
+                                                            : aTrim->BasisCurve();
+      if (!aBasis.IsNull()
+          && (aBasis->IsKind(STANDARD_TYPE(Geom_Conic))
+              || aBasis->DynamicType() == STANDARD_TYPE(Geom_Line)))
+      {
+        // Lengths measured on a window of the curve that is not periodic:
+        // on the whole circle a parameter before its origin comes back a
+        // period on.
+        const double aReach = dv_first + dv_last + (v2 - v1);
+        double       aW1 = v1 - aReach, aW2 = v2 + aReach;
+        if (aBasis->IsPeriodic())
+        {
+          const double aFree = std::max(aBasis->Period() - (v2 - v1), 0.) / 2.;
+          aW1                = v1 - aFree * 0.999;
+          aW2                = v2 + aFree * 0.999;
+        }
+        GeomAdaptor_Curve aGC(new Geom_TrimmedCurve(aBasis, aW1, aW2, true, false));
+        if (enlargeVfirst && dv_first != 0.)
+        {
+          GCPnts_AbscissaPoint anAbs(aGC, -dv_first, v1);
+          if (anAbs.IsDone())
+          {
+            aV1 = anAbs.Parameter();
+          }
+        }
+        if (enlargeVlast && dv_last != 0.)
+        {
+          GCPnts_AbscissaPoint anAbs(aGC, dv_last, v2);
+          if (anAbs.IsDone())
+          {
+            aV2 = anAbs.Parameter();
+          }
+        }
+        // Short of a whole turn of a periodic one: its ends apart.
+        if (aBasis->IsPeriodic() && aV2 - aV1 >= aBasis->Period())
+        {
+          const double aGrow = (v2 - v1 < aBasis->Period()) ? (aBasis->Period() - (v2 - v1)) / 2.1
+                                                           : 0.;
+          aV1 = v1 - (enlargeVfirst ? aGrow : 0.);
+          aV2 = v2 + (enlargeVlast ? aGrow : 0.);
+        }
+        // Not past a periodic curve's origin: the revolution keeps a copy of
+        // its meridian, and the copy takes its parameters into one period --
+        // a range from below the origin is the face's no more. Those are
+        // stretched as before.
+        const bool isInPeriod = !aBasis->IsPeriodic()
+                                || (aV1 >= aBasis->FirstParameter()
+                                    && aV2 <= aBasis->LastParameter());
+        if ((aV1 < v1 || aV2 > v2) && isInPeriod)
+        {
+          aRevol = new Geom_SurfaceOfRevolution(new Geom_TrimmedCurve(aBasis, aV1, aV2),
+                                                aRev->Axis());
+          enlargeV = false;
+        }
+        else
+        {
+          aV1 = v1;
+          aV2 = v2;
+        }
+      }
+    }
+    occ::handle<Geom_BoundedSurface> aSurf =
+      new Geom_RectangularTrimmedSurface(aRevol, u1, u2, aV1, aV2);
     if (enlargeU)
     {
       if (enlargeUfirst && du_first != 0.)
