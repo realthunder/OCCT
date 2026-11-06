@@ -10154,10 +10154,15 @@ bool TrimEdge(
         return aP - aU < aTolPC ? 0. : aU;
       };
       std::vector<std::pair<double, TopoDS_Vertex>> aVs, aAll;
-      // Only when the least to the greatest is all of it: one starting inside
-      // the span kept (#521's circle round the removed cylinder, from 45
-      // degrees) is trimmed right by them.
-      if (std::abs(aT2 - aT1 - aP) < aTolPC && UMax - UMin > aP - aTolPC)
+      // When the least to the greatest is all of it; one starting inside the
+      // span kept (#521's circle round the removed cylinder, from 45 degrees)
+      // is trimmed right by them, and is left so unless none of the edges
+      // lies on that span: the step cut off a cylinder, its side removed,
+      // outward -- the bottom's section with the side starts at the seam,
+      // where the bottom's two arcs meet, and its two vertices, where the
+      // step's wall comes down, hold the piece under the step between them.
+      const bool isAll = UMax - UMin > aP - aTolPC;
+      if (std::abs(aT2 - aT1 - aP) < aTolPC)
       {
         for (NCollection_List<TopoDS_Shape>::Iterator it(LE); it.More(); it.Next())
         {
@@ -10231,6 +10236,16 @@ bool TrimEdge(
       for (int k = 0; isRun && k < aNbOn; ++k)
       {
         isRun = aOn[(aStart + k) % aN];
+      }
+      // Not all of it: only where the span from the least to the greatest
+      // holds none of the edges.
+      for (int j = 0; isRun && !isAll && j + 1 < aN; ++j)
+      {
+        const double aU0 = aFrom(UMin), aU1 = aFrom(UMax);
+        if (aOn[j] && aVs[j].first >= aU0 - aTolPC && aVs[j + 1].first <= aU1 + aTolPC)
+        {
+          isRun = false;
+        }
       }
       if (isRun)
       {
