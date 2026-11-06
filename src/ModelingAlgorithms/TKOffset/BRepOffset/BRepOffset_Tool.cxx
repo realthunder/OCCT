@@ -5119,6 +5119,46 @@ static bool VertexOnOneCurve(const TopoDS_Edge&   theE1,
 
 //=================================================================================================
 
+// Whether two curves, each as its parameter runs, go the same way: their
+// tangents where they come nearest each other (as BRepOffset_Inter3d.cxx's
+// RunTheSameWay, there with the edges' orientations).
+static bool curvesRunTheSameWay(const TopoDS_Edge& theE, const TopoDS_Edge& theRef)
+{
+  BRepAdaptor_Curve   aC(theE), aRef(theRef);
+  const int           aNb   = 32;
+  double              aBest = RealLast();
+  double              aTE   = (aC.FirstParameter() + aC.LastParameter()) / 2.;
+  double              aTR   = (aRef.FirstParameter() + aRef.LastParameter()) / 2.;
+  std::vector<gp_Pnt> aRefPnts;
+  for (int j = 0; j <= aNb; ++j)
+  {
+    aRefPnts.push_back(aRef.Value(aRef.FirstParameter()
+                                  + (aRef.LastParameter() - aRef.FirstParameter()) * j / aNb));
+  }
+  for (int i = 0; i <= aNb; ++i)
+  {
+    const double aT = aC.FirstParameter() + (aC.LastParameter() - aC.FirstParameter()) * i / aNb;
+    const gp_Pnt aP = aC.Value(aT);
+    for (int j = 0; j <= aNb; ++j)
+    {
+      const double aD2 = aP.SquareDistance(aRefPnts[j]);
+      if (aD2 < aBest)
+      {
+        aBest = aD2;
+        aTE   = aT;
+        aTR   = aRef.FirstParameter() + (aRef.LastParameter() - aRef.FirstParameter()) * j / aNb;
+      }
+    }
+  }
+  gp_Pnt aP, aPR;
+  gp_Vec aD, aDR;
+  aC.D1(aTE, aP, aD);
+  aRef.D1(aTR, aPR, aDR);
+  return aD.Dot(aDR) >= 0.;
+}
+
+//=================================================================================================
+
 void BRepOffset_Tool::ExtentFace(
   const TopoDS_Face&                                                        F,
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& ConstShapes,
@@ -5309,6 +5349,22 @@ void BRepOffset_Tool::ExtentFace(
         NE                          = TopoDS::Edge(LInt1.First());
         occ::handle<BRep_TEdge>& TE = *((occ::handle<BRep_TEdge>*)&NE.TShape());
         TE->Tolerance(TE->Tolerance() * 10.); //????
+        // A closed edge's section is laid on it by this orientation alone
+        // (its one vertex says nothing of which way round it runs, below),
+        // and Inter3D orients it as if the removed face met the offset one at
+        // a convex edge. At a concave one -- #346's dome beside its removed
+        // cone, inward -- the rim came out running the same way as the
+        // apex's edge across the face, the face unorientable, and healed into
+        // one of tolerance 1.5e3. It runs as the edge it replaces now, as
+        // ContextIntByInt turns its sections (BRepOffset_Inter3d.cxx).
+        TopoDS_Vertex aVE1, aVE2;
+        TopExp::Vertices(E, aVE1, aVE2);
+        if (!BRep_Tool::Degenerated(E) && !aVE1.IsNull() && aVE1.IsSame(aVE2))
+        {
+          const bool isSameWay = curvesRunTheSameWay(TopoDS::Edge(NE.Oriented(TopAbs_FORWARD)),
+                                                     TopoDS::Edge(E.Oriented(TopAbs_FORWARD)));
+          NE.Orientation(isSameWay ? E.Orientation() : TopAbs::Reverse(E.Orientation()));
+        }
         if (NE.Orientation() == E.Orientation())
         {
           Build.Bind(E, NE.Oriented(TopAbs_FORWARD));
