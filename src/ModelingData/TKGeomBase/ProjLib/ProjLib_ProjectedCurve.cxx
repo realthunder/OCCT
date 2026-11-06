@@ -665,11 +665,12 @@ void ProjLib_ProjectedCurve::Perform(const occ::handle<Adaptor3d_Curve>& C)
       // Sixteen segments cannot follow a curve of many spans, its knots
       // bunched where it turns: #617's section of a revolution, a degree 8
       // B-spline of 29 spans, came out 0.8 off at any tolerance. Where the
-      // caller set no limit and the result misses the tolerance, the segments
-      // are doubled, up to 256, until it is met; the best is kept (the error
-      // falls in steps: 30 segments gave what 16 did, 40 a quarter of it). A
-      // result within the tolerance is left as it was.
-      if (myMaxSegments <= 0 && !aRes.IsNull())
+      // caller set no limit, the curve has more spans than that and the result
+      // misses the tolerance, the segments are doubled, up to 256, until it is
+      // met; the best is kept (the error falls in steps: 30 segments gave what
+      // 16 did, 40 a quarter of it). A result within the tolerance, or of a
+      // curve of fewer spans, is left as it was.
+      if (myMaxSegments <= 0 && !aRes.IsNull() && myCurve->NbIntervals(GeomAbs_CN) > MaxSeg)
       {
         double aErr = std::sqrt(aErrU * aErrU + aErrV * aErrV);
         for (int aSeg = 2 * MaxSeg; aErr > aTol2d && aSeg <= 256; aSeg *= 2)
