@@ -136,25 +136,57 @@ static int DefineClosedness(const TopoDS_Face& theFace)
 static void GetEdgesOrientedInFace(const TopoDS_Shape&                 theShape,
                                    const TopoDS_Face&                  theFace,
                                    const occ::handle<BRepAlgo_AsDes>&  theAsDes,
-                                   NCollection_Sequence<TopoDS_Shape>& theSeqEdges)
+                                   NCollection_Sequence<TopoDS_Shape>& theSeqEdges,
+                                   const TopoDS_Shape&                 theOwner  = TopoDS_Shape(),
+                                   bool*                               theOnOwner = nullptr)
 {
-  const NCollection_List<TopoDS_Shape>& aEdges = theAsDes->Descendant(theFace);
-  // SHOW_TOPO_SHAPE(theFace, "OrientedInFace", aEdges);
-  // SHOW_TOPO_SHAPE(TopoDS_Shape(), "OrientedInFace", aEdges);
-
-  TopExp_Explorer anExplo(theShape, TopAbs_EDGE);
-  for (; anExplo.More(); anExplo.Next())
+  // A removed face's sections with the offsets are stored on the face itself
+  // (BRepOffset_Inter3d::ContextIntByInt), not on its enlarged copy, which is
+  // <theFace> here. A section of one edge bound as a compound -- the whole
+  // circle the bottom's two arcs, split by the side's seam, both lie on, or
+  // the line where the wall's offset meets the side, shared by the side's two
+  // edges with the wall (the step cut off a cylinder, its side removed) --
+  // was none of the copy's, and the corner it makes with the section beside
+  // it was not intersected: such a one, none of it found on the copy, is
+  // looked up on <theOwner>, the face, and <theOnOwner> says so. (Sections
+  // in pieces are left as they were: the side's with a groove's quarter
+  // removed, beyond each end of the groove, are built without that corner.)
+  bool isOneEdge = false;
   {
-    const TopoDS_Shape&                      anEdge = anExplo.Current();
-    NCollection_List<TopoDS_Shape>::Iterator itl(aEdges);
-    for (; itl.More(); itl.Next())
+    TopExp_Explorer aExpW(theShape, TopAbs_EDGE);
+    if (aExpW.More())
     {
-      const TopoDS_Shape& anEdgeInFace = itl.Value();
-      if (anEdgeInFace.IsSame(anEdge))
+      aExpW.Next();
+      isOneEdge = !aExpW.More();
+    }
+  }
+  for (int aPass = 0; aPass < 2 && theSeqEdges.IsEmpty(); ++aPass)
+  {
+    if (aPass == 1
+        && (!isOneEdge || theOwner.IsNull() || !theAsDes->HasDescendant(theOwner)))
+    {
+      break;
+    }
+    const NCollection_List<TopoDS_Shape>& aEdges =
+      theAsDes->Descendant(aPass == 0 ? TopoDS_Shape(theFace) : theOwner);
+    TopExp_Explorer anExplo(theShape, TopAbs_EDGE);
+    for (; anExplo.More(); anExplo.Next())
+    {
+      const TopoDS_Shape&                      anEdge = anExplo.Current();
+      NCollection_List<TopoDS_Shape>::Iterator itl(aEdges);
+      for (; itl.More(); itl.Next())
       {
-        theSeqEdges.Append(anEdgeInFace);
-        break;
+        const TopoDS_Shape& anEdgeInFace = itl.Value();
+        if (anEdgeInFace.IsSame(anEdge))
+        {
+          theSeqEdges.Append(anEdgeInFace);
+          break;
+        }
       }
+    }
+    if (theOnOwner != nullptr)
+    {
+      *theOnOwner = aPass == 1 && !theSeqEdges.IsEmpty();
     }
   }
 
@@ -2745,7 +2777,8 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
       NCollection_Sequence<TopoDS_Shape> NE1seq, NE2seq;
       TopAbs_Orientation                 anOr1 = TopAbs_EXTERNAL, anOr2 = TopAbs_EXTERNAL;
 
-      int aChoice = 0;
+      int  aChoice    = 0;
+      bool isOnOwner1 = false, isOnOwner2 = false; // a section found on the removed face
       if (!OFI)
       {
         if (Index & 1)
@@ -2793,7 +2826,7 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
           }
           else
           {
-            GetEdgesOrientedInFace(NE1, FIO, theAsDes, NE1seq);
+            GetEdgesOrientedInFace(NE1, FIO, theAsDes, NE1seq, FI, &isOnOwner1);
           }
           if (NE2.ShapeType() == TopAbs_EDGE)
           {
@@ -2801,7 +2834,7 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
           }
           else
           {
-            GetEdgesOrientedInFace(NE2, FIO, theAsDes, NE2seq);
+            GetEdgesOrientedInFace(NE2, FIO, theAsDes, NE2seq, FI, &isOnOwner2);
           }
           if (NE1seq.IsEmpty() || NE2seq.IsEmpty())
           {
@@ -2971,25 +3004,39 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
         }
         else
         {
-          const int aNb1 = AsDes2d->Descendant(aE1).Extent();
-          const int aNb2 = AsDes2d->Descendant(aE2).Extent();
-          RefEdgeInter(FIO,
-                       BAsurf,
-                       aE1,
-                       aE2,
-                       anOr1,
-                       anOr2,
-                       AsDes2d,
-                       Tol,
-                       true,
-                       Vref,
-                       theImageVV,
-                       theDMVV,
-                       bCoincide);
+          // A section found on the removed face meets the face's own edge
+          // there; where that edge is offset itself, its section bounds the
+          // face in its place, and where the two cross is no vertex of the
+          // face: the circle the inner wall makes with the top, crossing the
+          // trough's edge beyond the corner with the trough's section, both
+          // tops removed inward (#363's Thickness001), left the circle's
+          // piece reaching past that corner. Not intersected; the corner is
+          // still taken as made (the side's seam, which is not offset, still
+          // cuts the circle the bottom's offset makes with the side).
+          const bool isOffsetEdge =
+            (isOnOwner1 || isOnOwner2) && Build.IsBound((Index & 1) ? CurE : NextE);
+          const int  aNb1         = AsDes2d->Descendant(aE1).Extent();
+          const int  aNb2         = AsDes2d->Descendant(aE2).Extent();
+          if (!isOffsetEdge)
+          {
+            RefEdgeInter(FIO,
+                         BAsurf,
+                         aE1,
+                         aE2,
+                         anOr1,
+                         anOr2,
+                         AsDes2d,
+                         Tol,
+                         true,
+                         Vref,
+                         theImageVV,
+                         theDMVV,
+                         bCoincide);
+          }
           // Two edges that run on almost tangent to each other at Vref meet
           // nowhere the intersection finds, though both pass through the
           // same point: see StoreAtSmoothVertex.
-          if (AsDes2d->Descendant(aE1).Extent() == aNb1
+          if (!isOffsetEdge && AsDes2d->Descendant(aE1).Extent() == aNb1
               && AsDes2d->Descendant(aE2).Extent() == aNb2)
           {
             StoreAtSmoothVertex(FIO, aE1, aE2, anOr1, anOr2, Vref, Analyse, Offset, Tol, AsDes2d,
