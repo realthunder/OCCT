@@ -9847,9 +9847,37 @@ bool TrimEdges(
           NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>                   aRunOn;
           // Only the section of an edge between two kept faces: one beside a
           // removed face is a lip's, and the two quarters of a groove removed
-          // took the lips inside out.
+          // took the lips inside out. Or of an edge beside a removed face
+          // whose kept face runs on, tangent, into another kept face at the
+          // edge's end: the groove's quarters with the side removed, each
+          // quarter's offset the other's surface, its section with the side
+          // split where the quarters meet and run on over the other's.
+          auto isRunOnTangent = [&]() {
+            if (!Analyse.HasAncestor(aS) || Analyse.Ancestors(aS).Extent() != 1)
+            {
+              return false;
+            }
+            for (TopoDS_Iterator aV(aS); aV.More(); aV.Next())
+            {
+              if (!Analyse.HasAncestor(aV.Value()))
+              {
+                continue;
+              }
+              NCollection_List<TopoDS_Shape> aLT;
+              Analyse.Edges(TopoDS::Vertex(aV.Value()), ChFiDS_Tangential, aLT);
+              for (NCollection_List<TopoDS_Shape>::Iterator itT(aLT); itT.More(); itT.Next())
+              {
+                if (!itT.Value().IsSame(aS) && Analyse.HasAncestor(itT.Value())
+                    && Analyse.Ancestors(itT.Value()).Extent() == 2)
+                {
+                  return true;
+                }
+              }
+            }
+            return false;
+          };
           const bool isKeptBoth =
-            Analyse.HasAncestor(aS) && Analyse.Ancestors(aS).Extent() > 1;
+            (Analyse.HasAncestor(aS) && Analyse.Ancestors(aS).Extent() > 1) || isRunOnTangent();
           for (TopExp_Explorer aP(NE, TopAbs_EDGE); isKeptBoth && aP.More(); aP.Next())
           {
             TopoDS_Vertex aP1, aP2;

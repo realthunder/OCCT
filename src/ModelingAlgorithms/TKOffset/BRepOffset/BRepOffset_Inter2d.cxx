@@ -190,7 +190,11 @@ static void GetEdgesOrientedInFace(const TopoDS_Shape&                 theShape,
     }
   }
 
-  if (theSeqEdges.Length() == 1)
+  // None found is an answer too: the caller leaves that corner, as the side
+  // removed leaves a groove quarter's section in pieces (TrimEdges trims
+  // them). Ordered, an empty set took the closed set's way and looked up
+  // its first vertex, null (Standard_NoSuchObject).
+  if (theSeqEdges.Length() <= 1)
   {
     return;
   }
