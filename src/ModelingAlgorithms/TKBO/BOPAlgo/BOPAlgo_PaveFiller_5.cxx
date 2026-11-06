@@ -29,6 +29,12 @@
 #include <BOPDS_Pave.hxx>
 #include <BOPTools_AlgoTools.hxx>
 #include <BOPTools_AlgoTools2D.hxx>
+#include <BOPTools_AlgoTools3D.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <NCollection_Array1.hxx>
+#include <NCollection_DataMap.hxx>
+#include <gp.hxx>
 #include <BOPTools_Parallel.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
@@ -162,6 +168,157 @@ typedef NCollection_DynamicArray<BOPAlgo_EdgeFace> BOPAlgo_VectorOfEdgeFace;
 
 //=================================================================================================
 
+// The sine of the angle between the face theF and the face theG at the edge theE
+// at theT, signed about the edge's tangent: (N_F x N_G) . T. The edge lies on
+// both, so both normals lie in the plane square to it, and the sine changes sign
+// where the faces are tangent.
+static bool tangencySine(const occ::handle<IntTools_Context>& theCtx,
+                         const TopoDS_Edge&                   theE,
+                         const BRepAdaptor_Curve&             theC,
+                         const TopoDS_Face&                   theF,
+                         const TopoDS_Face&                   theG,
+                         const double                         theT,
+                         double&                              theSin)
+{
+  gp_Pnt aP;
+  gp_Vec aDT;
+  theC.D1(theT, aP, aDT);
+  if (aDT.SquareMagnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  GeomAPI_ProjectPointOnSurf& aProj = theCtx->ProjPS(theF);
+  aProj.Perform(aP);
+  if (!aProj.IsDone() || !aProj.NbPoints())
+  {
+    return false;
+  }
+  double aU, aV;
+  aProj.LowerDistanceParameters(aU, aV);
+  gp_Pnt aPS;
+  gp_Vec aDU, aDV;
+  theCtx->SurfaceAdaptor(theF).D1(aU, aV, aPS, aDU, aDV);
+  gp_Vec aNF = aDU.Crossed(aDV);
+  if (aNF.SquareMagnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  gp_Dir aNG;
+  BOPTools_AlgoTools3D::GetNormalToFaceOnEdge(theE, theG, theT, aNG, theCtx);
+  theSin = aNF.Normalized().Crossed(gp_Vec(aNG)).Dot(aDT.Normalized());
+  return true;
+}
+
+// The points of the range [theT1, theT2] of the edge theE, which lies on the face
+// theF there, where its own face theG is tangent to theF. The faces' section
+// leaves the edge at such a point: a branch of it crosses the edge there (#617:
+// a pad's wall standing on a revolution along the pad's bottom edge, a branch
+// rising from the edge where the revolution turns vertical). No edge/face
+// intersection marks the point -- the edge is on the face all along -- and the
+// branch's ends have no vertex to end at. The faces must cross along the edge,
+// not lie on each other, and the sine change its sign clearly.
+static void tangentPointsOnEdge(const occ::handle<IntTools_Context>& theCtx,
+                                const TopoDS_Edge&                   theE,
+                                const double                         theT1,
+                                const double                         theT2,
+                                const TopoDS_Face&                   theF,
+                                const TopoDS_Face&                   theG,
+                                const double                         theTol,
+                                NCollection_List<double>&            theTs)
+{
+  BRepAdaptor_Curve          aC(theE);
+  const int                  aNbS = std::max(32, 4 * aC.NbIntervals(GeomAbs_C3));
+  NCollection_Array1<double> aT(0, aNbS), aS(0, aNbS);
+  NCollection_Array1<bool>   aOK(0, aNbS);
+  double                     aSMax = 0.;
+  for (int i = 0; i <= aNbS; ++i)
+  {
+    aT(i)  = theT1 + (theT2 - theT1) * i / aNbS;
+    aOK(i) = tangencySine(theCtx, theE, aC, theF, theG, aT(i), aS(i));
+    if (aOK(i))
+    {
+      aSMax = std::max(aSMax, std::abs(aS(i)));
+    }
+  }
+  if (aSMax < 0.01)
+  {
+    return;
+  }
+  const gp_Pnt aP1 = aC.Value(theT1), aP2 = aC.Value(theT2);
+  for (int i = 0; i < aNbS; ++i)
+  {
+    if (!aOK(i) || !aOK(i + 1) || aS(i) * aS(i + 1) >= 0.
+        || std::max(std::abs(aS(i)), std::abs(aS(i + 1))) < 1.e-4)
+    {
+      continue;
+    }
+    double a = aT(i), b = aT(i + 1), sa = aS(i);
+    bool   bOK = true;
+    for (int k = 0; k < 100 && b - a > 1.e-3 * Precision::PConfusion(); ++k)
+    {
+      const double m = 0.5 * (a + b);
+      double       sm;
+      if (!tangencySine(theCtx, theE, aC, theF, theG, m, sm))
+      {
+        bOK = false;
+        break;
+      }
+      if (sm * sa > 0.)
+      {
+        a  = m;
+        sa = sm;
+      }
+      else
+      {
+        b = m;
+      }
+    }
+    if (!bOK)
+    {
+      continue;
+    }
+    const double aTR = 0.5 * (a + b);
+    const gp_Pnt aPR = aC.Value(aTR);
+    if (aPR.Distance(aP1) <= theTol || aPR.Distance(aP2) <= theTol)
+    {
+      continue;
+    }
+    theTs.Append(aTR);
+  }
+}
+
+// The faces of the arguments bounded by each edge, by the edges' indices (the
+// data structure lists a face's edges and vertices as its sub-shapes).
+static void edgeFaces(const BOPDS_PDS&                                 theDS,
+                      NCollection_DataMap<int, NCollection_List<int>>& theMap)
+{
+  const int aNbS = theDS->NbSourceShapes();
+  for (int nF = 0; nF < aNbS; ++nF)
+  {
+    const BOPDS_ShapeInfo& aSIF = theDS->ShapeInfo(nF);
+    if (aSIF.ShapeType() != TopAbs_FACE)
+    {
+      continue;
+    }
+    for (NCollection_List<int>::Iterator aItE(aSIF.SubShapes()); aItE.More(); aItE.Next())
+    {
+      const int nE = aItE.Value();
+      if (theDS->ShapeInfo(nE).ShapeType() != TopAbs_EDGE)
+      {
+        continue;
+      }
+      NCollection_List<int>* pLF = theMap.ChangeSeek(nE);
+      if (!pLF)
+      {
+        pLF = theMap.Bound(nE, NCollection_List<int>());
+      }
+      pLF->Append(nF);
+    }
+  }
+}
+
+//=================================================================================================
+
 void BOPAlgo_PaveFiller::PerformEF(const Message_ProgressRange& theRange)
 {
   FillShrunkData(TopAbs_EDGE, TopAbs_FACE);
@@ -212,6 +369,9 @@ void BOPAlgo_PaveFiller::PerformEF(const Message_ProgressRange& theRange)
     100,
     aAllocator);
   BOPAlgo_DataMapOfPaveBlockBndBox aDMPBBox(100, aAllocator);
+  // the faces of each edge, for the points where an edge on a face leaves it
+  NCollection_DataMap<int, NCollection_List<int>> aMEF;
+  bool                                            bEdgeFaces = false;
   //
   NCollection_DynamicArray<BOPDS_InterfEF>& aEFs = myDS->InterfEF();
   aEFs.SetIncrement(iSize);
@@ -562,6 +722,62 @@ void BOPAlgo_PaveFiller::PerformEF(const Message_ProgressRange& theRange)
           myDS->AddInterf(nE, nF);
           // 3
           BOPAlgo_Tools::FillMap(aPB, nF, aMPBLI, aAllocator);
+          // 4 the edge split where a face of its own is tangent to the face
+          if (bIsPBSplittable)
+          {
+            if (!bEdgeFaces)
+            {
+              edgeFaces(myDS, aMEF);
+              bEdgeFaces = true;
+            }
+            const NCollection_List<int>* pLG = aMEF.Seek(nE);
+            if (!pLG)
+            {
+              break;
+            }
+            const bool bPlaneF = myContext->SurfaceAdaptor(aF).GetType() == GeomAbs_Plane;
+            NCollection_List<double> aLT;
+            for (NCollection_List<int>::Iterator aItG(*pLG); aItG.More(); aItG.Next())
+            {
+              const TopoDS_Face& aG = TopoDS::Face(myDS->Shape(aItG.Value()));
+              if (bPlaneF && myContext->SurfaceAdaptor(aG).GetType() == GeomAbs_Plane)
+              {
+                continue;
+              }
+              tangentPointsOnEdge(myContext,
+                                  aE,
+                                  aCPart.Range1().First(),
+                                  aCPart.Range1().Last(),
+                                  aF,
+                                  aG,
+                                  aTolE + aTolF,
+                                  aLT);
+            }
+            for (NCollection_List<double>::Iterator aItT(aLT); aItT.More(); aItT.Next())
+            {
+              const double  aT = aItT.Value();
+              TopoDS_Vertex aVnew;
+              BOPTools_AlgoTools::MakeNewVertex(aE, aT, aF, aVnew);
+              const double aTolVnew =
+                std::max(BRep_Tool::Tolerance(aVnew), std::max(aTolE, aTolF));
+              BRep_Builder().UpdateVertex(aVnew, aTolVnew);
+              //
+              IntTools_CommonPrt aCP;
+              aCP.SetEdge1(aE);
+              aCP.SetType(TopAbs_VERTEX);
+              aCP.SetRange1(aT, aT);
+              aCP.SetVertexParameter1(aT);
+              BOPDS_InterfEF& aEFT = aEFs.Appended();
+              aEFT.SetIndices(nE, nF);
+              aEFT.SetCommonPart(aCP);
+              //
+              BOPDS_CoupleOfPaveBlocks aCPB;
+              aCPB.SetPaveBlocks(aPB, aPB);
+              aCPB.SetIndexInterf(aEFs.Length() - 1);
+              aCPB.SetTolerance(aTolVnew);
+              aMVCPB.Add(aVnew, aCPB);
+            }
+          }
         }
         break;
         default:

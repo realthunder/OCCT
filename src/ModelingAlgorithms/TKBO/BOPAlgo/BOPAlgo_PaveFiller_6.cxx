@@ -23,6 +23,7 @@
 #include <BOPDS_CoupleOfPaveBlocks.hxx>
 #include <BOPDS_Curve.hxx>
 #include <NCollection_DataMap.hxx>
+#include <BOPDS_Pair.hxx>
 #include <BOPDS_PaveBlock.hxx>
 #include <Standard_Handle.hxx>
 #include <BOPDS_DS.hxx>
@@ -51,7 +52,9 @@
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_OffsetSurface.hxx>
 #include <Geom2d_Curve.hxx>
+#include <GCPnts_UniformAbscissa.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <GeomAdaptor_Curve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <gp_Pnt.hxx>
 #include <IntSurf_PntOn2S.hxx>
@@ -87,6 +90,20 @@ static int    tangentEndVertex(const BOPDS_PDS&                     theDS,
                                const int                            theEnd,
                                const NCollection_Map<int>&          theMV,
                                double&                              theDist);
+static bool   curveAlongEdges(
+  const BOPDS_PDS&                                            theDS,
+  const occ::handle<IntTools_Context>&                        theCtx,
+  const BOPDS_Curve&                                          theNC,
+  const NCollection_IndexedMap<occ::handle<BOPDS_PaveBlock>>& theMPBOnIn,
+  const NCollection_Map<occ::handle<BOPDS_PaveBlock>>&        theMPBCommon);
+static void   tangentVerticesNearCurve(const BOPDS_PDS&                     theDS,
+                                       const occ::handle<IntTools_Context>& theCtx,
+                                       const TopoDS_Face&                   theF1,
+                                       const TopoDS_Face&                   theF2,
+                                       const BOPDS_Curve&                   theNC,
+                                       const NCollection_Map<int>&          theMV,
+                                       NCollection_List<int>&               theLV,
+                                       NCollection_List<double>&            theLD);
 
 //=================================================================================================
 
@@ -731,6 +748,33 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
   // some of Face-Face intersections to avoid missing section edges
   // aNbFF will be increased to the number of potentially problematic Face-Face intersections
   const int aNbFFPrev = aNbFF;
+  // the vertices the edge/face pass put where an edge lying on a face leaves
+  // it (a vertex interference of an edge with a face it also lies on)
+  NCollection_Map<int> aMVTangent(100, aAllocator);
+  {
+    NCollection_DynamicArray<BOPDS_InterfEF>& aEFs = myDS->InterfEF();
+    NCollection_Map<BOPDS_Pair>               aMEOnF(100, aAllocator);
+    for (int k = 0; k < aEFs.Length(); ++k)
+    {
+      if (aEFs(k).CommonPart().Type() == TopAbs_EDGE)
+      {
+        int nE, nF;
+        aEFs(k).Indices(nE, nF);
+        aMEOnF.Add(BOPDS_Pair(nE, nF));
+      }
+    }
+    for (int k = 0; k < aEFs.Length() && !aMEOnF.IsEmpty(); ++k)
+    {
+      int nE, nF, nV;
+      aEFs(k).Indices(nE, nF);
+      if (aEFs(k).CommonPart().Type() == TopAbs_VERTEX && aEFs(k).HasIndexNew(nV)
+          && aMEOnF.Contains(BOPDS_Pair(nE, nF)))
+      {
+        myDS->HasShapeSD(nV, nV);
+        aMVTangent.Add(nV);
+      }
+    }
+  }
   for (i = 0; i < aNbFF; ++i, aPS.Next())
   {
     if (UserBreak(aPS))
@@ -821,6 +865,42 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
     // and it also was put on another curve correctly then remove this vertex from
     // the first curve. Detect such case if the distance to curve exceeds aTolR3D.
     FilterPavesOnCurves(aVC, aMVTol);
+
+    // the vertices where an edge on a face leaves it, which a curve passes near
+    if (!aMVTangent.IsEmpty())
+    {
+      NCollection_Map<int> aMVT;
+      for (const NCollection_Map<int>* pM : {&aMVCommon, &aMVStick, &aMVEF})
+      {
+        for (NCollection_Map<int>::Iterator aItS(*pM); aItS.More(); aItS.Next())
+        {
+          int nVSD = aItS.Value();
+          myDS->HasShapeSD(nVSD, nVSD);
+          if (aMVTangent.Contains(nVSD))
+          {
+            aMVT.Add(aItS.Value());
+          }
+        }
+      }
+      for (j = 0; j < aNbC && !aMVT.IsEmpty(); ++j)
+      {
+        BOPDS_Curve& aNC = aVC.ChangeValue(j);
+        // not a curve along an edge the faces share already: its pieces go to
+        // that edge, and a vertex grown to reach its end would stay grown
+        if (curveAlongEdges(myDS, myContext, aNC, aMPBOnIn, aMPBCommon))
+        {
+          continue;
+        }
+        NCollection_List<int>    aLV;
+        NCollection_List<double> aLD;
+        tangentVerticesNearCurve(myDS, myContext, aF1, aF2, aNC, aMVT, aLV, aLD);
+        NCollection_List<double>::Iterator aItD(aLD);
+        for (NCollection_List<int>::Iterator aItV(aLV); aItV.More(); aItV.Next(), aItD.Next())
+        {
+          PutPaveOnCurve(aItV.Value(), aItD.Value() * (1. + 1.e-6), aNC, aMI, aMVTol, aDMVLV);
+        }
+      }
+    }
 
     for (j = 0; j < aNbC; ++j)
     {
@@ -2413,6 +2493,140 @@ static int tangentEndVertex(const BOPDS_PDS&                     theDS,
     theDist = aD;
   }
   return nVEnd;
+}
+
+//=================================================================================================
+
+// Whether the section curve runs along edges already on both faces: points
+// inside it, evenly along its length (a walking line's parameter is not --
+// #617's ran along an edge for 99% of its range, then climbed the faces'
+// other branch for half its length), each on one of them.
+static bool curveAlongEdges(
+  const BOPDS_PDS&                                            theDS,
+  const occ::handle<IntTools_Context>&                        theCtx,
+  const BOPDS_Curve&                                          theNC,
+  const NCollection_IndexedMap<occ::handle<BOPDS_PaveBlock>>& theMPBOnIn,
+  const NCollection_Map<occ::handle<BOPDS_PaveBlock>>&        theMPBCommon)
+{
+  const IntTools_Curve& aIC = theNC.Curve();
+  if (!aIC.HasBounds())
+  {
+    return false;
+  }
+  double aT[2];
+  gp_Pnt aP[2];
+  aIC.Bounds(aT[0], aT[1], aP[0], aP[1]);
+  const double aTolR3D = std::max(theNC.Tolerance(), theNC.TangentialTolerance());
+  NCollection_List<int> aLE;
+  for (int i = 1; i <= theMPBOnIn.Extent(); ++i)
+  {
+    if (theMPBOnIn(i)->HasEdge())
+    {
+      aLE.Append(theMPBOnIn(i)->Edge());
+    }
+  }
+  for (NCollection_Map<occ::handle<BOPDS_PaveBlock>>::Iterator aIt(theMPBCommon); aIt.More();
+       aIt.Next())
+  {
+    if (aIt.Value()->HasEdge())
+    {
+      aLE.Append(aIt.Value()->Edge());
+    }
+  }
+  GeomAdaptor_Curve       aGAC(aIC.Curve(), aT[0], aT[1]);
+  GCPnts_UniformAbscissa  aUA(aGAC, 21, aT[0], aT[1]);
+  if (!aUA.IsDone() || aUA.NbPoints() < 3)
+  {
+    return false;
+  }
+  for (int k = 2; k < aUA.NbPoints(); ++k)
+  {
+    const gp_Pnt aP  = aGAC.Value(aUA.Parameter(k));
+    bool         bOn = false;
+    for (NCollection_List<int>::Iterator aItE(aLE); aItE.More() && !bOn; aItE.Next())
+    {
+      const TopoDS_Edge& aE = TopoDS::Edge(theDS->Shape(aItE.Value()));
+      if (BRep_Tool::Degenerated(aE))
+      {
+        continue;
+      }
+      GeomAPI_ProjectPointOnCurve& aProj = theCtx->ProjPC(aE);
+      aProj.Perform(aP);
+      bOn = aProj.NbPoints() && aProj.LowerDistance() <= 10. * (aTolR3D + BRep_Tool::Tolerance(aE));
+    }
+    if (!bOn)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The vertices of theMV the section curve passes near where the faces are
+// tangent at them: each with the curve's point nearest to it, if the faces
+// stay within the curve's tolerance of each other from there to the vertex
+// (the distance times the sine of the angle between them at the point), as
+// tangentEndVertex() takes a tangent end. A walking line through a point where
+// two branches of the section cross -- a pad's wall on a revolution, tangent
+// to it where the revolution turns vertical on the pad's bottom edge, which
+// lies on it (#617) -- loses its way a few 1e-3 off the point and runs on the
+// other branch or stops; the edge/face pass has put a vertex at the point.
+static void tangentVerticesNearCurve(const BOPDS_PDS&                     theDS,
+                                     const occ::handle<IntTools_Context>& theCtx,
+                                     const TopoDS_Face&                   theF1,
+                                     const TopoDS_Face&                   theF2,
+                                     const BOPDS_Curve&                   theNC,
+                                     const NCollection_Map<int>&          theMV,
+                                     NCollection_List<int>&               theLV,
+                                     NCollection_List<double>&            theLD)
+{
+  const IntTools_Curve& aIC = theNC.Curve();
+  if (!aIC.HasBounds())
+  {
+    return;
+  }
+  double aT[2];
+  gp_Pnt aP[2];
+  aIC.Bounds(aT[0], aT[1], aP[0], aP[1]);
+  const double                   aTolR3D = std::max(theNC.Tolerance(), theNC.TangentialTolerance());
+  const double                   aDMax   = 0.1 * aP[0].Distance(aP[1]);
+  const occ::handle<Geom_Curve>& aC      = aIC.Curve();
+  for (NCollection_Map<int>::Iterator aIt(theMV); aIt.More(); aIt.Next())
+  {
+    const int            nV  = aIt.Value();
+    const TopoDS_Vertex& aV  = TopoDS::Vertex(theDS->Shape(nV));
+    const gp_Pnt         aPV = BRep_Tool::Pnt(aV);
+    GeomAPI_ProjectPointOnCurve aProj(aPV, aC, aT[0], aT[1]);
+    double                      aD = aPV.Distance(aP[0]), aTV = aT[0];
+    if (aPV.Distance(aP[1]) < aD)
+    {
+      aD  = aPV.Distance(aP[1]);
+      aTV = aT[1];
+    }
+    if (aProj.NbPoints() && aProj.LowerDistance() < aD)
+    {
+      aD  = aProj.LowerDistance();
+      aTV = aProj.LowerDistanceParameter();
+    }
+    if (aD <= BRep_Tool::Tolerance(aV) + aTolR3D || aD > aDMax)
+    {
+      continue; // on the curve already, or too far
+    }
+    const gp_Pnt aPC = aC->Value(aTV);
+    gp_Dir       aDN[2], aDNV[2];
+    if (!normalAt(theCtx, theF1, aPC, aDN[0]) || !normalAt(theCtx, theF2, aPC, aDN[1])
+        || gp_Vec(aDN[0]).Crossed(gp_Vec(aDN[1])).Magnitude() * aD > aTolR3D)
+    {
+      continue;
+    }
+    if (!normalAt(theCtx, theF1, aPV, aDNV[0]) || !normalAt(theCtx, theF2, aPV, aDNV[1])
+        || 1. - std::abs(aDNV[0] * aDNV[1]) > 5.e-9) // the creasing criteria
+    {
+      continue;
+    }
+    theLV.Append(nV);
+    theLD.Append(aD);
+  }
 }
 
 //=================================================================================================
