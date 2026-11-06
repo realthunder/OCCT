@@ -658,12 +658,46 @@ void ProjLib_ProjectedCurve::Perform(const occ::handle<Adaptor3d_Curve>& C)
       Approx_CurveOnSurface appr(HProjector, mySurface, Udeb, Ufin, myTolerance);
       appr.Perform(MaxSeg, MaxDegree, Continuity, Only3d, Only2d);
 
-      occ::handle<Geom2d_BSplineCurve> aRes = appr.Curve2d();
+      occ::handle<Geom2d_BSplineCurve> aRes  = appr.Curve2d();
+      double                           aErrU = appr.MaxError2dU();
+      double                           aErrV = appr.MaxError2dV();
+
+      // Sixteen segments cannot follow a curve of many spans, its knots
+      // bunched where it turns: #617's section of a revolution, a degree 8
+      // B-spline of 29 spans, came out 0.8 off at any tolerance. Where the
+      // caller set no limit and the result misses the tolerance, the segments
+      // are doubled, up to 256, until it is met; the best is kept (the error
+      // falls in steps: 30 segments gave what 16 did, 40 a quarter of it). A
+      // result within the tolerance is left as it was.
+      if (myMaxSegments <= 0 && !aRes.IsNull())
+      {
+        double aErr = std::sqrt(aErrU * aErrU + aErrV * aErrV);
+        for (int aSeg = 2 * MaxSeg; aErr > aTol2d && aSeg <= 256; aSeg *= 2)
+        {
+          Approx_CurveOnSurface aMore(HProjector, mySurface, Udeb, Ufin, myTolerance);
+          aMore.Perform(aSeg, MaxDegree, Continuity, Only3d, Only2d);
+          occ::handle<Geom2d_BSplineCurve> aResMore = aMore.Curve2d();
+          if (aResMore.IsNull())
+          {
+            break;
+          }
+          const double aErrMoreU = aMore.MaxError2dU();
+          const double aErrMoreV = aMore.MaxError2dV();
+          const double aErrMore  = std::sqrt(aErrMoreU * aErrMoreU + aErrMoreV * aErrMoreV);
+          if (aErrMore < aErr)
+          {
+            aRes  = aResMore;
+            aErrU = aErrMoreU;
+            aErrV = aErrMoreV;
+            aErr  = aErrMore;
+          }
+        }
+      }
 
       if (!aRes.IsNull())
       {
-        aTolU            = appr.MaxError2dU();
-        aTolV            = appr.MaxError2dV();
+        aTolU            = aErrU;
+        aTolV            = aErrV;
         double aNewTol2d = std::sqrt(aTolU * aTolU + aTolV * aTolV);
         myTolerance *= (aNewTol2d / aTol2d);
         if (IsTrimmed[0] || IsTrimmed[1])

@@ -2241,6 +2241,30 @@ void ProjLib_CompProjectedCurve::UpdateTripleByTrapCriteria(gp_Pnt& thePoint) co
   {
     V = thePoint.Z();
   }
+  // The same on a direction closed but not periodic -- a revolution of a closed
+  // B-spline profile: its two bounds are one curve in space, and a point on it
+  // is found at either. The walk came to the one it is on; the global search
+  // may give the other, and the pcurve would then jump across the whole range
+  // on its last step (#617: a section of such a revolution ending on its seam,
+  // its pcurve 36.5 off).
+  const double aUTol =
+    std::max(Precision::PConfusion(), mySurface->UResolution(Precision::Confusion()));
+  const double aVTol =
+    std::max(Precision::PConfusion(), mySurface->VResolution(Precision::Confusion()));
+  if (!mySurface->IsUPeriodic() && mySurface->IsUClosed()
+      && std::abs(std::abs(U - thePoint.Y())
+                  - (mySurface->LastUParameter() - mySurface->FirstUParameter()))
+           < aUTol)
+  {
+    U = thePoint.Y();
+  }
+  if (!mySurface->IsVPeriodic() && mySurface->IsVClosed()
+      && std::abs(std::abs(V - thePoint.Z())
+                  - (mySurface->LastVParameter() - mySurface->FirstVParameter()))
+           < aVTol)
+  {
+    V = thePoint.Z();
+  }
   thePoint.SetY(U);
   thePoint.SetZ(V);
 }
