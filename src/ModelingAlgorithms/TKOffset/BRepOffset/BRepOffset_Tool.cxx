@@ -3602,6 +3602,20 @@ static bool EnlargeGeometry(occ::handle<Geom_Surface>& S,
         enlargeVlast = false;
         IsV2degen    = true;
       }
+      // Nor past an end of the surface on its axis, where the face stops
+      // short of it: the offset of a peak inward, cut where its meridian
+      // crosses the axis, has its basis's apex beyond -- stretched past it,
+      // the meridian turned back up across the axis, the face was never
+      // trimmed by the loops and was dropped (#346's peaked shells, the cone
+      // removed, the Intersection join).
+      if (BRepOffset_Tool::Gabarit(S->VIso(v1)) <= TolApex)
+      {
+        enlargeVfirst = false;
+      }
+      if (BRepOffset_Tool::Gabarit(S->VIso(v2)) <= TolApex)
+      {
+        enlargeVlast = false;
+      }
     }
     // A revolution whose meridian is a piece of a conic or a line goes on
     // along that curve: stretched by GeomLib, as a B-spline, its meridian
