@@ -27,6 +27,27 @@
 #include <NCollection_Array1.hxx>
 #include <NCollection_HArray1.hxx>
 
+namespace
+{
+// The <theIndex>-th item of <theSeq>, found by walking it: Value() is const
+// but moves the sequence's own cursor, and an offset surface shared by the
+// threads of a parallel boolean is evaluated by several at once -- their
+// cursors crossed, one walked a node another had just moved it from, and the
+// process segfaulted (the fork's thickness campaign, #346's shells cut by
+// their boolean references).
+template <typename T>
+const T& sequenceItem(const NCollection_Sequence<T>& theSeq, const int theIndex)
+{
+  typename NCollection_Sequence<T>::Iterator anIt(theSeq);
+  for (int i = 1; i < theIndex && anIt.More(); ++i)
+  {
+    anIt.Next();
+  }
+  Standard_OutOfRange_Raise_if(!anIt.More() || theIndex < 1, "Geom_OsculatingSurface");
+  return anIt.Value();
+}
+} // namespace
+
 //=================================================================================================
 
 Geom_OsculatingSurface::Geom_OsculatingSurface()
@@ -441,7 +462,7 @@ bool Geom_OsculatingSurface::UOsculatingSurface(double                          
 
     if (myAlong[0] && NV == 1)
     {
-      theL  = myOsculSurf1.Value(NU);
+      theL  = sequenceItem(myOsculSurf1, NU);
       along = true;
     }
     if (myAlong[1] && (NV == NbVK - 1) && !isToSkipSecond)
@@ -449,11 +470,11 @@ bool Geom_OsculatingSurface::UOsculatingSurface(double                          
       // theT means that derivative vector of osculating surface is opposite
       // to the original. This happens when (v-t)^k is negative, i.e.
       // difference between degrees (k) is odd and t is the last parameter
-      if (myKdeg.Value(NU) % 2)
+      if (sequenceItem(myKdeg, NU) % 2)
       {
         theT = true;
       }
-      theL  = myOsculSurf2.Value(NU);
+      theL  = sequenceItem(myOsculSurf2, NU);
       along = true;
     }
   }
@@ -511,16 +532,16 @@ bool Geom_OsculatingSurface::VOsculatingSurface(double                          
 
     if (myAlong[2] && NU == 1)
     {
-      theL  = myOsculSurf1.Value(NV);
+      theL  = sequenceItem(myOsculSurf1, NV);
       along = true;
     }
     if (myAlong[3] && (NU == NbUK - 1) && !isToSkipSecond)
     {
-      if (myKdeg.Value(NV) % 2)
+      if (sequenceItem(myKdeg, NV) % 2)
       {
         theT = true;
       }
-      theL  = myOsculSurf2.Value(NV);
+      theL  = sequenceItem(myOsculSurf2, NV);
       along = true;
     }
   }
