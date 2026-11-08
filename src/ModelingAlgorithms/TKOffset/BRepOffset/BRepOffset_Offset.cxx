@@ -28,6 +28,7 @@
 #include <BRepOffset.hxx>
 #include <BRepOffset_Tool.hxx>
 #include <BRepTools.hxx>
+#include <ElCLib.hxx>
 #include <ElSLib.hxx>
 #include <gce_MakePln.hxx>
 #include <Geom2d_Curve.hxx>
@@ -475,6 +476,13 @@ void BRepOffset_Offset::Init(const TopoDS_Face&     Face,
 // the gap inwards, and with the Intersection join the crossing outwards too,
 // as the Arc join leaves every end outwards (its extension ran on through
 // the axis, and the offset came out folded over the apex).
+//
+// From fix level 3 a crossing is trimmed whichever the side and the join:
+// past it every point of the offset is nearer the face than the offset, and
+// the sphere stood off the band the offset bounds -- #346's dimple outward
+// by 4.6e-4, a steeper one (its arc centred 3 off the axis) by 3.9e-3. Both
+// joins give the crossing, a concave corner: a sharp one. A gap is left open
+// as before, or extended with the Intersection join outwards.
 
 static bool IsApexBeyondEnd(const gp_Pnt& thePFirst,
                             const gp_Pnt& thePInt,
@@ -483,6 +491,27 @@ static bool IsApexBeyondEnd(const gp_Pnt& thePFirst,
 {
   const double aDot = gp_Vec(thePFirst, thePInt).Dot(theDir);
   return theIsMaxEnd ? aDot > 0. : aDot < 0.;
+}
+
+//=================================================================================================
+
+// What becomes of a singular end of an offset surface (see IsApexBeyondEnd).
+enum class ApexEnd
+{
+  Open,
+  Extend,
+  Trim
+};
+
+static ApexEnd ApexEndOf(const bool             theIsBeyond,
+                         const bool             theOffsetOutside,
+                         const GeomAbs_JoinType theJoin)
+{
+  if (theIsBeyond)
+  {
+    return theOffsetOutside && theJoin != GeomAbs_Arc ? ApexEnd::Extend : ApexEnd::Open;
+  }
+  return !theOffsetOutside || BRepOffset_FixLevel() >= 3 ? ApexEnd::Trim : ApexEnd::Open;
 }
 
 //=================================================================================================
@@ -533,6 +562,130 @@ static gp_Pnt EndAtApex(const occ::handle<Geom_Surface>& theSurf,
     }
   }
   return anApex;
+}
+
+//=================================================================================================
+
+// From fix level 3, the offset of a revolution whose meridian is a piece of a
+// circle, carried on to the apex (see IsApexBeyondEnd) on the offset of that
+// circle: a circle about the same centre, whose parameters are the offset's.
+// GeomLib's extension, a B-spline of the whole offset, left the circle: #346's
+// peaked shells offset outward with the Intersection join ended 9.1e-4 off the
+// point on the axis, the thickness 0.042 over. Null where it does not apply,
+// or the end would not stay in the period a copy of the meridian keeps.
+static occ::handle<Geom_Surface> RevolutionToApex(const occ::handle<Geom_Surface>& theSurf,
+                                                  const double                     theU1,
+                                                  const double                     theU2,
+                                                  const double                     theV1,
+                                                  const double                     theV2,
+                                                  const bool                       theIsLast)
+{
+  const occ::handle<Geom_OffsetSurface> anOff = occ::down_cast<Geom_OffsetSurface>(theSurf);
+  if (BRepOffset_FixLevel() < 3 || anOff.IsNull())
+  {
+    return nullptr;
+  }
+  const occ::handle<Geom_SurfaceOfRevolution> aRev =
+    occ::down_cast<Geom_SurfaceOfRevolution>(anOff->BasisSurface());
+  if (aRev.IsNull())
+  {
+    return nullptr;
+  }
+  occ::handle<Geom_Curve>              aBasis = aRev->BasisCurve();
+  const occ::handle<Geom_TrimmedCurve> aTrim  = occ::down_cast<Geom_TrimmedCurve>(aBasis);
+  if (!aTrim.IsNull())
+  {
+    aBasis = aTrim->BasisCurve();
+  }
+  const occ::handle<Geom_Circle> aCircle = occ::down_cast<Geom_Circle>(aBasis);
+  if (aCircle.IsNull())
+  {
+    return nullptr;
+  }
+
+  // The offset circle: the one of the two that the offset lies on.
+  const gp_Pnt             aRef = theSurf->Value(theU1, 0.5 * (theV1 + theV2));
+  occ::handle<Geom_Circle> aMer;
+  for (const double aSign : {1., -1.})
+  {
+    gp_Circ      aC = aCircle->Circ();
+    const double aR = aC.Radius() + aSign * anOff->Offset();
+    if (aR <= Precision::Confusion())
+    {
+      continue;
+    }
+    aC.SetRadius(aR);
+    const occ::handle<Geom_Circle> aCand = new Geom_Circle(aC);
+    const gp_Pnt aP =
+      Geom_SurfaceOfRevolution(aCand, aRev->Axis()).Value(theU1, 0.5 * (theV1 + theV2));
+    if (aP.Distance(aRef) <= Precision::Confusion())
+    {
+      aMer = aCand;
+      break;
+    }
+  }
+  if (aMer.IsNull())
+  {
+    return nullptr;
+  }
+
+  // Where it meets the axis, the nearest past the end.
+  const gp_Ax1 anAxis = aRev->Axis();
+  const gp_Pnt aCtr   = aMer->Circ().Location();
+  const gp_XYZ aA     = anAxis.Direction().XYZ();
+  const gp_Pnt aFoot(anAxis.Location().XYZ()
+                     + aA * (aCtr.XYZ() - anAxis.Location().XYZ()).Dot(aA));
+  const double aH = aFoot.Distance(aCtr), aR = aMer->Radius();
+  if (aH >= aR)
+  {
+    return nullptr;
+  }
+  const double aPeriod = 2. * M_PI;
+  const double aHalf   = std::sqrt(aR * aR - aH * aH);
+  double       aVAxis = 0., aBest = RealLast();
+  for (const double aSign : {1., -1.})
+  {
+    double aW = ElCLib::Parameter(aMer->Circ(), gp_Pnt(aFoot.XYZ() + aSign * aHalf * aA));
+    if (theIsLast)
+    {
+      while (aW <= theV2)
+      {
+        aW += aPeriod;
+      }
+      while (aW - aPeriod > theV2)
+      {
+        aW -= aPeriod;
+      }
+    }
+    else
+    {
+      while (aW >= theV1)
+      {
+        aW -= aPeriod;
+      }
+      while (aW + aPeriod < theV1)
+      {
+        aW += aPeriod;
+      }
+    }
+    const double aGap = theIsLast ? aW - theV2 : theV1 - aW;
+    if (aGap < aBest)
+    {
+      aBest  = aGap;
+      aVAxis = aW;
+    }
+  }
+  const double aVa = theIsLast ? theV1 : aVAxis, aVb = theIsLast ? aVAxis : theV2;
+  if (aVa < aMer->FirstParameter() || aVa >= aMer->LastParameter() || aVb - aVa >= aPeriod)
+  {
+    return nullptr;
+  }
+  return new Geom_RectangularTrimmedSurface(
+    new Geom_SurfaceOfRevolution(new Geom_TrimmedCurve(aMer, aVa, aVb), anAxis),
+    theU1,
+    theU2,
+    aVa,
+    aVb);
 }
 
 //=================================================================================================
@@ -607,9 +760,10 @@ void BRepOffset_Offset::Init(
   bool   HasSingularity = false;
   double uf1, uf2, vf1, vf2, fpar, lpar;
   BRepTools::UVBounds(Face, uf1, uf2, vf1, vf2);
-  if ((!OffsetOutside || JoinType != GeomAbs_Arc)
-      && (TheSurf->DynamicType() == STANDARD_TYPE(Geom_ConicalSurface)
-          || TheSurf->DynamicType() == STANDARD_TYPE(Geom_OffsetSurface)))
+  if (((!OffsetOutside || JoinType != GeomAbs_Arc)
+       && TheSurf->DynamicType() == STANDARD_TYPE(Geom_ConicalSurface))
+      || ((!OffsetOutside || JoinType != GeomAbs_Arc || BRepOffset_FixLevel() >= 3)
+          && TheSurf->DynamicType() == STANDARD_TYPE(Geom_OffsetSurface)))
   {
     NCollection_Sequence<TopoDS_Shape> DegEdges;
     TopExp_Explorer                    Explo(Face, TopAbs_EDGE);
@@ -728,14 +882,12 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            // At a dimple the end is left open for the sphere round the apex
-            // (see IsApexBeyondEnd).
-            const bool isOpen =
-              IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false) != OffsetOutside;
-            if (isOpen)
-            {
-            }
-            else if (OffsetOutside)
+            // Left open, extended to the apex or trimmed where the offset
+            // crosses its line (see IsApexBeyondEnd).
+            const ApexEnd anEnd = ApexEndOf(IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false),
+                                            OffsetOutside,
+                                            JoinType);
+            if (anEnd == ApexEnd::Extend)
             {
               occ::handle<Geom_BoundedSurface> aSurf =
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
@@ -743,7 +895,7 @@ void BRepOffset_Offset::Init(
               TheSurf = aSurf;
               MinApex = EndAtApex(TheSurf, true, false, vf1);
             }
-            else
+            else if (anEnd == ApexEnd::Trim)
             {
               occ::handle<Geom_Curve>     viso = TheSurf->VIso(vf1);
               GeomAPI_ProjectPointOnCurve Projector(Pint1, viso);
@@ -751,7 +903,7 @@ void BRepOffset_Offset::Init(
               TheSurf = new Geom_RectangularTrimmedSurface(TheSurf, NewFirstU, uf2, vf1, vf2);
               MinApex = TheSurf->Value(NewFirstU, vf1);
             }
-            HasSingularity = HasSingularity || !isOpen;
+            HasSingularity = HasSingularity || anEnd != ApexEnd::Open;
           }
         } // end of if (UminDegen)
         if (UmaxDegen)
@@ -774,14 +926,12 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            // At a dimple the end is left open for the sphere round the apex
-            // (see IsApexBeyondEnd).
-            const bool isOpen =
-              IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true) != OffsetOutside;
-            if (isOpen)
-            {
-            }
-            else if (OffsetOutside)
+            // Left open, extended to the apex or trimmed where the offset
+            // crosses its line (see IsApexBeyondEnd).
+            const ApexEnd anEnd = ApexEndOf(IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true),
+                                            OffsetOutside,
+                                            JoinType);
+            if (anEnd == ApexEnd::Extend)
             {
               occ::handle<Geom_BoundedSurface> aSurf =
                 new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
@@ -789,7 +939,7 @@ void BRepOffset_Offset::Init(
               TheSurf = aSurf;
               MaxApex = EndAtApex(TheSurf, true, true, vf1);
             }
-            else
+            else if (anEnd == ApexEnd::Trim)
             {
               occ::handle<Geom_Curve>     viso = TheSurf->VIso(vf1);
               GeomAPI_ProjectPointOnCurve Projector(Pint1, viso);
@@ -797,7 +947,7 @@ void BRepOffset_Offset::Init(
               TheSurf = new Geom_RectangularTrimmedSurface(TheSurf, uf1, NewLastU, vf1, vf2);
               MaxApex = TheSurf->Value(NewLastU, vf1);
             }
-            HasSingularity = HasSingularity || !isOpen;
+            HasSingularity = HasSingularity || anEnd != ApexEnd::Open;
           }
         } // end of if (UmaxDegen)
         if (VminDegen)
@@ -820,22 +970,29 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            // At a dimple the end is left open for the sphere round the apex
-            // (see IsApexBeyondEnd).
-            const bool isOpen =
-              IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false) != OffsetOutside;
-            if (isOpen)
+            // Left open, extended to the apex or trimmed where the offset
+            // crosses its line (see IsApexBeyondEnd).
+            const ApexEnd anEnd = ApexEndOf(IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, false),
+                                            OffsetOutside,
+                                            JoinType);
+            if (anEnd == ApexEnd::Extend)
             {
-            }
-            else if (OffsetOutside)
-            {
-              occ::handle<Geom_BoundedSurface> aSurf =
-                new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
-              GeomLib::ExtendSurfByLength(aSurf, length, 1, false, false);
-              TheSurf = aSurf;
+              const occ::handle<Geom_Surface> anExact =
+                RevolutionToApex(TheSurf, uf1, uf2, vf1, vf2, false);
+              if (!anExact.IsNull())
+              {
+                TheSurf = anExact;
+              }
+              else
+              {
+                occ::handle<Geom_BoundedSurface> aSurf =
+                  new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
+                GeomLib::ExtendSurfByLength(aSurf, length, 1, false, false);
+                TheSurf = aSurf;
+              }
               MinApex = EndAtApex(TheSurf, false, false, uf1);
             }
-            else
+            else if (anEnd == ApexEnd::Trim)
             {
               occ::handle<Geom_Curve>     uiso = TheSurf->UIso(uf1);
               GeomAPI_ProjectPointOnCurve Projector(Pint1, uiso);
@@ -845,7 +1002,7 @@ void BRepOffset_Offset::Init(
               // TheSurf = new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1+length, vf2);
               // MinApex = TheSurf->Value( uf1, vf1+length );
             }
-            HasSingularity = HasSingularity || !isOpen;
+            HasSingularity = HasSingularity || anEnd != ApexEnd::Open;
           }
         } // end of if (VminDegen)
         if (VmaxDegen)
@@ -868,22 +1025,29 @@ void BRepOffset_Offset::Init(
             gp_Pnt                    Pint1, Pint2;
             theExtrema.NearestPoints(Pint1, Pint2);
             double length = Pfirst.Distance(Pint1);
-            // At a dimple the end is left open for the sphere round the apex
-            // (see IsApexBeyondEnd).
-            const bool isOpen =
-              IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true) != OffsetOutside;
-            if (isOpen)
+            // Left open, extended to the apex or trimmed where the offset
+            // crosses its line (see IsApexBeyondEnd).
+            const ApexEnd anEnd = ApexEndOf(IsApexBeyondEnd(Pfirst, Pint1, DirGeneratrix, true),
+                                            OffsetOutside,
+                                            JoinType);
+            if (anEnd == ApexEnd::Extend)
             {
-            }
-            else if (OffsetOutside)
-            {
-              occ::handle<Geom_BoundedSurface> aSurf =
-                new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
-              GeomLib::ExtendSurfByLength(aSurf, length, 1, false, true);
-              TheSurf = aSurf;
+              const occ::handle<Geom_Surface> anExact =
+                RevolutionToApex(TheSurf, uf1, uf2, vf1, vf2, true);
+              if (!anExact.IsNull())
+              {
+                TheSurf = anExact;
+              }
+              else
+              {
+                occ::handle<Geom_BoundedSurface> aSurf =
+                  new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2);
+                GeomLib::ExtendSurfByLength(aSurf, length, 1, false, true);
+                TheSurf = aSurf;
+              }
               MaxApex = EndAtApex(TheSurf, false, true, uf1);
             }
-            else
+            else if (anEnd == ApexEnd::Trim)
             {
               occ::handle<Geom_Curve>     uiso = TheSurf->UIso(uf1);
               GeomAPI_ProjectPointOnCurve Projector(Pint1, uiso);
@@ -893,7 +1057,7 @@ void BRepOffset_Offset::Init(
               // TheSurf = new Geom_RectangularTrimmedSurface(TheSurf, uf1, uf2, vf1, vf2-length);
               // MaxApex = TheSurf->Value( uf1, vf2-length );
             }
-            HasSingularity = HasSingularity || !isOpen;
+            HasSingularity = HasSingularity || anEnd != ApexEnd::Open;
           }
         } // end of if (VmaxDegen)
       } // end of else (case of Geom_OffsetSurface)

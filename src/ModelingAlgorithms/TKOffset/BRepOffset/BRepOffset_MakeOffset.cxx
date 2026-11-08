@@ -1556,6 +1556,22 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
         }
       }
     }
+    // Nor is a thick solid one whose offset is the removed faces' rims
+    // alone: every offset of a face that stays hung and was dropped, and
+    // the solid glued below is the shape itself (#346's shell, its dome
+    // removed, inward: the cone's offset never met the dome, and the result
+    // was the cone and the dome, invalid, -15929.7133).
+    bool isRimOnly = !aRim.IsEmpty();
+    for (TopExp_Explorer aExp(myOffsetShape, TopAbs_FACE); aExp.More() && isRimOnly; aExp.Next())
+    {
+      isRimOnly = aRim.Contains(aExp.Current());
+    }
+    if (isRimOnly)
+    {
+      SHOW_TOPO_SHAPE(myOffsetShape, "OffsetRimOnly");
+      myError = BRepOffset_UnknownError;
+      return;
+    }
     bool hasRim = aRim.IsEmpty();
     for (TopExp_Explorer aExp(myOffsetShape, TopAbs_FACE); aExp.More() && !hasRim; aExp.Next())
     {

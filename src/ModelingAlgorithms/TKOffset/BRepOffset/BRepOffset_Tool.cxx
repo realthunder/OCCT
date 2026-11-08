@@ -3462,7 +3462,8 @@ static bool EnlargeGeometry(occ::handle<Geom_Surface>& S,
                             const double               theLenBeforeUfirst,
                             const double               theLenAfterUlast,
                             const double               theLenBeforeVfirst,
-                            const double               theLenAfterVlast)
+                            const double               theLenAfterVlast,
+                            double*                    theVShift)
 {
   const double TolApex = 1.e-5;
 
@@ -3489,14 +3490,16 @@ static bool EnlargeGeometry(occ::handle<Geom_Surface>& S,
                     theLenBeforeUfirst,
                     theLenAfterUlast,
                     theLenBeforeVfirst,
-                    theLenAfterVlast);
+                    theLenAfterVlast,
+                    theVShift);
+    const double aVShift = theVShift != nullptr ? *theVShift : 0.;
     if (!theGlobalEnlargeVfirst)
     {
-      V1 = vf1;
+      V1 = vf1 + aVShift;
     }
     if (!theGlobalEnlargeVlast)
     {
-      V2 = vf2;
+      V2 = vf2 + aVShift;
     }
     if (!theGlobalEnlargeVfirst || !theGlobalEnlargeVlast)
     {
@@ -3530,8 +3533,18 @@ static bool EnlargeGeometry(occ::handle<Geom_Surface>& S,
                                     theLenBeforeUfirst,
                                     theLenAfterUlast,
                                     theLenBeforeVfirst,
-                                    theLenAfterVlast);
-    occ::down_cast<Geom_OffsetSurface>(S)->SetBasisSurface(Surf);
+                                    theLenAfterVlast,
+                                    theVShift);
+    // Taken a period on, a new surface: the face's own stays as it is, a
+    // trimmed surface round it keeping its bounds on it.
+    if (theVShift != nullptr && *theVShift != 0.)
+    {
+      S = new Geom_OffsetSurface(Surf, occ::down_cast<Geom_OffsetSurface>(S)->Offset(), true);
+    }
+    else
+    {
+      occ::down_cast<Geom_OffsetSurface>(S)->SetBasisSurface(Surf);
+    }
   }
   else if (S->DynamicType() == STANDARD_TYPE(Geom_SurfaceOfLinearExtrusion)
            || S->DynamicType() == STANDARD_TYPE(Geom_SurfaceOfRevolution))
@@ -3677,15 +3690,37 @@ static bool EnlargeGeometry(occ::handle<Geom_Surface>& S,
         // Not past a periodic curve's origin: the revolution keeps a copy of
         // its meridian, and the copy takes its parameters into one period --
         // a range from below the origin is the face's no more. Those are
-        // stretched as before.
-        const bool isInPeriod = !aBasis->IsPeriodic()
-                                || (aV1 >= aBasis->FirstParameter()
-                                    && aV2 <= aBasis->LastParameter());
+        // stretched as before. From fix level 3 the copy's own rule decides:
+        // a range from within the period, one period long at most, is kept
+        // as it is, past the period's end too; and where the caller moves the
+        // face's pcurves with it (theVShift), a range from below the origin
+        // is taken a period on, and so is the face -- the same points. The
+        // corpus's profiles, their arcs starting at their circle's origin,
+        // met the removed cone 6.6e-4 off the corner.
+        double aShift     = 0.;
+        bool   isInPeriod = !aBasis->IsPeriodic()
+                          || (aV1 >= aBasis->FirstParameter() && aV2 <= aBasis->LastParameter());
+        if (!isInPeriod && BRepOffset_FixLevel() >= 3)
+        {
+          const double aPeriod = aBasis->Period();
+          if (aV1 < aBasis->FirstParameter() && theVShift != nullptr)
+          {
+            aShift = aPeriod;
+          }
+          isInPeriod = aV1 + aShift >= aBasis->FirstParameter()
+                       && aV1 + aShift < aBasis->LastParameter() && aV2 - aV1 <= aPeriod;
+        }
         if ((aV1 < v1 || aV2 > v2) && isInPeriod)
         {
+          aV1 += aShift;
+          aV2 += aShift;
           aRevol = new Geom_SurfaceOfRevolution(new Geom_TrimmedCurve(aBasis, aV1, aV2),
                                                 aRev->Axis());
           enlargeV = false;
+          if (theVShift != nullptr)
+          {
+            *theVShift = aShift;
+          }
         }
         else
         {
@@ -3837,13 +3872,25 @@ static bool EnlargeGeometry(occ::handle<Geom_Surface>& S,
   return SurfaceChange;
 }
 
+// A pcurve moved by theVShift in v (EnlargeGeometry's period shift); the
+// curve itself where there is none.
+static occ::handle<Geom2d_Curve> ShiftedInV(const occ::handle<Geom2d_Curve>& theC2d,
+                                            const double                     theVShift)
+{
+  if (theC2d.IsNull() || theVShift == 0.)
+  {
+    return theC2d;
+  }
+  return occ::down_cast<Geom2d_Curve>(theC2d->Translated(gp_Vec2d(0., theVShift)));
+}
+
 //=======================================================================
 // function : UpDatePCurve
 // purpose  :  Mise a jour des pcurves de F sur la surface de de BF.
 //            F and BF has to be FORWARD,
 //=======================================================================
 
-static void UpdatePCurves(const TopoDS_Face& F, TopoDS_Face& BF)
+static void UpdatePCurves(const TopoDS_Face& F, TopoDS_Face& BF, const double theVShift)
 {
   double                                                        f, l;
   int                                                           i;
@@ -3857,13 +3904,14 @@ static void UpdatePCurves(const TopoDS_Face& F, TopoDS_Face& BF)
   {
     TopoDS_Edge CE = TopoDS::Edge(Emap(i));
     CE.Orientation(TopAbs_FORWARD);
-    occ::handle<Geom2d_Curve> C2 = BRep_Tool::CurveOnSurface(CE, F, f, l);
+    occ::handle<Geom2d_Curve> C2 = ShiftedInV(BRep_Tool::CurveOnSurface(CE, F, f, l), theVShift);
     if (!C2.IsNull())
     {
       if (BRep_Tool::IsClosed(CE, F))
       {
         CE.Reverse();
-        occ::handle<Geom2d_Curve> C2R = BRep_Tool::CurveOnSurface(CE, F, f, l);
+        occ::handle<Geom2d_Curve> C2R =
+          ShiftedInV(BRep_Tool::CurveOnSurface(CE, F, f, l), theVShift);
         B.UpdateEdge(CE, NullPCurve, NullPCurve, F, BRep_Tool::Tolerance(CE));
         B.UpdateEdge(CE, C2, C2R, BF, BRep_Tool::Tolerance(CE));
       }
@@ -4735,18 +4783,23 @@ bool BRepOffset_Tool::TurnedOffPole(const TopoDS_Face& theF, TopoDS_Face& theTwi
 
 //=================================================================================================
 
-bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
-                                  TopoDS_Face&       BF,
-                                  const bool         CanExtentSurface,
-                                  const bool         UpdatePCurve,
-                                  const bool         theEnlargeU,
-                                  const bool         theEnlargeVfirst,
-                                  const bool         theEnlargeVlast,
-                                  const int          theExtensionMode,
-                                  const double       theLenBeforeUfirst,
-                                  const double       theLenAfterUlast,
-                                  const double       theLenBeforeVfirst,
-                                  const double       theLenAfterVlast)
+// BRepOffset_Tool::EnLargeFace; theVShift, where not null, takes what the
+// enlarged surface's v is on the face's (EnlargeGeometry): a caller that
+// moves the face's pcurves onto it moves them by that much. The pcurves
+// updated here (UpdatePCurve) are moved here.
+static bool EnLargeFaceShifted(const TopoDS_Face& F,
+                               TopoDS_Face&       BF,
+                               const bool         CanExtentSurface,
+                               const bool         UpdatePCurve,
+                               const bool         theEnlargeU,
+                               const bool         theEnlargeVfirst,
+                               const bool         theEnlargeVlast,
+                               const int          theExtensionMode,
+                               const double       theLenBeforeUfirst,
+                               const double       theLenAfterUlast,
+                               const double       theLenBeforeVfirst,
+                               const double       theLenAfterVlast,
+                               double*            theVShift)
 {
   //---------------------------
   // extension de la geometrie.
@@ -4832,7 +4885,13 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
                                     theLenBeforeUfirst,
                                     theLenAfterUlast,
                                     theLenBeforeVfirst,
-                                    theLenAfterVlast);
+                                    theLenAfterVlast,
+                                    theVShift);
+    if (theVShift != nullptr)
+    {
+      VF1 += *theVShift;
+      VF2 += *theVShift;
+    }
   }
   else
   {
@@ -4967,7 +5026,7 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
   if (SurfaceChange && UpdatePCurve)
   {
     TopoDS_Shape aLocalFace = F.Oriented(TopAbs_FORWARD);
-    UpdatePCurves(TopoDS::Face(aLocalFace), BF);
+    UpdatePCurves(TopoDS::Face(aLocalFace), BF, theVShift != nullptr ? *theVShift : 0.);
     // UpdatePCurves(TopoDS::Face(F.Oriented(TopAbs_FORWARD)),BF);
     BRep_Builder BB;
     BB.UpdateFace(F, S, L, BRep_Tool::Tolerance(F));
@@ -4975,6 +5034,37 @@ bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
 
   BF.Orientation(F.Orientation());
   return SurfaceChange;
+}
+
+//=================================================================================================
+
+bool BRepOffset_Tool::EnLargeFace(const TopoDS_Face& F,
+                                  TopoDS_Face&       BF,
+                                  const bool         CanExtentSurface,
+                                  const bool         UpdatePCurve,
+                                  const bool         theEnlargeU,
+                                  const bool         theEnlargeVfirst,
+                                  const bool         theEnlargeVlast,
+                                  const int          theExtensionMode,
+                                  const double       theLenBeforeUfirst,
+                                  const double       theLenAfterUlast,
+                                  const double       theLenBeforeVfirst,
+                                  const double       theLenAfterVlast)
+{
+  double aVShift = 0.;
+  return EnLargeFaceShifted(F,
+                            BF,
+                            CanExtentSurface,
+                            UpdatePCurve,
+                            theEnlargeU,
+                            theEnlargeVfirst,
+                            theEnlargeVlast,
+                            theExtensionMode,
+                            theLenBeforeUfirst,
+                            theLenAfterUlast,
+                            theLenBeforeVfirst,
+                            theLenAfterVlast,
+                            UpdatePCurve ? &aVShift : nullptr);
 }
 
 //=================================================================================================
@@ -5293,8 +5383,10 @@ void BRepOffset_Tool::ExtentFace(
   // BRepBndLib::Add(TopBuild.Value(), ContextBox);
   //}
 
-  bool SurfaceChange;
-  SurfaceChange = EnLargeFace(F, EF, true);
+  bool   SurfaceChange;
+  double aVShift = 0.;
+  SurfaceChange =
+    EnLargeFaceShifted(F, EF, true, false, true, true, true, 1, -1., -1., -1., -1., &aVShift);
 
   TopoDS_Shape aLocalShape = EF.EmptyCopied();
   NF                       = TopoDS::Face(aLocalShape);
@@ -5316,7 +5408,8 @@ void BRepOffset_Tool::ExtentFace(
       TopoDS_Edge CE = TopoDS::Edge(Emap(i));
       CE.Orientation(TopAbs_FORWARD);
       TopoDS_Edge               Ecs; // patch
-      occ::handle<Geom2d_Curve> C2 = BRep_Tool::CurveOnSurface(CE, Fforward, f, l);
+      occ::handle<Geom2d_Curve> C2 =
+        ShiftedInV(BRep_Tool::CurveOnSurface(CE, Fforward, f, l), aVShift);
       if (!C2.IsNull())
       {
         if (ConstShapes.IsBound(CE))
@@ -5327,8 +5420,9 @@ void BRepOffset_Tool::ExtentFace(
         if (BRep_Tool::IsClosed(CE, Fforward))
         {
           TopoDS_Shape              aLocalShapeReversedCE = CE.Reversed();
-          occ::handle<Geom2d_Curve> C2R =
-            BRep_Tool::CurveOnSurface(TopoDS::Edge(aLocalShapeReversedCE), Fforward, f, l);
+          occ::handle<Geom2d_Curve> C2R = ShiftedInV(
+            BRep_Tool::CurveOnSurface(TopoDS::Edge(aLocalShapeReversedCE), Fforward, f, l),
+            aVShift);
           //	  occ::handle<Geom2d_Curve> C2R =
           //	    BRep_Tool::CurveOnSurface(TopoDS::Edge(CE.Reversed()),F,f,l);
           B.UpdateEdge(CE, C2, C2R, EF, BRep_Tool::Tolerance(CE));

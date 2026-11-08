@@ -77,6 +77,12 @@ public:
 //!       shapes made before within their tolerances: they are made at every
 //!       level (sec 32). Kept, so that a client's object saved at 1 is not
 //!       taken for one of the next correction's.
+//!  2 -- a revolution whose meridian is a piece of a conic or a line is
+//!       stretched along that curve before the faces are cut, not as a
+//!       B-spline (sec 57).
+//!  3 -- an offset crossing the axis at a face's apex is trimmed there with
+//!       either join, not closed by a sphere, and the stretch of level 2
+//!       reaches below a periodic meridian's origin (sec 59).
 extern "C" Standard_EXPORT int BRepOffset_SetFixLevel(const int theLevel);
 
 //! The calling thread's level of BRepOffset_SetFixLevel().
