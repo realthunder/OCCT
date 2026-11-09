@@ -104,6 +104,12 @@ NCollection_List<std::pair<gp_Pnt, gp_Pnt>>& ChFi3d_SideSeams();
 //! calling thread's.
 bool& ChFi3d_SnapSlivers();
 
+//! Set where the computation running passed over a correction of a fix level
+//! above the calling thread's (ChFi3d_SetFixLevel) that would have made it
+//! differently: ChFi3d_Builder::Compute, where it then makes nothing, tries
+//! once more at the latest level. The calling thread's.
+bool& ChFi3d_FixPassedOver();
+
 //! Set while ChFi3d_Builder::Compute makes the corners' plates again with
 //! their sharp edges stepped back only to the stripes' common points on
 //! those edges (ChFi3d_Builder::PerformMoreThreeCorner): the result was

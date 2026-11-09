@@ -155,6 +155,12 @@ std::atomic<double> THE_CORNER_SETBACK_FALLBACK(2.);
 thread_local bool THE_IN_SETBACK_COMPUTE = false;
 // SetFlatEndAtVertex(): the calling thread's
 thread_local bool THE_FLAT_END_AT_VERTEX = false;
+// ChFi3d_SetFixLevel(): the calling thread's, and the latest there is
+thread_local int THE_FIX_LEVEL        = 0;
+constexpr int    THE_FIX_LEVEL_LATEST = 1;
+// set while Compute() runs at the level set, which a failure tries again at
+// the latest
+thread_local bool THE_IN_FIX_LEVEL_COMPUTE = false;
 // The vertices where two fillets on no common face meet (OppositeEnds) that
 // the computation running is to build with the opposite corner
 // (PerformOppositeCorner), and those it met and built with the plate; both
@@ -230,6 +236,18 @@ int ChFi3d_SetFlatEndAtVertex(const int theToUse)
   const bool wasSet      = THE_FLAT_END_AT_VERTEX;
   THE_FLAT_END_AT_VERTEX = theToUse != 0;
   return wasSet ? 1 : 0;
+}
+
+int ChFi3d_SetFixLevel(const int theLevel)
+{
+  const int aPrevious = THE_FIX_LEVEL;
+  THE_FIX_LEVEL       = theLevel;
+  return aPrevious;
+}
+
+int ChFi3d_FixLevel()
+{
+  return THE_FIX_LEVEL;
 }
 
 //=================================================================================================
@@ -3063,6 +3081,71 @@ void ChFi3d_Builder::ComputeOppositeCorners()
 
 void ChFi3d_Builder::Compute()
 {
+  if (!THE_IN_SETBACK_COMPUTE && !THE_IN_FIX_LEVEL_COMPUTE && THE_FIX_LEVEL < THE_FIX_LEVEL_LATEST)
+  {
+    // the computation at the level set; where it makes nothing and passed
+    // over a correction above that level (ChFi3d_FixPassedOver), once more at
+    // the latest: what the level was to keep was refused anyway. The input's
+    // tolerances as they were for it, which a computation raises in place
+    NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aTolerances;
+    for (TopExp_Explorer exV(myShape, TopAbs_VERTEX); exV.More(); exV.Next())
+    {
+      aTolerances.Bind(exV.Current(), BRep_Tool::Tolerance(TopoDS::Vertex(exV.Current())));
+    }
+    for (TopExp_Explorer exE(myShape, TopAbs_EDGE); exE.More(); exE.Next())
+    {
+      aTolerances.Bind(exE.Current(), BRep_Tool::Tolerance(TopoDS::Edge(exE.Current())));
+    }
+    struct LevelGuard
+    {
+      LevelGuard()
+      {
+        THE_IN_FIX_LEVEL_COMPUTE = true;
+        ChFi3d_FixPassedOver()   = false;
+      }
+
+      ~LevelGuard() { THE_IN_FIX_LEVEL_COMPUTE = false; }
+    };
+    std::exception_ptr aFailure;
+    bool               isPassedOver = false;
+    {
+      LevelGuard aGuard;
+      try
+      {
+        Compute();
+      }
+      catch (Standard_Failure const&)
+      {
+        aFailure = std::current_exception();
+        done     = false;
+      }
+      isPassedOver = ChFi3d_FixPassedOver();
+    }
+    if (done || !isPassedOver)
+    {
+      if (aFailure)
+      {
+        std::rethrow_exception(aFailure);
+      }
+      return;
+    }
+    struct LatestGuard
+    {
+      LatestGuard()
+          : myPrevious(ChFi3d_SetFixLevel(THE_FIX_LEVEL_LATEST))
+      {
+      }
+
+      ~LatestGuard() { ChFi3d_SetFixLevel(myPrevious); }
+
+      int myPrevious;
+    } aLatest;
+    THE_INPUT_TOLERANCES = aTolerances;
+    Reset();
+    THE_INPUT_TOLERANCES.Clear();
+    Compute();
+    return;
+  }
   if (!THE_IN_SETBACK_COMPUTE)
   {
     // the computation; where it fails at a vertex, the setback fallback;

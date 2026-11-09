@@ -19,6 +19,7 @@
 //  Modified by skv - Mon Jun 16 15:50:44 2003 OCC615
 
 #include <ChFi3d_Builder_0.hxx>
+#include <ChFi3d_Builder.hxx>
 
 #include <AppParCurves_MultiBSpCurve.hxx>
 #include <Approx_SameParameter.hxx>
@@ -132,6 +133,14 @@ bool& ChFi3d_SnapSlivers()
 {
   thread_local bool isSnap = false;
   return isSnap;
+}
+
+//=================================================================================================
+
+bool& ChFi3d_FixPassedOver()
+{
+  thread_local bool isPassedOver = false;
+  return isPassedOver;
 }
 
 //=================================================================================================
@@ -5904,13 +5913,13 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
       // Yes if there was no extension and the tangent is not the good one.
       adjust = adjustDeb = true;
     }
-    else
+    else if (ChFi3d_FixLevel() >= 1)
     {
       // An end extended above (or one that needs nothing) keeps its own
       // point and tangent: the elspine's are those of the spine carried on
       // straight, which the extension does not follow -- held to them, the
       // whole curve was bent to reach them (11 away on #631's loft), a
-      // chamfer's guide 0.53 off its edge at the vertex
+      // chamfer's guide 0.53 off its edge at the vertex. From fix level 1
       PDeb    = P1;
       VrefDeb = V1;
     }
@@ -5924,15 +5933,21 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
       // the same at the end
       adjust = adjustFin = true;
     }
-    else
+    else if (ChFi3d_FixLevel() >= 1)
     {
       PFin    = P2;
       VrefFin = V2;
     }
     // Each end that needs it moved on the last quarter of the edges' part
-    // next to it, the rest of the curve as it was
+    // next to it, the rest of the curve as it was. From fix level 1; below
+    // it, a computation that makes nothing is tried again at the latest
+    // (ChFi3d_Builder::Compute)
+    if (adjust && ChFi3d_FixLevel() < 1)
+    {
+      ChFi3d_FixPassedOver() = true;
+    }
     const double aQuarter = 0.25 * (Wreffin - Wrefdeb);
-    if (adjust && aQuarter > Precision::PConfusion()
+    if (adjust && ChFi3d_FixLevel() >= 1 && aQuarter > Precision::PConfusion()
         && (!adjustDeb || AdjustEndLocally(BSpline, false, WF + aQuarter, PDeb, VrefDeb))
         && (!adjustFin || AdjustEndLocally(BSpline, true, WL - aQuarter, PFin, VrefFin)))
     {

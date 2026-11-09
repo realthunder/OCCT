@@ -955,4 +955,27 @@ extern "C" Standard_EXPORT double ChFi3d_SetCornerSetbackFallback(const double t
 //! calling thread's setting before, 1 or 0.
 extern "C" Standard_EXPORT int ChFi3d_SetFlatEndAtVertex(const int theToUse);
 
+//! Sets, for the calling thread, the fork's fillet fix level: which of the
+//! fork's corrections to the fillets and chamfers are made that give a
+//! different shape, valid before, for some input -- so that a client's object
+//! made before recomputes as it was. 0, the default on every thread, makes
+//! none; each level adds those of its own to the ones below it. A computation
+//! that makes nothing at the level set, where a correction above it would
+//! have made it differently, is tried once more at the latest level: what was
+//! refused before (an invalid result is refused) needs no level. Returns the
+//! level set before. A C function, so that a client looks it up by name and
+//! goes on without it where the library is upstream's.
+//! A correction that moves the shapes it changes no further than their
+//! tolerances, or makes only what was refused, needs no level: it is made at
+//! every one.
+//!  1 -- a chamfer's guide (the elspine, ChFi3d_PerformElSpine) has an end it
+//!       moves to the edge beyond moved over its last quarter alone, not bent
+//!       whole to it, and an end extended keeps its own point and tangent
+//!       (#631's arm: a chamfer of 0.8 from 0.52 to 1.37 wide, exact now;
+//!       the fork's tests/fork/fillet/README.md).
+extern "C" Standard_EXPORT int ChFi3d_SetFixLevel(const int theLevel);
+
+//! The calling thread's level of ChFi3d_SetFixLevel().
+extern "C" Standard_EXPORT int ChFi3d_FixLevel();
+
 #endif // _ChFi3d_Builder_HeaderFile
