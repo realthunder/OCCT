@@ -5312,6 +5312,91 @@ static bool GoodExt(const occ::handle<Geom_Curve>& C,
   return true;
 }
 
+//=======================================================================
+// function : AdjustEndLocally
+// purpose  : Moves an end of <theC> (the last one if <isLast>) to <theP>,
+//            its tangent along <theT>, by a deformation that is nought with
+//            its first two derivatives at <theW0> and on the far side of it
+//            -- the curve left as it is there, the elspine's other end and
+//            its extension with it. GeomLib::AdjustExtremity deforms the
+//            whole curve: an end's correction of 3e-4 and 0.17 deg, spread
+//            over the 41 of the extension at the other end, took a chamfer's
+//            guide 0.025 off its edge there (#631's loft, a chamfer of 0.3).
+//            Returns false, <theC> as it was, if the curve's degree is under
+//            5 or <theW0> is not inside it.
+//=======================================================================
+
+static bool AdjustEndLocally(occ::handle<Geom_BSplineCurve>& theC,
+                             const bool                      isLast,
+                             const double                    theW0,
+                             const gp_Pnt&                   theP,
+                             const gp_Vec&                   theT)
+{
+  const int    aDeg = theC->Degree();
+  const double aF   = theC->FirstParameter();
+  const double aL   = theC->LastParameter();
+  if (aDeg < 5 || theC->IsPeriodic() || theT.Magnitude() < gp::Resolution()
+      || theW0 <= aF + Precision::PConfusion() || theW0 >= aL - Precision::PConfusion())
+  {
+    return false;
+  }
+  // the change of the end point, and of the derivative there: its length
+  // kept, its direction <theT>'s
+  gp_Pnt aPe;
+  gp_Vec aVe;
+  theC->D1(isLast ? aL : aF, aPe, aVe);
+  const gp_Vec aTan = theT.Normalized();
+  const gp_XYZ aDP  = theP.XYZ() - aPe.XYZ();
+  const gp_XYZ aDV  = (aTan * (aTan * aVe) - aVe).XYZ();
+
+  occ::handle<Geom_BSplineCurve> aC = occ::down_cast<Geom_BSplineCurve>(theC->Copy());
+  aC->InsertKnot(theW0, aDeg - 2, Precision::PConfusion(), false);
+  // the derivative at the last end is Deg / span * w(n-1) / w(n) * (P(n) -
+  // P(n-1)), span the length of the end's span
+  const int    aN    = aC->NbPoles();
+  const double aWEnd = isLast ? aC->Weight(aN) : aC->Weight(1);
+  const double aWNb  = isLast ? aC->Weight(aN - 1) : aC->Weight(2);
+  const double aSpan = isLast ? aL - theW0 : theW0 - aF;
+  const gp_XYZ aDNb  = aDP + aDV * (aSpan / aDeg) * (aWEnd / aWNb) * (isLast ? -1. : 1.);
+
+  // the deformation: two spans meeting at <theW0> with C2 (they share three
+  // poles there, all nought), nought on the far side, the end pole and its
+  // neighbour moved on the end's side
+  NCollection_Array1<double> aK(1, 3);
+  NCollection_Array1<int>    aM(1, 3);
+  aK(1) = aF;
+  aK(2) = theW0;
+  aK(3) = aL;
+  aM(1) = aDeg + 1;
+  aM(2) = aDeg - 2;
+  aM(3) = aDeg + 1;
+  NCollection_Array1<gp_Pnt> aQ(1, 2 * aDeg - 1);
+  aQ.Init(gp_Pnt(0., 0., 0.));
+  aQ(isLast ? 2 * aDeg - 1 : 1) = gp_Pnt(aDP);
+  aQ(isLast ? 2 * aDeg - 2 : 2) = gp_Pnt(aDNb);
+  occ::handle<Geom_BSplineCurve> aD = new Geom_BSplineCurve(aQ, aK, aM, aDeg);
+
+  // the two on the same knots, each knot at the higher of its multiplicities
+  for (int i = 1; i <= aC->NbKnots(); ++i)
+  {
+    aD->InsertKnot(aC->Knot(i), aC->Multiplicity(i), Precision::PConfusion(), false);
+  }
+  for (int i = 1; i <= aD->NbKnots(); ++i)
+  {
+    aC->InsertKnot(aD->Knot(i), aD->Multiplicity(i), Precision::PConfusion(), false);
+  }
+  if (aC->NbPoles() != aD->NbPoles())
+  {
+    return false;
+  }
+  for (int i = 1; i <= aC->NbPoles(); ++i)
+  {
+    aC->SetPole(i, gp_Pnt(aC->Pole(i).XYZ() + aD->Pole(i).XYZ()));
+  }
+  theC = aC;
+  return true;
+}
+
 //=================================================================================================
 
 Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
@@ -5806,7 +5891,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
   {
     // Otherwise is it necessary to move the poles to adapt
     // them to new tangents ?
-    bool   adjust = false;
+    bool   adjust = false, adjustDeb = false, adjustFin = false;
     gp_Pnt P1, P2;
     gp_Vec V1, V2;
     BSpline->D1(WF, P1, V1);
@@ -5817,7 +5902,17 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
     if ((std::abs(WF - LocalWF) < 1.e-12) && ((scaldeb <= 0.9999999) || disdeb >= tol))
     {
       // Yes if there was no extension and the tangent is not the good one.
-      adjust = true;
+      adjust = adjustDeb = true;
+    }
+    else
+    {
+      // An end extended above (or one that needs nothing) keeps its own
+      // point and tangent: the elspine's are those of the spine carried on
+      // straight, which the extension does not follow -- held to them, the
+      // whole curve was bent to reach them (11 away on #631's loft), a
+      // chamfer's guide 0.53 off its edge at the vertex
+      PDeb    = P1;
+      VrefDeb = V1;
     }
     BSpline->D1(WL, P2, V2);
     V2.Normalize();
@@ -5827,7 +5922,21 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
     if ((std::abs(WL - LocalWL) < 1.e-12) && ((scalfin <= 0.9999999) || disfin >= tol))
     {
       // the same at the end
-      adjust = true;
+      adjust = adjustFin = true;
+    }
+    else
+    {
+      PFin    = P2;
+      VrefFin = V2;
+    }
+    // Each end that needs it moved on the last quarter of the edges' part
+    // next to it, the rest of the curve as it was
+    const double aQuarter = 0.25 * (Wreffin - Wrefdeb);
+    if (adjust && aQuarter > Precision::PConfusion()
+        && (!adjustDeb || AdjustEndLocally(BSpline, false, WF + aQuarter, PDeb, VrefDeb))
+        && (!adjustFin || AdjustEndLocally(BSpline, true, WL - aQuarter, PFin, VrefFin)))
+    {
+      adjust = false;
     }
     if (adjust)
     {
