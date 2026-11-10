@@ -646,7 +646,13 @@ static bool isOnBoundary(const TopoDS_Edge& theEdge,
   for (TopoDS_Iterator it(theEdge); it.More(); it.Next())
   {
     const TopoDS_Vertex& aV      = TopoDS::Vertex(it.Value());
-    double               aVParam = BRep_Tool::Parameter(aV, theEdge);
+    double               aVParam = 0.;
+    // A vertex with no parameter on the edge -- one an offset's loop gives an
+    // edge before it is cut, #360's skin -- bounds it nowhere: asking threw.
+    if (!BRep_Tool::Parameter(aV, theEdge, aVParam))
+    {
+      continue;
+    }
     if (std::abs(aVParam - theParam) < thePTol
         && BRep_Tool::Pnt(aV).Distance(theSol) < BRep_Tool::Tolerance(aV))
     {

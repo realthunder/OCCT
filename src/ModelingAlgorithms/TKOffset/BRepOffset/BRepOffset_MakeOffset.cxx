@@ -122,6 +122,7 @@
 #include <NCollection_DynamicArray.hxx>
 #include <NCollection_IncAllocator.hxx>
 //
+#include <BOPAlgo_ArgumentAnalyzer.hxx>
 #include <BOPAlgo_Builder.hxx>
 #include <BOPAlgo_MakerVolume.hxx>
 #include <BOPTools_AlgoTools.hxx>
@@ -3888,14 +3889,150 @@ static bool IsRunaway(const TopoDS_Shape& theShape, const TopoDS_Shape& theResul
 
 //=================================================================================================
 
+//! How deep in thick solids the thread is: one makes others, of the pieces
+//! and the split shapes it falls back to.
+static thread_local int theThickSolidDepth = 0;
+
+//! A solid that is valid and passes through itself nowhere. BRepCheck looks
+//! at each face and at the shell's edges, two faces a side each: a skin whose
+//! pockets were closed over, each a box of its own inside it, lid on lid with
+//! the face that covers them, is valid by it.
+static bool IsSoundSolid(const TopoDS_Shape& theShape)
+{
+  if (theShape.IsNull() || !BRepCheck_Analyzer(theShape).IsValid())
+  {
+    return false;
+  }
+  try
+  {
+    BOPAlgo_ArgumentAnalyzer aChecker;
+    aChecker.SetShape1(theShape);
+    aChecker.ArgumentTypeMode() = false;
+    aChecker.SelfInterMode()    = true;
+    aChecker.Perform();
+    return !aChecker.HasFaulty();
+  }
+  catch (Standard_Failure const&)
+  {
+    return false;
+  }
+}
+
 void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange)
 {
-  MakeThickSolidOrRunaway(theRange);
-  if (myDone && IsRunaway(myInitialShape, myOffsetShape, myOffset))
+  // What it is asked for, to be asked again.
+  const TopoDS_Shape                                                  aShape  = myInitialShape;
+  const double                                                        anOffset = myOffset;
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aRemoved = myOriginalFaces;
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aFaceOffsets =
+    myFaceOffset;
+  const bool isLinearizationAllowed = myIsLinearizationAllowed;
+  auto       aMake = [&](BRepOffset_MakeOffset& theMO, const Message_ProgressRange& theR) {
+    ++theThickSolidDepth;
+    try
+    {
+      theMO.MakeThickSolidOrRunaway(theR);
+    }
+    catch (Standard_Failure const&)
+    {
+      --theThickSolidDepth;
+      throw;
+    }
+    --theThickSolidDepth;
+    if (theMO.myDone && IsRunaway(theMO.myInitialShape, theMO.myOffsetShape, theMO.myOffset))
+    {
+      theMO.myDone  = false;
+      theMO.myError = BRepOffset_UnknownError;
+      theMO.myOffsetShape.Nullify();
+    }
+  };
+  auto aSetUp = [&](BRepOffset_MakeOffset& theMO) {
+    theMO.Initialize(aShape,
+                     anOffset,
+                     myTol,
+                     myMode,
+                     myInter,
+                     mySelfInter,
+                     myJoin,
+                     myThickening,
+                     myRemoveIntEdges);
+    theMO.AllowLinearization(isLinearizationAllowed);
+    for (int i = 1; i <= aRemoved.Extent(); ++i)
+    {
+      theMO.AddFace(TopoDS::Face(aRemoved(i)));
+    }
+    for (NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator anIt(
+           aFaceOffsets);
+         anIt.More();
+         anIt.Next())
+    {
+      theMO.SetOffsetOnFace(TopoDS::Face(anIt.Key()), anIt.Value());
+    }
+  };
+
+  const bool isOutermost = theThickSolidDepth == 0;
+  aMake(*this, theRange);
+
+  // No valid answer: once more with the loops' wires taken by the way their
+  // edges run (BRepAlgo_LoopByOrientation). The loops keep every piece of
+  // an edge and choose among the regions the pieces bound by what they
+  // share, which cannot tell a pocket from the strip where the offsets of
+  // two walls have passed each other: a plate with two holes nearer each
+  // other than twice the thickness, or one nearer the outline, a face
+  // removed inward, was refused or came out invalid, every one of them.
+  // What had a valid answer keeps it: nothing is made here that was made
+  // before.
+  if (!isOutermost || myThickening || aRemoved.IsEmpty())
+  {
+    return;
+  }
+  const bool wasDone = myDone;
+  if (wasDone && BRepCheck_Analyzer(myOffsetShape).IsValid())
+  {
+    return;
+  }
+  BRepAlgo_LoopByOrientation aByOrientation;
+  if (wasDone)
+  {
+    // An answer, though invalid: it stays unless the other way has a valid
+    // one.
+    BRepOffset_MakeOffset aTry;
+    aSetUp(aTry);
+    try
+    {
+      aMake(aTry, Message_ProgressRange());
+    }
+    catch (Standard_Failure const&)
+    {
+      return;
+    }
+    if (!aTry.myDone || !IsSoundSolid(aTry.myOffsetShape))
+    {
+      return;
+    }
+  }
+  const BRepOffset_Error anError = myError;
+  aSetUp(*this);
+  try
+  {
+    aMake(*this, Message_ProgressRange());
+  }
+  catch (Standard_Failure const&)
+  {
+    myDone = false;
+  }
+  // The answer of this way is taken where it is sound, and no other: it is
+  // one nothing asked to see before.
+  if (myDone && !IsSoundSolid(myOffsetShape))
   {
     myDone  = false;
     myError = BRepOffset_UnknownError;
     myOffsetShape.Nullify();
+  }
+  if (!myDone && !wasDone && anError != BRepOffset_NoError)
+  {
+    // refused both ways: for the reason it was refused first
+    myError = anError;
   }
 }
 

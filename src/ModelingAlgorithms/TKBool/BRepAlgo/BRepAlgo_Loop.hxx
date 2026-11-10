@@ -157,4 +157,17 @@ public:
     EdgeMap();
 };
 
+//! While one of these lives on a thread, the loops built on it take the
+//! wires of a planar face by the way its edges run: of the regions the edges
+//! bound, those every edge has on the side its orientation gives the face.
+//! The loop as it is otherwise keeps every piece of its edges and chooses
+//! among the regions by what they share, which cannot tell a pocket from
+//! the strip where the offsets of two walls have passed each other.
+class BRepAlgo_LoopByOrientation
+{
+public:
+  Standard_EXPORT BRepAlgo_LoopByOrientation();
+  Standard_EXPORT ~BRepAlgo_LoopByOrientation();
+};
+
 #endif // _BRepAlgo_Loop_HeaderFile

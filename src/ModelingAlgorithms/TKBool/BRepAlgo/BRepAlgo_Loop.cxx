@@ -87,6 +87,7 @@ static char* name       = new char[100];
 #endif
 
 static thread_local int _CollectingEdges;
+static thread_local int _ByOrientation;
 static thread_local
   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     _EdgeMap;
@@ -110,6 +111,16 @@ NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_Shape
   return _EdgeMap;
 }
 
+BRepAlgo_LoopByOrientation::BRepAlgo_LoopByOrientation()
+{
+  ++_ByOrientation;
+}
+
+BRepAlgo_LoopByOrientation::~BRepAlgo_LoopByOrientation()
+{
+  --_ByOrientation;
+}
+
 //=================================================================================================
 
 namespace
@@ -130,6 +141,8 @@ public:
     myCutEdges;
   //! Pieces of cut edges beyond the span the edge's own vertices gave it.
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myOutsideEdges;
+  //! The face is a removed one, built on its context.
+  bool myIsContext = false;
   //! Edges whose unused pieces are not purged (KeepPieces).
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myKeptEdges;
 };
@@ -895,6 +908,7 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
   LoopState& aState         = stateOf(myCutEdges);
   auto&      aCutEdges      = aState.myCutEdges;
   auto&      anOutsideEdges = aState.myOutsideEdges;
+  aState.myIsContext        = ContextFaces != nullptr;
   NCollection_List<TopoDS_Shape>::Iterator itl, itl1, itl2, itl3;
   TopoDS_Vertex                            V1, V2, OV1, OV2;
   BRep_Builder                             B;
@@ -2092,7 +2106,9 @@ static bool FindLoopsByAngle(
                                                                 MVE,
   const TopoDS_Face&                                            theFace,
   MapOfWire&                                                    theWires,
-  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theOutside)
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theOutside,
+  std::vector<std::vector<int>>*                                 theCells = nullptr,
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>* theEdges = nullptr)
 {
   // The edges, and for each its pcurve and its two ends among the vertices.
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEdges;
@@ -2309,6 +2325,13 @@ static bool FindLoopsByAngle(
     {
       continue;
     }
+    if (theCells != nullptr)
+    {
+      // The regions as the darts round them (dart 2e runs along edge e,
+      // 2e + 1 against it), and no wires.
+      theCells->push_back(aPruned);
+      continue;
+    }
     BRepLib_MakeWire aMW;
     for (int x : aPruned)
     {
@@ -2329,6 +2352,10 @@ static bool FindLoopsByAngle(
       SHOW_TOPO_SHAPE(anInfo.aWire, "AngleWire");
     }
   }
+  if (theEdges != nullptr)
+  {
+    *theEdges = anEdges;
+  }
   return true;
 }
 
@@ -2340,6 +2367,322 @@ static bool FindLoopsByAngle(
 // whose two pcurves lie the other way round for that has them exchanged, and
 // one that two loops want both ways is no seam of this face: false, and
 // nothing found.
+// The wires of a planar face by the way its edges run
+// (BRepAlgo_LoopByOrientation).
+//
+// The loop keeps every piece of its edges and picks the face's wires out of
+// the regions the pieces bound by what the regions share, the edges'
+// orientations unread. Where the wall between two holes is thinner than
+// twice an offset inward, the offsets of its two sides pass each other,
+// and the strip between them -- a lens, the Arc join's corners rounded --
+// is a region like any other: a pocket's floor on the offset bottom. On a
+// removed face, whose own edges the loop stretches far past their ends, the
+// stretched side of each hole runs through the rim between the holes and
+// the outline, and of all the others in line with it: the rim is in dozens
+// of pieces, most with every edge shared, and what stood out among the
+// regions was the openings of the holes (#360's plate, its top removed 4
+// inward: no rim at all, and before that a search that ran out of memory).
+//
+// An edge that is no stretched piece has what is left of its face on one
+// side, the left as it is given, as in the wire the face ends with; round
+// the strip two edges have it there and two do not.
+//
+// On an offset face a region is of the face where every edge round it has
+// it on that side. On a removed face, what is left lies within the face as
+// it was -- the offset inward, as the face's own edges, those with the face
+// as it was on one side only, all say, or there is no answer here -- and a
+// region within is left out where every edge round it, and round the
+// regions it runs on into across stretched pieces, has it on the other
+// side: the opening of a pocket. The strip stays, and the walls that stood
+// round it hang, their tops inside the face, and are dropped.
+//
+// The wires are those of the edges between a region of the face and one
+// that is not, walked again.
+static bool FindRegionWires(
+  const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+                                                                MVE,
+  const TopoDS_Face&                                            theFace,
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theStretched,
+  const bool                                                    theIsContext,
+  MapOfWire&                                                    theWires)
+{
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>  aNone;
+  std::vector<std::vector<int>>                                 aCells;
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEdges;
+  MapOfWire                                                     aUnused;
+  if (!FindLoopsByAngle(MVE, theFace, aUnused, aNone, &aCells, &anEdges) || aCells.empty())
+  {
+    return false;
+  }
+  const int                 aNbE = anEdges.Extent();
+  const int                 aNbC = static_cast<int>(aCells.size());
+  std::vector<TopoDS_Shape> aGiven(aNbE + 1);
+  for (int i = 1; i <= MVE.Extent(); ++i)
+  {
+    for (NCollection_List<TopoDS_Shape>::Iterator it(MVE(i)); it.More(); it.Next())
+    {
+      const int e = anEdges.FindIndex(it.Value());
+      if (e > 0 && aGiven[e].IsNull())
+      {
+        aGiven[e] = it.Value();
+      }
+    }
+  }
+  // Dart 2e runs along edge e taken forward, 2e + 1 against it, and the
+  // region of a dart is on its left.
+  std::vector<int> aCellOf(2 * (aNbE + 1), -1);
+  for (int c = 0; c < aNbC; ++c)
+  {
+    for (int x : aCells[c])
+    {
+      aCellOf[x] = c;
+    }
+  }
+  // Each region within the face as it was, or not: a point just inside the
+  // region, off the middle of one of its edges.
+  const TopoDS_Face                  aForward = TopoDS::Face(theFace.Oriented(TopAbs_FORWARD));
+  BRepTopAdaptor_FClass2d            aClassifier(aForward, Precision::PConfusion());
+  std::vector<bool>                  isWithin(aNbC, false);
+  std::vector<std::vector<gp_Pnt2d>> aPolygons(aNbC);
+  auto isInPolygon = [](const std::vector<gp_Pnt2d>& thePoly, const gp_Pnt2d& theP) {
+    bool isIn = false;
+    for (size_t k = 0; k < thePoly.size(); ++k)
+    {
+      const gp_Pnt2d& aP = thePoly[k];
+      const gp_Pnt2d& aQ = thePoly[(k + 1) % thePoly.size()];
+      if ((aP.Y() > theP.Y()) != (aQ.Y() > theP.Y())
+          && theP.X() < aP.X() + (aQ.X() - aP.X()) * (theP.Y() - aP.Y()) / (aQ.Y() - aP.Y()))
+      {
+        isIn = !isIn;
+      }
+    }
+    return isIn;
+  };
+  for (int c = 0; c < aNbC; ++c)
+  {
+    std::vector<gp_Pnt2d>& aPoly = aPolygons[c];
+    for (int x : aCells[c])
+    {
+      double                          aF, aL;
+      const occ::handle<Geom2d_Curve> aC2d =
+        BRep_Tool::CurveOnSurface(TopoDS::Edge(anEdges(x / 2)), theFace, aF, aL);
+      if (aC2d.IsNull())
+      {
+        return false;
+      }
+      for (int k = 0; k < 8; ++k)
+      {
+        const double t = (x & 1) ? 1. - k / 8. : k / 8.;
+        aPoly.push_back(aC2d->Value(aF + (aL - aF) * t));
+      }
+    }
+    auto isInside = [&](const gp_Pnt2d& theP) { return isInPolygon(aPoly, theP); };
+    bool isFound = false;
+    for (size_t k = 0; k < aPoly.size() && !isFound; ++k)
+    {
+      const gp_Pnt2d& aP = aPoly[k];
+      const gp_Pnt2d& aQ = aPoly[(k + 1) % aPoly.size()];
+      const gp_Vec2d  aD(aP, aQ);
+      if (aD.Magnitude() <= Precision::PConfusion())
+      {
+        continue;
+      }
+      // counter-clockwise round the region: its inside is on the left
+      for (double aStep = 1.e-2; aStep > 1.e-7 && !isFound; aStep *= 0.1)
+      {
+        const gp_Pnt2d aTry(0.5 * (aP.X() + aQ.X()) - aStep * aD.Y(),
+                            0.5 * (aP.Y() + aQ.Y()) + aStep * aD.X());
+        if (isInside(aTry))
+        {
+          isWithin[c] = aClassifier.Perform(aTry) == TopAbs_IN;
+          isFound     = true;
+        }
+      }
+    }
+    if (!isFound)
+    {
+      return false;
+    }
+  }
+  // The network can be in several parts, one inside a region of another: a
+  // hole none of whose sides is stretched through the rest. What lies round
+  // such a part is that region -- the smallest of another part that holds
+  // a vertex of it.
+  std::vector<int> aPartOfV(MVE.Extent() + 1);
+  for (int i = 0; i <= MVE.Extent(); ++i)
+  {
+    aPartOfV[i] = i;
+  }
+  auto aPartRoot = [&aPartOfV](int v) {
+    while (aPartOfV[v] != v)
+    {
+      aPartOfV[v] = aPartOfV[aPartOfV[v]];
+      v           = aPartOfV[v];
+    }
+    return v;
+  };
+  std::vector<int> aFirstV(aNbE + 1, 0);
+  for (int e = 1; e <= aNbE; ++e)
+  {
+    TopoDS_Vertex aVF, aVL;
+    TopExp::Vertices(TopoDS::Edge(anEdges(e)), aVF, aVL);
+    const int i1 = MVE.FindIndex(aVF), i2 = MVE.FindIndex(aVL);
+    if (i1 == 0 || i2 == 0)
+    {
+      return false;
+    }
+    aFirstV[e]              = i1;
+    aPartOfV[aPartRoot(i1)] = aPartRoot(i2);
+  }
+  std::vector<double> anAreas(aNbC, 0.);
+  std::vector<int>    aPartOfC(aNbC, 0);
+  for (int c = 0; c < aNbC; ++c)
+  {
+    const std::vector<gp_Pnt2d>& aPoly = aPolygons[c];
+    for (size_t k = 0; k < aPoly.size(); ++k)
+    {
+      const gp_Pnt2d& aP = aPoly[k];
+      const gp_Pnt2d& aQ = aPoly[(k + 1) % aPoly.size()];
+      anAreas[c] += aP.X() * aQ.Y() - aQ.X() * aP.Y();
+    }
+    aPartOfC[c] = aPartRoot(aFirstV[aCells[c].front() / 2]);
+  }
+  NCollection_DataMap<int, int> aHostOfPart;
+  for (int e = 1; e <= aNbE; ++e)
+  {
+    const int aPart = aPartRoot(aFirstV[e]);
+    if (aHostOfPart.IsBound(aPart))
+    {
+      continue;
+    }
+    double                          aF, aL;
+    const occ::handle<Geom2d_Curve> aC2d =
+      BRep_Tool::CurveOnSurface(TopoDS::Edge(anEdges(e)), theFace, aF, aL);
+    int aHost = -1;
+    if (!aC2d.IsNull())
+    {
+      const gp_Pnt2d aP = aC2d->Value(aF);
+      for (int c = 0; c < aNbC; ++c)
+      {
+        if (aPartOfC[c] != aPart && (aHost < 0 || anAreas[c] < anAreas[aHost])
+            && isInPolygon(aPolygons[c], aP))
+        {
+          aHost = c;
+        }
+      }
+    }
+    aHostOfPart.Bind(aPart, aHost);
+  }
+  // The region on the left of an edge taken forward (0) or against (1).
+  auto aSide = [&](const int e, const int k) {
+    const int c = aCellOf[2 * e + k];
+    return c >= 0 ? c : aHostOfPart.Find(aPartRoot(aFirstV[e]));
+  };
+  // The regions that run on into each other across stretched pieces, as one.
+  std::vector<int> aGroup(aNbC);
+  for (int c = 0; c < aNbC; ++c)
+  {
+    aGroup[c] = c;
+  }
+  auto aRoot = [&aGroup](int c) {
+    while (aGroup[c] != c)
+    {
+      aGroup[c] = aGroup[aGroup[c]];
+      c         = aGroup[c];
+    }
+    return c;
+  };
+  for (int e = 1; e <= aNbE; ++e)
+  {
+    const int c1 = aSide(e, 0), c2 = aSide(e, 1);
+    if (c1 >= 0 && c2 >= 0 && c1 != c2 && theStretched.Contains(aGiven[e]))
+    {
+      aGroup[aRoot(c1)] = aRoot(c2);
+    }
+  }
+  // The edges are given as the wire takes them on the surface, what is left
+  // of the face on the left of each -- whichever way the face is oriented
+  // (#360's plate is the same with its top removed, a reversed face here,
+  // and its bottom, a forward one).
+  std::vector<int> aNbFor(aNbC, 0), aNbAgainst(aNbC, 0);
+  int              aNbInward = 0, aNbOutward = 0;
+  for (int e = 1; e <= aNbE; ++e)
+  {
+    const int c1 = aSide(e, 0), c2 = aSide(e, 1);
+    if (c1 == c2 || theStretched.Contains(aGiven[e]))
+    {
+      continue; // a tail, a bridge, a stretched piece
+    }
+    const bool isLeftFor = aGiven[e].Orientation() != TopAbs_REVERSED;
+    const int  aFor = isLeftFor ? c1 : c2, anAgainst = isLeftFor ? c2 : c1;
+    if (aFor >= 0)
+    {
+      ++aNbFor[aRoot(aFor)];
+    }
+    if (anAgainst >= 0)
+    {
+      ++aNbAgainst[aRoot(anAgainst)];
+    }
+    // one of the face's own edges
+    const bool isWithinFor     = aFor >= 0 && isWithin[aFor];
+    const bool isWithinAgainst = anAgainst >= 0 && isWithin[anAgainst];
+    if (isWithinFor != isWithinAgainst)
+    {
+      ++(isWithinFor ? aNbInward : aNbOutward);
+    }
+  }
+  // Within the face, by every edge of its own: no other case is known to
+  // come here, and none has been tried.
+  if (theIsContext && (aNbInward == 0 || aNbOutward > 0))
+  {
+    return false;
+  }
+  std::vector<bool> isOfFace(aNbC, false);
+  for (int c = 0; c < aNbC; ++c)
+  {
+    const int g = aRoot(c);
+    if (theIsContext)
+    {
+      const bool isOpening = aNbAgainst[g] > 0 && aNbFor[g] == 0;
+      isOfFace[c]          = isWithin[c] && !isOpening;
+    }
+    else
+    {
+      // An offset face has no face it was to lie within: a region is of
+      // it where every edge round it says so.
+      isOfFace[c] = aNbFor[g] > 0 && aNbAgainst[g] == 0;
+    }
+  }
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+       aBounds;
+  bool hasBound = false;
+  for (int e = 1; e <= aNbE; ++e)
+  {
+    const int c1 = aSide(e, 0), c2 = aSide(e, 1);
+    if (c1 == c2 || (c1 >= 0 && isOfFace[c1]) == (c2 >= 0 && isOfFace[c2]))
+    {
+      continue;
+    }
+    TopoDS_Vertex aVF, aVL;
+    TopExp::Vertices(TopoDS::Edge(aGiven[e]), aVF, aVL);
+    if (aVF.IsNull() || aVL.IsNull())
+    {
+      return false;
+    }
+    for (int k = 0; k < (aVF.IsSame(aVL) ? 1 : 2); ++k)
+    {
+      const TopoDS_Vertex& aV = k == 0 ? aVF : aVL;
+      if (!aBounds.Contains(aV))
+      {
+        aBounds.Add(aV, NCollection_List<TopoDS_Shape>());
+      }
+      aBounds.ChangeFromKey(aV).Append(aGiven[e]);
+    }
+    hasBound = true;
+  }
+  return hasBound && FindLoopsByAngle(aBounds, theFace, theWires, aNone) && !theWires.IsEmpty();
+}
+
 static bool FindLoopsInUV(
   const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
                                                                 MVE,
@@ -2736,6 +3079,11 @@ void BRepAlgo_Loop::FindLoop()
   // the rest of the face. Both in the loop, the face gets the line twice and
   // the shell a free edge. Such a piece is left out; the other edge stays.
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDuplicates;
+  // The pieces of extended edges beyond the edges' own ends, and of those
+  // that lie over each other -- the removed face's edges on walls in one
+  // plane, a notch and its mirror image, the aligned sides of a row of
+  // holes, stretched along one line -- all but one (FindRegionWires).
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aStretched, aStretchedTwins;
   {
     auto isExtended = [](const TopoDS_Shape& theE) {
       for (TopoDS_Iterator aIt(theE); aIt.More(); aIt.Next())
@@ -2799,6 +3147,73 @@ void BRepAlgo_Loop::FindLoop()
           SHOW_TOPO_SHAPE(itl1.Value(), "DuplicateOfExtended");
           break;
         }
+      }
+    }
+    struct ExtPiece
+    {
+      TopoDS_Shape Piece;
+      gp_Pnt       P1, P2, M;
+      bool         IsOwn;
+    };
+    std::vector<ExtPiece> aPieces;
+    const bool isOnPlane = _ByOrientation > 0
+                           && BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Plane;
+    for (int iC = 1; iC <= aCutEdges.Extent() && isOnPlane; ++iC)
+    {
+      const TopoDS_Shape&                   aCutKey = aCutEdges.FindKey(iC);
+      const NCollection_List<TopoDS_Shape>& aCutL   = aCutEdges(iC);
+      if (!isExtended(aCutKey))
+      {
+        continue;
+      }
+      const TopoDS_Edge aParent = TopoDS::Edge(aCutKey.Oriented(TopAbs_FORWARD));
+      double            aIntF = Precision::Infinite(), aIntL = -Precision::Infinite();
+      for (TopoDS_Iterator aIt(aParent); aIt.More(); aIt.Next())
+      {
+        double aPar = 0.;
+        if (aIt.Value().Orientation() == TopAbs_INTERNAL
+            && BRep_Tool::Parameter(TopoDS::Vertex(aIt.Value()), aParent, aPar))
+        {
+          aIntF = std::min(aIntF, aPar);
+          aIntL = std::max(aIntL, aPar);
+        }
+      }
+      for (itl1.Initialize(aCutL); itl1.More(); itl1.Next())
+      {
+        ExtPiece aPiece;
+        aPiece.Piece = itl1.Value();
+        if (aDuplicates.Contains(aPiece.Piece)
+            || !aKey(TopoDS::Edge(aPiece.Piece), aPiece.P1, aPiece.P2, aPiece.M))
+        {
+          continue;
+        }
+        double aF, aL;
+        BRep_Tool::Range(TopoDS::Edge(aPiece.Piece), aF, aL);
+        aPiece.IsOwn =
+          aF >= aIntF - Precision::PConfusion() && aL <= aIntL + Precision::PConfusion();
+        if (!aPiece.IsOwn)
+        {
+          aStretched.Add(aPiece.Piece);
+        }
+        aPieces.push_back(aPiece);
+      }
+    }
+    // Of pieces lying over each other the one between its edge's own ends
+    // stays, where there is one.
+    for (size_t i = 0; i < aPieces.size(); ++i)
+    {
+      const ExtPiece& aPi = aPieces[i];
+      for (size_t j = i + 1; j < aPieces.size() && !aStretchedTwins.Contains(aPi.Piece); ++j)
+      {
+        const ExtPiece& aPj = aPieces[j];
+        if (aPi.M.Distance(aPj.M) > aTol || aStretchedTwins.Contains(aPj.Piece)
+            || aPi.Piece.IsSame(aPj.Piece)
+            || !((aPi.P1.Distance(aPj.P1) <= aTol && aPi.P2.Distance(aPj.P2) <= aTol)
+                 || (aPi.P1.Distance(aPj.P2) <= aTol && aPi.P2.Distance(aPj.P1) <= aTol)))
+        {
+          continue;
+        }
+        aStretchedTwins.Add(aPj.IsOwn && !aPi.IsOwn ? aPi.Piece : aPj.Piece);
       }
     }
   }
@@ -2953,11 +3368,48 @@ void BRepAlgo_Loop::FindLoop()
   }
   DejaVu.Clear();
 
+  // Asked to (BRepAlgo_LoopByOrientation), on a plane: the wires by the way
+  // the edges run, and neither the walk nor the search.
+  bool isByRegion = false;
+  if (_ByOrientation > 0 && !IsPeriodic
+      && BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Plane)
+  {
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aNoSide = aStretched;
+    for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itO(anOutsideEdges);
+         itO.More();
+         itO.Next())
+    {
+      aNoSide.Add(itO.Key());
+    }
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      aSingles;
+    for (int i = 1; i <= MVE.Extent(); ++i)
+    {
+      NCollection_List<TopoDS_Shape> aLE;
+      for (itl.Initialize(MVE(i)); itl.More(); itl.Next())
+      {
+        if (!aStretchedTwins.Contains(itl.Value()))
+        {
+          aLE.Append(itl.Value());
+        }
+      }
+      aSingles.Add(MVE.FindKey(i), aLE);
+    }
+    MapOfWire aRegionWires;
+    if (FindRegionWires(aSingles, myFace, aNoSide, aState.myIsContext, aRegionWires))
+    {
+      NewWires   = aRegionWires;
+      isByRegion = true;
+      SHOW_TOPO_SHAPE(myFace, "LoopByRegion");
+    }
+  }
+
   // By angle where the face is not periodic, or its edges lie within one
   // period; the search otherwise, or when the walk cannot describe the network.
   MapOfWire  aWalked;
-  const bool isWalked = !IsPeriodic && FindLoopsByAngle(MVE, myFace, aWalked, anOutsideEdges);
-  if (isWalked)
+  const bool isWalked =
+    isByRegion || (!IsPeriodic && FindLoopsByAngle(MVE, myFace, aWalked, anOutsideEdges));
+  if (isWalked && !isByRegion)
   {
     NewWires = aWalked;
   }
@@ -3180,7 +3632,18 @@ void BRepAlgo_Loop::FindLoop()
     //-----------------------------------------------
     // Split wires
     //----------------------------------------------
-    SplitWires(myNewWires, NewWires, MVE, myFace);
+    if (isByRegion)
+    {
+      // The wires of the face as they are: nothing to split.
+      for (itW = MapIteratorOfMapOfWire(NewWires); itW.More(); itW.Next())
+      {
+        myNewWires.Append(itW.Value().aWire);
+      }
+    }
+    else
+    {
+      SplitWires(myNewWires, NewWires, MVE, myFace);
+    }
   }
   else
   {
