@@ -3893,9 +3893,9 @@ static bool IsRunaway(const TopoDS_Shape& theShape, const TopoDS_Shape& theResul
 //            either, and can be "valid" too: #363's cylinder with a slot
 //            across it, the slot's ceiling removed, 1 or 0.5 outward with
 //            the Arc join, is a closed shell of the offsets of one side of
-//            the slot and half the cylinder's, -819.3205 (upstream's as
-//            well; it was refused here by a fault since mended,
-//            BRepOffset_MakeLoops' AddCutImage). A solid only: a shell has
+//            the slot and half the cylinder's, -819.3205 (it was refused
+//            by a fault since mended, BRepOffset_MakeLoops' AddCutImage;
+//            upstream gives the input back). A solid only: a shell has
 //            no volume. And one with a face removed: with none the solid
 //            shrunk is the void of a hollow, and is asked for as such
 //            (FreeCAD's thickness to both sides with no opening).
