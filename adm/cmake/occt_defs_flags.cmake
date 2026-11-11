@@ -33,6 +33,15 @@ if (MSVC)
 else()
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
   set (CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fexceptions")
+  # The GCC and Clang side of /fp:precise above: no fused multiply-add the
+  # source did not ask for. Both compilers contract a*b+c into one fma where
+  # the target has the instruction, which rounds once where the two
+  # operations round twice. Every arm64 has it and the x86-64 baseline does
+  # not, so the kernel gave different last bits on the two: on Apple silicon
+  # BRepMesh left a face of a fused and cut solid at a deflection of 0.080
+  # where 0.05 was asked, and x86-64 reaches it.
+  set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffp-contract=off")
+  set (CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -ffp-contract=off")
   if (NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
     set (CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fPIC")
