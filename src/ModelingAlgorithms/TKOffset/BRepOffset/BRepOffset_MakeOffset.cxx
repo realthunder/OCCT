@@ -1083,6 +1083,7 @@ static bool WallsCrossAtRemovedFace(
     anEF;
   TopExp::MapShapesAndAncestors(theShape, TopAbs_EDGE, TopAbs_FACE, anEF);
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> anOffsets;
+  NCollection_DataMap<TopoDS_Shape, Bnd_Box, TopTools_ShapeMapHasher>      aBoxes;
   for (int i = 1; i <= theRemoved.Extent(); ++i)
   {
     // The faces beside this removed face, in the shape's order.
@@ -1124,6 +1125,7 @@ static bool WallsCrossAtRemovedFace(
           continue;
         }
         const TopoDS_Shape* aOff[2] = {anOffsets.Seek(aF1), anOffsets.Seek(aF2)};
+        const Bnd_Box*      aBox[2] = {aBoxes.Seek(aF1), aBoxes.Seek(aF2)};
         for (int m = 0; m < 2; ++m)
         {
           if (!aOff[m])
@@ -1135,7 +1137,20 @@ static bool WallsCrossAtRemovedFace(
               return false;
             }
             aOff[m] = anOffsets.Bound(aF, anOF.Face());
+            Bnd_Box aB;
+            BRepBndLib::Add(*aOff[m], aB, false);
+            aBox[m] = aBoxes.Bound(aF, aB);
           }
+        }
+        // Offsets whose boxes are further apart than the tolerance do not
+        // meet, and are not measured. The distance of two faces is a search
+        // of both, 0.3 to 1.4 s a pair of offsets of B-splines, and a face
+        // removed beside sixteen has some fifty pairs: #613's model, its
+        // side removed, spent 9 s here on faces 17 and more apart, twice
+        // (the second way asks again).
+        if (!aBox[0]->IsVoid() && !aBox[1]->IsVoid() && aBox[0]->Distance(*aBox[1]) > theTol)
+        {
+          continue;
         }
         BRepExtrema_DistShapeShape aDist(*aOff[0], *aOff[1]);
         if (aDist.IsDone() && aDist.Value() <= theTol)
