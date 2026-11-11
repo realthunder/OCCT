@@ -3887,6 +3887,30 @@ static bool IsRunaway(const TopoDS_Shape& theShape, const TopoDS_Shape& theResul
   return aU1 < aX1 || aV1 < aY1 || aW1 < aZ1 || aU2 > aX2 || aV2 > aY2 || aW2 > aZ2;
 }
 
+//=======================================================================
+// function : IsInsideOut
+// purpose  : A thick solid of a volume below nothing. It is never right
+//            either, and can be "valid" too: #363's cylinder with a slot
+//            across it, the slot's ceiling removed, 1 or 0.5 outward with
+//            the Arc join, is a closed shell of the offsets of one side of
+//            the slot and half the cylinder's, -819.3205 (upstream's as
+//            well; it was refused here by a fault since mended,
+//            BRepOffset_MakeLoops' AddCutImage). A solid only: a shell has
+//            no volume. And one with a face removed: with none the solid
+//            shrunk is the void of a hollow, and is asked for as such
+//            (FreeCAD's thickness to both sides with no opening).
+//=======================================================================
+static bool IsInsideOut(const TopoDS_Shape& theResult)
+{
+  if (theResult.IsNull() || !TopExp_Explorer(theResult, TopAbs_SOLID).More())
+  {
+    return false;
+  }
+  GProp_GProps aG;
+  BRepGProp::VolumeProperties(theResult, aG);
+  return aG.Mass() < 0.;
+}
+
 //=================================================================================================
 
 //! How deep in thick solids the thread is: one makes others, of the pieces
@@ -3939,7 +3963,9 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       throw;
     }
     --theThickSolidDepth;
-    if (theMO.myDone && IsRunaway(theMO.myInitialShape, theMO.myOffsetShape, theMO.myOffset))
+    if (theMO.myDone
+        && (IsRunaway(theMO.myInitialShape, theMO.myOffsetShape, theMO.myOffset)
+            || (!aRemoved.IsEmpty() && IsInsideOut(theMO.myOffsetShape))))
     {
       theMO.myDone  = false;
       theMO.myError = BRepOffset_UnknownError;

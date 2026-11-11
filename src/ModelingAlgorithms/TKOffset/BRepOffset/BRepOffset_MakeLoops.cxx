@@ -37,6 +37,46 @@
 
 #include <cstdio>
 
+// The pieces a loop cut an edge into, added to the edge's image.
+//
+// A face that takes an edge whole leaves it as its own image. Cut by a
+// face built after -- a removed face's rim, where the stretched side of a
+// hole crosses the arc a corner's offset leaves on it -- the pieces were
+// added beside it, and the image was the edge and its two pieces: the face
+// built first took all three (BRepOffset_MakeOffset::MakeFaces), the arc
+// twice over in its wire, and the shell had a free edge (#360's plate, 5
+// inward, refused). The pieces take the place of the edge whole.
+static void AddCutImage(BRepAlgo_Image&                       theImage,
+                        const TopoDS_Edge&                    theE,
+                        const NCollection_List<TopoDS_Shape>& thePieces)
+{
+  if (!theImage.HasImage(theE))
+  {
+    theImage.Bind(theE, thePieces);
+    return;
+  }
+  const bool isWhole = thePieces.Extent() == 1 && thePieces.First().IsSame(theE);
+  if (!isWhole)
+  {
+    bool hasWhole = false;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(theImage.Image(theE)); it.More() && !hasWhole;
+         it.Next())
+    {
+      hasWhole = it.Value().IsSame(theE);
+    }
+    if (hasWhole)
+    {
+      theImage.Remove(theE);
+      if (!theImage.HasImage(theE))
+      {
+        theImage.Bind(theE, thePieces);
+        return;
+      }
+    }
+  }
+  theImage.Add(theE, thePieces);
+}
+
 BRepOffset_MakeLoops::BRepOffset_MakeLoops() = default;
 
 //=================================================================================================
@@ -130,16 +170,8 @@ void BRepOffset_MakeLoops::Build(const NCollection_List<TopoDS_Shape>& LF,
       //-----------------------
       //  E => New edges;
       //-----------------------
-      if (Image.HasImage(E))
-      {
-        Image.Add(E, LoopNE);
-        SHOW_TOPO_SHAPE(E, "CutImageAdd1", LoopNE);
-      }
-      else
-      {
-        Image.Bind(E, LoopNE);
-        SHOW_TOPO_SHAPE(E, "CutImage1", LoopNE);
-      }
+      SHOW_TOPO_SHAPE(E, "CutImage1", LoopNE);
+      AddCutImage(Image, E, LoopNE);
     }
   }
   Loops.GetVerticesForSubstitute(myVerVerMap);
@@ -467,16 +499,8 @@ void BRepOffset_MakeLoops::BuildOnContext(const NCollection_List<TopoDS_Shape>& 
       //-----------------------
       //  E => New edges;
       //-----------------------
-      if (Image.HasImage(E))
-      {
-        Image.Add(E, LoopNE);
-        SHOW_TOPO_SHAPE(E, "CutImageAdd", LoopNE);
-      }
-      else
-      {
-        Image.Bind(E, LoopNE);
-        SHOW_TOPO_SHAPE(E, "CutImage", LoopNE);
-      }
+      SHOW_TOPO_SHAPE(E, "CutImage", LoopNE);
+      AddCutImage(Image, E, LoopNE);
     }
   }
   Loops.GetVerticesForSubstitute(myVerVerMap);
@@ -778,14 +802,7 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
           //-----------------------
           //  E => New edges;
           //-----------------------
-          if (Image.HasImage(E))
-          {
-            Image.Add(E, LoopNE);
-          }
-          else
-          {
-            Image.Bind(E, LoopNE);
-          }
+          AddCutImage(Image, E, LoopNE);
         }
       }
       if (isFirstPass)
