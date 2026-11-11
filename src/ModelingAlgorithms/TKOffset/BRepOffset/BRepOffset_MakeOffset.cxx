@@ -26,6 +26,8 @@
 #include <BRep_CurveRepresentation.hxx>
 #include <BRep_RepresentationLock.hxx>
 #include <BRep_Tool.hxx>
+#include <BRepTools_History.hxx>
+#include <BRepTools_ReShape.hxx>
 #include <BRep_TVertex.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -4075,6 +4077,346 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     // refused both ways: for the reason it was refused first
     myError = anError;
   }
+  if (myDone)
+  {
+    JoinEdgePieces();
+  }
+}
+
+//=======================================================================
+// function : JoinEdgePieces
+// purpose  : The second way keeps every piece of an edge and chooses among
+//            them by the way they run. An edge that the offset of a wall
+//            crossed, where that wall's offset has passed another's and is
+//            thrown away, stays in the result in the pieces the crossing
+//            cut it in: one curve, two edges, a vertex between them that
+//            nothing else comes to. #360's plate, 4 inward, came out with
+//            642 edges and 496 vertices for the 438 and 292 the first way
+//            makes where it can (and upstream) -- the same 152 faces, the
+//            same volume -- and a sketch in the issue's file that held one
+//            of those edges, 17.5 long, found it in three.
+//            Pieces are joined where a vertex of the result has just two
+//            edges, they lie on one curve (the same curve, by its handle)
+//            and on the same pcurves in the same faces, and their ranges
+//            meet there; a run of them becomes one edge. Not at a vertex
+//            of the input, nor round a closed run, nor a seam. The faces
+//            holding them are made again with the edge whole, and the
+//            images say so: what an edge or a face of the input became is
+//            asked of them (Generated, Modified).
+//=======================================================================
+void BRepOffset_MakeOffset::JoinEdgePieces()
+{
+  if (myOffsetShape.IsNull())
+  {
+    return;
+  }
+  typedef NCollection_IndexedDataMap<TopoDS_Shape,
+                                     NCollection_List<TopoDS_Shape>,
+                                     TopTools_ShapeMapHasher>
+                                                                Ancestors;
+  typedef NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> ShapeMap;
+  Ancestors aVE, anEF;
+  TopExp::MapShapesAndAncestors(myOffsetShape, TopAbs_VERTEX, TopAbs_EDGE, aVE);
+  TopExp::MapShapesAndAncestors(myOffsetShape, TopAbs_EDGE, TopAbs_FACE, anEF);
+  ShapeMap anInputV;
+  for (TopExp_Explorer anExp(myInitialShape, TopAbs_VERTEX); anExp.More(); anExp.Next())
+  {
+    anInputV.Add(anExp.Current());
+  }
+  // The faces of an edge, each once.
+  auto aFacesOf = [&](const TopoDS_Shape& theE, NCollection_List<TopoDS_Shape>& theFaces) {
+    ShapeMap aSeen;
+    if (const NCollection_List<TopoDS_Shape>* aLF = anEF.Seek(theE))
+    {
+      for (NCollection_List<TopoDS_Shape>::Iterator it(*aLF); it.More(); it.Next())
+      {
+        if (aSeen.Add(it.Value()))
+        {
+          theFaces.Append(it.Value());
+        }
+      }
+    }
+  };
+  // Whether a pcurve is another over a range: defined there, and the same
+  // points at its ends and its middle. A piece may carry a pcurve of its
+  // own on one of its faces, a copy made when it was cut.
+  auto isSamePCurve = [](const occ::handle<Geom2d_Curve>& theOver,
+                         const occ::handle<Geom2d_Curve>& theOther,
+                         const double                     theF,
+                         const double                     theL) {
+    if (theOver->FirstParameter() > theF + Precision::PConfusion()
+        || theOver->LastParameter() < theL - Precision::PConfusion())
+    {
+      return false;
+    }
+    for (int k = 0; k <= 2; ++k)
+    {
+      const double aT = theF + (theL - theF) * k / 2.;
+      if (theOver->Value(aT).Distance(theOther->Value(aT)) > Precision::PConfusion())
+      {
+        return false;
+      }
+    }
+    return true;
+  };
+  // Whether two edges are pieces of one: one curve, the same pcurves in the
+  // same faces, none of them closed there.
+  auto isOneEdge = [&](const TopoDS_Edge& theE1, const TopoDS_Edge& theE2) {
+    if (BRep_Tool::Degenerated(theE1) || BRep_Tool::Degenerated(theE2))
+    {
+      return false;
+    }
+    TopLoc_Location               aL1, aL2;
+    double                        aF, aL;
+    const occ::handle<Geom_Curve> aC1 = BRep_Tool::Curve(theE1, aL1, aF, aL);
+    const occ::handle<Geom_Curve> aC2 = BRep_Tool::Curve(theE2, aL2, aF, aL);
+    if (aC1.IsNull() || aC1 != aC2 || aL1 != aL2)
+    {
+      return false;
+    }
+    NCollection_List<TopoDS_Shape> aF1, aF2;
+    aFacesOf(theE1, aF1);
+    aFacesOf(theE2, aF2);
+    if (aF1.IsEmpty() || aF1.Extent() != aF2.Extent())
+    {
+      return false;
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator it(aF1); it.More(); it.Next())
+    {
+      const TopoDS_Face& aFace   = TopoDS::Face(it.Value());
+      bool               isOther = false;
+      for (NCollection_List<TopoDS_Shape>::Iterator it2(aF2); it2.More() && !isOther; it2.Next())
+      {
+        isOther = it2.Value().IsSame(aFace);
+      }
+      if (!isOther || BRep_Tool::IsClosed(theE1, aFace) || BRep_Tool::IsClosed(theE2, aFace))
+      {
+        return false;
+      }
+      double                          aPF1, aPL1, aPF2, aPL2;
+      const occ::handle<Geom2d_Curve> aP1 = BRep_Tool::CurveOnSurface(theE1, aFace, aPF1, aPL1);
+      const occ::handle<Geom2d_Curve> aP2 = BRep_Tool::CurveOnSurface(theE2, aFace, aPF2, aPL2);
+      if (aP1.IsNull() || aP2.IsNull()
+          || (aP1 != aP2 && !isSamePCurve(aP1, aP2, aPF2, aPL2)
+              && !isSamePCurve(aP2, aP1, aPF1, aPL1)))
+      {
+        return false;
+      }
+    }
+    return true;
+  };
+  // The vertices pieces are joined at, and each piece's two neighbours.
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aNext, aPrev;
+  for (int i = 1; i <= aVE.Extent(); ++i)
+  {
+    const TopoDS_Shape& aV = aVE.FindKey(i);
+    if (anInputV.Contains(aV))
+    {
+      continue;
+    }
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEdges;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(aVE(i)); it.More(); it.Next())
+    {
+      anEdges.Add(it.Value());
+    }
+    if (anEdges.Extent() != 2)
+    {
+      continue;
+    }
+    TopoDS_Edge aE1 = TopoDS::Edge(anEdges(1).Oriented(TopAbs_FORWARD));
+    TopoDS_Edge aE2 = TopoDS::Edge(anEdges(2).Oriented(TopAbs_FORWARD));
+    if (!isOneEdge(aE1, aE2))
+    {
+      continue;
+    }
+    // the vertex ends one and starts the other, where their ranges meet
+    TopoDS_Vertex aV11, aV12, aV21, aV22;
+    TopExp::Vertices(aE1, aV11, aV12);
+    TopExp::Vertices(aE2, aV21, aV22);
+    if (aV11.IsSame(aV) && aV22.IsSame(aV) && !aV12.IsSame(aV) && !aV21.IsSame(aV))
+    {
+      std::swap(aE1, aE2);
+    }
+    else if (!(aV12.IsSame(aV) && aV21.IsSame(aV) && !aV11.IsSame(aV) && !aV22.IsSame(aV)))
+    {
+      continue;
+    }
+    double aF1, aL1, aF2, aL2;
+    BRep_Tool::Range(aE1, aF1, aL1);
+    BRep_Tool::Range(aE2, aF2, aL2);
+    if (std::abs(aL1 - aF2) > Precision::PConfusion() || aNext.IsBound(aE1) || aPrev.IsBound(aE2))
+    {
+      continue;
+    }
+    aNext.Bind(aE1, aE2);
+    aPrev.Bind(aE2, aE1);
+  }
+  if (aNext.IsEmpty())
+  {
+    return;
+  }
+  // The runs, each from the piece nothing comes before; a closed run has
+  // none and stays.
+  BRep_Builder                                                             aBB;
+  BRepTools_ReShape                                                        aReShape;
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aJoined;
+  NCollection_List<TopoDS_Shape>                                           aFirsts;
+  for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(aNext);
+       it.More();
+       it.Next())
+  {
+    if (!aPrev.IsBound(it.Key()))
+    {
+      aFirsts.Append(it.Key());
+    }
+  }
+  for (NCollection_List<TopoDS_Shape>::Iterator itF(aFirsts); itF.More(); itF.Next())
+  {
+    const TopoDS_Edge              aFirst = TopoDS::Edge(itF.Value());
+    NCollection_List<TopoDS_Shape> aRun;
+    TopoDS_Edge                    aLast = aFirst;
+    double                         aTol  = 0.;
+    for (TopoDS_Shape aE = aFirst;; aE = aNext(aE))
+    {
+      aRun.Append(aE);
+      aLast = TopoDS::Edge(aE);
+      aTol  = std::max(aTol, BRep_Tool::Tolerance(aLast));
+      if (!aNext.IsBound(aE))
+      {
+        break;
+      }
+    }
+    TopLoc_Location               aLoc;
+    double                        aF, aL, aDummy;
+    const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(aFirst, aLoc, aF, aDummy);
+    BRep_Tool::Range(aLast, aDummy, aL);
+    TopoDS_Vertex aV1, aV2, aSkip;
+    TopExp::Vertices(aFirst, aV1, aSkip);
+    TopExp::Vertices(aLast, aSkip, aV2);
+    // On each face, a pcurve of the run's that is defined over all of it.
+    NCollection_List<TopoDS_Shape> aFaces;
+    aFacesOf(aFirst, aFaces);
+    NCollection_List<occ::handle<Geom2d_Curve>> aPCurves;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(aFaces); it.More(); it.Next())
+    {
+      const TopoDS_Face&        aFace = TopoDS::Face(it.Value());
+      occ::handle<Geom2d_Curve> aWhole;
+      for (NCollection_List<TopoDS_Shape>::Iterator itR(aRun); itR.More() && aWhole.IsNull();
+           itR.Next())
+      {
+        double                          aPF, aPL;
+        const occ::handle<Geom2d_Curve> aPC =
+          BRep_Tool::CurveOnSurface(TopoDS::Edge(itR.Value()), aFace, aPF, aPL);
+        if (!aPC.IsNull() && aPC->FirstParameter() <= aF + Precision::PConfusion()
+            && aPC->LastParameter() >= aL - Precision::PConfusion())
+        {
+          aWhole = aPC;
+        }
+      }
+      if (aWhole.IsNull())
+      {
+        break;
+      }
+      aPCurves.Append(aWhole);
+    }
+    if (aPCurves.Extent() != aFaces.Extent())
+    {
+      continue;
+    }
+    TopoDS_Edge aNew;
+    aBB.MakeEdge(aNew, aC, aLoc, aTol);
+    NCollection_List<occ::handle<Geom2d_Curve>>::Iterator itPC(aPCurves);
+    for (NCollection_List<TopoDS_Shape>::Iterator it(aFaces); it.More(); it.Next(), itPC.Next())
+    {
+      aBB.UpdateEdge(aNew, itPC.Value(), TopoDS::Face(it.Value()), aTol);
+    }
+    aBB.Range(aNew, aF, aL);
+    aBB.Add(aNew, aV1.Oriented(TopAbs_FORWARD));
+    aBB.Add(aNew, aV2.Oriented(TopAbs_REVERSED));
+    aBB.SameRange(aNew, BRep_Tool::SameRange(aFirst));
+    aBB.SameParameter(aNew, BRep_Tool::SameParameter(aFirst));
+    for (NCollection_List<TopoDS_Shape>::Iterator it(aRun); it.More(); it.Next())
+    {
+      aJoined.Bind(it.Value(), aNew);
+      if (it.Value().IsSame(aFirst))
+      {
+        aReShape.Replace(aFirst, aNew);
+      }
+      else
+      {
+        aReShape.Remove(it.Value());
+      }
+    }
+  }
+  if (aJoined.IsEmpty())
+  {
+    return;
+  }
+  const TopoDS_Shape aNewShape = aReShape.Apply(myOffsetShape);
+  int                aNbOld = 0, aNbNew = 0;
+  for (TopExp_Explorer anExp(myOffsetShape, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    ++aNbOld;
+  }
+  for (TopExp_Explorer anExp(aNewShape, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    ++aNbNew;
+  }
+  if (aNewShape.IsNull() || aNbOld != aNbNew || !BRepCheck_Analyzer(aNewShape).IsValid())
+  {
+    SHOW_TOPO_SHAPE(aNewShape, "JoinEdgePiecesRefused");
+    return;
+  }
+
+  // The images: a face made again is its old one's image; a run's first
+  // piece that an image knows becomes the joined edge, its others go.
+  const occ::handle<BRepTools_History> aHistory = aReShape.History();
+  BRepAlgo_Image*                      anImages[3] = {&myInitOffsetFace,
+                                                      &myInitOffsetEdge,
+                                                      &myImageOffset};
+  for (BRepAlgo_Image* anImage : anImages)
+  {
+    ShapeMap aRoots;
+    for (NCollection_List<TopoDS_Shape>::Iterator it(anImage->Roots()); it.More(); it.Next())
+    {
+      aRoots.Add(it.Value());
+    }
+    for (TopExp_Explorer anExp(myOffsetShape, TopAbs_FACE); anExp.More(); anExp.Next())
+    {
+      const TopoDS_Shape& aFace = anExp.Current();
+      if (anImage->HasImage(aFace) || !(anImage->IsImage(aFace) || aRoots.Contains(aFace)))
+      {
+        continue;
+      }
+      const NCollection_List<TopoDS_Shape>& aMod = aHistory->Modified(aFace);
+      if (aMod.Extent() == 1 && !aMod.First().IsSame(aFace))
+      {
+        anImage->Bind(aFace, aMod.First().Oriented(aFace.Orientation()));
+      }
+    }
+    ShapeMap aBound;
+    for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(
+           aJoined);
+         it.More();
+         it.Next())
+    {
+      const TopoDS_Shape& aPiece = it.Key();
+      if (anImage->HasImage(aPiece) || !(anImage->IsImage(aPiece) || aRoots.Contains(aPiece)))
+      {
+        continue;
+      }
+      if (aBound.Add(it.Value()))
+      {
+        anImage->Bind(aPiece, it.Value().Oriented(aPiece.Orientation()));
+      }
+      else if (anImage->IsImage(aPiece))
+      {
+        anImage->Remove(aPiece);
+      }
+    }
+  }
+  myOffsetShape = aNewShape;
+  myResMap.Clear();
 }
 
 //=================================================================================================

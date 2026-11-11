@@ -166,6 +166,10 @@ private:
   //! the shape, a face left unbounded, is refused there.
   Standard_EXPORT void MakeThickSolidOrRunaway(const Message_ProgressRange& theRange);
 
+  //! Joins, in the result, the pieces an edge was left in where nothing
+  //! crosses it any more.
+  Standard_EXPORT void JoinEdgePieces();
+
   //! Set the faces that are to be removed
   Standard_EXPORT void SetFaces();
 
