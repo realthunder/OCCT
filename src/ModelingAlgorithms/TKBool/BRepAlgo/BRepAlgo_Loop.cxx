@@ -1736,6 +1736,118 @@ void FindAllLoops(const TopoDS_Vertex&                                          
   CurrentEdgeList.RemoveFirst();
 }
 
+// Whether FindAllLoops, started as BRepAlgo_Loop::Perform starts it on a
+// face that is not periodic -- from every vertex along every edge not
+// started along before -- would spend all its steps.
+//
+// A search that does has no answer, and what it found is thrown away; but it
+// made a wire of every loop it found on the way, and on a face with enough
+// pieces those are long and many: the removed top of #360's plate, 5 inward
+// (1040 vertices), took 122 s and 5 GB to give up, and a wall after it 23 s.
+// This walks the same paths and counts the same steps, with numbers for the
+// vertices and edges and no wire made, in a tenth of a second; the search is
+// then run only where it will end.
+//
+// It answers false where it cannot stand for the search: an edge with an end
+// that is no vertex of the network.
+static bool IsLoopSearchOutOfSteps(
+  const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+    MVE)
+{
+  const int                                                          aNbV = MVE.Extent();
+  NCollection_DataMap<TopoDS_Shape, int, TopTools_ShapeMapHasher>    anIds;
+  std::vector<int>                                                   aFirst, aLast;
+  std::vector<std::vector<int>>                                      anEdgesAt(aNbV + 1);
+  for (int i = 1; i <= aNbV; ++i)
+  {
+    for (NCollection_List<TopoDS_Shape>::Iterator it(MVE(i)); it.More(); it.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(it.Value());
+      int                anId = 0;
+      if (const int* pId = anIds.Seek(anE))
+      {
+        anId = *pId;
+      }
+      else
+      {
+        TopoDS_Vertex aV1, aV2;
+        TopExp::Vertices(anE, aV1, aV2);
+        const int aI1 = aV1.IsNull() ? 0 : MVE.FindIndex(aV1);
+        const int aI2 = aV2.IsNull() ? 0 : MVE.FindIndex(aV2);
+        if (aI1 == 0 || aI2 == 0)
+        {
+          return false;
+        }
+        anId = static_cast<int>(aFirst.size());
+        anIds.Bind(anE, anId);
+        aFirst.push_back(aI1);
+        aLast.push_back(aI2);
+      }
+      anEdgesAt[i].push_back(anId);
+    }
+  }
+  // The edge each vertex of the path was left along, as CurrentVEMap has
+  // it: a vertex met again keeps its first edge, and loses it when the
+  // later visit ends.
+  std::vector<int> aLeftAlong(aNbV + 1, -1);
+  long             aSteps = THE_LOOP_SEARCH_STEPS;
+  // Not recursive in name only: a lambda that calls itself.
+  struct Walker
+  {
+    const std::vector<int>&              myFirst;
+    const std::vector<int>&              myLast;
+    const std::vector<std::vector<int>>& myEdgesAt;
+    std::vector<int>&                    myLeftAlong;
+    long&                                mySteps;
+
+    void Walk(const int theV, const int theE)
+    {
+      if (--mySteps < 0)
+      {
+        return;
+      }
+      if (myLeftAlong[theV] < 0)
+      {
+        myLeftAlong[theV] = theE;
+      }
+      const int aNext = theV == myFirst[theE] ? myLast[theE] : myFirst[theE];
+      const int aBack = myLeftAlong[aNext];
+      if (!(aBack >= 0 && (aBack != theE || myFirst[theE] == myLast[theE])))
+      {
+        // (by index: the list at aNext is not touched by the walk)
+        for (size_t k = 0; k < myEdgesAt[aNext].size() && mySteps >= 0; ++k)
+        {
+          const int anE = myEdgesAt[aNext][k];
+          if (anE != theE && anE != aBack)
+          {
+            Walk(aNext, anE);
+          }
+        }
+      }
+      myLeftAlong[theV] = -1;
+    }
+  };
+  Walker            aWalker{aFirst, aLast, anEdgesAt, aLeftAlong, aSteps};
+  std::vector<bool> isStarted(aFirst.size(), false);
+  for (int i = 1; i <= aNbV; ++i)
+  {
+    for (const int anE : anEdgesAt[i])
+    {
+      if (isStarted[anE])
+      {
+        continue;
+      }
+      isStarted[anE] = true;
+      aWalker.Walk(i, anE);
+      if (aSteps < 0)
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 void SplitWires(NCollection_List<TopoDS_Shape>& OutputWires,
                 MapOfWire&                      InputWires,
                 NCollection_IndexedDataMap<TopoDS_Shape,
@@ -3559,6 +3671,14 @@ void BRepAlgo_Loop::FindLoop()
 
   theLoopSearchSteps = THE_LOOP_SEARCH_STEPS;
   bool isGivenUp     = false;
+  if (!isWalked && !IsPeriodic && IsLoopSearchOutOfSteps(MVE))
+  {
+    // Out of steps before it has begun: the same as below, without the
+    // wires of the loops it would find on the way.
+    SHOW_TOPO_SHAPE(myFace, "LoopSearchGivenUp");
+    NewWires.Clear();
+    isGivenUp = true;
+  }
   for (int ii = 1; ii <= MVE.Extent() && !isWalked && !isGivenUp; ++ii)
   {
     const TopoDS_Vertex& VF = TopoDS::Vertex(MVE.FindKey(ii));
