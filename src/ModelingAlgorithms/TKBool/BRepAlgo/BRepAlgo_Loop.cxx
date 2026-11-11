@@ -2367,8 +2367,21 @@ static bool FindLoopsByAngle(
 // whose two pcurves lie the other way round for that has them exchanged, and
 // one that two loops want both ways is no seam of this face: false, and
 // nothing found.
-// The wires of a planar face by the way its edges run
-// (BRepAlgo_LoopByOrientation).
+
+// The surfaces whose faces are read by regions (FindRegionWires): a plane,
+// and a cylinder -- the rounded corner between two walls is one, and left to
+// the search it kept, of the edge it shares with a wall, the piece below the
+// floor: the wall, given that piece for its own, had no outline left (four
+// holes in a square, the walls between them thinner than twice the
+// thickness both ways: refused).
+static bool IsRegionSurface(const TopoDS_Face& theFace)
+{
+  const GeomAbs_SurfaceType aType = BRepAdaptor_Surface(theFace, false).GetType();
+  return aType == GeomAbs_Plane || aType == GeomAbs_Cylinder;
+}
+
+// The wires of a face by the way its edges run (BRepAlgo_LoopByOrientation),
+// on the surfaces of IsRegionSurface.
 //
 // The loop keeps every piece of its edges and picks the face's wires out of
 // the regions the pieces bound by what the regions share, the edges'
@@ -2478,20 +2491,34 @@ static bool FindRegionWires(
     }
     auto isInside = [&](const gp_Pnt2d& theP) { return isInPolygon(aPoly, theP); };
     bool isFound = false;
-    for (size_t k = 0; k < aPoly.size() && !isFound; ++k)
+    // Off the middle of an edge as the edge runs there, not off the chord
+    // of the polygon: between a chord and its arc lies a sliver of what is
+    // on the arc's other side (#360's plate 2 inward: the rim, sampled a
+    // hundredth off a chord of the opening's rounded corner, was read as
+    // the opening, and the face left to the search).
+    for (size_t n = 0; n < aCells[c].size() && !isFound; ++n)
     {
-      const gp_Pnt2d& aP = aPoly[k];
-      const gp_Pnt2d& aQ = aPoly[(k + 1) % aPoly.size()];
-      const gp_Vec2d  aD(aP, aQ);
-      if (aD.Magnitude() <= Precision::PConfusion())
+      const int                       x = aCells[c][n];
+      double                          aF, aL;
+      const occ::handle<Geom2d_Curve> aC2d =
+        BRep_Tool::CurveOnSurface(TopoDS::Edge(anEdges(x / 2)), theFace, aF, aL);
+      gp_Pnt2d aMid;
+      gp_Vec2d aD;
+      aC2d->D1(0.5 * (aF + aL), aMid, aD);
+      const double aLen = aPoly[8 * n + 4].Distance(aPoly[8 * n + 5]);
+      if (aD.Magnitude() <= Precision::PConfusion() || aLen <= Precision::PConfusion())
       {
         continue;
+      }
+      aD.Normalize();
+      if (x & 1)
+      {
+        aD.Reverse();
       }
       // counter-clockwise round the region: its inside is on the left
       for (double aStep = 1.e-2; aStep > 1.e-7 && !isFound; aStep *= 0.1)
       {
-        const gp_Pnt2d aTry(0.5 * (aP.X() + aQ.X()) - aStep * aD.Y(),
-                            0.5 * (aP.Y() + aQ.Y()) + aStep * aD.X());
+        const gp_Pnt2d aTry(aMid.X() - aStep * aLen * aD.Y(), aMid.Y() + aStep * aLen * aD.X());
         if (isInside(aTry))
         {
           isWithin[c] = aClassifier.Perform(aTry) == TopAbs_IN;
@@ -3156,8 +3183,7 @@ void BRepAlgo_Loop::FindLoop()
       bool         IsOwn;
     };
     std::vector<ExtPiece> aPieces;
-    const bool isOnPlane = _ByOrientation > 0
-                           && BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Plane;
+    const bool isOnPlane = _ByOrientation > 0 && IsRegionSurface(myFace);
     for (int iC = 1; iC <= aCutEdges.Extent() && isOnPlane; ++iC)
     {
       const TopoDS_Shape&                   aCutKey = aCutEdges.FindKey(iC);
@@ -3368,11 +3394,11 @@ void BRepAlgo_Loop::FindLoop()
   }
   DejaVu.Clear();
 
-  // Asked to (BRepAlgo_LoopByOrientation), on a plane: the wires by the way
-  // the edges run, and neither the walk nor the search.
+  // Asked to (BRepAlgo_LoopByOrientation), on a plane or a cylinder taken
+  // less than a turn round: the wires by the way the edges run, and neither
+  // the walk nor the search.
   bool isByRegion = false;
-  if (_ByOrientation > 0 && !IsPeriodic
-      && BRepAdaptor_Surface(myFace, false).GetType() == GeomAbs_Plane)
+  if (_ByOrientation > 0 && !IsPeriodic && IsRegionSurface(myFace))
   {
     NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aNoSide = aStretched;
     for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itO(anOutsideEdges);
