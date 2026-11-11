@@ -25,6 +25,7 @@
 #include <BRepAlgo_FaceRestrictor.hxx>
 #include <BRepAlgo_Loop.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <GeomAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
@@ -35,7 +36,9 @@
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <IntTools_FClass2d.hxx>
 #include <BRepTools.hxx>
+#include <BndLib.hxx>
 #include <BndLib_Add2dCurve.hxx>
+#include <Bnd_Box.hxx>
 #include <Bnd_Box2d.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom2d_Line.hxx>
@@ -895,6 +898,42 @@ static void PutPieceBeyondPole(const TopoDS_Face& theF, const TopoDS_Edge& theE)
 
 //=================================================================================================
 
+// The box of a piece of a line or of a circle, exact; false for any other
+// curve, whose box by its poles or by samples is not one to rule a point
+// out by.
+static bool AddAnalyticBox(const Adaptor3d_Curve& theC,
+                           const double           theF,
+                           const double           theL,
+                           Bnd_Box&               theBox)
+{
+  if (Precision::IsInfinite(theF) || Precision::IsInfinite(theL))
+  {
+    return false;
+  }
+  if (theC.GetType() == GeomAbs_Line)
+  {
+    theBox.Add(theC.Value(theF));
+    theBox.Add(theC.Value(theL));
+    return true;
+  }
+  if (theC.GetType() == GeomAbs_Circle)
+  {
+    BndLib::Add(theC.Circle(), std::min(theF, theL), std::max(theF, theL), 0., theBox);
+    return true;
+  }
+  return false;
+}
+
+// Whether a point is farther than a distance from a box.
+static bool IsClearOfBox(const gp_Pnt& theP, const Bnd_Box& theBox, const double theDist)
+{
+  double aX1, aY1, aZ1, aX2, aY2, aZ2;
+  theBox.Get(aX1, aY1, aZ1, aX2, aY2, aZ2);
+  const double aD = theDist + Precision::Confusion();
+  return theP.X() < aX1 - aD || theP.X() > aX2 + aD || theP.Y() < aY1 - aD || theP.Y() > aY2 + aD
+         || theP.Z() < aZ1 - aD || theP.Z() > aZ2 + aD;
+}
+
 //=================================================================================================
 
 void BRepAlgo_Loop::Perform()
@@ -1025,10 +1064,32 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
         }
       }
       const double aTolX = std::max(myTolConf, Precision::Confusion());
+      // Every edge against every other: on a face with hundreds of edges
+      // -- a plate's removed top with thirty holes -- that is tens of
+      // thousands of extrema, nearly all between edges nowhere near each
+      // other. Lines and arcs have exact boxes, their vertices in them; two
+      // whose boxes are farther apart than the tolerance are farther apart
+      // than it, and are not measured.
+      std::vector<Bnd_Box> aBoxes(aPlain.size());
+      std::vector<bool>    hasBox(aPlain.size(), false);
+      for (size_t i = 0; i < aPlain.size(); ++i)
+      {
+        const BRepAdaptor_Curve aBAC(aPlain[i]);
+        hasBox[i] = AddAnalyticBox(aBAC, aBAC.FirstParameter(), aBAC.LastParameter(), aBoxes[i]);
+        for (TopoDS_Iterator aVIt(aPlain[i]); aVIt.More() && hasBox[i]; aVIt.Next())
+        {
+          aBoxes[i].Add(BRep_Tool::Pnt(TopoDS::Vertex(aVIt.Value())));
+        }
+      }
       for (size_t i = 0; i < aPlain.size(); ++i)
       {
         for (size_t j = i + 1; j < aPlain.size(); ++j)
         {
+          if (hasBox[i] && hasBox[j]
+              && aBoxes[i].Distance(aBoxes[j]) > aTolX + Precision::Confusion())
+          {
+            continue;
+          }
           BRepExtrema_DistShapeShape aDist(aPlain[i], aPlain[j]);
           if (!aDist.IsDone() || aDist.Value() > aTolX)
           {
@@ -1181,6 +1242,16 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
       double                        aF, aL;
       const occ::handle<Geom_Curve> C = BRep_Tool::Curve(anEdge, aF, aL);
       TopExp::Vertices(anEdge, V1, V2);
+      // The edge's box, where it is a line or an arc: a vertex farther from
+      // it than its tolerance is on no point of the edge, and is not
+      // projected (as many projections as the face has edges times vertices).
+      Bnd_Box aCurveBox;
+      bool    hasCurveBox = false;
+      if (!C.IsNull())
+      {
+        const GeomAdaptor_Curve aGAC(C);
+        hasCurveBox = AddAnalyticBox(aGAC, aF, aL, aCurveBox);
+      }
 
       for (TopoDS_Iterator It(anEdge); It.More(); It.Next())
       {
@@ -1297,6 +1368,10 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
             continue;
           }
           SHOW_TOPO_SHAPE(aVertex, "CheckInterV");
+          if (hasCurveBox && IsClearOfBox(OP, aCurveBox, Tol))
+          {
+            continue;
+          }
           GeomAPI_ProjectPointOnCurve Proj(BRep_Tool::Pnt(aVertex), C);
           if (Proj.NbPoints() > 0)
           {
