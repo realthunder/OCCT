@@ -32,6 +32,8 @@
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_ErrorHandler.hxx>
+#include <BRepLib.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <BRepLib_MakeWire.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <IntTools_FClass2d.hxx>
@@ -4654,6 +4656,312 @@ const NCollection_List<TopoDS_Shape>& BRepAlgo_Loop::NewFaces() const
 
 //=================================================================================================
 
+//=======================================================================
+// function : SplitRingAtOwnClosedEdge
+// purpose  : A ring round the face -- the rim of a removed face offset
+//            outward: the new edges outside, the face's own outline the
+//            hole -- one of whose own edges is closed on the surface and
+//            no seam of the face: an edge lying on the seam, with both of
+//            a seam's pcurves, as a cut by a half-buried cylinder leaves
+//            its groove's wall (#363's Cut, made again). The face uses the
+//            edge one way round, with the pcurve it reaches; the hole
+//            needs it the other way round, which is the other pcurve, a
+//            period away from every other edge of the ring. No face on
+//            this surface holds such a ring: it was taken for one running
+//            round the period and dropped, and the offset kept the removed
+//            face's surface whole.
+//            The seam's line crosses the ring beyond each end of the
+//            edge. Where it meets the outer wire at vertices, the ring is
+//            cut there in two faces, by two new edges on the line with a
+//            seam's two pcurves: the part on the face's side, the hole's
+//            other edges in it, and the part beyond the line, moved a
+//            period on, where the edge's other pcurve is. The outer
+//            edges moved are not the face's own.
+//=======================================================================
+static bool SplitRingAtOwnClosedEdge(const TopoDS_Face&                    theOwnFace,
+                                     const NCollection_List<TopoDS_Shape>& theWires,
+                                     NCollection_List<TopoDS_Shape>&       theNewFaces)
+{
+  // The face forward, as the ring is given: an edge's orientation then
+  // says which of its two pcurves is meant, whichever way the face is
+  // oriented in its shell.
+  const TopoDS_Face               theFace = TopoDS::Face(theOwnFace.Oriented(TopAbs_FORWARD));
+  TopLoc_Location                 aLoc;
+  const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(theFace, aLoc);
+  if (aSurf.IsNull())
+  {
+    return false;
+  }
+  // The ring's two wires, as the forward face has them, and the one edge
+  // of them closed on the face.
+  const NCollection_List<TopoDS_Shape>& aWires = theWires;
+  if (aWires.Extent() != 2)
+  {
+    return false;
+  }
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anOwn;
+  for (TopExp_Explorer anExp(theFace, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    anOwn.Add(anExp.Current());
+  }
+  TopoDS_Edge aE0;
+  TopoDS_Wire aHole, anOuter;
+  for (NCollection_List<TopoDS_Shape>::Iterator itW(aWires); itW.More(); itW.Next())
+  {
+    for (TopoDS_Iterator itE(itW.Value()); itE.More(); itE.Next())
+    {
+      const TopoDS_Edge& aE = TopoDS::Edge(itE.Value());
+      if (!BRep_Tool::IsClosed(aE, theFace) || IsSeamOfFace(aE, theFace))
+      {
+        continue;
+      }
+      if (!aE0.IsNull())
+      {
+        return false;
+      }
+      aE0   = aE;
+      aHole = TopoDS::Wire(itW.Value());
+    }
+  }
+  if (aE0.IsNull())
+  {
+    return false;
+  }
+  anOuter = TopoDS::Wire(aWires.First().IsSame(aHole) ? aWires.Last() : aWires.First());
+  const int aReached = ReachedPCurve(aE0, theFace);
+  if (aReached == 0)
+  {
+    return false;
+  }
+  // The edge as the face uses it, and its pcurve there: a line, the seam's.
+  const TopAbs_Orientation anOriInFace = aReached == 1 ? TopAbs_FORWARD : TopAbs_REVERSED;
+  if (aE0.Orientation() == anOriInFace)
+  {
+    return false;
+  }
+  double                          aF, aL;
+  const occ::handle<Geom2d_Curve> aCR =
+    BRep_Tool::CurveOnSurface(TopoDS::Edge(aE0.Oriented(anOriInFace)), theFace, aF, aL);
+  const occ::handle<Geom2d_Curve> aCU =
+    BRep_Tool::CurveOnSurface(TopoDS::Edge(aE0.Oriented(TopAbs::Reverse(anOriInFace))),
+                              theFace,
+                              aF,
+                              aL);
+  if (aCR.IsNull() || aCU.IsNull() || !aCR->IsKind(STANDARD_TYPE(Geom2d_Line))
+      || !aCU->IsKind(STANDARD_TYPE(Geom2d_Line)))
+  {
+    return false;
+  }
+  const bool     isFwd = anOriInFace == TopAbs_FORWARD;
+  const gp_Pnt2d aPS   = aCR->Value(isFwd ? aF : aL), aPE = aCR->Value(isFwd ? aL : aF);
+  const gp_Vec2d aShift(aCR->Value(aF), aCU->Value(aF));
+  const double   aLen = aPS.Distance(aPE);
+  if (aLen <= Precision::PConfusion() || aShift.Magnitude() <= Precision::PConfusion())
+  {
+    return false;
+  }
+  const gp_Dir2d aDir(gp_Vec2d(aPS, aPE));
+  TopoDS_Vertex  aVS, aVE;
+  TopExp::Vertices(TopoDS::Edge(aE0.Oriented(anOriInFace)), aVS, aVE, true);
+  if (aVS.IsNull() || aVE.IsNull() || aVS.IsSame(aVE))
+  {
+    return false;
+  }
+
+  // The outer wire in its order; the vertices of it on the seam's line,
+  // the nearest before the edge's start and the nearest past its end.
+  struct Step
+  {
+    TopoDS_Edge   myE;
+    TopoDS_Vertex myV; // where the step starts
+    gp_Pnt2d      myP; // its place in (u, v)
+    gp_Pnt2d      myMid;
+  };
+  std::vector<Step>   aSteps;
+  BRepAdaptor_Surface aBAS(theFace, false);
+  for (BRepTools_WireExplorer anExp(anOuter); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Edge& aE = anExp.Current();
+    if (BRep_Tool::IsClosed(aE, theFace) || anOwn.Contains(aE))
+    {
+      return false;
+    }
+    double                          aEF, aEL;
+    const occ::handle<Geom2d_Curve> aC = BRep_Tool::CurveOnSurface(aE, theFace, aEF, aEL);
+    if (aC.IsNull())
+    {
+      return false;
+    }
+    const bool isEFwd = aE.Orientation() == TopAbs_FORWARD;
+    aSteps.push_back(
+      {aE, anExp.CurrentVertex(), aC->Value(isEFwd ? aEF : aEL), aC->Value((aEF + aEL) / 2.)});
+  }
+  const int aNb = int(aSteps.size());
+  if (aNb < 4)
+  {
+    return false;
+  }
+  int    aBefore = -1, anAfter = -1;
+  double aTBefore = 0., aTAfter = 0.;
+  for (int i = 0; i < aNb; ++i)
+  {
+    const double   aTolV = 10. * BRep_Tool::Tolerance(aSteps[i].myV);
+    const double   aTol2d =
+      std::max(Precision::PConfusion(), std::max(aBAS.UResolution(aTolV), aBAS.VResolution(aTolV)));
+    const gp_Vec2d aVec(aPS, aSteps[i].myP);
+    if (std::abs(aVec.Crossed(gp_Vec2d(aDir))) > aTol2d)
+    {
+      continue;
+    }
+    const double aT = aVec.Dot(gp_Vec2d(aDir));
+    if (aT < -aTol2d && (aBefore < 0 || aT > aTBefore))
+    {
+      aBefore  = i;
+      aTBefore = aT;
+    }
+    else if (aT > aLen + aTol2d && (anAfter < 0 || aT < aTAfter))
+    {
+      anAfter = i;
+      aTAfter = aT;
+    }
+  }
+  if (aBefore < 0 || anAfter < 0)
+  {
+    return false;
+  }
+  // The two chains between them. The face's side is on the left of the
+  // edge as the face runs it; the chain on its right is the far one, and
+  // the ring with the face on its left runs it from "before" to "after".
+  std::vector<int> aFar, aNear;
+  bool             isFarFromBefore = false;
+  {
+    std::vector<int> aChain[2]; // from "before" to "after", from "after" to "before"
+    for (int i = aBefore; i != anAfter; i = (i + 1) % aNb)
+    {
+      aChain[0].push_back(i);
+    }
+    for (int i = anAfter; i != aBefore; i = (i + 1) % aNb)
+    {
+      aChain[1].push_back(i);
+    }
+    double aSide[2] = {0., 0.};
+    for (int k = 0; k < 2; ++k)
+    {
+      for (int i : aChain[k])
+      {
+        aSide[k] += gp_Vec2d(aDir).Crossed(gp_Vec2d(aPS, aSteps[i].myMid));
+      }
+    }
+    if (aSide[0] * aSide[1] >= 0.)
+    {
+      return false;
+    }
+    isFarFromBefore = aSide[0] < 0.;
+    aFar            = aChain[isFarFromBefore ? 0 : 1];
+    aNear           = aChain[isFarFromBefore ? 1 : 0];
+  }
+  // The outer wire runs the other way round where its far chain goes from
+  // "after" to "before": every edge of it is then taken reversed.
+  const bool isOuterRev = !isFarFromBefore;
+
+  // The two edges on the line: forward along the face's run of the edge,
+  // the face's side's pcurve first.
+  BRep_Builder aBB;
+  const double aTolE = BRep_Tool::Tolerance(aE0);
+  auto         aMakeOnLine = [&](const TopoDS_Vertex& theV1,
+                         const double         theT1,
+                         const TopoDS_Vertex& theV2,
+                         const double         theT2,
+                         TopoDS_Edge&         theE) {
+    occ::handle<Geom2d_Line> aL1 = new Geom2d_Line(aPS, aDir);
+    occ::handle<Geom2d_Line> aL2 = new Geom2d_Line(aPS.Translated(aShift), aDir);
+    aBB.MakeEdge(theE);
+    aBB.UpdateEdge(theE, aL1, aL2, aSurf, aLoc, aTolE);
+    aBB.Range(theE, theT1, theT2);
+    aBB.Add(theE, theV1.Oriented(TopAbs_FORWARD));
+    aBB.Add(theE, theV2.Oriented(TopAbs_REVERSED));
+    if (!BRepLib::BuildCurve3d(theE, aTolE))
+    {
+      return false;
+    }
+    // each end is the vertex it is given
+    BRepAdaptor_Curve aBC(theE);
+    return aBC.Value(theT1).Distance(BRep_Tool::Pnt(theV1))
+             <= std::max(aTolE, BRep_Tool::Tolerance(theV1)) + Precision::Confusion()
+           && aBC.Value(theT2).Distance(BRep_Tool::Pnt(theV2))
+                <= std::max(aTolE, BRep_Tool::Tolerance(theV2)) + Precision::Confusion();
+  };
+  TopoDS_Edge aEB, aEA;
+  if (!aMakeOnLine(aSteps[aBefore].myV, aTBefore, aVS, 0., aEB)
+      || !aMakeOnLine(aVE, aLen, aSteps[anAfter].myV, aTAfter, aEA))
+  {
+    return false;
+  }
+
+  // The far chain's pcurves a period on, kept to be put back.
+  std::vector<std::pair<TopoDS_Edge, occ::handle<Geom2d_Curve>>> aMoved;
+  auto aPutBack = [&]() {
+    for (const auto& aM : aMoved)
+    {
+      aBB.UpdateEdge(aM.first, aM.second, aSurf, aLoc, BRep_Tool::Tolerance(aM.first));
+    }
+  };
+  for (int i : aFar)
+  {
+    double                          aEF, aEL;
+    const occ::handle<Geom2d_Curve> aC =
+      BRep_Tool::CurveOnSurface(aSteps[i].myE, theFace, aEF, aEL);
+    aMoved.push_back({aSteps[i].myE, aC});
+    occ::handle<Geom2d_Curve> aNC = occ::down_cast<Geom2d_Curve>(aC->Translated(aShift));
+    aBB.UpdateEdge(aSteps[i].myE, aNC, aSurf, aLoc, BRep_Tool::Tolerance(aSteps[i].myE));
+  }
+
+  // The near face: the near chain, the hole's other edges, the two new
+  // edges forward. The far one: the far chain, the edge, the two reversed.
+  TopoDS_Wire aWN, aWF;
+  aBB.MakeWire(aWN);
+  aBB.MakeWire(aWF);
+  for (int i : aNear)
+  {
+    aBB.Add(aWN, isOuterRev ? aSteps[i].myE.Reversed() : aSteps[i].myE);
+  }
+  for (TopoDS_Iterator itE(aHole); itE.More(); itE.Next())
+  {
+    if (!itE.Value().IsSame(aE0))
+    {
+      aBB.Add(aWN, itE.Value());
+    }
+  }
+  aBB.Add(aWN, aEB);
+  aBB.Add(aWN, aEA);
+  for (int i : aFar)
+  {
+    aBB.Add(aWF, isOuterRev ? aSteps[i].myE.Reversed() : aSteps[i].myE);
+  }
+  aBB.Add(aWF, aE0);
+  aBB.Add(aWF, aEB.Reversed());
+  aBB.Add(aWF, aEA.Reversed());
+  aWN.Closed(true);
+  aWF.Closed(true);
+  TopoDS_Face aFN, aFF;
+  aBB.MakeFace(aFN, aSurf, aLoc, BRep_Tool::Tolerance(theFace));
+  aBB.MakeFace(aFF, aSurf, aLoc, BRep_Tool::Tolerance(theFace));
+  aBB.Add(aFN, aWN);
+  aBB.Add(aFF, aWF);
+  if (!BRepCheck_Analyzer(aFN).IsValid() || !BRepCheck_Analyzer(aFF).IsValid())
+  {
+    SHOW_TOPO_SHAPE(aFN, "RingSplitInvalidNear");
+    SHOW_TOPO_SHAPE(aFF, "RingSplitInvalidFar");
+    aPutBack();
+    return false;
+  }
+  theNewFaces.Append(aFN);
+  theNewFaces.Append(aFF);
+  return true;
+}
+
+//=================================================================================================
+
 void BRepAlgo_Loop::WiresToFaces()
 {
   if (!myNewWires.IsEmpty())
@@ -4671,10 +4979,30 @@ void BRepAlgo_Loop::WiresToFaces()
     // and the face came out as the quarter its wire leaves free.
     const bool isReversedFace = myFace.Orientation() == TopAbs_REVERSED;
     NCollection_List<TopoDS_Shape>::Iterator it(myNewWires);
+    NCollection_List<TopoDS_Shape>           aForwardWires;
     for (; it.More(); it.Next())
     {
       TopoDS_Wire aW = TopoDS::Wire(isReversedFace ? it.Value().Reversed() : it.Value());
-      FR.Add(aW);
+      aForwardWires.Append(aW);
+    }
+    // A ring no one face holds is made in two, before the restrictor, which
+    // takes its two wires for one face running round the period or for
+    // two faces, the hole's the one running round.
+    {
+      NCollection_List<TopoDS_Shape> aParts;
+      if (SplitRingAtOwnClosedEdge(myFace, aForwardWires, aParts))
+      {
+        for (NCollection_List<TopoDS_Shape>::Iterator itP(aParts); itP.More(); itP.Next())
+        {
+          SHOW_TOPO_SHAPE(itP.Value(), "NewFaceOfRing");
+          myNewFaces.Append(itP.Value().Oriented(myFace.Orientation()));
+        }
+        return;
+      }
+    }
+    for (it.Initialize(aForwardWires); it.More(); it.Next())
+    {
+      FR.Add(TopoDS::Wire(it.Value()));
     }
 
     FR.Perform();
@@ -4727,6 +5055,24 @@ void BRepAlgo_Loop::WiresToFaces()
         if (goesRound(FR.Current()))
         {
           SHOW_TOPO_SHAPE(FR.Current(), "NewFaceRound");
+          // The ring again, its wires as the restrictor turned them: it
+          // sets right a hole that came the same way round as its outline.
+          NCollection_List<TopoDS_Shape> aRingWires, aParts;
+          for (TopoDS_Iterator itW(FR.Current()); itW.More(); itW.Next())
+          {
+            if (itW.Value().ShapeType() == TopAbs_WIRE)
+            {
+              aRingWires.Append(itW.Value());
+            }
+          }
+          if (SplitRingAtOwnClosedEdge(myFace, aRingWires, aParts))
+          {
+            for (NCollection_List<TopoDS_Shape>::Iterator itP(aParts); itP.More(); itP.Next())
+            {
+              SHOW_TOPO_SHAPE(itP.Value(), "NewFaceOfRing");
+              myNewFaces.Append(itP.Value().Oriented(OriF));
+            }
+          }
           continue;
         }
         SHOW_TOPO_SHAPE(FR.Current(), "NewFace");
