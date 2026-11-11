@@ -670,10 +670,17 @@ void ProjLib_ProjectedCurve::Perform(const occ::handle<Adaptor3d_Curve>& C)
       // met; the best is kept (the error falls in steps: 30 segments gave what
       // 16 did, 40 a quarter of it). A result within the tolerance, or of a
       // curve of fewer spans, is left as it was.
+      // The error falls in steps, so one doubling may gain nothing and the
+      // next a great deal (8.8e-6 at 16 and at 32, 1.4e-9 at 64); two in a
+      // row that gain nothing end it. What more segments cannot follow they
+      // are not spent on: a projection with a jump in it kept its error to
+      // six digits from 16 segments to 256, at thirty times the cost of the
+      // first (#613's model, 28 s of a thickness refused in 40).
       if (myMaxSegments <= 0 && !aRes.IsNull() && myCurve->NbIntervals(GeomAbs_CN) > MaxSeg)
       {
-        double aErr = std::sqrt(aErrU * aErrU + aErrV * aErrV);
-        for (int aSeg = 2 * MaxSeg; aErr > aTol2d && aSeg <= 256; aSeg *= 2)
+        double aErr      = std::sqrt(aErrU * aErrU + aErrV * aErrV);
+        int    aNbNoGain = 0;
+        for (int aSeg = 2 * MaxSeg; aErr > aTol2d && aSeg <= 256 && aNbNoGain < 2; aSeg *= 2)
         {
           Approx_CurveOnSurface aMore(HProjector, mySurface, Udeb, Ufin, myTolerance);
           aMore.Perform(aSeg, MaxDegree, Continuity, Only3d, Only2d);
@@ -687,10 +694,15 @@ void ProjLib_ProjectedCurve::Perform(const occ::handle<Adaptor3d_Curve>& C)
           const double aErrMore  = std::sqrt(aErrMoreU * aErrMoreU + aErrMoreV * aErrMoreV);
           if (aErrMore < aErr)
           {
-            aRes  = aResMore;
-            aErrU = aErrMoreU;
-            aErrV = aErrMoreV;
-            aErr  = aErrMore;
+            aRes      = aResMore;
+            aErrU     = aErrMoreU;
+            aErrV     = aErrMoreV;
+            aErr      = aErrMore;
+            aNbNoGain = 0;
+          }
+          else
+          {
+            ++aNbNoGain;
           }
         }
       }

@@ -861,12 +861,22 @@ void ProjLib_CompProjectedCurve::Init()
           d1(Triple.X(), Triple.Y(), Triple.Z(), aD, myCurve, mySurface);
           Tol /= std::max(std::abs(aD.X()), std::abs(aD.Y()));
 
-          if (!ExactBound(Triple, t - Step, Tol, myTolU, myTolV, myCurve, mySurface))
+          // The bound is sought between this point and one a step back, and
+          // no further back than the curve's start. A point taken from the
+          // extrema, anywhere in the step before the parameter tried, can be
+          // less than a step from the start, and the search then ran on
+          // before it: a B-spline there is its end span carried on, soon far
+          // from the surface, and the part was given a start outside the
+          // curve (#613's model, an edge's curve projected on the offset of
+          // a fillet: from -0.0193 for a curve from -0.0097, 0.38 off the
+          // surface there).
+          const double aNotSol = std::max(FirstU, t - Step);
+          if (!ExactBound(Triple, aNotSol, Tol, myTolU, myTolV, myCurve, mySurface))
           {
 #ifdef OCCT_DEBUG
             std::cout << "There is a problem with ExactBound computation" << std::endl;
 #endif
-            DichExactBound(Triple, t - Step, Tol, myTolU, myTolV, myCurve, mySurface);
+            DichExactBound(Triple, aNotSol, Tol, myTolU, myTolV, myCurve, mySurface);
           }
         }
         new_part = true;
