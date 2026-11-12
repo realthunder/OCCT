@@ -47,12 +47,16 @@
 #include <BRepBndLib.hxx>
 #include <BRepLib.hxx>
 #include <BRepTools.hxx>
+#include <Geom_BSplineCurve.hxx>
 #include <Geom_Curve.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_OffsetSurface.hxx>
+#include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_Curve.hxx>
 #include <GCPnts_UniformAbscissa.hxx>
+#include <Geom2dAPI_Interpolate.hxx>
+#include <GeomAPI_Interpolate.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomAdaptor_Curve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -104,14 +108,62 @@ static bool   curveAlongEdges(
   const BOPDS_Curve&                                          theNC,
   const NCollection_IndexedMap<occ::handle<BOPDS_PaveBlock>>& theMPBOnIn,
   const NCollection_Map<occ::handle<BOPDS_PaveBlock>>&        theMPBCommon);
-static void   tangentVerticesNearCurve(const BOPDS_PDS&                     theDS,
-                                       const occ::handle<IntTools_Context>& theCtx,
-                                       const TopoDS_Face&                   theF1,
-                                       const TopoDS_Face&                   theF2,
-                                       const BOPDS_Curve&                   theNC,
-                                       const NCollection_Map<int>&          theMV,
-                                       NCollection_List<int>&               theLV,
-                                       NCollection_List<double>&            theLD);
+static bool   facesTogether(const occ::handle<IntTools_Context>& theCtx,
+                            const TopoDS_Face&                   theF1,
+                            const TopoDS_Face&                   theF2,
+                            const gp_Pnt&                        thePA,
+                            const gp_Pnt&                        thePB,
+                            const double                         theTol,
+                            NCollection_Array1<gp_Pnt>*          thePnts = nullptr,
+                            double*                              theDist = nullptr,
+                            NCollection_Array1<gp_Pnt2d>*        theUV1  = nullptr,
+                            NCollection_Array1<gp_Pnt2d>*        theUV2  = nullptr);
+static void   sharedEdges(const BOPDS_PDS&                                            theDS,
+                          const NCollection_IndexedMap<occ::handle<BOPDS_PaveBlock>>& theMPBOnIn,
+                          const NCollection_Map<occ::handle<BOPDS_PaveBlock>>&        theMPBCommon,
+                          NCollection_List<int>&                                      theLE);
+static bool   onSharedEdge(const BOPDS_PDS&                     theDS,
+                           const occ::handle<IntTools_Context>& theCtx,
+                           const TopoDS_Face&                   theF1,
+                           const TopoDS_Face&                   theF2,
+                           const gp_Pnt&                        theP,
+                           const NCollection_List<int>&         theLE,
+                           const double                         theTol,
+                           const double                         theDMax);
+static bool   lostAlongEdges(const BOPDS_PDS&                     theDS,
+                             const occ::handle<IntTools_Context>& theCtx,
+                             const TopoDS_Face&                   theF1,
+                             const TopoDS_Face&                   theF2,
+                             const BOPDS_Curve&                   theNC,
+                             const NCollection_List<int>&         theLE);
+static bool   trimEndsOnEdges(const BOPDS_PDS&                     theDS,
+                              const occ::handle<IntTools_Context>& theCtx,
+                              const TopoDS_Face&                   theF1,
+                              const TopoDS_Face&                   theF2,
+                              BOPDS_Curve&                         theNC,
+                              const NCollection_List<int>&         theLE);
+static bool   bridgeToVertex(const BOPDS_PDS&                       theDS,
+                             const occ::handle<IntTools_Context>&   theCtx,
+                             const TopoDS_Face&                     theF1,
+                             const TopoDS_Face&                     theF2,
+                             NCollection_DynamicArray<BOPDS_Curve>& theVC,
+                             const int                              theJ,
+                             const int                              theNV,
+                             const double                           theTolV,
+                             const double                           theTolFF,
+                             const NCollection_List<int>&           theLE,
+                             occ::handle<Geom_Curve>&               theBridge,
+                             occ::handle<Geom2d_Curve>              theBridge2d[2],
+                             double&                                theTolB);
+static void   tangentVerticesNearCurve(const BOPDS_PDS&                        theDS,
+                                       const occ::handle<IntTools_Context>&    theCtx,
+                                       const TopoDS_Face&                      theF1,
+                                       const TopoDS_Face&                      theF2,
+                                       const BOPDS_Curve&                      theNC,
+                                       const NCollection_Map<int>&             theMV,
+                                       const NCollection_DataMap<int, double>& theMVTol,
+                                       NCollection_List<int>&                  theLV,
+                                       NCollection_List<double>&               theLD);
 
 //=================================================================================================
 
@@ -783,6 +835,8 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
       }
     }
   }
+  // the number of curves each pair's intersection gave
+  NCollection_DataMap<int, int> aDMNbCInt;
   for (i = 0; i < aNbFF; ++i, aPS.Next())
   {
     if (UserBreak(aPS))
@@ -874,6 +928,16 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
     // the first curve. Detect such case if the distance to curve exceeds aTolR3D.
     FilterPavesOnCurves(aVC, aMVTol);
 
+    // the curves of the intersection; those made here to reach a vertex
+    // follow, and are there already when the pair is gone through again
+    const int* pNbCInt = aDMNbCInt.Seek(aCurInd);
+    const int  aNbCInt = pNbCInt ? *pNbCInt : aNbC;
+    if (!pNbCInt)
+    {
+      aDMNbCInt.Bind(aCurInd, aNbC);
+    }
+    NCollection_Map<int> aMCLost;
+
     // the vertices where an edge on a face leaves it, which a curve passes near
     if (!aMVTangent.IsEmpty())
     {
@@ -890,24 +954,82 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
           }
         }
       }
-      for (j = 0; j < aNbC && !aMVT.IsEmpty(); ++j)
+      NCollection_List<int> aLEShared;
+      if (!aMVT.IsEmpty())
+      {
+        sharedEdges(myDS, aMPBOnIn, aMPBCommon, aLEShared);
+      }
+      for (j = 0; j < aNbCInt && !aMVT.IsEmpty(); ++j)
       {
         BOPDS_Curve& aNC = aVC.ChangeValue(j);
         // not a curve along an edge the faces share already: its pieces go to
         // that edge, and a vertex grown to reach its end would stay grown
         if (curveAlongEdges(myDS, myContext, aNC, aMPBOnIn, aMPBCommon))
         {
+          // and where it ends on one of them it takes no vertex of its own
+          if (trimEndsOnEdges(myDS, myContext, aF1, aF2, aNC, aLEShared))
+          {
+            aMCLost.Add(j);
+          }
+          continue;
+        }
+        // nor one lost beside such an edge: it takes no vertex at all
+        if (lostAlongEdges(myDS, myContext, aF1, aF2, aNC, aLEShared))
+        {
+          aMCLost.Add(j);
           continue;
         }
         NCollection_List<int>    aLV;
         NCollection_List<double> aLD;
-        tangentVerticesNearCurve(myDS, myContext, aF1, aF2, aNC, aMVT, aLV, aLD);
+        tangentVerticesNearCurve(myDS, myContext, aF1, aF2, aNC, aMVT, aMVTol, aLV, aLD);
         NCollection_List<double>::Iterator aItD(aLD);
         for (NCollection_List<int>::Iterator aItV(aLV); aItV.More(); aItV.Next(), aItD.Next())
         {
-          PutPaveOnCurve(aItV.Value(), aItD.Value() * (1. + 1.e-6), aNC, aMI, aMVTol, aDMVLV);
+          const int    nV    = aItV.Value();
+          const double aTolV = aMVTol.IsBound(nV)
+                                 ? aMVTol(nV)
+                                 : BRep_Tool::Tolerance(TopoDS::Vertex(myDS->Shape(nV)));
+          // the curve cut short of where it loses its way, and a curve of
+          // its own from there to the vertex; else the vertex grown to the curve
+          occ::handle<Geom_Curve>   aBridge;
+          occ::handle<Geom2d_Curve> aBridge2d[2];
+          double                    aTolB = 0.;
+          if (bridgeToVertex(myDS,
+                             myContext,
+                             aF1,
+                             aF2,
+                             aVC,
+                             j,
+                             nV,
+                             aTolV,
+                             ToleranceFF(myContext->SurfaceAdaptor(aF1),
+                                         myContext->SurfaceAdaptor(aF2)),
+                             aLEShared,
+                             aBridge,
+                             aBridge2d,
+                             aTolB))
+          {
+            if (!aBridge.IsNull())
+            {
+              const IntTools_Curve aICB(aBridge, aBridge2d[0], aBridge2d[1], aTolB, 0.);
+              Bnd_Box aBoxB;
+              if (IntTools_Tools::CheckCurve(aICB, aBoxB))
+              {
+                BOPDS_Curve& aNB = aVC.Appended();
+                aNB.SetCurve(aICB);
+                aBoxB.Enlarge(aTolB + aTolV + myFuzzyValue);
+                aNB.SetBox(aBoxB);
+                aNB.SetTolerance(aTolB);
+                aNB.InitPaveBlock1();
+                PutPaveOnCurve(nV, aTolB, aNB, aMI, aMVTol, aDMVLV);
+              }
+            }
+            continue;
+          }
+          PutPaveOnCurve(nV, aItD.Value() * (1. + 1.e-6), aNC, aMI, aMVTol, aDMVLV);
         }
       }
+      aNbC = aVC.Length();
     }
 
     for (j = 0; j < aNbC; ++j)
@@ -917,12 +1039,12 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
       //
       PutStickPavesOnCurve(aF1, aF2, aMI, aVC, j, aMVStick, aMVTol, aDMVLV);
       // 904/F7
-      if (aNbC == 1)
+      if (aNbCInt == 1)
       {
         PutEFPavesOnCurve(aVC, j, aMI, aMVEF, aMVTol, aDMVLV);
       }
       //
-      if (aIC.HasBounds())
+      if (aIC.HasBounds() && !aMCLost.Contains(j))
       {
         aLBV.Clear();
         //
@@ -2686,6 +2808,587 @@ static bool curveAlongEdges(
   return true;
 }
 
+// Whether the two faces stay within theTol of each other from thePA to thePB:
+// points along the line between the two in the first face's parameters, each
+// against the second face. The angle between the faces at one end times the
+// distance bounds the same thing for faces that are flat between the two, and
+// overstates it where they close on each other, as towards a point where
+// they are tangent. The points start at thePA and end at thePB (what the two
+// are off the first face is shared out along the line); thePnts takes them,
+// theUV1 and theUV2 where they are on the two faces, theDist the farthest
+// any is from either face.
+static bool facesTogether(const occ::handle<IntTools_Context>& theCtx,
+                          const TopoDS_Face&                   theF1,
+                          const TopoDS_Face&                   theF2,
+                          const gp_Pnt&                        thePA,
+                          const gp_Pnt&                        thePB,
+                          const double                         theTol,
+                          NCollection_Array1<gp_Pnt>*          thePnts,
+                          double*                              theDist,
+                          NCollection_Array1<gp_Pnt2d>*        theUV1,
+                          NCollection_Array1<gp_Pnt2d>*        theUV2)
+{
+  const occ::handle<Geom_Surface> aS1 = BRep_Tool::Surface(theF1);
+  double                          aU[2], aV[2];
+  gp_Vec                          aOff[2];
+  GeomAPI_ProjectPointOnSurf&     aPS1 = theCtx->ProjPS(theF1);
+  for (int i = 0; i < 2; ++i)
+  {
+    const gp_Pnt& aP = i == 0 ? thePA : thePB;
+    aPS1.Perform(aP);
+    if (!aPS1.IsDone() || !aPS1.NbPoints() || aPS1.LowerDistance() > theTol)
+    {
+      return false;
+    }
+    aPS1.LowerDistanceParameters(aU[i], aV[i]);
+    aOff[i] = gp_Vec(aS1->Value(aU[i], aV[i]), aP);
+  }
+  if (aS1->IsUPeriodic())
+  {
+    aU[1] += aS1->UPeriod() * std::round((aU[0] - aU[1]) / aS1->UPeriod());
+  }
+  if (aS1->IsVPeriodic())
+  {
+    aV[1] += aS1->VPeriod() * std::round((aV[0] - aV[1]) / aS1->VPeriod());
+  }
+  GeomAPI_ProjectPointOnSurf& aPS2 = theCtx->ProjPS(theF2);
+  const int                   aNb  = thePnts ? thePnts->Length() - 1 : 8;
+  double                      aDM  = std::max(aOff[0].Magnitude(), aOff[1].Magnitude());
+  for (int i = 0; i <= aNb; ++i)
+  {
+    const double aW = double(i) / aNb;
+    const gp_Pnt aP =
+      aS1->Value(aU[0] + (aU[1] - aU[0]) * aW, aV[0] + (aV[1] - aV[0]) * aW)
+        .Translated(aOff[0] * (1. - aW) + aOff[1] * aW);
+    aPS2.Perform(aP);
+    if (!aPS2.IsDone() || !aPS2.NbPoints() || aPS2.LowerDistance() > theTol)
+    {
+      return false;
+    }
+    aDM = std::max(aDM, aPS2.LowerDistance());
+    if (thePnts)
+    {
+      thePnts->ChangeValue(thePnts->Lower() + i) = aP;
+    }
+    if (theUV1)
+    {
+      theUV1->ChangeValue(theUV1->Lower() + i) =
+        gp_Pnt2d(aU[0] + (aU[1] - aU[0]) * aW, aV[0] + (aV[1] - aV[0]) * aW);
+    }
+    if (theUV2)
+    {
+      double aU2, aV2;
+      aPS2.LowerDistanceParameters(aU2, aV2);
+      theUV2->ChangeValue(theUV2->Lower() + i) = gp_Pnt2d(aU2, aV2);
+    }
+  }
+  if (theDist)
+  {
+    *theDist = aDM;
+  }
+  return true;
+}
+
+//=================================================================================================
+
+// The edges already on both faces (curveAlongEdges()).
+static void sharedEdges(const BOPDS_PDS&                                            theDS,
+                        const NCollection_IndexedMap<occ::handle<BOPDS_PaveBlock>>& theMPBOnIn,
+                        const NCollection_Map<occ::handle<BOPDS_PaveBlock>>&        theMPBCommon,
+                        NCollection_List<int>&                                      theLE)
+{
+  for (int i = 1; i <= theMPBOnIn.Extent(); ++i)
+  {
+    if (theMPBOnIn(i)->HasEdge()
+        && !BRep_Tool::Degenerated(TopoDS::Edge(theDS->Shape(theMPBOnIn(i)->Edge()))))
+    {
+      theLE.Append(theMPBOnIn(i)->Edge());
+    }
+  }
+  for (NCollection_Map<occ::handle<BOPDS_PaveBlock>>::Iterator aIt(theMPBCommon); aIt.More();
+       aIt.Next())
+  {
+    if (aIt.Value()->HasEdge()
+        && !BRep_Tool::Degenerated(TopoDS::Edge(theDS->Shape(aIt.Value()->Edge()))))
+    {
+      theLE.Append(aIt.Value()->Edge());
+    }
+  }
+}
+
+//=================================================================================================
+
+// Whether the point is on an edge both faces share as far as the faces tell:
+// it is as near the edge as curveAlongEdges() asks, or the faces stay
+// together (within the edge's tolerance, or theTol) from the point to the
+// edge, which is no further than theDMax.
+static bool onSharedEdge(const BOPDS_PDS&                     theDS,
+                         const occ::handle<IntTools_Context>& theCtx,
+                         const TopoDS_Face&                   theF1,
+                         const TopoDS_Face&                   theF2,
+                         const gp_Pnt&                        theP,
+                         const NCollection_List<int>&         theLE,
+                         const double                         theTol,
+                         const double                         theDMax)
+{
+  for (NCollection_List<int>::Iterator aItE(theLE); aItE.More(); aItE.Next())
+  {
+    const TopoDS_Edge&           aE    = TopoDS::Edge(theDS->Shape(aItE.Value()));
+    GeomAPI_ProjectPointOnCurve& aProj = theCtx->ProjPC(aE);
+    aProj.Perform(theP);
+    if (aProj.NbPoints() && aProj.LowerDistance() <= theDMax
+        && (aProj.LowerDistance() <= 10. * (theTol + BRep_Tool::Tolerance(aE))
+            || facesTogether(theCtx,
+                             theF1,
+                             theF2,
+                             theP,
+                             aProj.NearestPoint(),
+                             std::max(theTol, BRep_Tool::Tolerance(aE)))))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+//=================================================================================================
+
+// Whether the section curve, nothing put on it, is lost beside the edges both
+// faces share: every point of it on one of them as far as the faces tell
+// (onSharedEdge()), none further from it than a tenth of the curve. Round a
+// point where the faces are tangent a walking line may be a stray piece
+// beside the edge that runs through the point (#617's torus: 0.31 long,
+// 0.002 off the pad's bottom edge, half a millimetre from the point); it took
+// a vertex at each end and stayed in its face as an edge going nowhere.
+static bool lostAlongEdges(const BOPDS_PDS&                     theDS,
+                           const occ::handle<IntTools_Context>& theCtx,
+                           const TopoDS_Face&                   theF1,
+                           const TopoDS_Face&                   theF2,
+                           const BOPDS_Curve&                   theNC,
+                           const NCollection_List<int>&         theLE)
+{
+  const IntTools_Curve& aIC = theNC.Curve();
+  if (!aIC.HasBounds() || theLE.IsEmpty() || !theNC.PaveBlocks().First()->ExtPaves().IsEmpty())
+  {
+    return false;
+  }
+  double aT[2];
+  gp_Pnt aP[2];
+  aIC.Bounds(aT[0], aT[1], aP[0], aP[1]);
+  const double      aTolR3D = std::max(theNC.Tolerance(), theNC.TangentialTolerance());
+  GeomAdaptor_Curve aGAC(aIC.Curve(), aT[0], aT[1]);
+  GCPnts_UniformAbscissa aUA(aGAC, 9, aT[0], aT[1]);
+  if (!aUA.IsDone() || aUA.NbPoints() < 3)
+  {
+    return false;
+  }
+  double aLen = 0.;
+  for (int k = 2; k <= aUA.NbPoints(); ++k)
+  {
+    aLen += aGAC.Value(aUA.Parameter(k)).Distance(aGAC.Value(aUA.Parameter(k - 1)));
+  }
+  for (int k = 1; k <= aUA.NbPoints(); ++k)
+  {
+    if (!onSharedEdge(theDS,
+                      theCtx,
+                      theF1,
+                      theF2,
+                      aGAC.Value(aUA.Parameter(k)),
+                      theLE,
+                      aTolR3D,
+                      0.1 * aLen))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//=================================================================================================
+
+// Ends a section curve that runs along the edges both faces share
+// (curveAlongEdges()) at the last vertex put on it, at each end that has
+// none and is itself on one of those edges as far as the faces tell
+// (onSharedEdge()). Such an end took a vertex of its own, and the piece from
+// it to the next vertex became an edge beside the one already there (#617's
+// pad: 6.79 long from 5e-4 off the tangent point, which no longer grows to
+// take it in, see bridgeToVertex()). True if nothing of the curve is left.
+static bool trimEndsOnEdges(const BOPDS_PDS&                     theDS,
+                            const occ::handle<IntTools_Context>& theCtx,
+                            const TopoDS_Face&                   theF1,
+                            const TopoDS_Face&                   theF2,
+                            BOPDS_Curve&                         theNC,
+                            const NCollection_List<int>&         theLE)
+{
+  const IntTools_Curve& aIC = theNC.Curve();
+  if (!aIC.HasBounds())
+  {
+    return false;
+  }
+  double aT[2];
+  gp_Pnt aP[2];
+  aIC.Bounds(aT[0], aT[1], aP[0], aP[1]);
+  const NCollection_List<BOPDS_Pave>& aLP     = theNC.PaveBlocks().First()->ExtPaves();
+  const double                        aTolR3D = std::max(theNC.Tolerance(), theNC.TangentialTolerance());
+  const double                        aDMax   = 0.1 * aP[0].Distance(aP[1]);
+  int                                 aEndNV[2] = {-1, -1};
+  if (!aLP.IsEmpty())
+  {
+    getBoundPaves(theDS, theNC, aEndNV);
+  }
+  double aTN[2] = {aT[0], aT[1]};
+  bool   bTrim  = false;
+  for (int k = 0; k < 2; ++k)
+  {
+    if (aEndNV[k] >= 0
+        || !onSharedEdge(theDS, theCtx, theF1, theF2, aP[k], theLE, aTolR3D, aDMax))
+    {
+      continue;
+    }
+    if (aLP.IsEmpty())
+    {
+      return true;
+    }
+    aTN[k] = k == 0 ? RealLast() : -RealLast();
+    for (NCollection_List<BOPDS_Pave>::Iterator aIt(aLP); aIt.More(); aIt.Next())
+    {
+      aTN[k] = k == 0 ? std::min(aTN[k], aIt.Value().Parameter())
+                      : std::max(aTN[k], aIt.Value().Parameter());
+    }
+    bTrim = true;
+  }
+  if (!bTrim)
+  {
+    return false;
+  }
+  if (aTN[1] - aTN[0] < Precision::PConfusion())
+  {
+    return true;
+  }
+  const occ::handle<Geom_BSplineCurve> aC3D = occ::down_cast<Geom_BSplineCurve>(aIC.Curve());
+  occ::handle<Geom2d_BSplineCurve>     aC2D[2];
+  aC2D[0] = occ::down_cast<Geom2d_BSplineCurve>(aIC.FirstCurve2d());
+  aC2D[1] = occ::down_cast<Geom2d_BSplineCurve>(aIC.SecondCurve2d());
+  if (aC3D.IsNull() || aC3D->IsPeriodic() || (aC2D[0].IsNull() && !aIC.FirstCurve2d().IsNull())
+      || (aC2D[1].IsNull() && !aIC.SecondCurve2d().IsNull()))
+  {
+    return false;
+  }
+  occ::handle<Geom_BSplineCurve> aC3 = occ::down_cast<Geom_BSplineCurve>(aC3D->Copy());
+  aC3->Segment(aTN[0], aTN[1]);
+  occ::handle<Geom2d_BSplineCurve> aC2[2];
+  for (int i = 0; i < 2; ++i)
+  {
+    if (!aC2D[i].IsNull())
+    {
+      aC2[i] = occ::down_cast<Geom2d_BSplineCurve>(aC2D[i]->Copy());
+      aC2[i]->Segment(aTN[0], aTN[1]);
+    }
+  }
+  theNC.SetCurve(IntTools_Curve(aC3, aC2[0], aC2[1], aIC.Tolerance(), aIC.TangentialTolerance()));
+  return false;
+}
+
+//=================================================================================================
+
+// A curve of its own from the section curve theVC(theJ) to the vertex theNV,
+// which tangentVerticesNearCurve() found it passing near, the section curve
+// ending where the new one starts. A walking line that comes to a point where
+// the faces are tangent has them within tolerance of each other all round it
+// and loses its way there. #617's pad on a torus, the tangent points on the
+// pad's bottom edge, which lies on the torus: one line turns 0.07 short of the
+// point, runs on beside the edge (0.005 to 0.03 off it, the nearest 0.04 from
+// the point) and stops 0.17 past it on nothing; the other comes along the edge
+// 1e-3 off it, crosses it 0.007 the wrong side of the point, hooks back over
+// it 0.12 further on and leaves on the other branch. Putting the vertex on
+// such a line where it is nearest grows the vertex to reach it (0.04 and
+// 0.0075 there), keeps the hook as an edge and the run past the point as an
+// edge going nowhere, and the faces' wires close only within those
+// tolerances: areas and volumes read off them come out by that much times
+// the size of the face. So the line is cut where it is still sound and the
+// rest is made: the points on the first face between the cut and the vertex,
+// every one within tolerance of the second (theTolV: the vertex's tolerance
+// before any curve grew it; the edge it is on is known no better), a curve
+// through them. The cut is the first point of the line, past its last sharp
+// turn within 64 times the nearest, from which that holds. One side of the line
+// from its nearest point must be lost -- nothing put on it, its end near, and
+// its points on the vertex or on an edge both faces share as far as the faces
+// tell (together from the point to there) -- or be nothing, the line ending
+// at its nearest point. Returns false to have the vertex put on the line as
+// it is; true with no curve if the line was cut for this vertex already (a
+// pair of faces gone through again).
+static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
+                           const occ::handle<IntTools_Context>&   theCtx,
+                           const TopoDS_Face&                     theF1,
+                           const TopoDS_Face&                     theF2,
+                           NCollection_DynamicArray<BOPDS_Curve>& theVC,
+                           const int                              theJ,
+                           const int                              theNV,
+                           const double                           theTolV,
+                           const double                           theTolFF,
+                           const NCollection_List<int>&           theLE,
+                           occ::handle<Geom_Curve>&               theBridge,
+                           occ::handle<Geom2d_Curve>              theBridge2d[2],
+                           double&                                theTolB)
+{
+  BOPDS_Curve&          aNC = theVC.ChangeValue(theJ);
+  const IntTools_Curve& aIC = aNC.Curve();
+  const occ::handle<Geom_BSplineCurve> aC3D = occ::down_cast<Geom_BSplineCurve>(aIC.Curve());
+  occ::handle<Geom2d_BSplineCurve>     aC2D[2];
+  aC2D[0] = occ::down_cast<Geom2d_BSplineCurve>(aIC.FirstCurve2d());
+  aC2D[1] = occ::down_cast<Geom2d_BSplineCurve>(aIC.SecondCurve2d());
+  if (!aIC.HasBounds() || aC3D.IsNull() || aC3D->IsPeriodic()
+      || (aC2D[0].IsNull() && !aIC.FirstCurve2d().IsNull())
+      || (aC2D[1].IsNull() && !aIC.SecondCurve2d().IsNull()))
+  {
+    return false;
+  }
+  double aT[2];
+  gp_Pnt aP[2];
+  aIC.Bounds(aT[0], aT[1], aP[0], aP[1]);
+  const gp_Pnt aPV     = BRep_Tool::Pnt(TopoDS::Vertex(theDS->Shape(theNV)));
+  const double aTolR3D = std::max(aNC.Tolerance(), aNC.TangentialTolerance());
+  const double aTol    = std::max(aTolR3D, theTolV);
+  const double aDMax   = 0.1 * aP[0].Distance(aP[1]);
+  // the curve's point nearest the vertex
+  double aD = aPV.Distance(aP[0]), aTV = aT[0];
+  if (aPV.Distance(aP[1]) < aD)
+  {
+    aD  = aPV.Distance(aP[1]);
+    aTV = aT[1];
+  }
+  {
+    GeomAPI_ProjectPointOnCurve aProj(aPV, aC3D, aT[0], aT[1]);
+    if (aProj.NbPoints() && aProj.LowerDistance() < aD)
+    {
+      aD  = aProj.LowerDistance();
+      aTV = aProj.LowerDistanceParameter();
+    }
+  }
+  const gp_Pnt aPC = aC3D->Value(aTV);
+  // done already?
+  for (int i = 0; i < theVC.Length(); ++i)
+  {
+    const IntTools_Curve& aICi = theVC(i).Curve();
+    double                aTi[2];
+    gp_Pnt                aPi[2];
+    if (i != theJ && aICi.HasBounds() && aICi.Bounds(aTi[0], aTi[1], aPi[0], aPi[1])
+        && ((aPi[0].Distance(aPC) <= Precision::Confusion()
+             && aPi[1].Distance(aPV) <= Precision::Confusion())
+            || (aPi[1].Distance(aPC) <= Precision::Confusion()
+                && aPi[0].Distance(aPV) <= Precision::Confusion())))
+    {
+      return true;
+    }
+  }
+  // the side that is lost, or nothing
+  const NCollection_List<BOPDS_Pave>& aLP   = aNC.PaveBlocks().First()->ExtPaves();
+  int                                 kTail = -1;
+  for (int k = 0; k < 2; ++k)
+  {
+    const double aDT   = aT[k] - aTV;
+    bool         bLost = true;
+    if (std::abs(aDT) >= Precision::PConfusion())
+    {
+      bLost = aP[k].Distance(aPV) <= aDMax;
+      for (NCollection_List<BOPDS_Pave>::Iterator aIt(aLP); aIt.More() && bLost; aIt.Next())
+      {
+        bLost = (aIt.Value().Parameter() - aTV) * aDT <= 0.;
+      }
+      for (int i = 1; i <= 8 && bLost; ++i)
+      {
+        const gp_Pnt aPi = aC3D->Value(aTV + aDT * 0.125 * i);
+        if (facesTogether(theCtx, theF1, theF2, aPi, aPV, aTol))
+        {
+          continue;
+        }
+        bLost = onSharedEdge(theDS, theCtx, theF1, theF2, aPi, theLE, aTolR3D, aDMax);
+      }
+    }
+    if (bLost)
+    {
+      if (kTail >= 0)
+      {
+        return false; // both sides: nothing of the curve to keep
+      }
+      kTail = k;
+    }
+  }
+  if (kTail < 0)
+  {
+    return false;
+  }
+  // the points of the other side, out to 64 times the nearest, none past a
+  // vertex put on the curve
+  const int    kB    = 1 - kTail;
+  double       aTEnd = aT[kB];
+  const double aSign = aTEnd > aTV ? 1. : -1.;
+  for (NCollection_List<BOPDS_Pave>::Iterator aIt(aLP); aIt.More(); aIt.Next())
+  {
+    const double aTP = aIt.Value().Parameter();
+    if ((aTP - aTV) * aSign > 0. && (aTEnd - aTP) * aSign > 0.)
+    {
+      aTEnd = aTP;
+    }
+  }
+  const double                     aDFar = std::min(64. * aD, aDMax);
+  NCollection_DynamicArray<double> aTS;
+  NCollection_DynamicArray<gp_Pnt> aPS;
+  aTS.Append(aTV);
+  aPS.Append(aPC);
+  {
+    double aTc = aTV, aDt = (aTEnd - aTV) / 4096.;
+    while (aTS.Length() < 1024 && std::abs(aDt) > 1.e-12 * std::abs(aTEnd - aTV))
+    {
+      const double aTn = aTc + aDt;
+      if ((aTEnd - aTn) * aSign <= 0.)
+      {
+        break;
+      }
+      const gp_Pnt aPn   = aC3D->Value(aTn);
+      const double aStep = aPn.Distance(aPS.Last());
+      if (aStep > 0.5 * aD)
+      {
+        aDt *= 0.5;
+        continue;
+      }
+      if (aPn.Distance(aPV) > aDFar)
+      {
+        break;
+      }
+      aTc = aTn;
+      aTS.Append(aTc);
+      aPS.Append(aPn);
+      if (aStep < 0.125 * aD)
+      {
+        aDt *= 2.;
+      }
+    }
+  }
+  // sound from its last sharp turn on (20 degrees in a step, the steps under
+  // half the nearest distance): the first point after it the faces are
+  // together from
+  int iFirst = 0;
+  for (int i = 1; i < aTS.Length() - 1; ++i)
+  {
+    const gp_Vec aV1(aPS(i - 1), aPS(i)), aV2(aPS(i), aPS(i + 1));
+    if (aV1.Magnitude() > gp::Resolution() && aV2.Magnitude() > gp::Resolution()
+        && aV1 * aV2 < 0.94 * aV1.Magnitude() * aV2.Magnitude())
+    {
+      iFirst = i + 1;
+    }
+  }
+  NCollection_Array1<gp_Pnt>   aPnts(1, 17);
+  NCollection_Array1<gp_Pnt2d> aUV1(1, 17), aUV2(1, 17);
+  double                       aTB = aTV;
+  bool                         bOK = false;
+  for (int i = iFirst; i < aTS.Length() && !bOK; ++i)
+  {
+    aTB = aTS(i);
+    bOK =
+      facesTogether(theCtx, theF1, theF2, aPS(i), aPV, aTol, &aPnts, &theTolB, &aUV1, &aUV2);
+  }
+  if (!bOK || aPnts.First().Distance(aPnts.Last()) <= aTol)
+  {
+    return false;
+  }
+  // the curve through them
+  occ::handle<NCollection_HArray1<gp_Pnt>> aHP = new NCollection_HArray1<gp_Pnt>(1, 17);
+  occ::handle<NCollection_HArray1<double>> aHT = new NCollection_HArray1<double>(1, 17);
+  const double                             aL  = aPnts.First().Distance(aPnts.Last());
+  for (int i = 1; i <= 17; ++i)
+  {
+    aHP->SetValue(i, aPnts(i));
+    aHT->SetValue(i, aL * (i - 1) / 16.);
+  }
+  GeomAPI_Interpolate anInt(aHP, aHT, false, Precision::Confusion());
+  anInt.Perform();
+  if (!anInt.IsDone())
+  {
+    return false;
+  }
+  // and where it is on the faces: the line on the first, through the points'
+  // places on the second, kept on one side of a seam
+  NCollection_Array1<gp_Pnt2d> aPoles1(1, 2);
+  NCollection_Array1<double>   aKnots1(1, 2);
+  NCollection_Array1<int>      aMults1(1, 2);
+  aPoles1(1) = aUV1.First();
+  aPoles1(2) = aUV1.Last();
+  aKnots1(1) = 0.;
+  aKnots1(2) = aL;
+  aMults1.Init(2);
+  const occ::handle<Geom_Surface>            aS2  = BRep_Tool::Surface(theF2);
+  occ::handle<NCollection_HArray1<gp_Pnt2d>> aHUV = new NCollection_HArray1<gp_Pnt2d>(1, 17);
+  for (int i = 1; i <= 17; ++i)
+  {
+    gp_Pnt2d aUV = aUV2(i);
+    if (i > 1 && aS2->IsUPeriodic())
+    {
+      aUV.SetX(aUV.X()
+               + aS2->UPeriod() * std::round((aHUV->Value(i - 1).X() - aUV.X()) / aS2->UPeriod()));
+    }
+    if (i > 1 && aS2->IsVPeriodic())
+    {
+      aUV.SetY(aUV.Y()
+               + aS2->VPeriod() * std::round((aHUV->Value(i - 1).Y() - aUV.Y()) / aS2->VPeriod()));
+    }
+    aHUV->SetValue(i, aUV);
+  }
+  Geom2dAPI_Interpolate anInt2(aHUV, aHT, false, 1.e-13);
+  anInt2.Perform();
+  if (!anInt2.IsDone())
+  {
+    return false;
+  }
+  // the section curve from the cut on
+  aT[kTail] = aTB;
+  if (aT[1] - aT[0] < Precision::PConfusion())
+  {
+    return false;
+  }
+  occ::handle<Geom_BSplineCurve> aC3 = occ::down_cast<Geom_BSplineCurve>(aC3D->Copy());
+  aC3->Segment(aT[0], aT[1]);
+  occ::handle<Geom2d_BSplineCurve> aC2[2];
+  for (int i = 0; i < 2; ++i)
+  {
+    if (!aC2D[i].IsNull())
+    {
+      aC2[i] = occ::down_cast<Geom2d_BSplineCurve>(aC2D[i]->Copy());
+      aC2[i]->Segment(aT[0], aT[1]);
+    }
+  }
+  // its tolerance may have been the lost part's: what is left, measured
+  double aTolC = aIC.Tolerance();
+  {
+    GeomAdaptor_Curve      aGAC(aC3, aT[0], aT[1]);
+    GCPnts_UniformAbscissa aUA(aGAC, 65, aT[0], aT[1]);
+    double                 aDev = aUA.IsDone() && aUA.NbPoints() > 2 ? 0. : aTolC;
+    for (int k = 1; aDev < aTolC && k <= aUA.NbPoints(); ++k)
+    {
+      const gp_Pnt aPk = aGAC.Value(aUA.Parameter(k));
+      for (const TopoDS_Face* pF : {&theF1, &theF2})
+      {
+        GeomAPI_ProjectPointOnSurf& aPS = theCtx->ProjPS(*pF);
+        aPS.Perform(aPk);
+        aDev = aPS.IsDone() && aPS.NbPoints() ? std::max(aDev, aPS.LowerDistance()) : aTolC;
+      }
+    }
+    aTolC = std::min(aTolC, std::max(2. * aDev, theTolFF));
+  }
+  if (aTolC < aIC.Tolerance() && aNC.Tolerance() <= aIC.Tolerance())
+  {
+    aNC.SetTolerance(aTolC);
+  }
+  aNC.SetCurve(IntTools_Curve(aC3, aC2[0], aC2[1], aTolC, aIC.TangentialTolerance()));
+  theBridge      = anInt.Curve();
+  theBridge2d[0] = new Geom2d_BSplineCurve(aPoles1, aKnots1, aMults1, 1);
+  theBridge2d[1] = anInt2.Curve();
+  theTolB   = std::max(theTolB, theTolFF);
+  return true;
+}
+
+//=================================================================================================
+
 // The vertices of theMV the section curve passes near where the faces are
 // tangent at them: each with the curve's point nearest to it, if the faces
 // stay within the curve's tolerance of each other from there to the vertex
@@ -2695,14 +3398,21 @@ static bool curveAlongEdges(
 // to it where the revolution turns vertical on the pad's bottom edge, which
 // lies on it (#617) -- loses its way a few 1e-3 off the point and runs on the
 // other branch or stops; the edge/face pass has put a vertex at the point.
-static void tangentVerticesNearCurve(const BOPDS_PDS&                     theDS,
-                                     const occ::handle<IntTools_Context>& theCtx,
-                                     const TopoDS_Face&                   theF1,
-                                     const TopoDS_Face&                   theF2,
-                                     const BOPDS_Curve&                   theNC,
-                                     const NCollection_Map<int>&          theMV,
-                                     NCollection_List<int>&               theLV,
-                                     NCollection_List<double>&            theLD)
+// Where the angle says too far, the faces are measured (facesTogether()),
+// against the vertex's own tolerance too (theMVTol: what it was before a
+// curve grew it): the edge it is on is known no better than that. #617's pad
+// on a torus, its profile a copy of the torus' section 6e-5 off it, has the
+// line 0.04 from the vertex with the faces 2.9e-5 apart on the way, where the
+// angle times the distance says 5.9e-5 and the line's own tolerance is 1.7e-5.
+static void tangentVerticesNearCurve(const BOPDS_PDS&                        theDS,
+                                     const occ::handle<IntTools_Context>&    theCtx,
+                                     const TopoDS_Face&                      theF1,
+                                     const TopoDS_Face&                      theF2,
+                                     const BOPDS_Curve&                      theNC,
+                                     const NCollection_Map<int>&             theMV,
+                                     const NCollection_DataMap<int, double>& theMVTol,
+                                     NCollection_List<int>&                  theLV,
+                                     NCollection_List<double>&               theLD)
 {
   const IntTools_Curve& aIC = theNC.Curve();
   if (!aIC.HasBounds())
@@ -2738,10 +3448,17 @@ static void tangentVerticesNearCurve(const BOPDS_PDS&                     theDS,
     }
     const gp_Pnt aPC = aC->Value(aTV);
     gp_Dir       aDN[2], aDNV[2];
-    if (!normalAt(theCtx, theF1, aPC, aDN[0]) || !normalAt(theCtx, theF2, aPC, aDN[1])
-        || gp_Vec(aDN[0]).Crossed(gp_Vec(aDN[1])).Magnitude() * aD > aTolR3D)
+    if (!normalAt(theCtx, theF1, aPC, aDN[0]) || !normalAt(theCtx, theF2, aPC, aDN[1]))
     {
       continue;
+    }
+    if (gp_Vec(aDN[0]).Crossed(gp_Vec(aDN[1])).Magnitude() * aD > aTolR3D)
+    {
+      const double aTolV = theMVTol.IsBound(nV) ? theMVTol(nV) : BRep_Tool::Tolerance(aV);
+      if (!facesTogether(theCtx, theF1, theF2, aPC, aPV, std::max(aTolR3D, aTolV)))
+      {
+        continue;
+      }
     }
     if (!normalAt(theCtx, theF1, aPV, aDNV[0]) || !normalAt(theCtx, theF2, aPV, aDNV[1])
         || 1. - std::abs(aDNV[0] * aDNV[1]) > 5.e-9) // the creasing criteria
