@@ -11330,6 +11330,38 @@ const NCollection_List<TopoDS_Shape>& BRepOffset_MakeOffset::Modified(const Topo
     }
   }
 
+  // A face of the shape that stays in a thick solid, made again because an
+  // edge it shares with a removed face was cut (MakeFaces), and that edge
+  // itself, in its pieces or joined again: they are the shape's own, on its
+  // own surface and curve, and the images hold what they became. Nothing
+  // was said of them -- Generated answers with a face's offset, and this
+  // with a removed face's rim alone -- so that 78 of the 116 walls of
+  // #360's plate, 4 inward, were faces of the result no element of the
+  // input answered for, and whoever names a result by its history had to
+  // name them by their neighbours.
+  const TopAbs_ShapeEnum aType = theShape.ShapeType();
+  if (myGenerated.IsEmpty() && (aType == TopAbs_FACE || aType == TopAbs_EDGE)
+      && !myFaces.Contains(theShape) && myImageOffset.HasImage(theShape))
+  {
+    if (myResMap.IsEmpty())
+    {
+      TopExp::MapShapes(myOffsetShape, myResMap);
+    }
+    if (!myResMap.Contains(theShape))
+    {
+      NCollection_List<TopoDS_Shape> aLIm;
+      myImageOffset.LastImage(theShape, aLIm);
+      for (NCollection_List<TopoDS_Shape>::Iterator it(aLIm); it.More(); it.Next())
+      {
+        if (it.Value().ShapeType() == aType && !it.Value().IsSame(theShape)
+            && myResMap.Contains(it.Value()))
+        {
+          myGenerated.Append(it.Value());
+        }
+      }
+    }
+  }
+
   return myGenerated;
 }
 

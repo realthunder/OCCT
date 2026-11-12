@@ -106,6 +106,13 @@ const NCollection_List<TopoDS_Shape>& BRepOffsetAPI_MakeThickSolid::Modified(con
       }
     }
   }
+  // A face that stays, made again, and an edge it shares with a removed
+  // face: what the offset made of them (BRepOffset_MakeOffset::Modified).
+  if (myLastUsedAlgo == OffsetAlgo_JOIN && myGenerated.IsEmpty()
+      && !myOffsetShape.ClosingFaces().Contains(F))
+  {
+    myGenerated = myOffsetShape.Modified(F);
+  }
   else if (myLastUsedAlgo == OffsetAlgo_SIMPLE)
   {
     TopoDS_Shape aModShape = mySimpleOffsetShape.Modified(F);
