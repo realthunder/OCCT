@@ -2040,7 +2040,14 @@ void SplitWires(NCollection_List<TopoDS_Shape>& OutputWires,
         // copy.
         ShapeFix_Shape aFix(BRepBuilderAPI_Copy(aNF, true).Shape());
         aFix.Perform();
-        aNF = TopoDS::Face(aFix.Shape());
+        // A loop that crosses itself comes back as several faces: not the
+        // test face mended, and not one to cast. The face stays as it was
+        // made, to classify as well as it can.
+        const TopoDS_Shape aFixed = aFix.Shape();
+        if (!aFixed.IsNull() && aFixed.ShapeType() == TopAbs_FACE)
+        {
+          aNF = TopoDS::Face(aFixed);
+        }
       }
       aNF = TopoDS::Face(aNF.Oriented(TopAbs_FORWARD));
       SHOW_TOPO_SHAPE(aNF, "MakeTestFace");

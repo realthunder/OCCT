@@ -6823,7 +6823,16 @@ void BRepOffset_MakeOffset::ToContext(
     {
       ShapeFix_Shape aFix(NF);
       aFix.Perform();
-      NF = TopoDS::Face(aFix.Shape());
+      // The fix may hand back the face in several: an extended face whose
+      // bounds cross (two corner blends' offsets meeting on it) comes back
+      // as a compound of faces. That is not this face mended; it is kept
+      // as it was, for the loops made later to sort out or to refuse,
+      // rather than thrown out of the whole offset by the cast.
+      const TopoDS_Shape aFixed = aFix.Shape();
+      if (!aFixed.IsNull() && aFixed.ShapeType() == TopAbs_FACE)
+      {
+        NF = TopoDS::Face(aFixed);
+      }
     }
 #endif
     myInitOffsetFace.Bind(S, NF);
