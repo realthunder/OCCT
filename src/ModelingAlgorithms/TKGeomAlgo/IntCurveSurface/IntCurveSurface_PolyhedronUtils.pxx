@@ -225,6 +225,64 @@ inline double ComputeBorderDeflection(GeomGridEval_Surface& theEval,
   return aDeflection;
 }
 
+//! Compute border deflection for a boundary isoline of a polyhedron built on
+//! given parameters (InitWithParams): the chords are those between consecutive
+//! parameters, whatever their steps. Measured on as many even steps instead,
+//! a border whose parameters are denser in one stretch than in another came
+//! out too small: a helical face of four C2 intervals, sampled at steps of
+//! 0.262 and 0.315 along its rim, had 0.121 for the 0.160 of its longest
+//! chords, and a line crossing the face 0.0008 inside the rim, 0.144 beyond
+//! the border triangle, was not found (realthunder/FreeCAD#474's Helix002:
+//! BRepClass3d_SolidClassifier said a point outside the solid was inside).
+//! @param[in,out] theEval      Grid evaluator (will be reused for isoline evaluation)
+//! @param[in]     theParameter Fixed parameter value (U or V depending on isUIso)
+//! @param[in]     thePars      The varying parameters of the polyhedron's grid
+//! @param[in]     theIsUIso    True if this is a U-isoline, false for V-isoline
+//! @return Maximum deflection along the border
+inline double ComputeBorderDeflection(GeomGridEval_Surface&             theEval,
+                                      const double                      theParameter,
+                                      const NCollection_Array1<double>& thePars,
+                                      const bool                        theIsUIso)
+{
+  const int aNbChords = thePars.Length() - 1;
+  if (aNbChords <= 0)
+  {
+    return 0.0;
+  }
+
+  // The parameters and the middle of each two, interleaved
+  NCollection_Array1<double> aVaryingParams(1, 2 * aNbChords + 1);
+  NCollection_Array1<double> aFixedParams(1, 1);
+  aFixedParams(1) = theParameter;
+  for (int i = 0; i <= aNbChords; ++i)
+  {
+    aVaryingParams(2 * i + 1) = thePars(thePars.Lower() + i);
+    if (i < aNbChords)
+    {
+      aVaryingParams(2 * i + 2) =
+        0.5 * (thePars(thePars.Lower() + i) + thePars(thePars.Lower() + i + 1));
+    }
+  }
+
+  const NCollection_Array2<gp_Pnt> aGrid = theIsUIso
+                                             ? theEval.EvaluateGrid(aFixedParams, aVaryingParams)
+                                             : theEval.EvaluateGrid(aVaryingParams, aFixedParams);
+
+  double aDeflection = RealFirst();
+  for (int i = 0; i < aNbChords; ++i)
+  {
+    const gp_XYZ aP1 = (theIsUIso ? aGrid(1, 2 * i + 1) : aGrid(2 * i + 1, 1)).XYZ();
+    const gp_XYZ aP2 = (theIsUIso ? aGrid(1, 2 * i + 3) : aGrid(2 * i + 3, 1)).XYZ();
+    const gp_XYZ aPParMid = (theIsUIso ? aGrid(1, 2 * i + 2) : aGrid(2 * i + 2, 1)).XYZ();
+    const double aDist    = ((aP2 + aP1) / 2.0 - aPParMid).Modulus();
+    if (aDist > aDeflection)
+    {
+      aDeflection = aDist;
+    }
+  }
+  return aDeflection;
+}
+
 //! Compute the number of triangles in the polyhedron.
 //! @param[in] theNbDeltaU Number of U subdivisions
 //! @param[in] theNbDeltaV Number of V subdivisions
@@ -741,6 +799,28 @@ inline double ComputeMaxBorderDeflection(GeomGridEval_Surface& theEval,
     maxDeflection = aDeflection;
   }
 
+  return maxDeflection;
+}
+
+//! Compute the maximum border deflection over all four boundaries of a
+//! polyhedron built on given parameters (InitWithParams).
+//! @param[in,out] theEval  Grid evaluator (will be reused for each boundary)
+//! @param[in]     theUpars U parameters of the grid
+//! @param[in]     theVpars V parameters of the grid
+//! @return Maximum border deflection
+inline double ComputeMaxBorderDeflection(GeomGridEval_Surface&             theEval,
+                                         const NCollection_Array1<double>& theUpars,
+                                         const NCollection_Array1<double>& theVpars)
+{
+  double maxDeflection = RealFirst();
+  maxDeflection =
+    std::max(maxDeflection, ComputeBorderDeflection(theEval, theUpars.First(), theVpars, true));
+  maxDeflection =
+    std::max(maxDeflection, ComputeBorderDeflection(theEval, theUpars.Last(), theVpars, true));
+  maxDeflection =
+    std::max(maxDeflection, ComputeBorderDeflection(theEval, theVpars.First(), theUpars, false));
+  maxDeflection =
+    std::max(maxDeflection, ComputeBorderDeflection(theEval, theVpars.Last(), theUpars, false));
   return maxDeflection;
 }
 

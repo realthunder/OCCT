@@ -102,6 +102,58 @@ void IntCurveSurface_ThePolyhedronOfHInter::Destroy()
   PolyUtils::Destroy(C_MyPnts, C_MyU, C_MyV, C_MyIsOnBounds);
 }
 
+// Lets the boxes of the triangles on the border, and the box of the whole,
+// reach as far as the surface does there. The border of the surface bulges
+// out of the polyhedron by the border deflection, in the surface, where the
+// triangles' own deflection (across the surface) does not reach: a line that
+// meets the surface in that band passes the border triangle's box by, the
+// triangle is never tried against it, and the test that would take the
+// point within the border deflection of its border edge is never asked
+// (Intf_InterferencePolygonPolyhedron). A helical face of
+// realthunder/FreeCAD#474's Helix002, its rim 0.16 out of its 20 chords, lost
+// a line crossing it 0.0008 inside the rim, and a point outside the solid was
+// said inside it (BRepClass3d_SolidClassifier).
+//
+// The border deflection itself is over-estimated first, as the triangles'
+// is (DeflectionOverEstimation): measured, it is how far the border is from
+// the middle of its longest chord, and a line that meets the surface right
+// there meets the plane of the border triangle a little further out still --
+// the plane is not the surface -- and was refused by a hair (0.16 measured,
+// the line 0.0008 inside the rim at the middle of a chord). What is taken
+// by it goes to the exact solver, which is bounded by the surface.
+static void enlargeBorderBoxes(const IntCurveSurface_ThePolyhedronOfHInter&     thePolyhedron,
+                               const occ::handle<NCollection_HArray1<Bnd_Box>>& theComponentsBnd,
+                               Bnd_Box&                                         theBnd,
+                               double&                                          theBorderDeflection)
+{
+  if (theBorderDeflection <= 0.)
+  {
+    return;
+  }
+  theBorderDeflection = 1.2 * theBorderDeflection + thePolyhedron.DeflectionOverEstimation();
+  const double aMore  = theBorderDeflection - thePolyhedron.DeflectionOverEstimation();
+  for (int iTri = 1; iTri <= thePolyhedron.NbTriangles(); ++iTri)
+  {
+    int aP1, aP2, aP3;
+    thePolyhedron.Triangle(iTri, aP1, aP2, aP3);
+    if (thePolyhedron.IsOnBound(aP1, aP2) || thePolyhedron.IsOnBound(aP2, aP3)
+        || thePolyhedron.IsOnBound(aP3, aP1))
+    {
+      Bnd_Box& aBox = theComponentsBnd->ChangeValue(iTri);
+      if (!aBox.IsVoid())
+      {
+        aBox.Enlarge(aMore);
+      }
+    }
+  }
+  if (!theBnd.IsVoid())
+  {
+    theBnd.Enlarge(aMore);
+  }
+}
+
+//=================================================================================================
+
 //=================================================================================================
 
 void IntCurveSurface_ThePolyhedronOfHInter::Init(const occ::handle<Adaptor3d_Surface>& Surface,
@@ -132,6 +184,7 @@ void IntCurveSurface_ThePolyhedronOfHInter::Init(const occ::handle<Adaptor3d_Sur
 
   TheBorderDeflection =
     PolyUtils::ComputeMaxBorderDeflection(anEval, U0, V0, U1, V1, nbdeltaU, nbdeltaV);
+  enlargeBorderBoxes(*this, TheComponentsBnd, TheBnd, TheBorderDeflection);
 }
 
 //=================================================================================================
@@ -158,13 +211,9 @@ void IntCurveSurface_ThePolyhedronOfHInter::Init(const occ::handle<Adaptor3d_Sur
   DeflectionOverEstimation(tol * 1.2);
   FillBounding();
 
-  TheBorderDeflection = PolyUtils::ComputeMaxBorderDeflection(anEval,
-                                                              Upars(Upars.Lower()),
-                                                              Vpars(Vpars.Lower()),
-                                                              Upars(Upars.Upper()),
-                                                              Vpars(Vpars.Upper()),
-                                                              nbdeltaU,
-                                                              nbdeltaV);
+  // on the chords the grid has, which are not of one length
+  TheBorderDeflection = PolyUtils::ComputeMaxBorderDeflection(anEval, Upars, Vpars);
+  enlargeBorderBoxes(*this, TheComponentsBnd, TheBnd, TheBorderDeflection);
 }
 
 //=================================================================================================
