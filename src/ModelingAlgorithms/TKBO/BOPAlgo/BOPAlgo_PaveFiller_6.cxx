@@ -90,6 +90,14 @@ static int    tangentEndVertex(const BOPDS_PDS&                     theDS,
                                const int                            theEnd,
                                const NCollection_Map<int>&          theMV,
                                double&                              theDist);
+static int    continuedEndVertex(const BOPDS_PDS&                     theDS,
+                                 const occ::handle<IntTools_Context>& theCtx,
+                                 const TopoDS_Face&                   theF1,
+                                 const TopoDS_Face&                   theF2,
+                                 const BOPDS_Curve&                   theNC,
+                                 const int                            theEnd,
+                                 const NCollection_Map<int>&          theMV,
+                                 double&                              theDist);
 static bool   curveAlongEdges(
   const BOPDS_PDS&                                            theDS,
   const occ::handle<IntTools_Context>&                        theCtx,
@@ -917,6 +925,32 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
       if (aIC.HasBounds())
       {
         aLBV.Clear();
+        //
+        // an end short of a vertex of both faces that the section runs on to
+        {
+          int aEndNV[2];
+          getBoundPaves(myDS, aNC, aEndNV);
+          for (int k = 0; k < 2; ++k)
+          {
+            if (aEndNV[k] >= 0)
+            {
+              continue;
+            }
+            NCollection_Map<int> aMV;
+            aMV.Assign(aMVCommon);
+            for (NCollection_Map<int>::Iterator aItS(aMVStick); aItS.More(); aItS.Next())
+            {
+              aMV.Add(aItS.Value());
+            }
+            RemoveUsedVertices(aVC, aMV);
+            double    aD;
+            const int nV = continuedEndVertex(myDS, myContext, aF1, aF2, aNC, k, aMV, aD);
+            if (nV >= 0)
+            {
+              PutPaveOnCurve(nV, aD * (1. + 1.e-6), aNC, aMI, aMVTol, aDMVLV);
+            }
+          }
+        }
         //
         PutBoundPaveOnCurve(aF1, aF2, aNC, aLBV);
         //
@@ -2486,6 +2520,96 @@ static int tangentEndVertex(const BOPDS_PDS&                     theDS,
     gp_Dir aDNV[2];
     if (!normalAt(theCtx, theF1, aPV, aDNV[0]) || !normalAt(theCtx, theF2, aPV, aDNV[1])
         || 1. - std::abs(aDNV[0] * aDNV[1]) > 5.e-9) // the creasing criteria
+    {
+      continue;
+    }
+    nVEnd   = nV;
+    theDist = aD;
+  }
+  return nVEnd;
+}
+
+//=================================================================================================
+
+// A vertex of both faces for the end <theEnd> of the section curve, which
+// stops short of it. Where a section runs into a corner of both faces along
+// their boundaries -- the rim of a cylinder lying in the plane the other
+// face ends in, that face's bounding arc tangent to the rim at the corner
+// -- the two faces and their two boundaries are all within tolerance of
+// each other well before the corner: in realthunder/FreeCAD#280, a pocket's
+// cylinder against a revolved end of the part, the arc is within 1e-7 of
+// the cylinder for 0.25 before the corner. The walking line stops anywhere
+// in there (0.0051 short). Its end is on both faces and would take a vertex
+// of its own, and the pieces of the two boundaries from that vertex to the
+// corner, a hair apart (2e-7), are not found the same: a face of no area
+// between them, edges no two faces share, no solid split, and the cut came
+// back the part unchanged, the common and the fuse empty, with no error.
+// The corner's vertex is the end if the section goes on to it: it lies ahead
+// of the end, the way the curve runs, the points from the end to it are on
+// both surfaces within the curve's tolerance, and it is near, not as far as
+// a tenth of the curve. Returns the vertex and its distance, or -1.
+static int continuedEndVertex(const BOPDS_PDS&                     theDS,
+                              const occ::handle<IntTools_Context>& theCtx,
+                              const TopoDS_Face&                   theF1,
+                              const TopoDS_Face&                   theF2,
+                              const BOPDS_Curve&                   theNC,
+                              const int                            theEnd,
+                              const NCollection_Map<int>&          theMV,
+                              double&                              theDist)
+{
+  const IntTools_Curve& aIC = theNC.Curve();
+  double                aT[2];
+  gp_Pnt                aP[2];
+  aIC.Bounds(aT[0], aT[1], aP[0], aP[1]);
+  const double aTolR3D = std::max(theNC.Tolerance(), theNC.TangentialTolerance());
+  const double aDMax   = 0.1 * aP[0].Distance(aP[1]);
+  // the way the curve runs out of its end
+  gp_Pnt aPE;
+  gp_Vec aVT;
+  aIC.Curve()->D1(aT[theEnd], aPE, aVT);
+  if (aVT.Magnitude() < gp::Resolution())
+  {
+    return -1;
+  }
+  if (theEnd == 0)
+  {
+    aVT.Reverse();
+  }
+  const gp_Dir aDT(aVT);
+  int          nVEnd = -1;
+  theDist            = RealLast();
+  for (NCollection_Map<int>::Iterator aIt(theMV); aIt.More(); aIt.Next())
+  {
+    const int            nV  = aIt.Value();
+    const TopoDS_Vertex& aV  = TopoDS::Vertex(theDS->Shape(nV));
+    const gp_Pnt         aPV = BRep_Tool::Pnt(aV);
+    const double         aD  = aPV.Distance(aP[theEnd]);
+    // one within tolerance of the end is the end's already
+    if (aD >= theDist || aD > aDMax || aD <= aTolR3D + BRep_Tool::Tolerance(aV))
+    {
+      continue;
+    }
+    const gp_Vec aVPV(aP[theEnd], aPV);
+    if (aVPV * gp_Vec(aDT) < 0.9 * aD)
+    {
+      continue;
+    }
+    bool bOn = true;
+    for (int i = 1; i <= 4 && bOn; ++i)
+    {
+      const gp_Pnt aPi = aP[theEnd].Translated(aVPV * (0.25 * i));
+      for (const TopoDS_Face* pF : {&theF1, &theF2})
+      {
+        GeomAPI_ProjectPointOnSurf& aPS = theCtx->ProjPS(*pF);
+        aPS.Perform(aPi);
+        if (!aPS.IsDone() || !aPS.NbPoints() || aPS.LowerDistance() > aTolR3D)
+        {
+          bOn = false;
+          break;
+        }
+      }
+    }
+    if (!bOn)
     {
       continue;
     }
