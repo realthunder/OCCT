@@ -1686,6 +1686,29 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&             
     }
   }
 
+  // The spine's parameters of a surface are read off its line on one of the
+  // two faces, the first unless a corner OnSame chose (above). A line that
+  // lies along an edge of its face -- a chamfer taking the whole width of a
+  // band, its line the band's far edge -- is cut by the hatching to a point
+  // at one end, and read off that it gave the surface no length on the
+  // spine: it was dropped, the edge was left to the walk, and the walk ends
+  // on the same edge, which a chamfer does not make (PerformSurf, not
+  // implemented). So with the band the first face; with it the second the
+  // same chamfer was made (#580's pad, 2 on the base and 5 up the side).
+  // The other line is read where this one has no length and that one has.
+  if (cntlFiOnS == 0 && SetData.Length() == 1)
+  {
+    const occ::handle<ChFiDS_SurfData>& aSD = SetData.First();
+    const double aLenOn = std::abs(aSD->Interference(onS).LastParameter()
+                                   - aSD->Interference(onS).FirstParameter());
+    const double aLenOther = std::abs(aSD->Interference(3 - onS).LastParameter()
+                                      - aSD->Interference(3 - onS).FirstParameter());
+    if (aLenOn <= pitol && aLenOther > pitol)
+    {
+      onS = 3 - onS;
+    }
+  }
+
   if (!intf)
   {
     // SurfData are entirely suspended before the beginning of the edge.
