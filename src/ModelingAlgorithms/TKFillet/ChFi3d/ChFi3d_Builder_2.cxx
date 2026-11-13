@@ -748,7 +748,23 @@ static void ChangeTransition(const ChFiDS_CommonPoint&                       Pre
   PCurve1                  = getCurveOnSurface(Arc, F);
   TopoDS_Shape aLocalShape = Arc.Reversed();
   PCurve2                  = getCurveOnSurface(TopoDS::Edge(aLocalShape), F);
-  if (PCurve1 != PCurve2)
+  // A cutting edge is one the face has twice, with a curve for each way, and
+  // is told here by the two curves not being one. An edge of a plane that has
+  // no curve stored there is given one made on the spot each time it is asked
+  // for (BRep_Tool::CurveOnSurface), never the same twice, and is taken for a
+  // cutting edge too. Where the point then has no vector to test it with,
+  // that threw (ChFiDS_CommonPoint::Vector()) and the chamfer was not done:
+  // two sizes on a D-shaped rim of a pad whose faces carry no curves of their
+  // edges, as a pad made by a prism has them (realthunder/FreeCAD#580), where
+  // the same pad copied, the curves stored by the copy, is chamfered. Such an
+  // edge is not a cutting edge. One that is none and whose point has a
+  // vector is tested as it was.
+  bool isCutting = PCurve1 != PCurve2;
+  if (isCutting && !Precedant.HasVector() && !BRep_Tool::IsClosed(Arc, F))
+  {
+    isCutting = false;
+  }
+  if (isCutting)
   {
     // This is a cutting edge, it is necessary to make a small Geometric test
     gp_Vec            tgarc;
