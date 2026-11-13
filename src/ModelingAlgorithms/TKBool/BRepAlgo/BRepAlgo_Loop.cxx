@@ -2234,6 +2234,18 @@ constexpr double THE_ANGLE_REFINE = 0.1;
 // 1 outward, 6.1 deg at 2.5), though the edge itself runs on the right
 // side of it.
 constexpr double THE_ANGLE_NEAR = 0.2;
+// The tangent at the very end of an approximated pcurve may belong to no
+// part of the curve: the section of two tubes that touch at their ends, on
+// one of them, runs straight to its end -- its direction the same to 5e-4
+// over the last hundredth -- and its derivative at the end parameter itself
+// points 48 deg off, to the other side of the tube's edge there (#613's
+// part, a flat of its roof removed, 1 inward: the tube lost its strip and
+// both ends but one, and the thickness was refused). A tangent further than
+// this from the chord to a point a thousandth of the way along is not how
+// the edge leaves its vertex, and the chord is taken: a curve that turns
+// that much in a thousandth of its length turns eight times round in all.
+constexpr double THE_ANGLE_STRAY    = 0.05;
+constexpr double THE_ANGLE_STRAY_AT = 1.e-3;
 
 struct LoopDart
 {
@@ -2288,6 +2300,15 @@ static bool DartAngle(const occ::handle<Geom2d_Curve>& theC2d,
     if (aD1.SquareMagnitude() > Precision::SquarePConfusion())
     {
       aDir = theAtStart ? aD1 : aD1.Reversed();
+      const double p0 = theAtStart ? theF : theL;
+      const double p1 = theAtStart ? theF + (theL - theF) * THE_ANGLE_STRAY_AT
+                                   : theL - (theL - theF) * THE_ANGLE_STRAY_AT;
+      const gp_Vec2d aChord(theC2d->Value(p0), theC2d->Value(p1));
+      if (aChord.SquareMagnitude() > Precision::SquarePConfusion()
+          && std::abs(aDir.Angle(aChord)) > THE_ANGLE_STRAY)
+      {
+        aDir = aChord;
+      }
     }
     else
     {
