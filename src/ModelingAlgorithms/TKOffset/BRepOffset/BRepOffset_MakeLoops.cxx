@@ -16,6 +16,7 @@
 
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
+#include <Geom_Curve.hxx>
 #include <BRep_TVertex.hxx>
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_Loop.hxx>
@@ -879,6 +880,86 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
             SHOW_TOPO_SHAPE(E, "ReplaceE");
             SHOW_TOPO_SHAPE(NewV, "ReplaceV");
           }
+        }
+      }
+    }
+  }
+  // An edge two faces share, renewed in the loop of one of them because a
+  // vertex at its end was -- the same curve and range, a copy with the new
+  // vertex -- is the copy in that face. The other face takes the copy when
+  // it is rebuilt after (above: a face is rebuilt when one of its edges has
+  // an image); rebuilt before, it has the edge as it was, and with the
+  // vertices put back as they were, just now, the two faces hold an edge
+  // each along one curve between the same two vertices. The shell is open
+  // there, the faces hang and are dropped. Which of the two comes about is
+  // the order the faces come in: #613's part with a blend up to the ridge
+  // removed, 0.5 outward, was made on one side of the ridge (face 17) and
+  // refused on the other (face 20), a mirror image. The faces still holding
+  // such an edge are given its copy.
+  for (itr.Initialize(aToReplace); itr.More(); itr.Next())
+  {
+    NCollection_List<TopoDS_Shape> LIF;
+    Image.LastImage(itr.Value(), LIF);
+    for (itl.Initialize(LIF); itl.More(); itl.Next())
+    {
+      if (itl.Value().ShapeType() != TopAbs_FACE)
+      {
+        continue;
+      }
+      for (TopoDS_Iterator aWIt(itl.Value(), false, false); aWIt.More(); aWIt.Next())
+      {
+        if (aWIt.Value().ShapeType() != TopAbs_WIRE)
+        {
+          continue;
+        }
+        TopoDS_Shape                   aW = aWIt.Value();
+        NCollection_List<TopoDS_Shape> anEdges;
+        bool                           isChanged = false;
+        for (TopoDS_Iterator anEIt(aW, false, false); anEIt.More(); anEIt.Next())
+        {
+          const TopoDS_Shape& anE = anEIt.Value();
+          TopoDS_Shape        aNew = anE;
+          if (anE.ShapeType() == TopAbs_EDGE && Image.HasImage(anE)
+              && Image.Image(anE).Extent() == 1 && !Image.Image(anE).First().IsSame(anE)
+              && Image.Image(anE).First().ShapeType() == TopAbs_EDGE)
+          {
+            const TopoDS_Edge anOld = TopoDS::Edge(anE);
+            const TopoDS_Edge aCopy = TopoDS::Edge(Image.Image(anE).First());
+            TopoDS_Vertex     aO1, aO2, aC1, aC2;
+            TopExp::Vertices(TopoDS::Edge(anOld.Oriented(TopAbs_FORWARD)), aO1, aO2);
+            TopExp::Vertices(TopoDS::Edge(aCopy.Oriented(TopAbs_FORWARD)), aC1, aC2);
+            double                        aOF, aOL, aCF, aCL;
+            const occ::handle<Geom_Curve> aOC = BRep_Tool::Curve(anOld, aOF, aOL);
+            const occ::handle<Geom_Curve> aCC = BRep_Tool::Curve(aCopy, aCF, aCL);
+            if (!aO1.IsNull() && !aO2.IsNull() && !aC1.IsNull() && !aC2.IsNull()
+                && aO1.IsSame(aC1) && aO2.IsSame(aC2) && !aOC.IsNull() && aOC == aCC
+                && std::abs(aOF - aCF) < Precision::PConfusion()
+                && std::abs(aOL - aCL) < Precision::PConfusion())
+            {
+              aNew      = aCopy.Oriented(anE.Orientation());
+              isChanged = true;
+              SHOW_TOPO_SHAPE(anE, "ReplaceTwinE");
+            }
+          }
+          anEdges.Append(aNew);
+        }
+        if (!isChanged)
+        {
+          continue;
+        }
+        aW.Free(true);
+        NCollection_List<TopoDS_Shape> anOldEdges;
+        for (TopoDS_Iterator anEIt(aW, false, false); anEIt.More(); anEIt.Next())
+        {
+          anOldEdges.Append(anEIt.Value());
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator anIt(anOldEdges); anIt.More(); anIt.Next())
+        {
+          BB.Remove(aW, anIt.Value());
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator anIt(anEdges); anIt.More(); anIt.Next())
+        {
+          BB.Add(aW, anIt.Value());
         }
       }
     }
