@@ -54,7 +54,6 @@
 #include <Geom_OffsetSurface.hxx>
 #include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_Curve.hxx>
-#include <GCPnts_UniformAbscissa.hxx>
 #include <Geom2dAPI_Interpolate.hxx>
 #include <GeomAPI_Interpolate.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
@@ -102,6 +101,11 @@ static int    continuedEndVertex(const BOPDS_PDS&                     theDS,
                                  const int                            theEnd,
                                  const NCollection_Map<int>&          theMV,
                                  double&                              theDist);
+static bool   evenParameters(const occ::handle<Geom_Curve>&    theC,
+                             const double                      theT1,
+                             const double                      theT2,
+                             const int                         theNb,
+                             NCollection_DynamicArray<double>& thePars);
 static bool   curveAlongEdges(
   const BOPDS_PDS&                                            theDS,
   const occ::handle<IntTools_Context>&                        theCtx,
@@ -154,7 +158,8 @@ static bool   bridgeToVertex(const BOPDS_PDS&                       theDS,
                              const NCollection_List<int>&           theLE,
                              occ::handle<Geom_Curve>&               theBridge,
                              occ::handle<Geom2d_Curve>              theBridge2d[2],
-                             double&                                theTolB);
+                             double&                                theTolB,
+                             NCollection_DataMap<int, int>&         theOwners);
 static void   tangentVerticesNearCurve(const BOPDS_PDS&                        theDS,
                                        const occ::handle<IntTools_Context>&    theCtx,
                                        const TopoDS_Face&                      theF1,
@@ -959,6 +964,50 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
       {
         sharedEdges(myDS, aMPBOnIn, aMPBCommon, aLEShared);
       }
+      NCollection_DataMap<int, int> aMVOwner; // the curve that reaches a vertex
+      // the curve cut short of where it loses its way near the vertex, and a
+      // curve of its own from there to the vertex
+      const auto aJoin = [&](const int theJ, const int theNV, const double theTolV) -> bool {
+        occ::handle<Geom_Curve>   aBridge;
+        occ::handle<Geom2d_Curve> aBridge2d[2];
+        double                    aTolB = 0.;
+        if (!bridgeToVertex(myDS,
+                            myContext,
+                            aF1,
+                            aF2,
+                            aVC,
+                            theJ,
+                            theNV,
+                            theTolV,
+                            ToleranceFF(myContext->SurfaceAdaptor(aF1),
+                                        myContext->SurfaceAdaptor(aF2)),
+                            aLEShared,
+                            aBridge,
+                            aBridge2d,
+                            aTolB,
+                            aMVOwner))
+        {
+          return false;
+        }
+        if (!aBridge.IsNull())
+        {
+          const IntTools_Curve aICB(aBridge, aBridge2d[0], aBridge2d[1], aTolB, 0.);
+          Bnd_Box              aBoxB;
+          if (IntTools_Tools::CheckCurve(aICB, aBoxB))
+          {
+            BOPDS_Curve& aNB = aVC.Appended();
+            aNB.SetCurve(aICB);
+            aBoxB.Enlarge(aTolB + theTolV + myFuzzyValue);
+            aNB.SetBox(aBoxB);
+            aNB.SetTolerance(aTolB);
+            aNB.InitPaveBlock1();
+            PutPaveOnCurve(theNV, aTolB, aNB, aMI, aMVTol, aDMVLV);
+          }
+        }
+        return true;
+      };
+      NCollection_DynamicArray<int>    aLaterJ, aLaterV;
+      NCollection_DynamicArray<double> aLaterD;
       for (j = 0; j < aNbCInt && !aMVT.IsEmpty(); ++j)
       {
         BOPDS_Curve& aNC = aVC.ChangeValue(j);
@@ -989,44 +1038,30 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
           const double aTolV = aMVTol.IsBound(nV)
                                  ? aMVTol(nV)
                                  : BRep_Tool::Tolerance(TopoDS::Vertex(myDS->Shape(nV)));
-          // the curve cut short of where it loses its way, and a curve of
-          // its own from there to the vertex; else the vertex grown to the curve
-          occ::handle<Geom_Curve>   aBridge;
-          occ::handle<Geom2d_Curve> aBridge2d[2];
-          double                    aTolB = 0.;
-          if (bridgeToVertex(myDS,
-                             myContext,
-                             aF1,
-                             aF2,
-                             aVC,
-                             j,
-                             nV,
-                             aTolV,
-                             ToleranceFF(myContext->SurfaceAdaptor(aF1),
-                                         myContext->SurfaceAdaptor(aF2)),
-                             aLEShared,
-                             aBridge,
-                             aBridge2d,
-                             aTolB))
+          if (!aJoin(j, nV, aTolV))
           {
-            if (!aBridge.IsNull())
-            {
-              const IntTools_Curve aICB(aBridge, aBridge2d[0], aBridge2d[1], aTolB, 0.);
-              Bnd_Box aBoxB;
-              if (IntTools_Tools::CheckCurve(aICB, aBoxB))
-              {
-                BOPDS_Curve& aNB = aVC.Appended();
-                aNB.SetCurve(aICB);
-                aBoxB.Enlarge(aTolB + aTolV + myFuzzyValue);
-                aNB.SetBox(aBoxB);
-                aNB.SetTolerance(aTolB);
-                aNB.InitPaveBlock1();
-                PutPaveOnCurve(nV, aTolB, aNB, aMI, aMVTol, aDMVLV);
-              }
-            }
-            continue;
+            aLaterJ.Append(j);
+            aLaterV.Append(nV);
+            aLaterD.Append(aItD.Value());
           }
-          PutPaveOnCurve(nV, aItD.Value() * (1. + 1.e-6), aNC, aMI, aMVTol, aDMVLV);
+        }
+      }
+      // a line the vertex was not joined to is tried once more if another
+      // line owns the vertex by now; else the vertex is grown to the line
+      for (int k = 0; k < aLaterJ.Length(); ++k)
+      {
+        const int    nV    = aLaterV(k);
+        const double aTolV = aMVTol.IsBound(nV)
+                               ? aMVTol(nV)
+                               : BRep_Tool::Tolerance(TopoDS::Vertex(myDS->Shape(nV)));
+        if (!aMVOwner.IsBound(nV) || !aJoin(aLaterJ(k), nV, aTolV))
+        {
+          PutPaveOnCurve(nV,
+                         aLaterD(k) * (1. + 1.e-6),
+                         aVC.ChangeValue(aLaterJ(k)),
+                         aMI,
+                         aMVTol,
+                         aDMVLV);
         }
       }
       aNbC = aVC.Length();
@@ -2743,6 +2778,77 @@ static int continuedEndVertex(const BOPDS_PDS&                     theDS,
 
 //=================================================================================================
 
+// The parameters of theNb points evenly along the length of the curve from
+// theT1 to theT2, the two among them. The length is the polygon's through the
+// curve's knots and the points between them (512 pieces at least, four a
+// span). A walking line's parameter is far from its length, and
+// GCPnts_UniformAbscissa integrates each span's length down to the curve's
+// resolution, which for one such line is 5e-24 (the pad on a torus cut
+// through its plane of symmetry, away from it: more than 100 s a boolean in
+// curveAlongEdges() alone).
+static bool evenParameters(const occ::handle<Geom_Curve>&    theC,
+                           const double                      theT1,
+                           const double                      theT2,
+                           const int                         theNb,
+                           NCollection_DynamicArray<double>& thePars)
+{
+  thePars.Clear();
+  if (theC.IsNull() || theNb < 2 || theT2 - theT1 <= Precision::PConfusion())
+  {
+    return false;
+  }
+  NCollection_DynamicArray<double> aTK;
+  aTK.Append(theT1);
+  const occ::handle<Geom_BSplineCurve> aBS = occ::down_cast<Geom_BSplineCurve>(theC);
+  for (int i = 1; !aBS.IsNull() && i <= aBS->NbKnots(); ++i)
+  {
+    const double aK = aBS->Knot(i);
+    if (aK > aTK.Last() && aK < theT2)
+    {
+      aTK.Append(aK);
+    }
+  }
+  aTK.Append(theT2);
+  const int                        aNbSub = std::max(4, 512 / (aTK.Length() - 1) + 1);
+  NCollection_DynamicArray<double> aT, aL;
+  gp_Pnt                           aPPrev = theC->Value(theT1);
+  aT.Append(theT1);
+  aL.Append(0.);
+  for (int i = 1; i < aTK.Length(); ++i)
+  {
+    for (int k = 1; k <= aNbSub; ++k)
+    {
+      const double aTi = k == aNbSub ? aTK(i) : aTK(i - 1) + (aTK(i) - aTK(i - 1)) * k / aNbSub;
+      const gp_Pnt aPi = theC->Value(aTi);
+      aT.Append(aTi);
+      aL.Append(aL.Last() + aPi.Distance(aPPrev));
+      aPPrev = aPi;
+    }
+  }
+  const double aLen = aL.Last();
+  if (aLen <= gp::Resolution())
+  {
+    return false;
+  }
+  int i = 1;
+  thePars.Append(theT1);
+  for (int k = 1; k < theNb - 1; ++k)
+  {
+    const double aLk = aLen * k / (theNb - 1);
+    while (i < aL.Length() - 1 && aL(i) < aLk)
+    {
+      ++i;
+    }
+    const double aDL = aL(i) - aL(i - 1);
+    const double aDT = aT(i) - aT(i - 1);
+    thePars.Append(aDL > gp::Resolution() ? aT(i - 1) + aDT * (aLk - aL(i - 1)) / aDL : aT(i));
+  }
+  thePars.Append(theT2);
+  return true;
+}
+
+//=================================================================================================
+
 // Whether the section curve runs along edges already on both faces: points
 // inside it, evenly along its length (a walking line's parameter is not --
 // #617's ran along an edge for 99% of its range, then climbed the faces'
@@ -2779,15 +2885,14 @@ static bool curveAlongEdges(
       aLE.Append(aIt.Value()->Edge());
     }
   }
-  GeomAdaptor_Curve       aGAC(aIC.Curve(), aT[0], aT[1]);
-  GCPnts_UniformAbscissa  aUA(aGAC, 21, aT[0], aT[1]);
-  if (!aUA.IsDone() || aUA.NbPoints() < 3)
+  NCollection_DynamicArray<double> aTE;
+  if (!evenParameters(aIC.Curve(), aT[0], aT[1], 21, aTE))
   {
     return false;
   }
-  for (int k = 2; k < aUA.NbPoints(); ++k)
+  for (int k = 1; k < aTE.Length() - 1; ++k)
   {
-    const gp_Pnt aP  = aGAC.Value(aUA.Parameter(k));
+    const gp_Pnt aP  = aIC.Curve()->Value(aTE(k));
     bool         bOn = false;
     for (NCollection_List<int>::Iterator aItE(aLE); aItE.More() && !bOn; aItE.Next())
     {
@@ -2976,24 +3081,23 @@ static bool lostAlongEdges(const BOPDS_PDS&                     theDS,
   gp_Pnt aP[2];
   aIC.Bounds(aT[0], aT[1], aP[0], aP[1]);
   const double      aTolR3D = std::max(theNC.Tolerance(), theNC.TangentialTolerance());
-  GeomAdaptor_Curve aGAC(aIC.Curve(), aT[0], aT[1]);
-  GCPnts_UniformAbscissa aUA(aGAC, 9, aT[0], aT[1]);
-  if (!aUA.IsDone() || aUA.NbPoints() < 3)
+  NCollection_DynamicArray<double> aTE;
+  if (!evenParameters(aIC.Curve(), aT[0], aT[1], 9, aTE))
   {
     return false;
   }
   double aLen = 0.;
-  for (int k = 2; k <= aUA.NbPoints(); ++k)
+  for (int k = 1; k < aTE.Length(); ++k)
   {
-    aLen += aGAC.Value(aUA.Parameter(k)).Distance(aGAC.Value(aUA.Parameter(k - 1)));
+    aLen += aIC.Curve()->Value(aTE(k)).Distance(aIC.Curve()->Value(aTE(k - 1)));
   }
-  for (int k = 1; k <= aUA.NbPoints(); ++k)
+  for (int k = 0; k < aTE.Length(); ++k)
   {
     if (!onSharedEdge(theDS,
                       theCtx,
                       theF1,
                       theF2,
-                      aGAC.Value(aUA.Parameter(k)),
+                      aIC.Curve()->Value(aTE(k)),
                       theLE,
                       aTolR3D,
                       0.1 * aLen))
@@ -3110,13 +3214,30 @@ static bool trimEndsOnEdges(const BOPDS_PDS&                     theDS,
 // every one within tolerance of the second (theTolV: the vertex's tolerance
 // before any curve grew it; the edge it is on is known no better), a curve
 // through them. The cut is the first point of the line, past its last sharp
-// turn within 64 times the nearest, from which that holds. One side of the line
-// from its nearest point must be lost -- nothing put on it, its end near, and
-// its points on the vertex or on an edge both faces share as far as the faces
-// tell (together from the point to there) -- or be nothing, the line ending
-// at its nearest point. Returns false to have the vertex put on the line as
-// it is; true with no curve if the line was cut for this vertex already (a
-// pair of faces gone through again).
+// turn within 64 times the nearest, from which that holds and which is not on
+// a shared edge itself (the curve from there to the vertex would run along
+// that edge). One side of the line from the point taken must be lost, or be
+// nothing, the line ending there. Lost is: nothing put on it, its end near,
+// and its points on the vertex, on an edge both faces share as far as the
+// faces tell (together from the point to there) or off a face; or, however
+// far it goes and whatever is on it, every point of it on such an edge or
+// off a face -- the line running on beside the edge it came to, which is
+// that edge's already (the vertices on it go with it). The point taken is
+// the line's nearest to the vertex, or another foot of the vertex on the line
+// if that leaves less of it: a line may come by the vertex, run on, turn
+// round and come by again (0.44 on, the pad on a torus cut through its plane
+// of symmetry), and all of that is lost. And several lines may go by one
+// vertex, the same line more than once, each lost its own way (three there,
+// up to 2.4e-3 apart within 0.12 of the vertex, so that cut and joined each
+// by itself they cross): the first joined to the vertex owns it (theOwners),
+// and a later one is cut at the first of its points from which on it lies on
+// the owner, and ends there with no curve of its own. So is one no side of
+// which is lost, if one side lies on the owner: left as it is, it would be
+// there twice between the vertex and where the owner was cut (the caller
+// asks again for a line once its vertex has an owner). Returns false to have
+// the vertex put on the line as it is; true with no curve if the line was
+// cut for this vertex already (a pair of faces gone through again) or ends
+// on the owner.
 static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
                            const occ::handle<IntTools_Context>&   theCtx,
                            const TopoDS_Face&                     theF1,
@@ -3129,7 +3250,8 @@ static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
                            const NCollection_List<int>&           theLE,
                            occ::handle<Geom_Curve>&               theBridge,
                            occ::handle<Geom2d_Curve>              theBridge2d[2],
-                           double&                                theTolB)
+                           double&                                theTolB,
+                           NCollection_DataMap<int, int>&         theOwners)
 {
   BOPDS_Curve&          aNC = theVC.ChangeValue(theJ);
   const IntTools_Curve& aIC = aNC.Curve();
@@ -3165,7 +3287,7 @@ static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
       aTV = aProj.LowerDistanceParameter();
     }
   }
-  const gp_Pnt aPC = aC3D->Value(aTV);
+  gp_Pnt aPC = aC3D->Value(aTV);
   // done already?
   for (int i = 0; i < theVC.Length(); ++i)
   {
@@ -3178,67 +3300,109 @@ static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
             || (aPi[1].Distance(aPC) <= Precision::Confusion()
                 && aPi[0].Distance(aPV) <= Precision::Confusion())))
     {
+      if (!theOwners.IsBound(theNV))
+      {
+        theOwners.Bind(theNV, theJ);
+      }
       return true;
     }
   }
-  // the side that is lost, or nothing
-  const NCollection_List<BOPDS_Pave>& aLP   = aNC.PaveBlocks().First()->ExtPaves();
-  int                                 kTail = -1;
-  for (int k = 0; k < 2; ++k)
-  {
-    const double aDT   = aT[k] - aTV;
-    bool         bLost = true;
-    if (std::abs(aDT) >= Precision::PConfusion())
+  // the side that is lost, or nothing: its end near the vertex and nothing put
+  // on it, or all of it beside the shared edges or off a face
+  const NCollection_List<BOPDS_Pave>& aLP    = aNC.PaveBlocks().First()->ExtPaves();
+  const auto                          isLost = [&](const double theTV, const int k) -> bool {
+    const double aDT = aT[k] - theTV;
+    if (std::abs(aDT) < Precision::PConfusion())
     {
-      bLost = aP[k].Distance(aPV) <= aDMax;
-      for (NCollection_List<BOPDS_Pave>::Iterator aIt(aLP); aIt.More() && bLost; aIt.Next())
-      {
-        bLost = (aIt.Value().Parameter() - aTV) * aDT <= 0.;
-      }
-      for (int i = 1; i <= 8 && bLost; ++i)
-      {
-        const gp_Pnt aPi = aC3D->Value(aTV + aDT * 0.125 * i);
-        if (facesTogether(theCtx, theF1, theF2, aPi, aPV, aTol))
-        {
-          continue;
-        }
-        bLost = onSharedEdge(theDS, theCtx, theF1, theF2, aPi, theLE, aTolR3D, aDMax);
-      }
+      return true;
     }
-    if (bLost)
+    const bool bNear = aP[k].Distance(aPV) <= aDMax;
+    bool       bLost = true;
+    for (NCollection_List<BOPDS_Pave>::Iterator aIt(aLP); aIt.More() && bLost && bNear; aIt.Next())
     {
-      if (kTail >= 0)
-      {
-        return false; // both sides: nothing of the curve to keep
-      }
-      kTail = k;
+      bLost = (aIt.Value().Parameter() - theTV) * aDT <= 0.;
     }
-  }
-  if (kTail < 0)
-  {
-    return false;
-  }
-  // the points of the other side, out to 64 times the nearest, none past a
-  // vertex put on the curve
-  const int    kB    = 1 - kTail;
-  double       aTEnd = aT[kB];
-  const double aSign = aTEnd > aTV ? 1. : -1.;
-  for (NCollection_List<BOPDS_Pave>::Iterator aIt(aLP); aIt.More(); aIt.Next())
-  {
-    const double aTP = aIt.Value().Parameter();
-    if ((aTP - aTV) * aSign > 0. && (aTEnd - aTP) * aSign > 0.)
+    const int aNbS = bNear ? 8 : 64;
+    for (int i = 1; i <= aNbS && bLost; ++i)
     {
-      aTEnd = aTP;
+      const gp_Pnt aPi = aC3D->Value(theTV + aDT * i / aNbS);
+      if (bNear && facesTogether(theCtx, theF1, theF2, aPi, aPV, aTol))
+      {
+        continue;
+      }
+      bLost = onSharedEdge(theDS, theCtx, theF1, theF2, aPi, theLE, aTolR3D, aDMax)
+              || !theCtx->IsValidPointForFaces(aPi, theF1, theF2, aTolR3D);
+    }
+    return bLost;
+  };
+  int kTail = -1;
+  {
+    const bool bL[2] = {isLost(aTV, 0), isLost(aTV, 1)};
+    if (bL[0] && bL[1])
+    {
+      return false; // both sides: nothing of the curve to keep
+    }
+    if (bL[0] != bL[1])
+    {
+      kTail = bL[0] ? 0 : 1;
     }
   }
-  const double                     aDFar = std::min(64. * aD, aDMax);
-  NCollection_DynamicArray<double> aTS;
-  NCollection_DynamicArray<gp_Pnt> aPS;
-  aTS.Append(aTV);
-  aPS.Append(aPC);
+  // the line may come by the vertex once more, after a hook: what it does
+  // before the last time is lost with the side
   {
+    const double                aTV0  = aTV, aD0 = aD;
+    double                      aKept = kTail < 0 ? RealLast() : std::abs(aT[1 - kTail] - aTV);
+    GeomAPI_ProjectPointOnCurve aProj(aPV, aC3D, aT[0], aT[1]);
+    for (int i = 1; i <= aProj.NbPoints(); ++i)
+    {
+      const double aTi = aProj.Parameter(i), aDi = aProj.Distance(i);
+      if (std::abs(aTi - aTV0) < Precision::PConfusion() || aDi > aDMax)
+      {
+        continue;
+      }
+      const gp_Pnt aPi = aC3D->Value(aTi);
+      if (!facesTogether(theCtx, theF1, theF2, aPi, aPV, aTol))
+      {
+        continue;
+      }
+      const bool bL[2] = {isLost(aTi, 0), isLost(aTi, 1)};
+      if (bL[0] == bL[1])
+      {
+        continue;
+      }
+      const int k = bL[0] ? 0 : 1;
+      if (std::abs(aT[1 - k] - aTi) < aKept)
+      {
+        aKept = std::abs(aT[1 - k] - aTi);
+        kTail = k;
+        aTV   = aTi;
+        aD    = std::max(aDi, aD0);
+        aPC   = aPi;
+      }
+    }
+  }
+  // the points of a side, out to 64 times the nearest, none past a vertex put
+  // on the curve
+  const double aDFar  = std::min(64. * aD, aDMax);
+  const auto   sample = [&](const int                         theKB,
+                            NCollection_DynamicArray<double>& theTS,
+                            NCollection_DynamicArray<gp_Pnt>& thePS) {
+    double       aTEnd = aT[theKB];
+    const double aSign = aTEnd > aTV ? 1. : -1.;
+    for (NCollection_List<BOPDS_Pave>::Iterator aIt(aLP); aIt.More(); aIt.Next())
+    {
+      const double aTP = aIt.Value().Parameter();
+      if ((aTP - aTV) * aSign > 0. && (aTEnd - aTP) * aSign > 0.)
+      {
+        aTEnd = aTP;
+      }
+    }
+    theTS.Clear();
+    thePS.Clear();
+    theTS.Append(aTV);
+    thePS.Append(aPC);
     double aTc = aTV, aDt = (aTEnd - aTV) / 4096.;
-    while (aTS.Length() < 1024 && std::abs(aDt) > 1.e-12 * std::abs(aTEnd - aTV))
+    while (theTS.Length() < 1024 && std::abs(aDt) > 1.e-12 * std::abs(aTEnd - aTV))
     {
       const double aTn = aTc + aDt;
       if ((aTEnd - aTn) * aSign <= 0.)
@@ -3246,7 +3410,7 @@ static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
         break;
       }
       const gp_Pnt aPn   = aC3D->Value(aTn);
-      const double aStep = aPn.Distance(aPS.Last());
+      const double aStep = aPn.Distance(thePS.Last());
       if (aStep > 0.5 * aD)
       {
         aDt *= 0.5;
@@ -3257,14 +3421,73 @@ static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
         break;
       }
       aTc = aTn;
-      aTS.Append(aTc);
-      aPS.Append(aPn);
+      theTS.Append(aTc);
+      thePS.Append(aPn);
       if (aStep < 0.125 * aD)
       {
         aDt *= 2.;
       }
     }
+  };
+  // another curve reaches this vertex already: this one is the same line once
+  // more if a side of it lies on that one, and where the two have lost their
+  // way they are not the same. The first of the side's points from which on
+  // it is on the other, or -1
+  const int* pOwner  = theOwners.Seek(theNV);
+  const auto onOwner = [&](const NCollection_DynamicArray<gp_Pnt>& thePS) -> int {
+    if (!pOwner || *pOwner == theJ)
+    {
+      return -1;
+    }
+    const BOPDS_Curve&    aNO = theVC(*pOwner);
+    const IntTools_Curve& aIO = aNO.Curve();
+    double                aTO[2];
+    gp_Pnt                aPO[2];
+    if (!aIO.HasBounds() || !aIO.Bounds(aTO[0], aTO[1], aPO[0], aPO[1]))
+    {
+      return -1;
+    }
+    const double aTolO = aTolR3D + std::max(aNO.Tolerance(), aNO.TangentialTolerance());
+    GeomAPI_ProjectPointOnCurve aProjO;
+    aProjO.Init(aIO.Curve(), aTO[0], aTO[1]);
+    int iOn = thePS.Length();
+    for (int i = thePS.Length() - 1; i >= 0; --i)
+    {
+      aProjO.Perform(thePS(i));
+      if (!aProjO.NbPoints() || aProjO.LowerDistance() > aTolO)
+      {
+        break;
+      }
+      iOn = i;
+    }
+    return iOn < thePS.Length() - 1 ? iOn : -1;
+  };
+  NCollection_DynamicArray<double> aTS;
+  NCollection_DynamicArray<gp_Pnt> aPS;
+  if (kTail < 0)
+  {
+    // no side of it is lost. If one lies on the owner the other goes all the
+    // same: left as it is, the line would be there twice between the vertex
+    // and where the owner was cut
+    for (int k = 0; k < 2; ++k)
+    {
+      sample(k, aTS, aPS);
+      if (onOwner(aPS) >= 0)
+      {
+        if (kTail >= 0)
+        {
+          return false;
+        }
+        kTail = 1 - k;
+      }
+    }
+    if (kTail < 0)
+    {
+      return false;
+    }
   }
+  const int kB = 1 - kTail;
+  sample(kB, aTS, aPS);
   // sound from its last sharp turn on (20 degrees in a step, the steps under
   // half the nearest distance): the first point after it the faces are
   // together from
@@ -3282,69 +3505,114 @@ static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
   NCollection_Array1<gp_Pnt2d> aUV1(1, 17), aUV2(1, 17);
   double                       aTB = aTV;
   bool                         bOK = false;
-  for (int i = iFirst; i < aTS.Length() && !bOK; ++i)
+  // cut where it is on the owner from there on, to end on it
+  const int  iOn      = onOwner(aPS);
+  const bool bOnOwner = iOn >= 0;
+  if (bOnOwner)
   {
+    aTB = aTS(iOn);
+  }
+  for (int i = iFirst; i < aTS.Length() && !bOK && !bOnOwner; ++i)
+  {
+    // not from a point on a shared edge: the curve from there to the vertex
+    // would run along that edge
+    if (onSharedEdge(theDS,
+                     theCtx,
+                     theF1,
+                     theF2,
+                     aPS(i),
+                     theLE,
+                     aTolR3D,
+                     10. * (aTolR3D + Precision::Confusion())))
+    {
+      continue;
+    }
     aTB = aTS(i);
     bOK =
       facesTogether(theCtx, theF1, theF2, aPS(i), aPV, aTol, &aPnts, &theTolB, &aUV1, &aUV2);
   }
-  if (!bOK || aPnts.First().Distance(aPnts.Last()) <= aTol)
+  if (!bOnOwner && (!bOK || aPnts.First().Distance(aPnts.Last()) <= aTol))
   {
     return false;
   }
-  // the curve through them
-  occ::handle<NCollection_HArray1<gp_Pnt>> aHP = new NCollection_HArray1<gp_Pnt>(1, 17);
-  occ::handle<NCollection_HArray1<double>> aHT = new NCollection_HArray1<double>(1, 17);
-  const double                             aL  = aPnts.First().Distance(aPnts.Last());
-  for (int i = 1; i <= 17; ++i)
+  occ::handle<Geom_Curve>   aBr3;
+  occ::handle<Geom2d_Curve> aBr2[2];
+  if (!bOnOwner)
   {
-    aHP->SetValue(i, aPnts(i));
-    aHT->SetValue(i, aL * (i - 1) / 16.);
-  }
-  GeomAPI_Interpolate anInt(aHP, aHT, false, Precision::Confusion());
-  anInt.Perform();
-  if (!anInt.IsDone())
-  {
-    return false;
-  }
-  // and where it is on the faces: the line on the first, through the points'
-  // places on the second, kept on one side of a seam
-  NCollection_Array1<gp_Pnt2d> aPoles1(1, 2);
-  NCollection_Array1<double>   aKnots1(1, 2);
-  NCollection_Array1<int>      aMults1(1, 2);
-  aPoles1(1) = aUV1.First();
-  aPoles1(2) = aUV1.Last();
-  aKnots1(1) = 0.;
-  aKnots1(2) = aL;
-  aMults1.Init(2);
-  const occ::handle<Geom_Surface>            aS2  = BRep_Tool::Surface(theF2);
-  occ::handle<NCollection_HArray1<gp_Pnt2d>> aHUV = new NCollection_HArray1<gp_Pnt2d>(1, 17);
-  for (int i = 1; i <= 17; ++i)
-  {
-    gp_Pnt2d aUV = aUV2(i);
-    if (i > 1 && aS2->IsUPeriodic())
+    // the curve through them
+    occ::handle<NCollection_HArray1<gp_Pnt>> aHP = new NCollection_HArray1<gp_Pnt>(1, 17);
+    occ::handle<NCollection_HArray1<double>> aHT = new NCollection_HArray1<double>(1, 17);
+    const double                             aL  = aPnts.First().Distance(aPnts.Last());
+    for (int i = 1; i <= 17; ++i)
     {
-      aUV.SetX(aUV.X()
-               + aS2->UPeriod() * std::round((aHUV->Value(i - 1).X() - aUV.X()) / aS2->UPeriod()));
+      aHP->SetValue(i, aPnts(i));
+      aHT->SetValue(i, aL * (i - 1) / 16.);
     }
-    if (i > 1 && aS2->IsVPeriodic())
+    GeomAPI_Interpolate anInt(aHP, aHT, false, Precision::Confusion());
+    anInt.Perform();
+    if (!anInt.IsDone())
     {
-      aUV.SetY(aUV.Y()
-               + aS2->VPeriod() * std::round((aHUV->Value(i - 1).Y() - aUV.Y()) / aS2->VPeriod()));
+      return false;
     }
-    aHUV->SetValue(i, aUV);
-  }
-  Geom2dAPI_Interpolate anInt2(aHUV, aHT, false, 1.e-13);
-  anInt2.Perform();
-  if (!anInt2.IsDone())
-  {
-    return false;
+    // and where it is on the faces: the line on the first, through the points'
+    // places on the second, kept on one side of a seam
+    NCollection_Array1<gp_Pnt2d> aPoles1(1, 2);
+    NCollection_Array1<double>   aKnots1(1, 2);
+    NCollection_Array1<int>      aMults1(1, 2);
+    aPoles1(1) = aUV1.First();
+    aPoles1(2) = aUV1.Last();
+    aKnots1(1) = 0.;
+    aKnots1(2) = aL;
+    aMults1.Init(2);
+    const occ::handle<Geom_Surface>            aS2  = BRep_Tool::Surface(theF2);
+    occ::handle<NCollection_HArray1<gp_Pnt2d>> aHUV = new NCollection_HArray1<gp_Pnt2d>(1, 17);
+    for (int i = 1; i <= 17; ++i)
+    {
+      gp_Pnt2d aUV = aUV2(i);
+      if (i > 1 && aS2->IsUPeriodic())
+      {
+        aUV.SetX(aUV.X()
+                 + aS2->UPeriod()
+                     * std::round((aHUV->Value(i - 1).X() - aUV.X()) / aS2->UPeriod()));
+      }
+      if (i > 1 && aS2->IsVPeriodic())
+      {
+        aUV.SetY(aUV.Y()
+                 + aS2->VPeriod()
+                     * std::round((aHUV->Value(i - 1).Y() - aUV.Y()) / aS2->VPeriod()));
+      }
+      aHUV->SetValue(i, aUV);
+    }
+    Geom2dAPI_Interpolate anInt2(aHUV, aHT, false, 1.e-13);
+    anInt2.Perform();
+    if (!anInt2.IsDone())
+    {
+      return false;
+    }
+    aBr3    = anInt.Curve();
+    aBr2[0] = new Geom2d_BSplineCurve(aPoles1, aKnots1, aMults1, 1);
+    aBr2[1] = anInt2.Curve();
   }
   // the section curve from the cut on
   aT[kTail] = aTB;
   if (aT[1] - aT[0] < Precision::PConfusion())
   {
     return false;
+  }
+  {
+    NCollection_List<int> aLOff;
+    for (NCollection_List<BOPDS_Pave>::Iterator aIt(aLP); aIt.More(); aIt.Next())
+    {
+      if (aIt.Value().Parameter() < aT[0] - Precision::PConfusion()
+          || aIt.Value().Parameter() > aT[1] + Precision::PConfusion())
+      {
+        aLOff.Append(aIt.Value().Index());
+      }
+    }
+    for (NCollection_List<int>::Iterator aIt(aLOff); aIt.More(); aIt.Next())
+    {
+      aNC.ChangePaveBlock1()->RemoveExtPave(aIt.Value());
+    }
   }
   occ::handle<Geom_BSplineCurve> aC3 = occ::down_cast<Geom_BSplineCurve>(aC3D->Copy());
   aC3->Segment(aT[0], aT[1]);
@@ -3360,12 +3628,11 @@ static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
   // its tolerance may have been the lost part's: what is left, measured
   double aTolC = aIC.Tolerance();
   {
-    GeomAdaptor_Curve      aGAC(aC3, aT[0], aT[1]);
-    GCPnts_UniformAbscissa aUA(aGAC, 65, aT[0], aT[1]);
-    double                 aDev = aUA.IsDone() && aUA.NbPoints() > 2 ? 0. : aTolC;
-    for (int k = 1; aDev < aTolC && k <= aUA.NbPoints(); ++k)
+    NCollection_DynamicArray<double> aTE;
+    double aDev = evenParameters(aC3, aT[0], aT[1], 65, aTE) ? 0. : aTolC;
+    for (int k = 0; aDev < aTolC && k < aTE.Length(); ++k)
     {
-      const gp_Pnt aPk = aGAC.Value(aUA.Parameter(k));
+      const gp_Pnt aPk = aC3->Value(aTE(k));
       for (const TopoDS_Face* pF : {&theF1, &theF2})
       {
         GeomAPI_ProjectPointOnSurf& aPS = theCtx->ProjPS(*pF);
@@ -3380,10 +3647,18 @@ static bool bridgeToVertex(const BOPDS_PDS&                       theDS,
     aNC.SetTolerance(aTolC);
   }
   aNC.SetCurve(IntTools_Curve(aC3, aC2[0], aC2[1], aTolC, aIC.TangentialTolerance()));
-  theBridge      = anInt.Curve();
-  theBridge2d[0] = new Geom2d_BSplineCurve(aPoles1, aKnots1, aMults1, 1);
-  theBridge2d[1] = anInt2.Curve();
-  theTolB   = std::max(theTolB, theTolFF);
+  if (bOnOwner)
+  {
+    return true;
+  }
+  theBridge      = aBr3;
+  theBridge2d[0] = aBr2[0];
+  theBridge2d[1] = aBr2[1];
+  theTolB        = std::max(theTolB, theTolFF);
+  if (!theOwners.IsBound(theNV))
+  {
+    theOwners.Bind(theNV, theJ);
+  }
   return true;
 }
 
