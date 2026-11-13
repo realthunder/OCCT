@@ -106,6 +106,12 @@ static bool   evenParameters(const occ::handle<Geom_Curve>&    theC,
                              const double                      theT2,
                              const int                         theNb,
                              NCollection_DynamicArray<double>& thePars);
+static void   dropStretchedPaves(const BOPDS_PDS&                             theDS,
+                                 const occ::handle<IntTools_Context>&         theCtx,
+                                 const NCollection_DynamicArray<BOPDS_Curve>& theVC,
+                                 const NCollection_Map<int>&                  theMI,
+                                 const double                                 theFuzzy,
+                                 NCollection_DataMap<int, double>&            theMVTol);
 static bool   curveAlongEdges(
   const BOPDS_PDS&                                            theDS,
   const occ::handle<IntTools_Context>&                        theCtx,
@@ -932,6 +938,8 @@ void BOPAlgo_PaveFiller::MakeBlocks(const Message_ProgressRange& theRange)
     // and it also was put on another curve correctly then remove this vertex from
     // the first curve. Detect such case if the distance to curve exceeds aTolR3D.
     FilterPavesOnCurves(aVC, aMVTol);
+    // nor a vertex its stretched tolerance put on a curve that only passes by
+    dropStretchedPaves(myDS, myContext, aVC, aMI, myFuzzyValue, aMVTol);
 
     // the curves of the intersection; those made here to reach a vertex
     // follow, and are there already when the pair is gone through again
@@ -2774,6 +2782,303 @@ static int continuedEndVertex(const BOPDS_PDS&                     theDS,
     theDist = aD;
   }
   return nVEnd;
+}
+
+//=================================================================================================
+
+// The part of an edge the tolerance of the vertex theNV is stretched along
+// (BOPAlgo_PaveFiller::ExtendedTolerance(), which gives the distance only):
+// the edge of the edge/edge or edge/face interference that made the vertex,
+// and its range there.
+static bool stretchedPart(const BOPDS_PDS&            theDS,
+                          const int                   theNV,
+                          const NCollection_Map<int>& theMI,
+                          const int                   theType,
+                          TopoDS_Edge&                theE,
+                          double&                     theT1,
+                          double&                     theT2)
+{
+  if (!theDS->IsNewShape(theNV))
+  {
+    return false;
+  }
+  NCollection_DynamicArray<BOPDS_InterfEE>& aEEs = theDS->InterfEE();
+  NCollection_DynamicArray<BOPDS_InterfEF>& aEFs = theDS->InterfEF();
+  for (int k = theType == 2 ? 1 : 0; k < (theType == 1 ? 1 : 2); ++k)
+  {
+    const int aNb = !k ? aEEs.Length() : aEFs.Length();
+    for (int i = 0; i < aNb; ++i)
+    {
+      const BOPDS_Interf* aInt =
+        !k ? (const BOPDS_Interf*)(&aEEs(i)) : (const BOPDS_Interf*)(&aEFs(i));
+      if (aInt->IndexNew() == theNV && theMI.Contains(aInt->Index1())
+          && theMI.Contains(aInt->Index2()))
+      {
+        const IntTools_CommonPrt& aCP = !k ? aEEs(i).CommonPart() : aEFs(i).CommonPart();
+        theE                          = aCP.Edge1();
+        aCP.Range1(theT1, theT2);
+        return !theE.IsNull();
+      }
+    }
+  }
+  return false;
+}
+
+//=================================================================================================
+
+// Whether the section curve comes within theTol of the part [theT1, theT2]
+// of the edge anywhere within theR of the point thePV, which is nearest the
+// curve at theT: the curve's points each way from there, a sixteenth of
+// theR apart, and between the nearest of them and its neighbours.
+static bool curveMeetsEdgePart(const occ::handle<IntTools_Context>& theCtx,
+                               const IntTools_Curve&                theIC,
+                               const double                         theT,
+                               const gp_Pnt&                        thePV,
+                               const double                         theR,
+                               const TopoDS_Edge&                   theE,
+                               const double                         theT1,
+                               const double                         theT2,
+                               const double                         theTol)
+{
+  const occ::handle<Geom_Curve>& aC = theIC.Curve();
+  if (aC.IsNull() || theR <= gp::Resolution())
+  {
+    return true;
+  }
+  double aTC[2] = {aC->FirstParameter(), aC->LastParameter()};
+  if (theIC.HasBounds())
+  {
+    gp_Pnt aPC[2];
+    theIC.Bounds(aTC[0], aTC[1], aPC[0], aPC[1]);
+  }
+  GeomAPI_ProjectPointOnCurve& aProj  = theCtx->ProjPC(theE);
+  const double                 aTolT  = 1.e-3 * (theT2 - theT1) + Precision::PConfusion();
+  const auto                   toPart = [&](const double theTc) -> double {
+    aProj.Perform(aC->Value(theTc));
+    if (!aProj.NbPoints())
+    {
+      return RealLast();
+    }
+    const double aTE = aProj.LowerDistanceParameter();
+    return aTE >= theT1 - aTolT && aTE <= theT2 + aTolT ? aProj.LowerDistance() : RealLast();
+  };
+  if (toPart(theT) <= theTol)
+  {
+    return true;
+  }
+  for (int k = 0; k < 2; ++k)
+  {
+    // along the curve this way, while within theR of the point
+    double aDt    = (aTC[k] - theT) / 4096.;
+    double aTc    = theT, aTPrev = theT, aTBest = theT, aTBestPrev = theT, aTBestNext = theT;
+    double aDBest = RealLast();
+    gp_Pnt aPc    = aC->Value(theT);
+    for (int n = 0; n < 512 && std::abs(aDt) > 1.e-12 * std::abs(aTC[k] - theT); ++n)
+    {
+      double aTn = aTc + aDt;
+      if ((aTC[k] - aTn) * aDt <= 0.)
+      {
+        aTn = aTC[k];
+      }
+      const gp_Pnt aPn = aC->Value(aTn);
+      if (aPn.Distance(aPc) > theR / 16. && std::abs(aDt) > 1.e-9 * std::abs(aTC[k] - theT))
+      {
+        aDt *= 0.5;
+        continue;
+      }
+      if (aPn.Distance(thePV) > theR)
+      {
+        break;
+      }
+      const double aD = toPart(aTn);
+      if (aD <= theTol)
+      {
+        return true;
+      }
+      if (aD < aDBest)
+      {
+        aDBest     = aD;
+        aTBest     = aTn;
+        aTBestPrev = aTc;
+        aTBestNext = aTn; // set when the next point is made
+      }
+      else if (aTBest == aTc)
+      {
+        aTBestNext = aTn;
+      }
+      if (aPn.Distance(aPc) < theR / 64.)
+      {
+        aDt *= 2.;
+      }
+      aTPrev = aTc;
+      aTc    = aTn;
+      aPc    = aPn;
+      if (aTn == aTC[k])
+      {
+        break;
+      }
+    }
+    (void)aTPrev;
+    if (aDBest >= RealLast())
+    {
+      continue;
+    }
+    // nearer between the nearest point and its neighbours
+    double aA = std::min(aTBestPrev, aTBestNext), aB = std::max(aTBestPrev, aTBestNext);
+    for (int n = 0; n < 48 && aB - aA > 1.e-14 * std::max(1., std::abs(aB)); ++n)
+    {
+      const double aM1 = aA + (aB - aA) / 3., aM2 = aB - (aB - aA) / 3.;
+      const double aD1 = toPart(aM1), aD2 = toPart(aM2);
+      if (std::min(aD1, aD2) <= theTol)
+      {
+        return true;
+      }
+      if (aD1 < aD2)
+      {
+        aB = aM2;
+      }
+      else
+      {
+        aA = aM1;
+      }
+    }
+  }
+  return false;
+}
+
+//=================================================================================================
+
+// Takes a vertex off a section curve that it was put on by its stretched
+// tolerance and that does not come to it. A vertex made where an edge meets
+// a face (or another edge) has its tolerance stretched, for the curves of
+// that face, to the ends of the part of the edge that lies on the face round
+// it (BOPAlgo_PaveFiller::ExtendedTolerance()), and a curve within that
+// distance takes the vertex and grows it to reach
+// (BOPAlgo_PaveFiller::PutPaveOnCurve()). FilterPavesOnCurves() takes such a
+// vertex off a curve again where another curve has it nearer, unless the
+// vertex is square to the curve -- the curve passing by it. Passing by is not
+// coming to it: a prism standing 0.01 inside a torus on a profile that is the
+// torus' own cut has its bottom edge cross the torus at a grazing angle,
+// lying on it for 0.3 each way. One section of the wall with the torus ends
+// on that vertex, as it should; another, a line 0.01 from the edge all along
+// which turns away 0.046 from the vertex, took the vertex too and grew it to
+// 0.046. Five edges then end in one vertex, a face of the torus is not made
+// (BOPAlgo_AlertFaceBuilderUnusedEdges), and the common of the two solids is
+// nothing, with no error. So: where another curve of the pair has the vertex
+// within its own tolerance, a curve that has it further off than its
+// tolerance, passes on both ways beyond that distance, and nowhere on the
+// way comes to the part of the edge the tolerance was stretched along,
+// gives the vertex up. The vertex's tolerance goes back to what the curves
+// that keep it need.
+static void dropStretchedPaves(const BOPDS_PDS&                             theDS,
+                               const occ::handle<IntTools_Context>&         theCtx,
+                               const NCollection_DynamicArray<BOPDS_Curve>& theVC,
+                               const NCollection_Map<int>&                  theMI,
+                               const double                                 theFuzzy,
+                               NCollection_DataMap<int, double>&            theMVTol)
+{
+  for (int i = 0; i < theVC.Length(); ++i)
+  {
+    const BOPDS_Curve&    aNC = theVC(i);
+    const IntTools_Curve& aIC = aNC.Curve();
+    if (!aIC.HasBounds() || aNC.PaveBlocks().IsEmpty())
+    {
+      continue;
+    }
+    double aTB[2];
+    gp_Pnt aPB[2];
+    aIC.Bounds(aTB[0], aTB[1], aPB[0], aPB[1]);
+    const double aTolR3D = std::max(aNC.Tolerance(), aNC.TangentialTolerance());
+    const occ::handle<BOPDS_PaveBlock>& aPB1 = aNC.PaveBlocks().First();
+    NCollection_List<int>               aLOff;
+    for (NCollection_List<BOPDS_Pave>::Iterator aItP(aPB1->ExtPaves()); aItP.More(); aItP.Next())
+    {
+      const int     nV   = aItP.Value().Index();
+      const double* pTol = theMVTol.Seek(nV); // what it was before a curve grew it
+      if (!pTol || !theDS->IsNewShape(nV))
+      {
+        continue;
+      }
+      const TopoDS_Vertex& aV  = TopoDS::Vertex(theDS->Shape(nV));
+      const gp_Pnt         aPV = BRep_Tool::Pnt(aV);
+      const double         aD  = aPV.Distance(aIC.Curve()->Value(aItP.Value().Parameter()));
+      if (aD <= aTolR3D + *pTol + theFuzzy || aPB[0].Distance(aPV) <= 2. * aD
+          || aPB[1].Distance(aPV) <= 2. * aD)
+      {
+        continue;
+      }
+      // another curve of the pair has it
+      bool bOther = false;
+      for (int j = 0; j < theVC.Length() && !bOther; ++j)
+      {
+        const BOPDS_Curve& aNCj = theVC(j);
+        if (j == i || aNCj.PaveBlocks().IsEmpty())
+        {
+          continue;
+        }
+        const double aTolJ = std::max(aNCj.Tolerance(), aNCj.TangentialTolerance());
+        for (NCollection_List<BOPDS_Pave>::Iterator aItJ(aNCj.PaveBlocks().First()->ExtPaves());
+             aItJ.More() && !bOther;
+             aItJ.Next())
+        {
+          bOther = aItJ.Value().Index() == nV
+                   && aPV.Distance(aNCj.Curve().Curve()->Value(aItJ.Value().Parameter()))
+                        <= aTolJ + *pTol + theFuzzy;
+        }
+      }
+      if (!bOther)
+      {
+        continue;
+      }
+      TopoDS_Edge aEPart;
+      double      aTPart[2] = {0., 0.};
+      if (stretchedPart(theDS, nV, theMI, 0, aEPart, aTPart[0], aTPart[1])
+          && !curveMeetsEdgePart(theCtx,
+                                 aIC,
+                                 aItP.Value().Parameter(),
+                                 aPV,
+                                 2. * aD,
+                                 aEPart,
+                                 aTPart[0],
+                                 aTPart[1],
+                                 aTolR3D + std::max(*pTol, BRep_Tool::Tolerance(aEPart))
+                                   + theFuzzy))
+      {
+        aLOff.Append(nV);
+      }
+    }
+    for (NCollection_List<int>::Iterator aItV(aLOff); aItV.More(); aItV.Next())
+    {
+      const int nV = aItV.Value();
+      aPB1->RemoveExtPave(nV);
+      // as wide as the curves that keep it need
+      const TopoDS_Vertex& aV   = TopoDS::Vertex(theDS->Shape(nV));
+      const gp_Pnt         aPV  = BRep_Tool::Pnt(aV);
+      double               aTol = theMVTol(nV);
+      for (int j = 0; j < theVC.Length(); ++j)
+      {
+        if (theVC(j).PaveBlocks().IsEmpty())
+        {
+          continue;
+        }
+        for (NCollection_List<BOPDS_Pave>::Iterator aItJ(theVC(j).PaveBlocks().First()->ExtPaves());
+             aItJ.More();
+             aItJ.Next())
+        {
+          if (aItJ.Value().Index() == nV)
+          {
+            aTol = std::max(aTol,
+                            aPV.Distance(theVC(j).Curve().Curve()->Value(aItJ.Value().Parameter()))
+                              + Precision::Confusion());
+          }
+        }
+      }
+      if (aTol < BRep_Tool::Tolerance(aV))
+      {
+        (*(occ::handle<BRep_TVertex>*)&aV.TShape())->Tolerance(aTol);
+      }
+    }
+  }
 }
 
 //=================================================================================================
