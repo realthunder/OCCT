@@ -6644,6 +6644,103 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
   return aResult;
 }
 
+// The tube round a tangent edge of a removed face (the cap) ends, at each
+// end of the edge, in a quarter circle from the neighbour's offset edge
+// theOE down to its edge on the cap, theOn. Where the cap's next edge goes
+// on in the same direction and is tangent too -- a blend along the cap made
+// in two, the cap's edge with a vertex in its middle -- that edge's tube
+// ends in the same quarter circle, and it is to be the same edge: each tube
+// with an arc of its own, the two never met (they are tangent there, and
+// nothing cuts one by the other), the shell stayed open along the arcs,
+// every face of the offset hung from there and was dropped, and the
+// thickness was refused: #613's part, the flat of its roof removed, whose
+// blend to the cone is in two halves -- where the other flat, its blend in
+// one, was made.
+// Among the tubes made so far for the same cap, the one whose end arc
+// starts at the vertex theOE ends in and ends where theOn does, within
+// theTol: theOn then takes that arc's vertex for its own, and the arc is
+// handed back, theFirst at theOn's first end and theLast at its last, for
+// BRepOffset_Offset::Init to bound the tube with.
+static void ShareTubeEnds(
+  const TopoDS_Face&                                                                   theCap,
+  const TopoDS_Edge&                                                                   theOE,
+  TopoDS_Edge&                                                                         theOn,
+  const NCollection_IndexedDataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theTangentE,
+  const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& theTubes,
+  const double                                                                         theTol,
+  TopoDS_Edge&                                                                         theFirst,
+  TopoDS_Edge&                                                                         theLast)
+{
+  TopoDS_Vertex aVO[2], aVN[2];
+  TopExp::Vertices(TopoDS::Edge(theOE.Oriented(TopAbs_FORWARD)), aVO[0], aVO[1]);
+  TopExp::Vertices(TopoDS::Edge(theOn.Oriented(TopAbs_FORWARD)), aVN[0], aVN[1]);
+  if (aVO[0].IsNull() || aVO[1].IsNull() || aVN[0].IsNull() || aVN[1].IsNull()
+      || aVO[0].IsSame(aVO[1]) || aVN[0].IsSame(aVN[1]))
+  {
+    return;
+  }
+  bool isShared = false;
+  for (int iEnd = 0; iEnd < 2; ++iEnd)
+  {
+    const gp_Pnt aPN = BRep_Tool::Pnt(aVN[iEnd]);
+    TopoDS_Edge  anArc;
+    TopoDS_Vertex aFoot;
+    double        aBest = theTol;
+    for (int iT = 1; iT <= theTangentE.Extent(); ++iT)
+    {
+      if (!theTangentE(iT).IsSame(theCap) || !theTubes.IsBound(theTangentE.FindKey(iT)))
+      {
+        continue;
+      }
+      const TopoDS_Face& aTF = theTubes(theTangentE.FindKey(iT)).Face();
+      for (TopExp_Explorer anExp(aTF, TopAbs_EDGE); anExp.More(); anExp.Next())
+      {
+        const TopoDS_Edge& anA = TopoDS::Edge(anExp.Current());
+        if (BRep_Tool::Degenerated(anA))
+        {
+          continue;
+        }
+        TopoDS_Vertex aA1, aA2;
+        TopExp::Vertices(anA, aA1, aA2);
+        if (aA1.IsNull() || aA2.IsNull() || aA1.IsSame(aA2))
+        {
+          continue;
+        }
+        if (!aA1.IsSame(aVO[iEnd]) && !aA2.IsSame(aVO[iEnd]))
+        {
+          continue;
+        }
+        const TopoDS_Vertex& aW = aA1.IsSame(aVO[iEnd]) ? aA2 : aA1;
+        const double         aD = BRep_Tool::Pnt(aW).Distance(aPN);
+        if (aD <= aBest)
+        {
+          aBest = aD;
+          anArc = anA;
+          aFoot = aW;
+        }
+      }
+    }
+    if (anArc.IsNull() || aFoot.IsSame(aVN[1 - iEnd]))
+    {
+      continue;
+    }
+    BRep_Builder().UpdateVertex(aFoot, 1.1 * aBest + BRep_Tool::Tolerance(theOn));
+    aVN[iEnd] = aFoot;
+    (iEnd == 0 ? theFirst : theLast) = anArc;
+    isShared = true;
+  }
+  if (!isShared)
+  {
+    return;
+  }
+  const TopAbs_Orientation anOri = theOn.Orientation();
+  TopoDS_Edge              aNew  = TopoDS::Edge(theOn.EmptyCopied().Oriented(TopAbs_FORWARD));
+  BRep_Builder             aBB;
+  aBB.Add(aNew, aVN[0].Oriented(TopAbs_FORWARD));
+  aBB.Add(aNew, aVN[1].Oriented(TopAbs_REVERSED));
+  theOn = TopoDS::Edge(aNew.Oriented(anOri));
+}
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::ToContext(
@@ -6995,10 +7092,28 @@ void BRepOffset_MakeOffset::ToContext(
       SHOW_TOPO_SHAPE(E, "TangentTubeNoEdge");
       continue;
     }
+    // The end it has in common with a tube made before (ShareTubeEnds).
+    TopoDS_Edge aFirstArc, aLastArc;
+    ShareTubeEnds(CF,
+                  OE0,
+                  EOn2,
+                  aTangentE,
+                  aTubes,
+                  std::max(myTol, 10. * Precision::Confusion()),
+                  aFirstArc,
+                  aLastArc);
     try
     {
       BRepOffset_Offset aTube;
-      aTube.Init(E, OE0, EOn2, myOffset);
+      if (aFirstArc.IsNull() && aLastArc.IsNull())
+      {
+        aTube.Init(E, OE0, EOn2, myOffset);
+      }
+      else
+      {
+        aTube.Init(E, OE0, EOn2, myOffset, aFirstArc, aLastArc);
+        SHOW_TOPO_SHAPE(aFirstArc.IsNull() ? aLastArc : aFirstArc, "TangentTubeSharedEnd");
+      }
       const TopoDS_Face& aTF = aTube.Face();
       myInitOffsetFace.Bind(E, aTF);
       myInitOffsetFace.SetRoot(E);
