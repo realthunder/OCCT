@@ -17,6 +17,7 @@
 //  Modified by skv - Thu Sep  4 11:22:05 2003 OCC578
 
 #include <BRep_Tool.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepClass3d_Intersector3d.hxx>
 #include <BRepClass3d_SClassifier.hxx>
 #include <BRepClass3d_SolidExplorer.hxx>
@@ -254,6 +255,28 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
   bool   isFaultyLine = true;
   int    anIndFace    = 0;
   double parmin       = 0.0;
+  // A line that passes an edge within the edge's tolerance, but not through
+  // its curve, says nothing of a crossing there: the two faces' normals at
+  // the edge tell which way a line through the edge crosses, and beside it
+  // the line may cross neither face, or both -- out of the solid and in
+  // again where the faces do not quite meet, which no face's intersection
+  // finds either. Such a pass, nearer than the first crossing found, makes
+  // the line faulty, as one that passes a vertex. (A chamfer of #631, the
+  // corner of two set back, a patch with edges of 0.011: a point 0.56
+  // inside the solid, its line 0.008 from such an edge at 5.9 where it
+  // clips a notch of the patch, was taken to enter the solid there, and
+  // was OUT.) Where every line is faulty so, the lines are taken again with
+  // the pass trusted as it was before.
+  // Nor is a crossing found on a face within the edge's tolerance of such a
+  // pass the first: there the faces overlap, or gape, and the line that
+  // only touches the solid crosses one face in and the other out, a
+  // thousandth apart, in either order. (#962, two chamfers and a patch
+  // with edges of 0.0024: the line of a point inside passes one 0.0008
+  // from its curve at 0.7047 and crosses the two faces of that edge at
+  // 0.7037, in, and at 0.7053, out, on the border of the second; the first
+  // made the point OUT.)
+  bool isStrict     = true;
+  bool hasLoosePass = false;
   while (isFaultyLine)
   {
     if (anIndFace == 0)
@@ -270,6 +293,12 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
     if (aCurInd > anIndFace)
     {
       anIndFace = aCurInd;
+    }
+    else if (isStrict && hasLoosePass)
+    {
+      isStrict  = false;
+      anIndFace = 0;
+      continue;
     }
     else
     {
@@ -300,6 +329,9 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
     parmin       = RealLast();
 
     double NearFaultPar = RealLast(); // Parameter on line.
+    // the nearest a crossing may be to count before a loose pass: the pass
+    // less its edge's tolerance
+    double aLooseNear = RealLast();
     aSelectorLine.ClearResults();
     aSelectorLine.SetCurrentLine(L, Par);
     int SelsEVL = 0;
@@ -344,6 +376,21 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
         if (LVInts.Contains(V1) || LVInts.Contains(V2))
         {
           continue;
+        }
+        if (BRepAdaptor_Curve(EE).Value(param).Distance(ElCLib::Value(Lpar, L))
+            > std::max(Tol, Precision::Confusion()))
+        {
+          // within the edge's tolerance, not through its curve
+          hasLoosePass = true;
+          if (isStrict)
+          {
+            if (std::abs(Lpar) < std::abs(NearFaultPar))
+            {
+              NearFaultPar = Lpar;
+            }
+            aLooseNear = std::min(aLooseNear, std::abs(Lpar) - BRep_Tool::Tolerance(EE));
+            continue;
+          }
         }
 
         IntCurveSurface_TransitionOnCurve tran = IntCurveSurface_Tangent;
@@ -510,6 +557,10 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
 
     if (NearFaultPar != RealLast()
         && std::abs(parmin) >= std::abs(NearFaultPar) - Precision::PConfusion())
+    {
+      isFaultyLine = true;
+    }
+    if (aLooseNear != RealLast() && std::abs(parmin) >= aLooseNear)
     {
       isFaultyLine = true;
     }
