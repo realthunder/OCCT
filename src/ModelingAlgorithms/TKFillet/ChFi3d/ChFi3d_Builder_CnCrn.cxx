@@ -3183,11 +3183,27 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         // than the patch set back where both of the edge's neighbours are
         // stripes (#474's coil on its block's upright edge). So only once the
         // result is invalid all the same (ChFi3d_PlateStepBackOnEdge).
+        // Nor has one on this edge whose parameter is not where its point
+        // is: a line that left the face across the edge's curve beyond the
+        // edge's end -- the rim of a post on a box's corner, a circle of
+        // which the edge is three quarters, the line crossing the quarter
+        // that is not there -- has its point there and the parameter of the
+        // curve's other crossing, on the edge. The edge's point went to
+        // that, and the plate over the whole top of the post (#523's box,
+        // the post's line and the box's top edge chamfered: valid, the
+        // top's chamfer 4 round the post).
         auto isOnSharp = [&](const ChFiDS_CommonPoint& theCP) {
-          return theCP.IsOnArc()
-                 && (!ChFi3d_PlateStepBackOnEdge() || theCP.Arc().IsSame(Evive.Value(ic))
-                     || C.Value(theCP.ParameterOnArc()).Distance(theCP.Point())
-                          <= std::max(theCP.Tolerance(), tolapp3d));
+          if (!theCP.IsOnArc())
+          {
+            return false;
+          }
+          const bool isThere = C.Value(theCP.ParameterOnArc()).Distance(theCP.Point())
+                               <= std::max(theCP.Tolerance(), tolapp3d);
+          if (theCP.Arc().IsSame(Evive.Value(ic)))
+          {
+            return isThere;
+          }
+          return !ChFi3d_PlateStepBackOnEdge() || isThere;
         };
         if (!sharp.Value(icplus))
         {

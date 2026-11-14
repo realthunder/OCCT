@@ -42,14 +42,18 @@ void ChFi3d_ChBuilder::PerformTwoCorner(const int Index)
   // and the corner was left with nothing. The corner of several edges
   // makes it, as it does for two fillets
   // (ChFi3d_FilBuilder::PerformTwoCorner) -- where the vertex has the two
-  // edges and one more, and neither chamfer's surface runs on past the
-  // vertex by more than one and a half times its size: that corner takes each surface's
-  // end as it is, and one carried on along the next edge stayed in the
-  // result, a chamfer of an edge nobody asked for (#962's arm, 13 along
-  // the block's foot; valid, and clean by BOP's check). And the result is
-  // refused where that corner left an edge looser than a twentieth of the
-  // chamfer (ChFi3d_TwoChamferCorner): a chamfer of 1 on a piece of an
-  // edge 0.7 long came out with vertices of 0.23.
+  // edges and one more; and, below fix level 3, where neither chamfer's
+  // surface runs on past the vertex by more than one and a half times its
+  // size: from such a surface that corner made a chamfer of an edge nobody
+  // asked for (#962's arm, 13 along the block's foot; #523's box, the
+  // whole top of its post; valid, and clean by BOP's check). From level 3
+  // it cuts the line at the vertex (ChFi3d_Builder_CnCrn.cxx,
+  // CutAtSpineEnd), and at every level it takes no common point for the
+  // edge's whose parameter is not where it is (isOnSharp, there): with
+  // both, these are made right. And the result is refused
+  // where that corner left an edge looser than a twentieth of the chamfer
+  // (ChFi3d_TwoChamferCorner): a chamfer of 1 on a piece of an edge 0.7
+  // long came out with vertices of 0.23.
   const TopoDS_Vertex& aVtx = myVDataMap.FindKey(Index);
   // (the map lists an edge once for each face it is in)
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anEdges;
@@ -79,15 +83,14 @@ void ChFi3d_ChBuilder::PerformTwoCorner(const int Index)
     const bool                          isFirst = aSens == 1;
     const double aPast  = isFirst ? aSpine->FirstParameter(1) - aSD->FirstSpineParam()
                                   : aSD->LastSpineParam() - aSpine->LastParameter(aSpine->NbEdges());
-    // (At every fix level. From level 3 the corner of several edges cuts a
-    // line that no neighbour crosses back to the vertex, CutAtSpineEnd, and
-    // that is not enough: let through, #523's box, the post's line with
-    // the box's top edge, was made with the top split along the edge's
-    // chamfer carried on across the post's top and the corner's patch over
-    // all of that top -- the corner's own cuts at the vertex, 0.3 along
-    // each. Why is not known; fe5e57d291's message says that corner finds
-    // a crossing for the line, which the trace does not show.)
-    isAtVertex = aPast <= 1.5 * ChFi3d_ChamferSize(aSpine);
+    // (Below fix level 3. From it the corner of several edges cuts such a
+    // line back to the vertex, CutAtSpineEnd, and the surface is let at
+    // it; below, the corner is left and noted as one a level above makes.)
+    if (aPast > 1.5 * ChFi3d_ChamferSize(aSpine) && ChFi3d_FixLevel() < 3)
+    {
+      ChFi3d_FixPassedOver() = true;
+      isAtVertex             = false;
+    }
   }
   if (isAtVertex)
   {
