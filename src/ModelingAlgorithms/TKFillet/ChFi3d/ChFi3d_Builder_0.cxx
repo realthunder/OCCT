@@ -145,6 +145,14 @@ bool& ChFi3d_FixPassedOver()
 
 //=================================================================================================
 
+double& ChFi3d_TwoChamferCorner()
+{
+  thread_local double aSize = 0.;
+  return aSize;
+}
+
+//=================================================================================================
+
 NCollection_List<gp_Pnt>& ChFi3d_RunOnSeams()
 {
   thread_local NCollection_List<gp_Pnt> aSeams;

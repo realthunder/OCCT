@@ -3304,10 +3304,17 @@ void ChFi3d_Builder::Compute()
     // not done, the shape kept for BadShape(). Before the long extension,
     // which may make it valid, and after it, which may give it back as it was.
     // So is one with the radii a hair smaller that kept a sliver
+    // So is one where two chamfers' corner was made as a corner of several
+    // edges (ChFi3d_ChBuilder::PerformTwoCorner) and left an edge looser
+    // than the input's or a twentieth of the chamfer, the terms the setback
+    // fallback takes a result on
     const auto RefuseInvalid = [this]() {
       if (done
           && (!BRepCheck_Analyzer(myShapeResult).IsValid()
-              || (ChFi3d_SnapSlivers() && ChFi3d_HasSliverLeft(myShapeResult, myShape, tolapp3d))))
+              || (ChFi3d_SnapSlivers() && ChFi3d_HasSliverLeft(myShapeResult, myShape, tolapp3d))
+              || (ChFi3d_TwoChamferCorner() > 0.
+                  && MaxEdgeTolerance(myShapeResult)
+                       > std::max(MaxEdgeTolerance(myShape), 0.05 * ChFi3d_TwoChamferCorner()))))
       {
         badShape  = myShapeResult;
         hasresult = true;
@@ -3380,6 +3387,7 @@ void ChFi3d_Builder::Compute()
   }
 
   Reset();
+  ChFi3d_TwoChamferCorner()        = 0.;
   myDS                             = new TopOpeBRepDS_HDataStructure();
   TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
   done                             = true;

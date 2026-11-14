@@ -110,6 +110,14 @@ bool& ChFi3d_SnapSlivers();
 //! once more at the latest level. The calling thread's.
 bool& ChFi3d_FixPassedOver();
 
+//! The smallest size of a chamfer whose corner with another the computation
+//! running made as a corner of several edges, their intersection having
+//! failed (ChFi3d_ChBuilder::PerformTwoCorner); 0 where it made none. Such a
+//! result is held to that corner's terms: no edge looser than the input's
+//! or a twentieth of this size (ChFi3d_Builder::Compute). The calling
+//! thread's.
+double& ChFi3d_TwoChamferCorner();
+
 //! Set while ChFi3d_Builder::Compute makes the corners' plates again with
 //! their sharp edges stepped back only to the stripes' common points on
 //! those edges (ChFi3d_Builder::PerformMoreThreeCorner): the result was
