@@ -65,6 +65,43 @@ void ChFi3d_ChBuilder::PerformTwoCorner(const int Index)
     }
   }
   bool isAtVertex = anEdges.Extent() == 3;
+  if (anEdges.Extent() == 4)
+  {
+    // At a vertex of four edges too, where the two chamfered edges are on
+    // one face: the fourth edge is then beside the two and not between
+    // them. Where they have no face in common it may be a split between
+    // coplanar pieces of the wall the two stand on, and that corner came
+    // out with vertices BOP's check reports and a cut fails with (#962's
+    // block, its upright edge at the top with the edge along the split).
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFaces;
+    bool                                                   isShared = false;
+    int                                                    aNb      = 0;
+    for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myVDataMap(Index));
+         itS.More() && !isShared;
+         itS.Next(), aNb++)
+    {
+      const occ::handle<ChFiDS_Spine>& aSpine = itS.Value()->Spine();
+      int                              aSens  = 0;
+      ChFi3d_IndexOfSurfData(aVtx, itS.Value(), aSens);
+      const TopoDS_Edge& anE = aSpine->Edges(aSens == 1 ? 1 : aSpine->NbEdges());
+      if (!myEFMap.Contains(anE))
+      {
+        continue;
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator itF(myEFMap(anE)); itF.More(); itF.Next())
+      {
+        if (aNb == 0)
+        {
+          aFaces.Add(itF.Value());
+        }
+        else if (aFaces.Contains(itF.Value()))
+        {
+          isShared = true;
+        }
+      }
+    }
+    isAtVertex = isShared && aNb == 2;
+  }
   for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myVDataMap(Index));
        itS.More() && isAtVertex;
        itS.Next())
