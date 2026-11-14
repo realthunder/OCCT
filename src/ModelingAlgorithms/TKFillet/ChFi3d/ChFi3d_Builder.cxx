@@ -2564,16 +2564,35 @@ double LargestRadiusAt(const occ::handle<ChFiDS_FilSpine>& theSp, const int theI
   return theSp->IsConstant(theIE) ? theSp->Radius(theIE) : theSp->MaxRadFromSeqAndLaws();
 }
 
+// Whether three sharp edges meet at <theV>; not where the count fails, as
+// a corner there can.
+bool HasThreeSharpEdges(const TopoDS_Vertex& theV,
+                        const ChFiDS_Map&    theVEMap,
+                        const ChFiDS_Map&    theEFMap)
+{
+  try
+  {
+    OCC_CATCH_SIGNALS
+    return ChFi3d_NumberOfSharpEdges(theV, theVEMap, theEFMap) == 3;
+  }
+  catch (Standard_Failure const&)
+  {
+    return false;
+  }
+}
+
 // Whether a fillet stripe of <theStripes> ends at one of <theVertices>, as
-// the setback fallback sets ends back: a chamfer's does not.
+// the setback fallback sets ends back -- or, with <isChamfer>, a chamfer's.
 bool HasFilletEndAt(const NCollection_List<occ::handle<ChFiDS_Stripe>>&          theStripes,
-                    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theVertices)
+                    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theVertices,
+                    const bool isChamfer = false)
 {
   for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(theStripes); itS.More();
        itS.Next())
   {
-    const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(itS.Value()->Spine());
-    if (aSp.IsNull())
+    const occ::handle<ChFiDS_Spine>& aSp = itS.Value()->Spine();
+    if (aSp.IsNull() || occ::down_cast<ChFiDS_FilSpine>(aSp).IsNull() != isChamfer
+        || (isChamfer && ChFi3d_ChamferSize(aSp) <= 0.))
     {
       continue;
     }
@@ -3524,6 +3543,52 @@ void ChFi3d_Builder::Compute()
         {
           done = false;
         }
+      }
+    }
+    // Chamfers whose corner the plate made, the result invalid still, or
+    // looser than RefuseInvalid lets a corner of two chamfers be: that
+    // corner set back, as the fillets' above -- after the step back, which
+    // makes some today, and from fix level 3, as where a chamfer's corner
+    // fails (ComputeSetbackFallback); below it noted as passed over.
+    // #962, E68 (concave) with E69 (convex) at a vertex of three edges,
+    // chamfered at 0.3: the corner of two made as a corner of several
+    // edges, invalid. Only where the plate made one corner, and that at a
+    // vertex of three sharp edges. With two, the one that was sound is set
+    // back with the other: #474's coil, E17 with E20 at 0.3, 5.8 cubes of
+    // the chamfer's size less than the two edges chamfered alone put
+    // together, up to 13 sizes from the vertex. At a vertex of four sharp
+    // edges: #962, E50 with E51 at 1, 4.4 cubes less, up to 4.9 sizes from
+    // the vertex; #631, E9 with E16, 2.1 less, up to 3.5. Of the 80 of the
+    // sweeps at three, none is more than 2.2 sizes from its vertex off the
+    // two alone, nor by more than 0.6 cubes where the corner is set back
+    // by less than one and a half sizes.
+    if (done && aPlates.Extent() == 1 && CornerSetbackFallback() > 0.
+        && HasFilletEndAt(myListStripe, aPlates, true)
+        && HasThreeSharpEdges(
+          TopoDS::Vertex(
+            NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator(aPlates).Key()),
+          myVEMap,
+          myEFMap)
+        && (!BRepCheck_Analyzer(myShapeResult).IsValid()
+            || (ChFi3d_TwoChamferCorner() > 0.
+                && MaxEdgeTolerance(myShapeResult)
+                     > std::max(MaxEdgeTolerance(myShape), 0.05 * ChFi3d_TwoChamferCorner()))))
+    {
+      if (ChFi3d_FixLevel() < 3)
+      {
+        ChFi3d_FixPassedOver() = true;
+      }
+      else
+      {
+        badvertices.Clear();
+        for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itV(aPlates);
+             itV.More();
+             itV.Next())
+        {
+          badvertices.Append(itV.Key());
+        }
+        done = false;
+        ComputeSetbackFallback();
       }
     }
     // A result BRepCheck finds invalid is no result: refused, the computation
