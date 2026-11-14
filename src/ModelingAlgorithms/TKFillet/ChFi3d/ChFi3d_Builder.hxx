@@ -973,6 +973,12 @@ extern "C" Standard_EXPORT int ChFi3d_SetFlatEndAtVertex(const int theToUse);
 //!       whole to it, and an end extended keeps its own point and tangent
 //!       (#631's arm: a chamfer of 0.8 from 0.52 to 1.37 wide, exact now;
 //!       the fork's tests/fork/fillet/README.md).
+//!  2 -- at a corner, the surfaces of a stripe kept are those at that end of
+//!       it: a surface run on past the stripe's other end, which starts on an
+//!       edge that is beside the spine's at both of its ends (a chord across
+//!       a cup's top, the rim beside it the spine), is not taken for the one
+//!       at this vertex (#273's rim, whose chamfer was refused; four fillets
+//!       at the vertices of #474's coil are made differently by it).
 extern "C" Standard_EXPORT int ChFi3d_SetFixLevel(const int theLevel);
 
 //! The calling thread's level of ChFi3d_SetFixLevel().

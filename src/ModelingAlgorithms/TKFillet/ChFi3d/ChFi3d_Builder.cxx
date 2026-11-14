@@ -157,7 +157,7 @@ thread_local bool THE_IN_SETBACK_COMPUTE = false;
 thread_local bool THE_FLAT_END_AT_VERTEX = false;
 // ChFi3d_SetFixLevel(): the calling thread's, and the latest there is
 thread_local int THE_FIX_LEVEL        = 0;
-constexpr int    THE_FIX_LEVEL_LATEST = 1;
+constexpr int    THE_FIX_LEVEL_LATEST = 2;
 // set while Compute() runs at the level set, which a failure tries again at
 // the latest
 thread_local bool THE_IN_FIX_LEVEL_COMPUTE = false;

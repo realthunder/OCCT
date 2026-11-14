@@ -1186,11 +1186,26 @@ static void PerformTwoCornerSameExt(TopOpeBRepDS_DataStructure&       DStr,
 // purpose  : determine if surfdata num has a common point on Eadj1 or Eadj2
 //=======================================================================
 
+// Whether the surface has, at its end <isfirst>, a point on one of the two
+// edges beside the spine's at <theV> -- and on <theV>'s half of that edge.
+// An edge beside the spine's at one of its ends can be beside it at the
+// other as well: a chord across the top of a cup, the rim on one side of it
+// the spine. The surface run on past the far end starts on that chord too,
+// by the far vertex; taken for the one at <theV>, every surface before it
+// was removed, the edge's own among them, and the corner was left with a
+// surface of which one side is no face (a chamfer of #273's rim beside its
+// handle: "Failed to find edge" at both ends, where the fillet, whose
+// surfaces past the ends are not kept, was made).
+// From fix level 2: fillets made before are made differently by it (four
+// at the vertices of #474's coil, by 0.2 mm3). Below, a point by the far
+// vertex counts as it did, and the computation, where it then makes
+// nothing, is tried again at the latest level (ChFi3d_Builder::Compute).
 static void CpOnEdge(const occ::handle<ChFiDS_Stripe>& stripe,
                      int                               num,
                      bool                              isfirst,
                      const TopoDS_Edge&                Eadj1,
                      const TopoDS_Edge&                Eadj2,
+                     const TopoDS_Vertex&              theV,
                      bool&                             compoint)
 
 {
@@ -1198,16 +1213,40 @@ static void CpOnEdge(const occ::handle<ChFiDS_Stripe>& stripe,
   compoint = false;
   cp1      = stripe->SetOfSurfData()->Value(num)->ChangeVertex(isfirst, 1);
   cp2      = stripe->SetOfSurfData()->Value(num)->ChangeVertex(isfirst, 2);
+  auto isByV = [&](const ChFiDS_CommonPoint& theCP) {
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(theCP.Arc(), aV1, aV2);
+    if (aV1.IsNull() || aV2.IsNull() || aV1.IsSame(aV2))
+    {
+      return true;
+    }
+    const TopoDS_Vertex& aFar = aV1.IsSame(theV) ? aV2 : aV1;
+    if (!aV1.IsSame(theV) && !aV2.IsSame(theV))
+    {
+      return true;
+    }
+    if (theCP.Point().Distance(BRep_Tool::Pnt(theV))
+        <= theCP.Point().Distance(BRep_Tool::Pnt(aFar)))
+    {
+      return true;
+    }
+    if (ChFi3d_FixLevel() < 2)
+    {
+      ChFi3d_FixPassedOver() = true;
+      return true;
+    }
+    return false;
+  };
   if (cp1.IsOnArc())
   {
-    if (cp1.Arc().IsSame(Eadj1) || cp1.Arc().IsSame(Eadj2))
+    if ((cp1.Arc().IsSame(Eadj1) || cp1.Arc().IsSame(Eadj2)) && isByV(cp1))
     {
       compoint = true;
     }
   }
   if (cp2.IsOnArc())
   {
-    if (cp2.Arc().IsSame(Eadj1) || cp2.Arc().IsSame(Eadj2))
+    if ((cp2.Arc().IsSame(Eadj1) || cp2.Arc().IsSame(Eadj2)) && isByV(cp2))
     {
       compoint = true;
     }
@@ -1292,7 +1331,7 @@ static void RemoveSurfData(const ChFiDS_StripeMap& myVDataMap,
         // remove surfdata from 1 to ind-1
         for (int i = 1; i <= nbsurf && isAtEnd(i); i++)
         {
-          CpOnEdge(It.Value(), i, isfirst, Eadj1, Eadj2, compoint);
+          CpOnEdge(It.Value(), i, isfirst, Eadj1, Eadj2, V1, compoint);
           if (compoint)
           {
             ind = i;
@@ -1311,7 +1350,7 @@ static void RemoveSurfData(const ChFiDS_StripeMap& myVDataMap,
         // remove surfdata from ind+1 to num
         for (int i = num; i >= 1 && isAtEnd(i); i--)
         {
-          CpOnEdge(It.Value(), i, isfirst, Eadj1, Eadj2, compoint);
+          CpOnEdge(It.Value(), i, isfirst, Eadj1, Eadj2, V1, compoint);
           if (compoint)
           {
             ind = i;
