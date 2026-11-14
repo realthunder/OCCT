@@ -3101,37 +3101,54 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
     {
       const occ::handle<Adaptor3d_TopolTool>& aTT1 = It1; // to avoid ambiguity
       const occ::handle<Adaptor3d_TopolTool>& aTT2 = It2; // to avoid ambiguity
-      CallPerformSurf(Stripe,
-                      Simul,
-                      SeqSD,
-                      SD,
-                      HGuide,
-                      Spine,
-                      HS1,
-                      HS3,
-                      pp1,
-                      pp3,
-                      aTT1,
-                      HS2,
-                      HS4,
-                      pp2,
-                      pp4,
-                      aTT2,
-                      MaxStep,
-                      locfleche,
-                      tolesp,
-                      First,
-                      Last,
-                      Inside,
-                      Inside,
-                      forward,
-                      RecS1,
-                      RecS2,
-                      Soldep,
-                      intf,
-                      intl,
-                      HS1,
-                      HS2);
+      // A walk past the stripe's end that cannot be made is done without
+      // (below): so where it comes back not done, and so where its surface
+      // could not be approximated, which a chamfer's throws -- left to go
+      // on, that took the whole stripe with it (#273's rim chamfered at 2,
+      // which a fillet, whose walk there only fails, is not lost for).
+      const bool isExtension = (!Ok1 && !obstacleon1) || (!Ok2 && !obstacleon2);
+      try
+      {
+        CallPerformSurf(Stripe,
+                        Simul,
+                        SeqSD,
+                        SD,
+                        HGuide,
+                        Spine,
+                        HS1,
+                        HS3,
+                        pp1,
+                        pp3,
+                        aTT1,
+                        HS2,
+                        HS4,
+                        pp2,
+                        pp4,
+                        aTT2,
+                        MaxStep,
+                        locfleche,
+                        tolesp,
+                        First,
+                        Last,
+                        Inside,
+                        Inside,
+                        forward,
+                        RecS1,
+                        RecS2,
+                        Soldep,
+                        intf,
+                        intl,
+                        HS1,
+                        HS2);
+      }
+      catch (Standard_Failure const&)
+      {
+        if (!isExtension)
+        {
+          throw;
+        }
+        done = false;
+      }
       decroch1 = decroch2 = false;
     }
 
