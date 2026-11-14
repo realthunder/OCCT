@@ -36,6 +36,8 @@
 #include <limits>
 #include <ChFi3d.hxx>
 #include <ChFiDS_FilSpine.hxx>
+#include <map>
+#include <utility>
 #include <ElCLib.hxx>
 #include <ElSLib.hxx>
 #include <Extrema_LocateExtCC.hxx>
@@ -151,6 +153,68 @@ double& ChFi3d_TwoChamferCorner()
 {
   thread_local double aSize = 0.;
   return aSize;
+}
+
+//=================================================================================================
+
+namespace
+{
+//! the chamfer spines set back, for the calling thread: first end, last end
+std::map<const ChFiDS_Spine*, std::pair<double, double>>& theChamferSetbacks()
+{
+  thread_local std::map<const ChFiDS_Spine*, std::pair<double, double>> aMap;
+  return aMap;
+}
+} // namespace
+
+//=================================================================================================
+
+double ChFi3d_SpineSetback(const occ::handle<ChFiDS_Spine>& theSpine, const bool isFirst)
+{
+  const occ::handle<ChFiDS_FilSpine> aFil = occ::down_cast<ChFiDS_FilSpine>(theSpine);
+  if (!aFil.IsNull())
+  {
+    return aFil->Setback(isFirst);
+  }
+  const auto anIt = theChamferSetbacks().find(theSpine.get());
+  if (anIt == theChamferSetbacks().end())
+  {
+    return -1.;
+  }
+  return isFirst ? anIt->second.first : anIt->second.second;
+}
+
+//=================================================================================================
+
+void ChFi3d_SetSpineSetback(const occ::handle<ChFiDS_Spine>& theSpine,
+                            const bool                       isFirst,
+                            const double                     theDist)
+{
+  const occ::handle<ChFiDS_FilSpine> aFil = occ::down_cast<ChFiDS_FilSpine>(theSpine);
+  if (!aFil.IsNull())
+  {
+    aFil->SetSetback(isFirst, theDist);
+    return;
+  }
+  if (theSpine.IsNull())
+  {
+    return;
+  }
+  std::map<const ChFiDS_Spine*, std::pair<double, double>>& aMap = theChamferSetbacks();
+  auto anIt = aMap.find(theSpine.get());
+  if (anIt == aMap.end())
+  {
+    if (theDist < 0.)
+    {
+      return;
+    }
+    anIt = aMap.emplace(theSpine.get(), std::make_pair(-1., -1.)).first;
+  }
+  (isFirst ? anIt->second.first : anIt->second.second) = theDist < 0. ? -1. : theDist;
+  if (anIt->second.first < 0. && anIt->second.second < 0.)
+  {
+    aMap.erase(anIt);
+  }
 }
 
 //=================================================================================================

@@ -986,7 +986,11 @@ extern "C" Standard_EXPORT int ChFi3d_SetFlatEndAtVertex(const int theToUse);
 //!       along the next edge, set the corner as far from the vertex as its
 //!       own far end (#962's rail, two edges in one line whose fillets were
 //!       refused; chamfers of #273's creases under the handle, which went on
-//!       5.8 past their end, are made differently by it).
+//!       5.8 past their end, are made differently by it). And from this
+//!       level a chamfer whose corner fails is made with the corner set
+//!       back, as a fillet is at any level: only a chamfer no level makes
+//!       whole is made so, as below this level the end is passed over and
+//!       the levels above are tried.
 //! Below the latest level, a computation that makes nothing and passed over
 //! a correction above its level is made again at each level above it in
 //! turn, and the first that makes it is the result.

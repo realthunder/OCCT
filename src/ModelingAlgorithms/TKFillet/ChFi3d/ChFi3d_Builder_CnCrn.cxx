@@ -1530,8 +1530,7 @@ static TopAbs_Orientation PlateOrientation(
 // where none is set (ChFiDS_FilSpine::SetSetback).
 static double SetbackOf(const occ::handle<ChFiDS_Stripe>& theStripe, const bool isFirst)
 {
-  const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(theStripe->Spine());
-  return aSp.IsNull() ? -1. : aSp->Setback(isFirst);
+  return ChFi3d_SpineSetback(theStripe->Spine(), isFirst);
 }
 
 // The depth asked for <theFace> at the corner by any stripe ending there
@@ -1565,7 +1564,7 @@ static double RadiusOf(const occ::handle<ChFiDS_Stripe>& theStripe, const bool i
   const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(theStripe->Spine());
   if (aSp.IsNull())
   {
-    return 0.;
+    return ChFi3d_ChamferSize(theStripe->Spine());
   }
   const int anIE = isFirst ? 1 : aSp->NbEdges();
   return aSp->IsConstant(anIE) ? aSp->Radius(anIE) : aSp->MaxRadFromSeqAndLaws();

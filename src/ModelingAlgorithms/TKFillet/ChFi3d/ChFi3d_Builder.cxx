@@ -28,6 +28,7 @@
 #include <NCollection_HSequence.hxx>
 #include <ChFiDS_Stripe.hxx>
 #include <NCollection_List.hxx>
+#include <ChFiDS_ChamfSpine.hxx>
 #include <ChFiDS_FilSpine.hxx>
 #include <ChFiDS_Spine.hxx>
 #include <Geom2d_Curve.hxx>
@@ -2322,6 +2323,159 @@ bool AreFilletsMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStrip
   return true;
 }
 
+// The angle between the outward normals of the two faces of <theE> at its
+// middle: 0 across a smooth edge; -1 where the edge has not two faces.
+double AngleAcross(const TopoDS_Edge& theE, const ChFiDS_Map& theEFMap)
+{
+  if (!theEFMap.Contains(theE))
+  {
+    return -1.;
+  }
+  const NCollection_List<TopoDS_Shape>& aFs = theEFMap.FindFromKey(theE);
+  if (aFs.Extent() < 2)
+  {
+    return -1.;
+  }
+  BRepAdaptor_Curve aC(theE);
+  const gp_Pnt      aMid = aC.Value(0.5 * (aC.FirstParameter() + aC.LastParameter()));
+  return OutwardNormalAt(TopoDS::Face(aFs.First()), aMid)
+    .Angle(OutwardNormalAt(TopoDS::Face(aFs.Last()), aMid));
+}
+
+// Whether <theResult> has an edge that its two vertices cover: one no longer
+// than twice their tolerances together, a vertex of it looser than
+// <theTolIn>, the loosest vertex of the input. Where the two spheres meet
+// BOP's check reports the vertices as interfering, and a cut with the shape
+// may fail; twice, as a result should not be made or refused by the last
+// digit of a length. #474's coil, the three chamfers of 1 at a vertex whose
+// fourth edge is smooth, the corner set back: an edge of 0.042 between
+// vertices of 0.03, and one of 0.050 between vertices of 0.025 at the
+// vertex across -- the only four of the 63 chamfers the sweeps made set
+// back with such an edge (the next nearest is 6.6 times its vertices).
+bool HasCoveredEdge(const TopoDS_Shape& theResult, const double theTolIn)
+{
+  for (TopExp_Explorer anExp(theResult, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(TopoDS::Edge(anExp.Current()), aV1, aV2);
+    if (aV1.IsNull() || aV2.IsNull() || aV1.IsSame(aV2))
+    {
+      continue;
+    }
+    const double aT1 = BRep_Tool::Tolerance(aV1);
+    const double aT2 = BRep_Tool::Tolerance(aV2);
+    if (std::max(aT1, aT2) > theTolIn
+        && BRep_Tool::Pnt(aV1).Distance(BRep_Tool::Pnt(aV2)) <= 2. * (aT1 + aT2))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Whether every chamfer of <theStripes> is in <theResult>, as AreFilletsMade
+// for the fillets -- and all along: at a quarter, a half and three quarters
+// of what the corners set back leave of each stripe, the edge's point lies
+// off the result's faces by half the depth of a chamfer of its smaller
+// distance there, d sin(a / 2) for the angle a between the faces' normals.
+// A stripe of which the setbacks leave less than its size is none. The
+// middle alone is not enough: #273's D-hole, the flat's rim of 5.2
+// chamfered at 2, came out as deep as asked at its middle, a chamfer 1.2
+// long between two patches of 10.8 each that stood out of the bottom.
+bool AreChamfersMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
+                     const ChFiDS_Map&                                   theEFMap,
+                     const TopoDS_Shape&                                 theResult)
+{
+  TopoDS_Compound aFaces;
+  BRep_Builder    aBuilder;
+  aBuilder.MakeCompound(aFaces);
+  for (TopExp_Explorer anExp(theResult, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    aBuilder.Add(aFaces, anExp.Current());
+  }
+  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(theStripes); it.More();
+       it.Next())
+  {
+    const occ::handle<ChFiDS_ChamfSpine> aSp =
+      occ::down_cast<ChFiDS_ChamfSpine>(it.Value()->Spine());
+    if (aSp.IsNull())
+    {
+      continue;
+    }
+    double aD1 = 0., aD2 = 0.;
+    switch (aSp->IsChamfer())
+    {
+      case ChFiDS_Sym:
+        aSp->GetDist(aD1);
+        aD2 = aD1;
+        break;
+      case ChFiDS_TwoDist:
+        aSp->Dists(aD1, aD2);
+        break;
+      case ChFiDS_DistAngle: {
+        double anAngle = 0.;
+        aSp->GetDistAngle(aD1, anAngle);
+        aD2 = aD1 * std::tan(std::min(std::abs(anAngle), 1.4));
+        break;
+      }
+    }
+    const double aSmall = std::min(aD1, aD2);
+    const int    aNbE   = aSp->NbEdges();
+    // the edges' lengths, and what the setbacks leave of the stripe
+    NCollection_Array1<double> aLens(1, std::max(aNbE, 1));
+    double                     aTotal = 0.;
+    for (int j = 1; j <= aNbE; j++)
+    {
+      aLens.SetValue(j, GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(aSp->Edges(j))));
+      aTotal += aLens.Value(j);
+    }
+    // (a setback of 0 is one: the corner cut where its stripes meet)
+    const double aSetF = aSp->IsClosed() ? -1. : ChFi3d_SpineSetback(aSp, true);
+    const double aSetL = aSp->IsClosed() ? -1. : ChFi3d_SpineSetback(aSp, false);
+    if (aSetF < 0. && aSetL < 0.)
+    {
+      // no corner of this stripe set back: as it was made
+      continue;
+    }
+    const double aBackF = std::max(aSetF, 0.);
+    const double aBackL = std::max(aSetL, 0.);
+    const double aLeft = aTotal - aBackF - aBackL;
+    if (aLeft < std::max(aD1, aD2))
+    {
+      return false;
+    }
+    for (int k = 1; k <= 3; k++)
+    {
+      // the point at that length along the stripe, the edges in the spine's order
+      double aAt = aBackF + 0.25 * k * aLeft;
+      int    aJ  = 1;
+      for (; aJ < aNbE && aAt > aLens.Value(aJ); aJ++)
+      {
+        aAt -= aLens.Value(aJ);
+      }
+      const TopoDS_Edge& anE = aSp->Edges(aJ);
+      const double       anA = AngleAcross(anE, theEFMap);
+      if (anA < 0.)
+      {
+        continue;
+      }
+      BRepAdaptor_Curve aC(anE);
+      // (an edge reversed in the spine runs the other way along it)
+      const bool   isRev = anE.Orientation() == TopAbs_REVERSED;
+      const double aFrac = aLens.Value(aJ) > 0. ? std::min(aAt / aLens.Value(aJ), 1.) : 0.5;
+      const double aLong = aC.LastParameter() - aC.FirstParameter();
+      const double aPar  = isRev ? aC.LastParameter() - aFrac * aLong
+                                 : aC.FirstParameter() + aFrac * aLong;
+      BRepExtrema_DistShapeShape aDist(BRepBuilderAPI_MakeVertex(aC.Value(aPar)).Vertex(), aFaces);
+      if (!aDist.IsDone() || aDist.Value() < std::max(0.5 * aSmall * std::sin(0.5 * anA), 1.e-6))
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 // Whether a face of <theResult> made by the computation -- not on a surface
 // of <theInput> -- and not elementary folds over itself within <theReach>
 // of one of <theVertices>, or anywhere when there are none: a line of its
@@ -2445,7 +2599,7 @@ bool ChFi3d_Builder::HasSetbackAt(const int Index) const
   for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(myVDataMap(Index)); it.More();
        it.Next())
   {
-    const occ::handle<ChFiDS_FilSpine> aSp = occ::down_cast<ChFiDS_FilSpine>(it.Value()->Spine());
+    const occ::handle<ChFiDS_Spine>& aSp = it.Value()->Spine();
     if (aSp.IsNull())
     {
       continue;
@@ -2453,7 +2607,7 @@ bool ChFi3d_Builder::HasSetbackAt(const int Index) const
     int aSens = 0;
     ChFi3d_IndexOfSurfData(aV, it.Value(), aSens);
     const bool isFirst = aSens == 1;
-    if (aSp->Setback(isFirst) >= 0. && aSp->Status(isFirst) != ChFiDS_FreeBoundary)
+    if (ChFi3d_SpineSetback(aSp, isFirst) >= 0. && aSp->Status(isFirst) != ChFiDS_FreeBoundary)
     {
       return true;
     }
@@ -2565,7 +2719,7 @@ void ChFi3d_Builder::ComputeSetbackFallback()
   // setbacks they had, and the largest radius at each of those vertices
   struct SetbackEnd
   {
-    occ::handle<ChFiDS_FilSpine> Spine;
+    occ::handle<ChFiDS_Spine> Spine;
     bool                         IsFirst;
     double                       Before;
     double                       Radius;
@@ -2587,9 +2741,12 @@ void ChFi3d_Builder::ComputeSetbackFallback()
       for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();
            itS.Next())
       {
-        const occ::handle<ChFiDS_FilSpine> aSp =
-          occ::down_cast<ChFiDS_FilSpine>(itS.Value()->Spine());
-        if (aSp.IsNull())
+        // (a chamfer's stripe as a fillet's, its size its larger distance;
+        // not one of a crease of less than 5 deg, whose chamfer is next to
+        // nothing and whose corner set back is all there is of it)
+        const occ::handle<ChFiDS_Spine>&   aSp  = itS.Value()->Spine();
+        const occ::handle<ChFiDS_FilSpine> aFil = occ::down_cast<ChFiDS_FilSpine>(aSp);
+        if (aSp.IsNull() || (aFil.IsNull() && ChFi3d_ChamferSize(aSp) <= 0.))
         {
           continue;
         }
@@ -2601,8 +2758,29 @@ void ChFi3d_Builder::ComputeSetbackFallback()
           {
             continue;
           }
-          aRadius = std::max(aRadius, LargestRadiusAt(aSp, isFirst ? 1 : aSp->NbEdges()));
-          anEnds.Append({aSp, isFirst, aSp->Setback(isFirst), 0.});
+          if (aFil.IsNull())
+          {
+            const double anA = AngleAcross(aSp->Edges(isFirst ? 1 : aSp->NbEdges()), myEFMap);
+            if (anA >= 0. && anA < 5. * M_PI / 180.)
+            {
+              continue;
+            }
+            // From fix level 3, and noted below it as passed over: a chamfer
+            // a level refuses is made at the next level that makes it, and
+            // set back at its own level first it came out set back where a
+            // level above makes it whole (#631's ellipse at 0.8, level 1's
+            // guide: 41501.9498 with vertices of 0.00016, and set back at
+            // level 0 41502.3346 with vertices of 0.04).
+            if (ChFi3d_FixLevel() < 3)
+            {
+              ChFi3d_FixPassedOver() = true;
+              continue;
+            }
+          }
+          aRadius = std::max(aRadius,
+                             aFil.IsNull() ? ChFi3d_ChamferSize(aSp)
+                                           : LargestRadiusAt(aFil, isFirst ? 1 : aFil->NbEdges()));
+          anEnds.Append({aSp, isFirst, ChFi3d_SpineSetback(aSp, isFirst), 0.});
         }
       }
       for (int i = aFirstE; i <= anEnds.Length(); i++)
@@ -2621,6 +2799,23 @@ void ChFi3d_Builder::ComputeSetbackFallback()
   // twentieth of the smallest radius set back -- today's fillets keep edges
   // of up to about a thirtieth of theirs (the plate fallback's measure)
   const double aMaxTolIn = MaxEdgeTolerance(myShape);
+  // (and its loosest vertex, for the chamfers: HasCoveredEdge)
+  double aMaxVertexTolIn = 0.;
+  for (TopExp_Explorer anExp(myShape, TopAbs_VERTEX); anExp.More(); anExp.Next())
+  {
+    aMaxVertexTolIn =
+      std::max(aMaxVertexTolIn, BRep_Tool::Tolerance(TopoDS::Vertex(anExp.Current())));
+  }
+  auto hasChamferEnd = [&]() {
+    for (int i = 1; i <= anEnds.Length(); i++)
+    {
+      if (occ::down_cast<ChFiDS_FilSpine>(anEnds.Value(i).Spine).IsNull())
+      {
+        return true;
+      }
+    }
+    return false;
+  };
   // what a computation that failed leaves behind, cleared for the next: the
   // stripes it left without a spine, which Compute reads before its own
   // Reset, and the topological builder, which a Perform broken off by an
@@ -2657,7 +2852,7 @@ void ChFi3d_Builder::ComputeSetbackFallback()
     for (int i = 1; i <= anEnds.Length(); i++)
     {
       const SetbackEnd& anEnd = anEnds.Value(i);
-      anEnd.Spine->SetSetback(anEnd.IsFirst, anEnd.Before);
+      ChFi3d_SetSpineSetback(anEnd.Spine, anEnd.IsFirst, anEnd.Before);
     }
   };
 
@@ -2669,7 +2864,9 @@ void ChFi3d_Builder::ComputeSetbackFallback()
     for (int i = 1; i <= anEnds.Length(); i++)
     {
       const SetbackEnd& anEnd = anEnds.Value(i);
-      anEnd.Spine->SetSetback(anEnd.IsFirst, std::max(anEnd.Before, aStep * anEnd.Radius));
+      ChFi3d_SetSpineSetback(anEnd.Spine,
+                             anEnd.IsFirst,
+                             std::max(anEnd.Before, aStep * anEnd.Radius));
     }
     try
     {
@@ -2680,6 +2877,8 @@ void ChFi3d_Builder::ComputeSetbackFallback()
       // setback and twice the radius of their vertices
       if (done && IsValidResult(myShapeResult, aMaxTol())
           && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+          && AreChamfersMade(myListStripe, myEFMap, myShapeResult)
+          && !(hasChamferEnd() && HasCoveredEdge(myShapeResult, aMaxVertexTolIn))
           && !HasFoldNear(myShapeResult,
                           myShape,
                           aVertices,

@@ -122,6 +122,17 @@ double& ChFi3d_TwoChamferCorner();
 //! is no chamfer's.
 double ChFi3d_ChamferSize(const occ::handle<ChFiDS_Spine>& theSpine);
 
+//! The setback of <theSpine>'s end at a corner, less than 0 where none is
+//! set: a fillet's own (ChFiDS_FilSpine::Setback); a chamfer's, which its
+//! spine has no room for, as ChFi3d_SetSpineSetback() set it for the calling
+//! thread -- the builder's setback fallback, while it runs.
+double ChFi3d_SpineSetback(const occ::handle<ChFiDS_Spine>& theSpine, const bool isFirst);
+
+//! Sets it; less than 0 for none.
+void ChFi3d_SetSpineSetback(const occ::handle<ChFiDS_Spine>& theSpine,
+                            const bool                       isFirst,
+                            const double                     theDist);
+
 //! Set while ChFi3d_Builder::Compute makes the corners' plates again with
 //! their sharp edges stepped back only to the stripes' common points on
 //! those edges (ChFi3d_Builder::PerformMoreThreeCorner): the result was
