@@ -118,6 +118,10 @@ bool& ChFi3d_FixPassedOver();
 //! thread's.
 double& ChFi3d_TwoChamferCorner();
 
+//! The larger of a chamfer's two distances from its edge; 0 where the spine
+//! is no chamfer's.
+double ChFi3d_ChamferSize(const occ::handle<ChFiDS_Spine>& theSpine);
+
 //! Set while ChFi3d_Builder::Compute makes the corners' plates again with
 //! their sharp edges stepped back only to the stripes' common points on
 //! those edges (ChFi3d_Builder::PerformMoreThreeCorner): the result was

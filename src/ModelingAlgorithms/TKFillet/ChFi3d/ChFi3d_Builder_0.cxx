@@ -19,6 +19,8 @@
 //  Modified by skv - Mon Jun 16 15:50:44 2003 OCC615
 
 #include <ChFi3d_Builder_0.hxx>
+
+#include <ChFiDS_ChamfSpine.hxx>
 #include <ChFi3d_Builder.hxx>
 
 #include <AppParCurves_MultiBSpCurve.hxx>
@@ -149,6 +151,35 @@ double& ChFi3d_TwoChamferCorner()
 {
   thread_local double aSize = 0.;
   return aSize;
+}
+
+//=================================================================================================
+
+double ChFi3d_ChamferSize(const occ::handle<ChFiDS_Spine>& theSpine)
+{
+  const occ::handle<ChFiDS_ChamfSpine> aSpine = occ::down_cast<ChFiDS_ChamfSpine>(theSpine);
+  if (aSpine.IsNull())
+  {
+    return 0.;
+  }
+  double aD1 = 0., aD2 = 0.;
+  switch (aSpine->IsChamfer())
+  {
+    case ChFiDS_Sym:
+      aSpine->GetDist(aD1);
+      aD2 = aD1;
+      break;
+    case ChFiDS_TwoDist:
+      aSpine->Dists(aD1, aD2);
+      break;
+    case ChFiDS_DistAngle: {
+      double anAngle = 0.;
+      aSpine->GetDistAngle(aD1, anAngle);
+      aD2 = aD1 * std::tan(std::min(std::abs(anAngle), 1.4));
+      break;
+    }
+  }
+  return std::max(aD1, aD2);
 }
 
 //=================================================================================================

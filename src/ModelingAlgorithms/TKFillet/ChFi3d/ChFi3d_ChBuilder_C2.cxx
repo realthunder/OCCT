@@ -29,37 +29,6 @@
 
 //=================================================================================================
 
-// The larger of a chamfer's two distances from its edge (0 where the spine
-// is no chamfer's).
-static double ChamferSize(const occ::handle<ChFiDS_Spine>& theSpine)
-{
-  const occ::handle<ChFiDS_ChamfSpine> aSpine = occ::down_cast<ChFiDS_ChamfSpine>(theSpine);
-  if (aSpine.IsNull())
-  {
-    return 0.;
-  }
-  double aD1 = 0., aD2 = 0.;
-  switch (aSpine->IsChamfer())
-  {
-    case ChFiDS_Sym:
-      aSpine->GetDist(aD1);
-      aD2 = aD1;
-      break;
-    case ChFiDS_TwoDist:
-      aSpine->Dists(aD1, aD2);
-      break;
-    case ChFiDS_DistAngle: {
-      double anAngle = 0.;
-      aSpine->GetDistAngle(aD1, anAngle);
-      aD2 = aD1 * std::tan(std::min(std::abs(anAngle), 1.4));
-      break;
-    }
-  }
-  return std::max(aD1, aD2);
-}
-
-//=================================================================================================
-
 void ChFi3d_ChBuilder::PerformTwoCorner(const int Index)
 {
   if (PerformTwoCornerbyInter(Index))
@@ -110,7 +79,12 @@ void ChFi3d_ChBuilder::PerformTwoCorner(const int Index)
     const bool                          isFirst = aSens == 1;
     const double aPast  = isFirst ? aSpine->FirstParameter(1) - aSD->FirstSpineParam()
                                   : aSD->LastSpineParam() - aSpine->LastParameter(aSpine->NbEdges());
-    isAtVertex = aPast <= 1.5 * ChamferSize(aSpine);
+    // (At every fix level: from level 3 the corner of several edges cuts a
+    // line that no neighbour crosses back to the vertex, CutAtSpineEnd, but
+    // not one it does find a crossing for -- #523's box, the post's line
+    // with the box's top edge, was made with the top's chamfer 4 round the
+    // post once this was let through.)
+    isAtVertex = aPast <= 1.5 * ChFi3d_ChamferSize(aSpine);
   }
   if (isAtVertex)
   {
@@ -118,7 +92,7 @@ void ChFi3d_ChBuilder::PerformTwoCorner(const int Index)
     for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myVDataMap(Index)); itS.More();
          itS.Next())
     {
-      const double aSize = ChamferSize(itS.Value()->Spine());
+      const double aSize = ChFi3d_ChamferSize(itS.Value()->Spine());
       double&      aMin  = ChFi3d_TwoChamferCorner();
       if (aSize > 0. && (aMin <= 0. || aSize < aMin))
       {

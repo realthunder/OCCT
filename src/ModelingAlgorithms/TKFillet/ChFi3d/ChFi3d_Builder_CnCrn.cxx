@@ -1571,6 +1571,37 @@ static double RadiusOf(const occ::handle<ChFiDS_Stripe>& theStripe, const bool i
   return aSp->IsConstant(anIE) ? aSp->Radius(anIE) : aSp->MaxRadFromSeqAndLaws();
 }
 
+// <thePar>, the end at the corner (<isFirst>) of <theStripe>'s line on a
+// face, where the line's neighbours do not cross it: where it is -- or, if
+// the line runs on past the stripe's end at the vertex by more than one and
+// a half times the stripe's size, at that end. A surface made over a whole
+// face (two planes' fillet, as long as the faces) or walked on along the
+// next edge ends far from the vertex; the corner took that end for the
+// stripe's, and set every other stripe as far from the vertex as it was.
+// From fix level 3: chamfers made before are made differently by it (#273's
+// creases under the handle, whose chamfer went on 5.8 past its end). Below,
+// the end where it is, and the computation, where it then makes nothing, is
+// tried again at the latest level (ChFi3d_Builder::Compute).
+static double CutAtSpineEnd(const occ::handle<ChFiDS_Stripe>& theStripe,
+                            const bool                        isFirst,
+                            const double                      thePar)
+{
+  const occ::handle<ChFiDS_Spine>& aSpine = theStripe->Spine();
+  const double aSize = std::max(RadiusOf(theStripe, isFirst), ChFi3d_ChamferSize(aSpine));
+  const double anEnd = isFirst ? aSpine->FirstParameter(1) : aSpine->LastParameter(aSpine->NbEdges());
+  const double aPast = isFirst ? anEnd - thePar : thePar - anEnd;
+  if (aSize <= 0. || aPast <= 1.5 * aSize)
+  {
+    return thePar;
+  }
+  if (ChFi3d_FixLevel() < 3)
+  {
+    ChFi3d_FixPassedOver() = true;
+    return thePar;
+  }
+  return anEnd;
+}
+
 // How far from <theV>, along <theE>, the point of <theE> nearest <theP> is:
 // where on its edge a stripe's contact point at a corner stands.
 static double AbscissaFromVertex(const TopoDS_Edge&   theE,
@@ -2958,6 +2989,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           else
           {
             Calcul_Param(CD.Value(ic), jf.Value(ic), i.Value(ic, icplus), isfirst, para);
+            para = CutAtSpineEnd(CD.Value(ic), isfirst, para);
             p.SetValue(ic, icplus, para);
           }
         }
@@ -2983,6 +3015,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           {
             jfp = 3 - jf.Value(icplus);
             Calcul_Param(CD.Value(icplus), jfp, i.Value(icplus, ic), isfirst, para);
+            para = CutAtSpineEnd(CD.Value(icplus), isfirst, para);
             p.SetValue(icplus, ic, para);
           }
         }

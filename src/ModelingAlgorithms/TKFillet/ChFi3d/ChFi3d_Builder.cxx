@@ -157,7 +157,7 @@ thread_local bool THE_IN_SETBACK_COMPUTE = false;
 thread_local bool THE_FLAT_END_AT_VERTEX = false;
 // ChFi3d_SetFixLevel(): the calling thread's, and the latest there is
 thread_local int THE_FIX_LEVEL        = 0;
-constexpr int    THE_FIX_LEVEL_LATEST = 2;
+constexpr int    THE_FIX_LEVEL_LATEST = 3;
 // set while Compute() runs at the level set, which a failure tries again at
 // the latest
 thread_local bool THE_IN_FIX_LEVEL_COMPUTE = false;
@@ -3084,9 +3084,14 @@ void ChFi3d_Builder::Compute()
   if (!THE_IN_SETBACK_COMPUTE && !THE_IN_FIX_LEVEL_COMPUTE && THE_FIX_LEVEL < THE_FIX_LEVEL_LATEST)
   {
     // the computation at the level set; where it makes nothing and passed
-    // over a correction above that level (ChFi3d_FixPassedOver), once more at
-    // the latest: what the level was to keep was refused anyway. The input's
-    // tolerances as they were for it, which a computation raises in place
+    // over a correction above that level (ChFi3d_FixPassedOver), again at
+    // each level above it in turn, and the first that makes it is the
+    // result: what the level was to keep was refused anyway, and an object
+    // of that level goes on getting the shape of the lowest level that
+    // makes it, whatever levels come after (it was once more at the latest,
+    // and three chamfers of #273's cup that level 0 refuses and level 2
+    // makes moved when a level 3 came). The input's tolerances as they
+    // were for each, which a computation raises in place
     NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aTolerances;
     for (TopExp_Explorer exV(myShape, TopAbs_VERTEX); exV.More(); exV.Next())
     {
@@ -3129,21 +3134,43 @@ void ChFi3d_Builder::Compute()
       }
       return;
     }
-    struct LatestGuard
+    struct RaisedGuard
     {
-      LatestGuard()
-          : myPrevious(ChFi3d_SetFixLevel(THE_FIX_LEVEL_LATEST))
+      RaisedGuard()
+          : myPrevious(ChFi3d_FixLevel())
       {
       }
 
-      ~LatestGuard() { ChFi3d_SetFixLevel(myPrevious); }
+      ~RaisedGuard() { ChFi3d_SetFixLevel(myPrevious); }
 
       int myPrevious;
-    } aLatest;
-    THE_INPUT_TOLERANCES = aTolerances;
-    Reset();
-    THE_INPUT_TOLERANCES.Clear();
-    Compute();
+    } aRaised;
+    for (int aTry = aRaised.myPrevious + 1; aTry <= THE_FIX_LEVEL_LATEST; aTry++)
+    {
+      ChFi3d_SetFixLevel(aTry);
+      THE_INPUT_TOLERANCES = aTolerances;
+      Reset();
+      THE_INPUT_TOLERANCES.Clear();
+      if (aTry == THE_FIX_LEVEL_LATEST)
+      {
+        // the last: its failure is the computation's
+        Compute();
+        return;
+      }
+      LevelGuard aGuard;
+      try
+      {
+        Compute();
+      }
+      catch (Standard_Failure const&)
+      {
+        done = false;
+      }
+      if (done)
+      {
+        return;
+      }
+    }
     return;
   }
   if (!THE_IN_SETBACK_COMPUTE)

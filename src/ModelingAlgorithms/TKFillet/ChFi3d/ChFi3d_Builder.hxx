@@ -979,6 +979,17 @@ extern "C" Standard_EXPORT int ChFi3d_SetFlatEndAtVertex(const int theToUse);
 //!       a cup's top, the rim beside it the spine), is not taken for the one
 //!       at this vertex (#273's rim, whose chamfer was refused; four fillets
 //!       at the vertices of #474's coil are made differently by it).
+//!  3 -- at a corner of several edges, a stripe's line that no neighbour
+//!       crosses and that runs on past the vertex by more than one and a
+//!       half times the stripe's size is cut at the vertex, not taken to
+//!       end where it does: a surface made over a whole face, or walked on
+//!       along the next edge, set the corner as far from the vertex as its
+//!       own far end (#962's rail, two edges in one line whose fillets were
+//!       refused; chamfers of #273's creases under the handle, which went on
+//!       5.8 past their end, are made differently by it).
+//! Below the latest level, a computation that makes nothing and passed over
+//! a correction above its level is made again at each level above it in
+//! turn, and the first that makes it is the result.
 extern "C" Standard_EXPORT int ChFi3d_SetFixLevel(const int theLevel);
 
 //! The calling thread's level of ChFi3d_SetFixLevel().
