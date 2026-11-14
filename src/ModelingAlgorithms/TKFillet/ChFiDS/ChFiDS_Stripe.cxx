@@ -49,6 +49,11 @@ void ChFiDS_Stripe::Reset()
   orcurv1 = orcurv2 = TopAbs_FORWARD;
   pcrv1.Nullify();
   pcrv1.Nullify();
+  // Nor are its ends in a data structure any more: the computation after
+  // this starts a new one, and left out the end that one before it had
+  // marked as put there (InDS) -- a computation made again after one that
+  // got as far as a corner made a shell with a hole.
+  begfilled = endfilled = 0;
   mySpine->Reset();
 }
 
