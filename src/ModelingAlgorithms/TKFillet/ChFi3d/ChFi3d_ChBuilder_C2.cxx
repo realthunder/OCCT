@@ -79,11 +79,14 @@ void ChFi3d_ChBuilder::PerformTwoCorner(const int Index)
     const bool                          isFirst = aSens == 1;
     const double aPast  = isFirst ? aSpine->FirstParameter(1) - aSD->FirstSpineParam()
                                   : aSD->LastSpineParam() - aSpine->LastParameter(aSpine->NbEdges());
-    // (At every fix level: from level 3 the corner of several edges cuts a
-    // line that no neighbour crosses back to the vertex, CutAtSpineEnd, but
-    // not one it does find a crossing for -- #523's box, the post's line
-    // with the box's top edge, was made with the top's chamfer 4 round the
-    // post once this was let through.)
+    // (At every fix level. From level 3 the corner of several edges cuts a
+    // line that no neighbour crosses back to the vertex, CutAtSpineEnd, and
+    // that is not enough: let through, #523's box, the post's line with
+    // the box's top edge, was made with the top split along the edge's
+    // chamfer carried on across the post's top and the corner's patch over
+    // all of that top -- the corner's own cuts at the vertex, 0.3 along
+    // each. Why is not known; fe5e57d291's message says that corner finds
+    // a crossing for the line, which the trace does not show.)
     isAtVertex = aPast <= 1.5 * ChFi3d_ChamferSize(aSpine);
   }
   if (isAtVertex)
