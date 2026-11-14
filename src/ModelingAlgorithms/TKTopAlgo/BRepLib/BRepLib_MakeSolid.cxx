@@ -25,6 +25,7 @@
 #include <TopoDS_Shape.hxx>
 #include <NCollection_List.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+#include <NCollection_IndexedDataMap.hxx>
 #include <NCollection_Map.hxx>
 
 //=================================================================================================
@@ -43,16 +44,26 @@ BRepLib_MakeSolid::BRepLib_MakeSolid(const TopoDS_CompSolid& S)
   BRep_Builder B;
   B.MakeSolid(TopoDS::Solid(myShape));
 
-  TopExp_Explorer                                        ex1, ex2;
-  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMapOfFaces;
+  // The faces met an odd number of times make the shell, in the order they
+  // are first met. They were taken out of a map keyed by the shape, whose
+  // order is that of the addresses the faces happen to have: the shell's
+  // faces came out in another order from one run to the next (FreeCAD's
+  // Connect, a box and a cylinder: an edge of the result Edge3 in one run
+  // and Edge6 in the next).
+  TopExp_Explorer                                                     ex1, ex2;
+  NCollection_IndexedDataMap<TopoDS_Shape, int, TopTools_ShapeMapHasher> aFaces;
   for (ex1.Init(S, TopAbs_SHELL); ex1.More(); ex1.Next())
   {
     for (ex2.Init(ex1.Current(), TopAbs_FACE); ex2.More(); ex2.Next())
     {
-      if (!aMapOfFaces.Add(ex2.Current()))
+      const int anInd = aFaces.FindIndex(ex2.Current());
+      if (anInd == 0)
+      {
+        aFaces.Add(ex2.Current(), 1);
+      }
+      else if (++aFaces.ChangeFromIndex(anInd) % 2 == 0)
       {
         myDeletedFaces.Append(ex2.Current());
-        aMapOfFaces.Remove(ex2.Current());
       }
     }
   }
@@ -60,10 +71,12 @@ BRepLib_MakeSolid::BRepLib_MakeSolid(const TopoDS_CompSolid& S)
   TopoDS_Shape aShell;
   B.MakeShell(TopoDS::Shell(aShell));
 
-  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator aFaceIter(aMapOfFaces);
-  for (; aFaceIter.More(); aFaceIter.Next())
+  for (int i = 1; i <= aFaces.Extent(); i++)
   {
-    B.Add(aShell, aFaceIter.Key());
+    if (aFaces.FindFromIndex(i) % 2 == 1)
+    {
+      B.Add(aShell, aFaces.FindKey(i));
+    }
   }
   aShell.Closed(BRep_Tool::IsClosed(aShell));
 
