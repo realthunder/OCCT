@@ -158,7 +158,7 @@ thread_local bool THE_IN_SETBACK_COMPUTE = false;
 thread_local bool THE_FLAT_END_AT_VERTEX = false;
 // ChFi3d_SetFixLevel(): the calling thread's, and the latest there is
 thread_local int THE_FIX_LEVEL        = 0;
-constexpr int    THE_FIX_LEVEL_LATEST = 3;
+constexpr int    THE_FIX_LEVEL_LATEST = 4;
 // set while Compute() runs at the level set, which a failure tries again at
 // the latest
 thread_local bool THE_IN_FIX_LEVEL_COMPUTE = false;
@@ -3467,15 +3467,52 @@ void ChFi3d_Builder::Compute()
     if (done && !aPlates.IsEmpty() && CornerSetbackFallback() > 0.
         && HasFilletEndAt(myListStripe, aPlates) && !BRepCheck_Analyzer(myShapeResult).IsValid())
     {
-      badvertices.Clear();
-      for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itV(aPlates);
-           itV.More();
-           itV.Next())
+      // From fix level 4, where the plate made several corners, each of
+      // them alone first, in the order the vertices are kept: the one at
+      // fault is set back and the others stay as the plate made them.
+      // Set back all together, the sound corners lost their shape with the
+      // one at fault (#474's coil, E52 with E53 at 1: a tolerance of 0.066
+      // where it is 0.0005 with the one corner set back; 25 fillets of the
+      // sweeps, all on that coil, are made differently by it).
+      bool isMade = false;
+      if (ChFi3d_FixLevel() >= 4 && aPlates.Extent() > 1)
       {
-        badvertices.Append(itV.Key());
+        NCollection_List<TopoDS_Shape> aCorners;
+        for (int j = 1; j <= myVDataMap.Extent(); j++)
+        {
+          if (aPlates.Contains(myVDataMap.FindKey(j)))
+          {
+            aCorners.Append(myVDataMap.FindKey(j));
+          }
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itC(aCorners); itC.More() && !isMade;
+             itC.Next())
+        {
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anOne;
+          anOne.Add(itC.Value());
+          if (!HasFilletEndAt(myListStripe, anOne))
+          {
+            continue;
+          }
+          badvertices.Clear();
+          badvertices.Append(itC.Value());
+          done = false;
+          ComputeSetbackFallback();
+          isMade = done && BRepCheck_Analyzer(myShapeResult).IsValid();
+        }
       }
-      done = false;
-      ComputeSetbackFallback();
+      if (!isMade)
+      {
+        badvertices.Clear();
+        for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itV(aPlates);
+             itV.More();
+             itV.Next())
+        {
+          badvertices.Append(itV.Key());
+        }
+        done = false;
+        ComputeSetbackFallback();
+      }
     }
     // Invalid still, where a corner was the plate: the plates made again,
     // their sharp edges stepped back only to the stripes' common points on

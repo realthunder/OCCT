@@ -991,6 +991,12 @@ extern "C" Standard_EXPORT int ChFi3d_SetFlatEndAtVertex(const int theToUse);
 //!       back, as a fillet is at any level: only a chamfer no level makes
 //!       whole is made so, as below this level the end is passed over and
 //!       the levels above are tried.
+//!  4 -- a result that is invalid where the plate made several corners has
+//!       each of those corners set back alone first, in the order the
+//!       vertices are kept, and all of them together only where none alone
+//!       makes it: set back together, the sound corners lost their shape
+//!       with the one at fault (25 fillets at the vertices of #474's coil
+//!       are made differently by it, with tolerances of 0.0005 for 0.066).
 //! Below the latest level, a computation that makes nothing and passed over
 //! a correction above its level is made again at each level above it in
 //! turn, and the first that makes it is the result.
