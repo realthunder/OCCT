@@ -38,8 +38,43 @@
 #include <BRep_Tool.hxx>
 #include <TopoDS.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <Precision.hxx>
 
 IMPLEMENT_STANDARD_RTTIEXT(IntCurvesFace_Intersector, Standard_Transient)
+
+// Leaves out of <theInts>, the bounds of <theNb> intervals, the bounds that
+// make an interval narrower than <theRes>, and gives the number left in
+// <theNb>. A face whose bounds, taken from its pcurves, end 1.7e-8 past a
+// knot of its surface has such an interval, and the polyhedron made on it a
+// last row of triangles 1.7e-8 wide: the border of the polyhedron is then
+// that row, and the triangles of the row before it, which a line near the
+// face's edge has to be tried against, are not taken for border triangles
+// (realthunder/FreeCAD#474's coil with an edge filleted: a line crossing
+// its helical face 0.04 from the face's edge found no crossing, and a point
+// outside the solid was said inside it).
+static void DropNarrowIntervals(NCollection_Array1<double>& theInts,
+                                int&                        theNb,
+                                const double                theRes)
+{
+  int aLast = 1;
+  for (int i = 2; i <= theNb + 1; ++i)
+  {
+    if (theInts(i) - theInts(aLast) > theRes)
+    {
+      theInts(++aLast) = theInts(i);
+    }
+    else if (i == theNb + 1 && aLast > 1)
+    {
+      // the last bound stays: the one before it goes
+      theInts(aLast) = theInts(i);
+    }
+    else if (i == theNb + 1)
+    {
+      theInts(++aLast) = theInts(i);
+    }
+  }
+  theNb = aLast - 1;
+}
 
 //
 static void ComputeSamplePars(const occ::handle<Adaptor3d_Surface>&     Hsurface,
@@ -54,6 +89,8 @@ static void ComputeSamplePars(const occ::handle<Adaptor3d_Surface>&     Hsurface
   NCollection_Array1<double> VInts(1, NbVInts + 1);
   Hsurface->UIntervals(UInts, GeomAbs_C2);
   Hsurface->VIntervals(VInts, GeomAbs_C2);
+  DropNarrowIntervals(UInts, NbUInts, Hsurface->UResolution(Precision::Confusion()));
+  DropNarrowIntervals(VInts, NbVInts, Hsurface->VResolution(Precision::Confusion()));
   //
   NCollection_Array1<int> NbUSubInts(1, NbUInts);
   NCollection_Array1<int> NbVSubInts(1, NbVInts);
