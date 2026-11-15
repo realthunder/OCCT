@@ -4014,7 +4014,29 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   };
 
   const bool isOutermost = theThickSolidDepth == 0;
-  aMake(*this, theRange);
+  // An exception out of the computation is a refusal, as an error it sets
+  // is: nothing was made. Thrown on, it left the caller with a message of
+  // some curve or surface evaluated where it is not, and the other way
+  // below untried. (#613's part, a flat of its roof or a blend removed
+  // with the Intersection join: a pcurve trimmed to no range in
+  // TrimEdge's SameParameter, an offset surface with no normal where a
+  // vertex's tolerance is read, a curve on a surface evaluated outside it
+  // in the edges' intersection.) An inner computation's goes on to the
+  // outermost, which makes the refusal.
+  try
+  {
+    aMake(*this, theRange);
+  }
+  catch (Standard_Failure const&)
+  {
+    if (!isOutermost)
+    {
+      throw;
+    }
+    myDone  = false;
+    myError = BRepOffset_UnknownError;
+    myOffsetShape.Nullify();
+  }
 
   // No valid answer: once more with the loops' wires taken by the way their
   // edges run (BRepAlgo_LoopByOrientation). The loops keep every piece of
