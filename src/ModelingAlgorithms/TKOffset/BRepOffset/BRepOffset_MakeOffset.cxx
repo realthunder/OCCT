@@ -53,8 +53,10 @@
 #include <TopoDS_Shape.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_Map.hxx>
+#include <NCollection_Sequence.hxx>
 #include <NCollection_DataMap.hxx>
 #include <NCollection_IndexedDataMap.hxx>
+#include <BRepOffset.hxx>
 #include <BRepOffset_Inter2d.hxx>
 #include <BRepOffset_Inter3d.hxx>
 #include <BRepOffset_MakeOffset.hxx>
@@ -264,6 +266,36 @@ enum BRepOffset_PIOperation
 };
 
 //=================================================================================================
+
+namespace
+{
+//! The offset the analysis takes its weak tangency by
+//! (BRepOffset_Analyse::SetTangencyOffset()), for a scope: the largest the
+//! faces are offset by.
+class TangencyOffset
+{
+public:
+  typedef NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> FaceOffsets;
+
+  TangencyOffset(const double theOffset, const FaceOffsets& theFaces)
+  {
+    double anOffset = std::abs(theOffset);
+    for (FaceOffsets::Iterator anIt(theFaces); anIt.More(); anIt.Next())
+    {
+      anOffset = std::max(anOffset, std::abs(anIt.Value()));
+    }
+    myPrevious = BRepOffset_Analyse::SetTangencyOffset(anOffset);
+  }
+
+  ~TangencyOffset() { BRepOffset_Analyse::SetTangencyOffset(myPrevious); }
+
+  TangencyOffset(const TangencyOffset&)            = delete;
+  TangencyOffset& operator=(const TangencyOffset&) = delete;
+
+private:
+  double myPrevious;
+};
+} // namespace
 
 // The angle under which the analysis takes two faces as tangent along their
 // edge: what the tolerance allows over half the offset. A test of tangency
@@ -1171,6 +1203,7 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
 {
   BRepAlgo_LoopIntersectingEdgeMap IntersectingEdgeMap;
   myDone = false;
+  const TangencyOffset aTangencyOffset(myOffset, myFaceOffset);
   //
 
   // check if shape consists of only planar faces
@@ -2179,7 +2212,10 @@ bool BRepOffset_MakeOffset::MakeThickSolidByPieces(const Message_ProgressRange& 
   EvalMax(myInitialShape, aTol);
   const double aTolAngleCoeff =
     std::min(aTol / (std::abs(myOffset * 0.5) + Precision::Confusion()), 1.0);
-  myAnalyse.Perform(aStay, 4 * std::asin(aTolAngleCoeff));
+  {
+    const TangencyOffset aTangencyOffset(myOffset, myFaceOffset);
+    myAnalyse.Perform(aStay, 4 * std::asin(aTolAngleCoeff));
+  }
 
   myResMap.Clear();
   myError = BRepOffset_NoError;
@@ -3514,7 +3550,10 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
     EvalMax(myInitialShape, aTol);
     const double aTolAngleCoeff =
       std::min(aTol / (std::abs(myOffset * 0.5) + Precision::Confusion()), 1.0);
-    myAnalyse.Perform(aStay, 4 * std::asin(aTolAngleCoeff));
+    {
+      const TangencyOffset aTangencyOffset(myOffset, myFaceOffset);
+      myAnalyse.Perform(aStay, 4 * std::asin(aTolAngleCoeff));
+    }
 
     myResMap.Clear();
     myError = BRepOffset_NoError;
@@ -3959,6 +3998,72 @@ static bool IsSoundSolid(const TopoDS_Shape& theShape)
   }
 }
 
+//! Whether the thick solid opens through none of the faces removed: each of
+//! them lies whole on its faces still, a grid of its points each on one of
+//! them. By the points, not by areas: a T's arm top removed outward leaves,
+//! of its plane, a rim of 12 round the opening and a strip of 4 under the
+//! stem's wall -- the 16 of the face, which is open.
+static bool OpensNowhere(
+  const TopoDS_Shape&                                                  theResult,
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theRemoved)
+{
+  if (theResult.IsNull() || theRemoved.IsEmpty())
+  {
+    return false;
+  }
+  occ::handle<IntTools_Context> aCtx = new IntTools_Context;
+  const int                     aNb  = 7;
+  const double                  aTol = 1.e-5;
+  NCollection_Sequence<TopoDS_Face> aFaces;
+  NCollection_Sequence<Bnd_Box>     aBoxes;
+  for (TopExp_Explorer anExp(theResult, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    Bnd_Box aBox;
+    BRepBndLib::Add(anExp.Current(), aBox);
+    aBox.Enlarge(aTol);
+    aFaces.Append(TopoDS::Face(anExp.Current()));
+    aBoxes.Append(aBox);
+  }
+  for (int iF = 1; iF <= theRemoved.Extent(); ++iF)
+  {
+    const TopoDS_Face&        aRF = TopoDS::Face(theRemoved(iF));
+    const BRepAdaptor_Surface aSurf(aRF);
+    double                    aU1, aU2, aV1, aV2;
+    BRepTools::UVBounds(aRF, aU1, aU2, aV1, aV2);
+    int aNbIn = 0;
+    for (int i = 1; i <= aNb; ++i)
+    {
+      for (int j = 1; j <= aNb; ++j)
+      {
+        const gp_Pnt2d aP2d(aU1 + (aU2 - aU1) * (i - 0.5) / aNb,
+                            aV1 + (aV2 - aV1) * (j - 0.5) / aNb);
+        if (!aCtx->IsPointInFace(aRF, aP2d))
+        {
+          continue;
+        }
+        ++aNbIn;
+        const gp_Pnt aP   = aSurf.Value(aP2d.X(), aP2d.Y());
+        bool         isOn = false;
+        for (int k = 1; k <= aFaces.Length() && !isOn; ++k)
+        {
+          const TopoDS_Face& aF = aFaces(k);
+          isOn = !aBoxes(k).IsOut(aP)
+                 && aCtx->IsValidPointForFace(aP, aF, std::max(aTol, BRep_Tool::Tolerance(aF)));
+        }
+        if (!isOn)
+        {
+          return false;
+        }
+      }
+    }
+    if (aNbIn == 0)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange)
 {
   // What it is asked for, to be asked again.
@@ -4063,16 +4168,31 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     // one.
     BRepOffset_MakeOffset aTry;
     aSetUp(aTry);
+    bool hasOther = false;
     try
     {
       aMake(aTry, Message_ProgressRange());
+      hasOther = aTry.myDone && IsSoundSolid(aTry.myOffsetShape);
     }
     catch (Standard_Failure const&)
     {
-      return;
     }
-    if (!aTry.myDone || !IsSoundSolid(aTry.myOffsetShape))
+    if (!hasOther)
     {
+      // It stays, but for one that opens nowhere, from level 4: invalid, and
+      // not a thick solid of the faces removed either. #613's part, a blend
+      // of its roof removed inward: of the offsets only the bottom's and
+      // the cylinder's were made, and the cone's with the crease alone for
+      // its bounds, a face of no area that closed the two into a void --
+      // the blend back whole, 21192 for a wall of some 3400. Below level 4,
+      // the crease not cut, a result of 24 faces too weighs no less than
+      // the part and is refused for that (MakeThickSolidOrRunaway).
+      if (BRepOffset_FixLevel() >= 4 && OpensNowhere(myOffsetShape, aRemoved))
+      {
+        myDone  = false;
+        myError = BRepOffset_UnknownError;
+        myOffsetShape.Nullify();
+      }
       return;
     }
   }

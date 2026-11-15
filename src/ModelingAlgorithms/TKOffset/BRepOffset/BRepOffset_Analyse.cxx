@@ -25,6 +25,7 @@
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Precision.hxx>
+#include <BRepOffset.hxx>
 #include <BRepOffset_Analyse.hxx>
 #include <BRepOffset_Interval.hxx>
 #include <BRepOffset_Tool.hxx>
@@ -91,6 +92,56 @@ BRepOffset_Analyse::BRepOffset_Analyse(const TopoDS_Shape& S, const double Angle
 
 //=================================================================================================
 
+namespace
+{
+// SetTangencyOffset(): the calling thread's
+thread_local double THE_TANGENCY_OFFSET = 0.0;
+
+// What the offsets of two faces taken for tangent may miss each other by.
+// It is the distance within which the weak test takes the faces to meet at
+// all (the TolC0 of ChFi3d::IsTangentFaces).
+const double THE_TANGENT_MISS = 0.001;
+
+// The angle that faces meant to be tangent may be apart. In the models at
+// hand (the issues' and the suites', 1539 edges between faces under 0.2 rad
+// that are not both planes) a fillet and the faces it blends are within
+// 6e-5 and two B-splines within 6e-4; nothing lies between that and 0.005,
+// and the creases start there. Offsets of a pair meant to be tangent miss
+// by the distance times their angle whatever is done with them.
+const double THE_TANGENT_ANGLE_MIN = 0.001;
+
+// The angle within which two faces are tangent by the weak test: 0.1 rad,
+// upstream's, at the levels below 4 and where no offset is known. A cone
+// 1.5 deg off the cylinder it stands on (#613's part) was tangent to it by
+// that, and so their offsets were joined along the offset of the crease as
+// they are, not cut by each other: 2 inward the two walls ran 0.052 past
+// each other there (outward they end 0.052 apart), the edge between them
+// given a tolerance to hold that, and the solid's volume, summed over its
+// faces, counted the band both walls cover twice: 46 short of 10240. From
+// level 4 the angle is the one at which the offsets miss by
+// THE_TANGENT_MISS, no less than THE_TANGENT_ANGLE_MIN and no more than 0.1.
+double WeakTangentAngle()
+{
+  const double anOffset = std::abs(THE_TANGENCY_OFFSET);
+  if (BRepOffset_FixLevel() < 4 || anOffset * 0.1 <= THE_TANGENT_MISS)
+  {
+    return 0.1;
+  }
+  return std::max(THE_TANGENT_MISS / anOffset, THE_TANGENT_ANGLE_MIN);
+}
+} // namespace
+
+//=================================================================================================
+
+double BRepOffset_Analyse::SetTangencyOffset(const double theOffset)
+{
+  const double aPrevious = THE_TANGENCY_OFFSET;
+  THE_TANGENCY_OFFSET    = theOffset;
+  return aPrevious;
+}
+
+//=================================================================================================
+
 static void EdgeAnalyse(const TopoDS_Edge&                     E,
                         const TopoDS_Face&                     F1,
                         const TopoDS_Face&                     F2,
@@ -138,7 +189,7 @@ static void EdgeAnalyse(const TopoDS_Edge&                     E,
 
     if (!isMixedConcavity)
     {
-      if (ChFi3d::IsTangentFaces(E, F1, F2)) // weak condition
+      if (ChFi3d::IsTangentFaces(E, F1, F2, WeakTangentAngle(), GeomAbs_G1)) // weak condition
       {
         ConnectType = ChFiDS_Tangential;
       }

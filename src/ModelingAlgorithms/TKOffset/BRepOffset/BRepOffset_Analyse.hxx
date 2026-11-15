@@ -119,6 +119,14 @@ public: //! @name Results
 
   void SetOffsetValue(const double theOffset) { myOffset = theOffset; }
 
+  //! The distance the faces analysed on the calling thread are to be offset
+  //! by, for the weak test of tangency (BRepOffset_SetFixLevel() 4): two
+  //! faces are tangent along an edge by it while their offsets miss each
+  //! other by no more than 0.001 there, or they are within 0.001 rad.
+  //! Returns the one set before; 0, the default on every thread, leaves the
+  //! test as it is at the levels below.
+  Standard_EXPORT static double SetTangencyOffset(const double theOffset);
+
   //! Sets the face-offset data map to analyze tangential cases
   void SetFaceOffsetMap(
     const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theMap)

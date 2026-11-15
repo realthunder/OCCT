@@ -83,6 +83,12 @@ public:
 //!  3 -- an offset crossing the axis at a face's apex is trimmed there with
 //!       either join, not closed by a sphere, and the stretch of level 2
 //!       reaches below a periodic meridian's origin (sec 59).
+//!  4 -- two faces are tangent along their edge by the analysis' weak test
+//!       while their offsets miss each other by no more than 0.001 there or
+//!       they are within 0.001 rad, not up to 0.1 rad whatever the offset:
+//!       past that the offsets are cut by each other or joined by a tube,
+//!       not left apart under a loose edge (sec 74). An invalid thick
+//!       solid that opens through none of the removed faces is refused.
 extern "C" Standard_EXPORT int BRepOffset_SetFixLevel(const int theLevel);
 
 //! The calling thread's level of BRepOffset_SetFixLevel().
