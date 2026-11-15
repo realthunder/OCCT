@@ -18,6 +18,7 @@
 
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <NCollection_Sequence.hxx>
 #include <BRepClass3d_Intersector3d.hxx>
 #include <BRepClass3d_SClassifier.hxx>
 #include <BRepClass3d_SolidExplorer.hxx>
@@ -275,8 +276,29 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
   // from its curve at 0.7047 and crosses the two faces of that edge at
   // 0.7037, in, and at 0.7053, out, on the border of the second; the first
   // made the point OUT.)
-  bool isStrict     = true;
-  bool hasLoosePass = false;
+  // Nor is the first crossing found the first where the line grazes the
+  // face there: a line that passes through a bulge of a curved face crosses
+  // it twice, close by, and the intersector, which looks for the crossings
+  // on a polyhedron of the face, finds one of the two as often as both.
+  // (#617's prism on the tilted torus, its wall an extrusion of a B-spline:
+  // the line of a point outside crosses the wall at 4.695 and at 6.310, 2.9
+  // degrees off its tangent plane; the second alone was found, going out,
+  // and the point was IN.) A line whose first crossing is within 0.1 of
+  // the tangent plane, by the cosine with the normal, is not believed
+  // alone: its answer stands where the next line that does not graze
+  // agrees with it, and where that one says otherwise a third line decides
+  // between the two -- the next line can have lost a crossing of its own
+  // (the same prism, a point 0.03 inside the wall: its first line grazes
+  // the wall and is right, the second leaves through the wall between the
+  // wall and its polyhedron and finds no crossing there). Lines in one
+  // direction count once. Where the lines run out, the first is trusted
+  // as it was before.
+  const double                 THE_GRAZING_COS = 0.1;
+  bool                         isStrict        = true;
+  bool                         hasLoosePass    = false;
+  int                          aGrazeState     = -1;
+  int                          aDisputeState   = -1;
+  NCollection_Sequence<gp_Dir> aCounted;
   while (isFaultyLine)
   {
     if (anIndFace == 0)
@@ -327,6 +349,8 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
 
     isFaultyLine = false;
     parmin       = RealLast();
+    // whether the line grazes the face at the crossing parmin is of
+    bool isGrazing = false;
 
     double NearFaultPar = RealLast(); // Parameter on line.
     // the nearest a crossing may be to count before a loose pass: the pass
@@ -518,6 +542,12 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
 
                     Trans(parmin, tran, myState);
                     myFace = f;
+                    gp_Dir aDNF;
+                    isGrazing = FaceNormal(f,
+                                           Intersector3d.UParameter(i),
+                                           Intersector3d.VParameter(i),
+                                           aDNF)
+                                && std::abs(aDNF.Dot(L.Direction())) < THE_GRAZING_COS;
                   }
                   // If the state is TopAbs_ON, it is necessary to chose
                   // another line and to repeat the whole procedure.
@@ -563,6 +593,34 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
     if (aLooseNear != RealLast() && std::abs(parmin) >= aLooseNear)
     {
       isFaultyLine = true;
+    }
+    if (isStrict && !isFaultyLine && myState != 2 && (isGrazing || aGrazeState >= 0))
+    {
+      hasLoosePass = true;
+      bool isCounted = false;
+      for (int k = 1; k <= aCounted.Length() && !isCounted; k++)
+      {
+        isCounted = aCounted(k).IsEqual(L.Direction(), Precision::Angular());
+      }
+      if (isCounted)
+      {
+        isFaultyLine = true;
+      }
+      else if (isGrazing)
+      {
+        aCounted.Append(L.Direction());
+        if (aGrazeState < 0)
+        {
+          aGrazeState = myState;
+        }
+        isFaultyLine = true;
+      }
+      else if (myState != aGrazeState && aDisputeState < 0)
+      {
+        aCounted.Append(L.Direction());
+        aDisputeState = myState;
+        isFaultyLine  = true;
+      }
     }
   }
 
