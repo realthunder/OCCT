@@ -34,6 +34,7 @@
 #include <TopTools.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_DataMap.hxx>
+#include <NCollection_IndexedMap.hxx>
 #include <NCollection_Map.hxx>
 
 #include <cstdio>
@@ -184,20 +185,49 @@ void BRepOffset_MakeLoops::Build(const NCollection_List<TopoDS_Shape>& LF,
   Message_ProgressScope aPS2(aPSOuter.Next(), "Building loops", LF.Extent());
 
   // myVerVerMap may record a chain of vertex replacement. We compress this
-  // chain to avoid having to do recursive lookup
-  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>                             VM;
-  NCollection_List<TopoDS_Shape>                                                     LV;
-  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itM(
-    myVerVerMap);
-  for (; itM.More(); itM.Next())
+  // chain to avoid having to do recursive lookup. A ring of replacements
+  // (two vertices, each bound to the other) keeps the member the
+  // compression starts from: so it starts from the vertices in the order
+  // the faces' images hold them, and only then from the ones left. In the
+  // order of the map, which is the order of addresses, the vertex kept was
+  // another one from run to run.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>        VM;
+  NCollection_List<TopoDS_Shape>                                LV;
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aStarts;
+  for (it.Initialize(LF); it.More(); it.Next())
   {
-    const TopoDS_Shape& V = itM.Key();
+    NCollection_List<TopoDS_Shape> LIF;
+    Image.LastImage(it.Value(), LIF);
+    for (itl.Initialize(LIF); itl.More(); itl.Next())
+    {
+      for (TopExp_Explorer EdExp(itl.Value(), TopAbs_EDGE); EdExp.More(); EdExp.Next())
+      {
+        for (TopoDS_Iterator VerExp(EdExp.Current()); VerExp.More(); VerExp.Next())
+        {
+          if (myVerVerMap.IsBound(VerExp.Value()))
+          {
+            aStarts.Add(VerExp.Value());
+          }
+        }
+      }
+    }
+  }
+  for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itM(
+         myVerVerMap);
+       itM.More();
+       itM.Next())
+  {
+    aStarts.Add(itM.Key());
+  }
+  for (int iStart = 1; iStart <= aStarts.Extent(); ++iStart)
+  {
+    const TopoDS_Shape V = aStarts(iStart);
     if (!VM.Add(V))
     {
       continue;
     }
 
-    TopoDS_Shape NV = itM.Value();
+    TopoDS_Shape NV = myVerVerMap.Find(V);
     LV.Clear();
     while (!NV.IsSame(V) && myVerVerMap.IsBound(NV))
     {
