@@ -86,6 +86,7 @@
 #include <GeomAPI.hxx>
 #include <GeomAPI_ExtremaCurveCurve.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <GeomAPI_PointsToBSpline.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomConvert_ApproxCurve.hxx>
 #include <GeomConvert_CompCurveToBSplineCurve.hxx>
@@ -819,11 +820,89 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
   GeomInt_IntSS Inter;
   Inter.Perform(AS1, AS2, Precision::Confusion(), true, true, true);
 
+  // A section that is not on the two surfaces: the approximation of the
+  // walked line can go astray -- a stadium's end fillet removed 0.2
+  // outward, the tubes round two of its edges: their section, 0.396 long,
+  // came back 3.46 long and up to 10.5 off the tubes, with its ends in
+  // place (its mirror image across the part: right). The same line not
+  // approximated is right. Where a section strays by more than the ends
+  // are snapped by, the lines are taken as walked -- a curve fitted to
+  // the walked points where that lies as near the surfaces, the points
+  // joined otherwise.
+  NCollection_Sequence<occ::handle<Geom_Curve>> aWalked;
+  {
+    Bnd_Box aBox1, aBox2;
+    BRepBndLib::Add(F1, aBox1);
+    BRepBndLib::Add(F2, aBox2);
+    const double aLimit =
+      1.e-3 * std::min(std::sqrt(aBox1.SquareExtent()), std::sqrt(aBox2.SquareExtent()));
+    auto aStray = [&](const occ::handle<Geom_Curve>& theC) {
+      double       aMax = 0.;
+      const double aF = theC->FirstParameter(), aL = theC->LastParameter();
+      for (int k = 1; k < 16; ++k)
+      {
+        const gp_Pnt aP = theC->Value(aF + (aL - aF) * k / 16.);
+        for (const occ::handle<Geom_Surface>& aS : {S1, S2})
+        {
+          GeomAPI_ProjectPointOnSurf aProj(aP, aS);
+          if (aProj.NbPoints() == 0)
+          {
+            return Precision::Infinite();
+          }
+          aMax = std::max(aMax, aProj.LowerDistance());
+        }
+      }
+      return aMax;
+    };
+    bool isAstray = false;
+    for (int i = 1; Inter.IsDone() && i <= Inter.NbLines() && !isAstray; ++i)
+    {
+      isAstray = !ToSmall(Inter.Line(i)) && aStray(Inter.Line(i)) > aLimit;
+    }
+    if (isAstray)
+    {
+      GeomInt_IntSS aPlain;
+      aPlain.Perform(AS1, AS2, Precision::Confusion(), false, false, false);
+      bool isRight = aPlain.IsDone() && aPlain.NbLines() > 0;
+      for (int i = 1; isRight && i <= aPlain.NbLines(); ++i)
+      {
+        occ::handle<Geom_Curve> aC = aPlain.Line(i);
+        if (ToSmall(aC))
+        {
+          continue;
+        }
+        const double aDev = aStray(aC);
+        isRight           = aDev <= aLimit;
+        occ::handle<Geom_BSplineCurve> aBS = occ::down_cast<Geom_BSplineCurve>(aC);
+        if (isRight && !aBS.IsNull() && aBS->Degree() == 1 && aBS->NbPoles() > 3)
+        {
+          try
+          {
+            GeomAPI_PointsToBSpline aFit(aBS->Poles(), 3, 8, GeomAbs_C2, Precision::Confusion());
+            if (aFit.IsDone() && aStray(aFit.Curve()) <= aDev)
+            {
+              aC = aFit.Curve();
+            }
+          }
+          catch (Standard_Failure const&)
+          {
+          }
+        }
+        aWalked.Append(aC);
+      }
+      if (!isRight)
+      {
+        aWalked.Clear();
+      }
+    }
+  }
+  const bool isWalked = !aWalked.IsEmpty();
+
   if (Inter.IsDone())
   {
-    for (int i = 1; i <= Inter.NbLines(); i++)
+    for (int i = 1; i <= (isWalked ? aWalked.Length() : Inter.NbLines()); i++)
     {
-      CI = Inter.Line(i);
+      CI = isWalked ? aWalked(i) : Inter.Line(i);
       if (ToSmall(CI))
       {
         continue;
@@ -961,7 +1040,7 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
         }
         theC2 = aBS2;
       };
-      if (Inter.HasLineOnS1(i))
+      if (!isWalked && Inter.HasLineOnS1(i))
       {
         occ::handle<Geom2d_Curve> C2 = Inter.LineOnS1(i);
         aMoveEnds(C2, S1);
@@ -972,7 +1051,7 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
       {
         BuildPCurves(E, F1);
       }
-      if (Inter.HasLineOnS2(i))
+      if (!isWalked && Inter.HasLineOnS2(i))
       {
         occ::handle<Geom2d_Curve> C2 = Inter.LineOnS2(i);
         aMoveEnds(C2, S2);
