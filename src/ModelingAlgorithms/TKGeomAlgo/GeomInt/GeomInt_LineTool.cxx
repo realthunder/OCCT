@@ -243,6 +243,15 @@ static bool FindPoint(const gp_Pnt2d& theFirstPoint,
       anoffset = (j == 0) ? anoffset : -anoffset;
       gp_Pnt2d acurpoint(aprojpoint.XY() + (anOtherVec.XY() * anoffset));
       gp_Vec2d acurvec(theLastPoint, acurpoint);
+      // The last point on the boundary already: no way on from it, and no
+      // angle to take with a vector of no length -- gp_Vec2d::Angle threw,
+      // and the whole intersection with it (a stadium's end fillet removed
+      // from a thickness of 0.45, the tubes round its edges: refused at
+      // one thickness in three).
+      if (acurvec.SquareMagnitude() <= gp::Resolution() * gp::Resolution())
+      {
+        continue;
+      }
 
       //
       double aDotX, anAngleX, aPC;
