@@ -18,6 +18,7 @@
 // Add methods for supporting history.
 //  Modified by skv - Mon Jan 12 11:50:02 2004 OCC4455
 
+#include <memory>
 #include <Adaptor3d_CurveOnSurface.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_PointRepresentation.hxx>
@@ -3978,6 +3979,20 @@ static bool IsInsideOut(const TopoDS_Shape& theResult)
 //! and the split shapes it falls back to.
 static thread_local int theThickSolidDepth = 0;
 
+//! The angle up to which an edge of a removed face is closed by a tube in a
+//! thick solid's last attempt (MakeThickSolid): the analysis' weak
+//! tangency, as upstream has it.
+static const double THE_CAP_TANGENT_ANGLE = 0.1;
+
+//! Set for that last attempt: ToContext() takes the edges of a removed face
+//! for tangent up to THE_CAP_TANGENT_ANGLE.
+static thread_local bool theIsCapTangentWide = false;
+
+//! Whether ToContext() met an edge of a removed face that is tangent within
+//! THE_CAP_TANGENT_ANGLE and not within the analysis' own tolerance: the
+//! last attempt has something to do otherwise.
+static thread_local bool theHasNearTangentCapEdge = false;
+
 //! A solid that is valid and passes through itself nowhere. BRepCheck looks
 //! at each face and at the shell's edges, two faces a side each: a skin whose
 //! pockets were closed over, each a box of its own inside it, lid on lid with
@@ -4124,6 +4139,10 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   };
 
   const bool isOutermost = theThickSolidDepth == 0;
+  if (isOutermost)
+  {
+    theHasNearTangentCapEdge = false;
+  }
   // An exception out of the computation is a refusal, as an error it sets
   // is: nothing was made. Thrown on, it left the caller with a message of
   // some curve or surface evaluated where it is not, and the other way
@@ -4166,67 +4185,119 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   {
     return;
   }
-  BRepAlgo_LoopByOrientation aByOrientation;
-  if (wasDone)
+  const BRepOffset_Error anError = myError;
   {
-    // An answer, though invalid: it stays unless the other way has a valid
-    // one.
-    BRepOffset_MakeOffset aTry;
-    aSetUp(aTry);
-    bool hasOther = false;
+    BRepAlgo_LoopByOrientation aByOrientation;
+    if (wasDone)
+    {
+      // An answer, though invalid: it stays unless the other way has a valid
+      // one.
+      BRepOffset_MakeOffset aTry;
+      aSetUp(aTry);
+      bool hasOther = false;
+      try
+      {
+        aMake(aTry, Message_ProgressRange());
+        hasOther = aTry.myDone && IsSoundSolid(aTry.myOffsetShape);
+      }
+      catch (Standard_Failure const&)
+      {
+      }
+      if (!hasOther)
+      {
+        // It stays, but for one that opens nowhere, from level 4: invalid, and
+        // not a thick solid of the faces removed either. #613's part, a blend
+        // of its roof removed inward: of the offsets only the bottom's and
+        // the cylinder's were made, and the cone's with the crease alone for
+        // its bounds, a face of no area that closed the two into a void --
+        // the blend back whole, 21192 for a wall of some 3400. Below level 4,
+        // the crease not cut, a result of 24 faces too weighs no less than
+        // the part and is refused for that (MakeThickSolidOrRunaway).
+        if (BRepOffset_FixLevel() >= 4 && OpensNowhere(myOffsetShape, aRemoved))
+        {
+          myDone  = false;
+          myError = BRepOffset_UnknownError;
+          myOffsetShape.Nullify();
+        }
+        return;
+      }
+    }
+    aSetUp(*this);
     try
     {
-      aMake(aTry, Message_ProgressRange());
-      hasOther = aTry.myDone && IsSoundSolid(aTry.myOffsetShape);
+      aMake(*this, Message_ProgressRange());
     }
     catch (Standard_Failure const&)
     {
+      myDone = false;
     }
-    if (!hasOther)
+    // The answer of this way is taken where it is sound, and no other: it is
+    // one nothing asked to see before.
+    if (myDone && !IsSoundSolid(myOffsetShape))
     {
-      // It stays, but for one that opens nowhere, from level 4: invalid, and
-      // not a thick solid of the faces removed either. #613's part, a blend
-      // of its roof removed inward: of the offsets only the bottom's and
-      // the cylinder's were made, and the cone's with the crease alone for
-      // its bounds, a face of no area that closed the two into a void --
-      // the blend back whole, 21192 for a wall of some 3400. Below level 4,
-      // the crease not cut, a result of 24 faces too weighs no less than
-      // the part and is refused for that (MakeThickSolidOrRunaway).
-      if (BRepOffset_FixLevel() >= 4 && OpensNowhere(myOffsetShape, aRemoved))
-      {
-        myDone  = false;
-        myError = BRepOffset_UnknownError;
-        myOffsetShape.Nullify();
-      }
-      return;
+      myDone  = false;
+      myError = BRepOffset_UnknownError;
+      myOffsetShape.Nullify();
+    }
+    if (!myDone && !wasDone && anError != BRepOffset_NoError)
+    {
+      // refused both ways: for the reason it was refused first
+      myError = anError;
+    }
+    if (myDone)
+    {
+      JoinEdgePieces();
     }
   }
-  const BRepOffset_Error anError = myError;
-  aSetUp(*this);
-  try
+  if (myDone || wasDone || !theHasNearTangentCapEdge)
   {
-    aMake(*this, Message_ProgressRange());
+    return;
   }
-  catch (Standard_Failure const&)
+  // Refused both ways, and a removed face has an edge along which its
+  // neighbour is nearly tangent to it: past what the analysis takes for
+  // tangent, so that the neighbour's offset was carried on to the removed
+  // face's surface, which it reaches far off or never. Once more with such
+  // edges closed by a tube, as the tangent ones are; either way of the
+  // loops, and a sound answer only. #613's part: its long blends meet the
+  // corner blends 0.9 deg off, tangent by the tolerance at a thickness of
+  // 0.5 and not at 1; its cylinder meets the cone 1.5 deg off, and the
+  // cone's offset carried down never comes to the cylinder's surface.
+  // What had an answer keeps it: this is tried after a refusal only.
+  struct WideScope
   {
-    myDone = false;
+    WideScope() { theIsCapTangentWide = true; }
+
+    ~WideScope() { theIsCapTangentWide = false; }
+  } aWide;
+  for (int aWay = 0; aWay < 2 && !myDone; ++aWay)
+  {
+    std::unique_ptr<BRepAlgo_LoopByOrientation> aByOrientation;
+    if (aWay == 1)
+    {
+      aByOrientation.reset(new BRepAlgo_LoopByOrientation);
+    }
+    aSetUp(*this);
+    try
+    {
+      aMake(*this, Message_ProgressRange());
+    }
+    catch (Standard_Failure const&)
+    {
+      myDone = false;
+    }
+    if (myDone && !IsSoundSolid(myOffsetShape))
+    {
+      myDone = false;
+    }
+    if (myDone && aWay == 1)
+    {
+      JoinEdgePieces();
+    }
   }
-  // The answer of this way is taken where it is sound, and no other: it is
-  // one nothing asked to see before.
-  if (myDone && !IsSoundSolid(myOffsetShape))
+  if (!myDone)
   {
-    myDone  = false;
-    myError = BRepOffset_UnknownError;
+    myError = anError != BRepOffset_NoError ? anError : BRepOffset_UnknownError;
     myOffsetShape.Nullify();
-  }
-  if (!myDone && !wasDone && anError != BRepOffset_NoError)
-  {
-    // refused both ways: for the reason it was refused first
-    myError = anError;
-  }
-  if (myDone)
-  {
-    JoinEdgePieces();
   }
 }
 
@@ -7060,7 +7131,11 @@ void BRepOffset_MakeOffset::ToContext(
     // microradians off, and an angular-precision test left its edge without
     // a tube -- the dome of a filleted B-spline top removed came back
     // unhollowed.
-    const double aSinTol = std::abs(std::sin(analyseTolAngle(myTol, myOffset)));
+    // Wider in a thick solid's last attempt (MakeThickSolid): a neighbour
+    // a degree off tangent has an offset that reaches the removed face's
+    // surface 57 thicknesses on, if at all.
+    const double aSinTol  = std::abs(std::sin(analyseTolAngle(myTol, myOffset)));
+    const double aSinWide = std::max(aSinTol, std::sin(THE_CAP_TANGENT_ANGLE));
     for (j = 1; j <= myFaces.Extent(); j++)
     {
       const TopoDS_Face& CF = TopoDS::Face(myFaces(j));
@@ -7072,11 +7147,8 @@ void BRepOffset_MakeOffset::ToContext(
         {
           continue;
         }
-        if (ChFi3d::DefineConnectType(E,
-                                      CF,
-                                      TopoDS::Face(myAnalyse.Ancestors(E).First()),
-                                      aSinTol,
-                                      false)
+        const TopoDS_Face& aNF = TopoDS::Face(myAnalyse.Ancestors(E).First());
+        if (ChFi3d::DefineConnectType(E, CF, aNF, theIsCapTangentWide ? aSinWide : aSinTol, false)
             == ChFiDS_Tangential)
         {
           aTangentE.Add(E, CF);
@@ -7084,6 +7156,11 @@ void BRepOffset_MakeOffset::ToContext(
           {
             aTangentV.Add(anItV.Value());
           }
+        }
+        else if (!theIsCapTangentWide
+                 && ChFi3d::DefineConnectType(E, CF, aNF, aSinWide, false) == ChFiDS_Tangential)
+        {
+          theHasNearTangentCapEdge = true;
         }
       }
     }
