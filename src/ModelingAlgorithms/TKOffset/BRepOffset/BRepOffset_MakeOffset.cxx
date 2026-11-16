@@ -1402,7 +1402,9 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
     }
     const TopoDS_Shape&                   CE = myInitOffsetEdge.ImageFrom(NE);
     const NCollection_List<TopoDS_Shape>& LE = myInitOffsetEdge.Image(CE);
-    if (LE.Extent() > 1)
+    // A vertex's images are the ends of the tubes that meet at it, each its
+    // own tube's (BuildOffsetByArc, where the new edges replace the old).
+    if (LE.Extent() > 1 && CE.ShapeType() != TopAbs_VERTEX)
     {
       for (NCollection_List<TopoDS_Shape>::Iterator itL(LE); itL.More(); itL.Next())
       {
@@ -8591,6 +8593,15 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
       continue;
     }
 
+    // A vertex's images are the ends of the tubes that meet at it, each its
+    // own tube's: one does not stand for another. Two tubes at a corner of
+    // the removed face (a chamfered box, a side removed outward): the first
+    // tube's end was replaced by the second's trace on the removed face, in
+    // the first tube too.
+    if (E.ShapeType() == TopAbs_VERTEX)
+    {
+      continue;
+    }
     const NCollection_List<TopoDS_Shape>& LE = myInitOffsetEdge.Image(E);
     for (NCollection_List<TopoDS_Shape>::Iterator itL(LE); itL.More(); itL.Next())
     {

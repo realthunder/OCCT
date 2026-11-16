@@ -3075,6 +3075,26 @@ void BRepOffset_Inter3d::ContextIntByArc(
             //-------------------------------------------------
             OF1 = TopoDS::Face(InitOffsetFace.Image(EV).First());
             OE  = TopoDS::Edge(InitOffsetEdge.Image(V[i]).First());
+            // The vertex has an image for each tube that ends at it, and
+            // this tube's is the one on it: with two tubes at a corner of
+            // the removed face -- a box with its top edges chamfered, a side
+            // removed outward: the chamfer's edge with the next side, and
+            // the mitre of the two chamfers -- both were given the first, the
+            // second had no trace on the removed face and was never cut by
+            // it.
+            for (NCollection_List<TopoDS_Shape>::Iterator itVI(InitOffsetEdge.Image(V[i]));
+                 itVI.More();
+                 itVI.Next())
+            {
+              double                          aVF, aVL;
+              const TopoDS_Edge&              aVE = TopoDS::Edge(itVI.Value());
+              const occ::handle<Geom2d_Curve> aVC = BRep_Tool::CurveOnSurface(aVE, OF1, aVF, aVL);
+              if (!aVC.IsNull())
+              {
+                OE = aVE;
+                break;
+              }
+            }
 
             SHOW_TOPO_SHAPE(EV, "EV2_");
             SHOW_TOPO_SHAPE(V[i], "VI2_");

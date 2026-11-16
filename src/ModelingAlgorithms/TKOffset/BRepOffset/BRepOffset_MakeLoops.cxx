@@ -743,6 +743,25 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
             }
           }
         }
+        // An edge the face is to have and was not built with is a reason to
+        // rebuild it too: the tube beside it, stretched to a removed face it
+        // meets at a vertex (ExtentFace), made their common edge again,
+        // whole, on a vertex of its own, and this face -- not stretched, cut
+        // by nothing -- kept the old one: each copy in one face, the shell
+        // open (a chamfered box, a side removed outward: the chamfer beside
+        // the mitre's tube).
+        if (!ToRebuild)
+        {
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anOwn;
+          for (TopExp_Explorer anExpOwn(F, TopAbs_EDGE); anExpOwn.More(); anExpOwn.Next())
+          {
+            anOwn.Add(anExpOwn.Current());
+          }
+          for (itl.Initialize(LE); itl.More() && !ToRebuild; itl.Next())
+          {
+            ToRebuild = !anOwn.Contains(itl.Value());
+          }
+        }
         if (ToRebuild)
         {
 
