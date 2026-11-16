@@ -4018,6 +4018,33 @@ static bool IsSoundSolid(const TopoDS_Shape& theShape)
   }
 }
 
+//! Whether every face of the shape is a plane.
+static bool IsPolyhedron(const TopoDS_Shape& theShape)
+{
+  for (TopExp_Explorer anExp(theShape, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    if (BRepAdaptor_Surface(TopoDS::Face(anExp.Current()), false).GetType() != GeomAbs_Plane)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+//! Whether the solid weighs no more than a skin of its thickness can: half
+//! the thickness times its area. A wall between a surface and its offset is
+//! the thickness times the mean of the two areas, less where the offsets of
+//! two faces cut each other and no more where a tube or a piece of sphere
+//! joins them (Steiner's formula: t A + t^2 M + 4 pi t^3 / 3 for a convex
+//! body, its offset's area A + 2 t M + 4 pi t^2); the rim is area too.
+static bool IsNoHeavierThanASkin(const TopoDS_Shape& theShape, const double theThickness)
+{
+  GProp_GProps aVolume, anArea;
+  BRepGProp::VolumeProperties(theShape, aVolume);
+  BRepGProp::SurfaceProperties(theShape, anArea);
+  return std::abs(aVolume.Mass()) <= 0.5 * std::abs(theThickness) * anArea.Mass() * 1.001;
+}
+
 //! Whether the thick solid opens through none of the faces removed: each of
 //! them lies whole on its faces still, a grid of its points each on one of
 //! them. By the points, not by areas: a T's arm top removed outward leaves,
@@ -4114,12 +4141,14 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       theMO.myOffsetShape.Nullify();
     }
   };
+  const bool isInter = myInter;
+  bool       isAllPairs = false;
   auto aSetUp = [&](BRepOffset_MakeOffset& theMO) {
     theMO.Initialize(aShape,
                      anOffset,
                      myTol,
                      myMode,
-                     myInter,
+                     isInter || isAllPairs,
                      mySelfInter,
                      myJoin,
                      myThickening,
@@ -4136,6 +4165,45 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     {
       theMO.SetOffsetOnFace(TopoDS::Face(anIt.Key()), anIt.Value());
     }
+  };
+
+  // The thick solid with every pair of faces intersected, either way of the
+  // loops: an answer is taken where it is sound, opens through the faces
+  // removed and weighs no more than a skin can.
+  auto aMakeAllPairs = [&](BRepOffset_MakeOffset& theMO) {
+    bool isMade = false;
+    isAllPairs  = true;
+    for (int aWay = 0; aWay < 2 && !isMade; ++aWay)
+    {
+      std::unique_ptr<BRepAlgo_LoopByOrientation> aByOrientation;
+      if (aWay == 1)
+      {
+        aByOrientation.reset(new BRepAlgo_LoopByOrientation);
+      }
+      aSetUp(theMO);
+      try
+      {
+        aMake(theMO, Message_ProgressRange());
+      }
+      catch (Standard_Failure const&)
+      {
+        theMO.myDone = false;
+      }
+      isMade = theMO.myDone && IsSoundSolid(theMO.myOffsetShape)
+               && !OpensNowhere(theMO.myOffsetShape, aRemoved)
+               && IsNoHeavierThanASkin(theMO.myOffsetShape, anOffset);
+      if (isMade && aWay == 1)
+      {
+        theMO.JoinEdgePieces();
+      }
+    }
+    isAllPairs    = false;
+    theMO.myInter = isInter;
+    if (!isMade)
+    {
+      theMO.myDone = false;
+    }
+    return isMade;
   };
 
   const bool isOutermost = theThickSolidDepth == 0;
@@ -4187,6 +4255,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     return;
   }
   const BRepOffset_Error anError = myError;
+  bool                   isInvalidKept = false;
   {
     BRepAlgo_LoopByOrientation aByOrientation;
     if (wasDone)
@@ -4219,92 +4288,131 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
           myDone  = false;
           myError = BRepOffset_UnknownError;
           myOffsetShape.Nullify();
+          return;
         }
-        return;
+        isInvalidKept = true;
       }
     }
-    aSetUp(*this);
-    try
+    if (!isInvalidKept)
     {
-      aMake(*this, Message_ProgressRange());
-    }
-    catch (Standard_Failure const&)
-    {
-      myDone = false;
-    }
-    // The answer of this way is taken where it is sound, and no other: it is
-    // one nothing asked to see before.
-    if (myDone && !IsSoundSolid(myOffsetShape))
-    {
-      myDone  = false;
-      myError = BRepOffset_UnknownError;
-      myOffsetShape.Nullify();
-    }
-    if (!myDone && !wasDone && anError != BRepOffset_NoError)
-    {
-      // refused both ways: for the reason it was refused first
-      myError = anError;
-    }
-    if (myDone)
-    {
-      JoinEdgePieces();
+      aSetUp(*this);
+      try
+      {
+        aMake(*this, Message_ProgressRange());
+      }
+      catch (Standard_Failure const&)
+      {
+        myDone = false;
+      }
+      // The answer of this way is taken where it is sound, and no other: it
+      // is one nothing asked to see before.
+      if (myDone && !IsSoundSolid(myOffsetShape))
+      {
+        myDone  = false;
+        myError = BRepOffset_UnknownError;
+        myOffsetShape.Nullify();
+      }
+      if (!myDone && !wasDone && anError != BRepOffset_NoError)
+      {
+        // refused both ways: for the reason it was refused first
+        myError = anError;
+      }
+      if (myDone)
+      {
+        JoinEdgePieces();
+      }
     }
   }
-  if (myDone || wasDone
-      || (!theHasNearTangentCapEdge && !BRepOffset_Tool::HasNearSectionEnd(false)))
+  if (isInvalidKept)
+  {
+    // The invalid answer stays, unless every face of the shape is a plane
+    // and the thick solid with every pair of faces intersected (below) is an
+    // answer: made on another first, so that this one keeps what it has
+    // where it is none. The box with all its edges chamfered, a face removed
+    // inward with the Intersection join: invalid, 4730.3015 for 844.9916.
+    if (!isInter && IsPolyhedron(aShape))
+    {
+      BRepOffset_MakeOffset aTry;
+      if (aMakeAllPairs(aTry) && !aMakeAllPairs(*this))
+      {
+        myError = BRepOffset_UnknownError;
+        myOffsetShape.Nullify();
+      }
+    }
+    return;
+  }
+  if (myDone || wasDone)
   {
     return;
   }
-  // Refused both ways, and a removed face has an edge along which its
-  // neighbour is nearly tangent to it: past what the analysis takes for
-  // tangent, so that the neighbour's offset was carried on to the removed
-  // face's surface, which it reaches far off or never. Once more with such
-  // edges closed by a tube, as the tangent ones are; either way of the
-  // loops, and a sound answer only. #613's part: its long blends meet the
-  // corner blends 0.9 deg off, tangent by the tolerance at a thickness of
-  // 0.5 and not at 1; its cylinder meets the cone 1.5 deg off, and the
-  // cone's offset carried down never comes to the cylinder's surface.
-  // What had an answer keeps it: this is tried after a refusal only.
-  // And with a section of two faces ending near a vertex both have put on
-  // that vertex from further off (BRepOffset_Tool::SetWideSectionSnap).
-  struct WideScope
+  if (theHasNearTangentCapEdge || BRepOffset_Tool::HasNearSectionEnd(false))
   {
-    WideScope()
+    // Refused both ways, and a removed face has an edge along which its
+    // neighbour is nearly tangent to it: past what the analysis takes for
+    // tangent, so that the neighbour's offset was carried on to the removed
+    // face's surface, which it reaches far off or never. Once more with such
+    // edges closed by a tube, as the tangent ones are; either way of the
+    // loops, and a sound answer only. #613's part: its long blends meet the
+    // corner blends 0.9 deg off, tangent by the tolerance at a thickness of
+    // 0.5 and not at 1; its cylinder meets the cone 1.5 deg off, and the
+    // cone's offset carried down never comes to the cylinder's surface.
+    // What had an answer keeps it: this is tried after a refusal only.
+    // And with a section of two faces ending near a vertex both have put on
+    // that vertex from further off (BRepOffset_Tool::SetWideSectionSnap).
+    struct WideScope
     {
-      theIsCapTangentWide = true;
-      BRepOffset_Tool::SetWideSectionSnap(true);
-    }
+      WideScope()
+      {
+        theIsCapTangentWide = true;
+        BRepOffset_Tool::SetWideSectionSnap(true);
+      }
 
-    ~WideScope()
+      ~WideScope()
+      {
+        theIsCapTangentWide = false;
+        BRepOffset_Tool::SetWideSectionSnap(false);
+      }
+    } aWide;
+    for (int aWay = 0; aWay < 2 && !myDone; ++aWay)
     {
-      theIsCapTangentWide = false;
-      BRepOffset_Tool::SetWideSectionSnap(false);
+      std::unique_ptr<BRepAlgo_LoopByOrientation> aByOrientation;
+      if (aWay == 1)
+      {
+        aByOrientation.reset(new BRepAlgo_LoopByOrientation);
+      }
+      aSetUp(*this);
+      try
+      {
+        aMake(*this, Message_ProgressRange());
+      }
+      catch (Standard_Failure const&)
+      {
+        myDone = false;
+      }
+      if (myDone && !IsSoundSolid(myOffsetShape))
+      {
+        myDone = false;
+      }
+      if (myDone && aWay == 1)
+      {
+        JoinEdgePieces();
+      }
     }
-  } aWide;
-  for (int aWay = 0; aWay < 2 && !myDone; ++aWay)
+  }
+  // Refused still, and every face of the shape a plane: once more with every
+  // pair of faces intersected, not only those across an edge (the caller's
+  // Intersection, which it did not ask for). At a corner of a removed face
+  // where three faces that stay meet, the offsets of two of them that share
+  // only that vertex cut each other, and nothing else intersects them: a
+  // box with its top edges chamfered, a side removed inward, was refused,
+  // and so was every face of the box with all its edges chamfered. Either
+  // way of the loops; an answer is taken where it is sound, opens through
+  // the faces removed and weighs no more than a skin can. Of planes only:
+  // tried on any shape, three of #613's blends at 1 came back sound solids
+  // of 43667, the part being 21192.
+  if (!myDone && !isInter && IsPolyhedron(aShape))
   {
-    std::unique_ptr<BRepAlgo_LoopByOrientation> aByOrientation;
-    if (aWay == 1)
-    {
-      aByOrientation.reset(new BRepAlgo_LoopByOrientation);
-    }
-    aSetUp(*this);
-    try
-    {
-      aMake(*this, Message_ProgressRange());
-    }
-    catch (Standard_Failure const&)
-    {
-      myDone = false;
-    }
-    if (myDone && !IsSoundSolid(myOffsetShape))
-    {
-      myDone = false;
-    }
-    if (myDone && aWay == 1)
-    {
-      JoinEdgePieces();
-    }
+    aMakeAllPairs(*this);
   }
   if (!myDone)
   {
