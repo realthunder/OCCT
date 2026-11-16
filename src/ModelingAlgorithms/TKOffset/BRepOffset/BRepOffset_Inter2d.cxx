@@ -446,6 +446,43 @@ static void Store(
 // function : Store
 // purpose  : Store the intersection vertices between two edges into AsDes
 //=======================================================================
+// function : NearRange
+// purpose  : The parameter of a crossing on a periodic curve, nearest the
+//           curve's range. A crossing at the end of the range can come back
+//           a period off it: the section of a wall with a tube, an ellipse
+//           from 3.73 to 3 pi / 2, crossed 6e-8 past its end and was given
+//           - pi / 2. The vertex stored there is the edge's end on the
+//           ellipse and nowhere near it on a pcurve that is not periodic,
+//           and the vertex it was fused into took a tolerance of 5.98 for
+//           it (a box with a notch across a corner, a face removed 1.45
+//           outward: refused; made at 1.4 and 1.5).
+//=======================================================================
+static double NearRange(const Geom2dAdaptor_Curve& theC,
+                        const double               theF,
+                        const double               theL,
+                        const double               theT)
+{
+  if (!theC.IsPeriodic() || (theT >= theF && theT <= theL))
+  {
+    return theT;
+  }
+  const double aP    = theC.Period();
+  auto         aDist = [&](const double theX) {
+    return theX < theF ? theF - theX : (theX > theL ? theX - theL : 0.);
+  };
+  double aBest = theT;
+  for (const double aT :
+       {ElCLib::InPeriod(theT, theF, theF + aP), ElCLib::InPeriod(theT, theL - aP, theL)})
+  {
+    if (aDist(aT) < aDist(aBest))
+    {
+      aBest = aT;
+    }
+  }
+  return aBest;
+}
+
+//=======================================================================
 static void Store(
   const TopoDS_Edge&                    theE1,
   const TopoDS_Edge&                    theE2,
@@ -548,8 +585,8 @@ static void EdgeInter(
         gp_Pnt2d P2d = Inter2d.Point(i).Value();
         P3d          = BAsurf.Value(P2d.X(), P2d.Y());
       }
-      double ParamsOnE1 = Inter2d.Point(i).ParamOnFirst();
-      double ParamsOnE2 = Inter2d.Point(i).ParamOnSecond();
+      double ParamsOnE1 = NearRange(GAC1, f[1], l[1], Inter2d.Point(i).ParamOnFirst());
+      double ParamsOnE2 = NearRange(GAC2, f[2], l[2], Inter2d.Point(i).ParamOnSecond());
       if (std::abs(ParamsOnE1 - f[1]) <= Precision::Confusion()
           || std::abs(ParamsOnE1 - l[1]) <= Precision::Confusion()
           || std::abs(ParamsOnE2 - f[2]) <= Precision::Confusion()
@@ -1095,8 +1132,8 @@ static void RefEdgeInter(
       P3d          = BAsurf.Value(P2d.X(), P2d.Y());
     }
     ResPoints.Append(P3d);
-    ResParamsOnE1.Append(Inter2d.Point(i).ParamOnFirst());
-    ResParamsOnE2.Append(Inter2d.Point(i).ParamOnSecond());
+    ResParamsOnE1.Append(NearRange(GAC1, f[1], l[1], Inter2d.Point(i).ParamOnFirst()));
+    ResParamsOnE2.Append(NearRange(GAC2, f[2], l[2], Inter2d.Point(i).ParamOnSecond()));
   }
 
   for (i = 1; i <= ResPoints.Length(); i++)
