@@ -54,6 +54,11 @@
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_Map.hxx>
 #include <NCollection_Sequence.hxx>
+#include <Geom_BezierSurface.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <math_Vector.hxx>
+#include <math_Matrix.hxx>
+#include <math_Gauss.hxx>
 #include <NCollection_DataMap.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <BRepOffset.hxx>
@@ -6414,6 +6419,11 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
   const double sF = theCap.Orientation() == TopAbs_REVERSED ? -1. : 1.;
   const double sE = theE.Orientation() == TopAbs_REVERSED ? -1. : 1.;
   const bool   isLine = aC->IsKind(STANDARD_TYPE(Geom_Line));
+  const bool isBounded = (theSurf->IsKind(STANDARD_TYPE(Geom_BSplineSurface))
+                          || theSurf->IsKind(STANDARD_TYPE(Geom_BezierSurface)))
+                         && !theSurf->IsUPeriodic() && !theSurf->IsVPeriodic();
+  gp_Pnt2d   aLastUV;
+  bool       hasLast = false;
   // The point at u, and its parameters on the cap.
   auto aPoint = [&](const double u, gp_Pnt& thePnt, gp_Pnt2d& theUV) {
     gp_Pnt aP;
@@ -6468,12 +6478,79 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
     }
     if (iBest == 0)
     {
-      return false;
+      // No point on the surface as it is bounded: on the surface carried on
+      // past its bounds, then, by what a B-spline or a Bezier is there, its
+      // last span's own. At a corner of a blend that is not square the
+      // circle round the end of the blend's end edge passes 0.02 to 0.05
+      // outside the long edge beside it (#613's blends, a thickness of
+      // 0.5), and the edge on the cap was given up for those two points --
+      // which lie past where the next tube's edge crosses it, and are cut
+      // off. By Newton's steps from the last point found, or from the
+      // point of the edge.
+      if (!isBounded)
+      {
+        return false;
+      }
+      double aTh     = 0.;
+      double aU      = hasLast ? aLastUV.X() : aUV.X();
+      double aV      = hasLast ? aLastUV.Y() : aUV.Y();
+      bool   isFound = false;
+      for (int anIter = 0; anIter < 30 && !isFound; ++anIter)
+      {
+        gp_Pnt aPC2, aPS2;
+        gp_Vec aDC, aSU, aSV;
+        aCirc->D1(aTh, aPC2, aDC);
+        theSurf->D1(aU, aV, aPS2, aSU, aSV);
+        const gp_Vec aF(aPS2, aPC2);
+        if (aF.Magnitude() < 1.e-10)
+        {
+          isFound = true;
+          break;
+        }
+        // C(th) - S(u, v) = 0: three equations, three unknowns
+        math_Matrix aJ(1, 3, 1, 3);
+        math_Vector aRhs(1, 3), aSol(1, 3);
+        for (int k = 1; k <= 3; ++k)
+        {
+          aJ(k, 1) = aDC.Coord(k);
+          aJ(k, 2) = -aSU.Coord(k);
+          aJ(k, 3) = -aSV.Coord(k);
+          aRhs(k)  = -aF.Coord(k);
+        }
+        math_Gauss aGauss(aJ);
+        if (!aGauss.IsDone())
+        {
+          break;
+        }
+        aGauss.Solve(aRhs, aSol);
+        aTh += aSol(1);
+        aU += aSol(2);
+        aV += aSol(3);
+      }
+      if (!isFound)
+      {
+        return false;
+      }
+      const gp_Pnt aPF = aCirc->Value(aTh);
+      // into the face, and no further off the surface than half the radius
+      double aB1, aB2, aB3, aB4;
+      theSurf->Bounds(aB1, aB2, aB3, aB4);
+      const gp_Pnt aPIn = theSurf->Value(std::min(std::max(aU, aB1), aB2),
+                                         std::min(std::max(aV, aB3), aB4));
+      if (gp_Vec(aP, aPF).Dot(aIn) <= 0. || aPIn.Distance(aPF) > theR / 2.)
+      {
+        return false;
+      }
+      thePnt = aPF;
+      theUV.SetCoord(aU, aV);
+      return true;
     }
     double aU, aV, aW;
     anInt.Parameters(iBest, aU, aV, aW);
     thePnt = anInt.Point(iBest);
     theUV.SetCoord(aU, aV);
+    aLastUV = theUV;
+    hasLast = true;
     return true;
   };
   // The points from theF to theL.
@@ -6482,11 +6559,47 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
                      NCollection_Array1<gp_Pnt>&   thePnts,
                      NCollection_Array1<gp_Pnt2d>& theUVs,
                      NCollection_Array1<double>&   thePars) {
-    const int aNb = thePnts.Length();
+    const int                aNb = thePnts.Length();
+    NCollection_Array1<bool> isMissed(1, aNb);
+    int                      aNbMissed = 0;
     for (int i = 1; i <= aNb; ++i)
     {
-      thePars(i) = theF + (theL - theF) * (i - 1) / (aNb - 1);
-      if (!aPoint(thePars(i), thePnts(i), theUVs(i)))
+      thePars(i)  = theF + (theL - theF) * (i - 1) / (aNb - 1);
+      isMissed(i) = !aPoint(thePars(i), thePnts(i), theUVs(i));
+      aNbMissed += isMissed(i) ? 1 : 0;
+    }
+    if (aNbMissed == 0)
+    {
+      return true;
+    }
+    if (!isBounded || aNbMissed == aNb)
+    {
+      return false;
+    }
+    // The points missed, each from the one found next to it: outward from
+    // the points found.
+    for (int aPass = 0; aPass < 2; ++aPass)
+    {
+      for (int k = 1; k <= aNb; ++k)
+      {
+        const int i  = aPass == 0 ? k : aNb + 1 - k;
+        const int iN = aPass == 0 ? i - 1 : i + 1;
+        if (!isMissed(i) || iN < 1 || iN > aNb || isMissed(iN))
+        {
+          continue;
+        }
+        aLastUV = theUVs(iN);
+        hasLast = true;
+        if (!aPoint(thePars(i), thePnts(i), theUVs(i)))
+        {
+          return false;
+        }
+        isMissed(i) = false;
+      }
+    }
+    for (int i = 1; i <= aNb; ++i)
+    {
+      if (isMissed(i))
       {
         return false;
       }

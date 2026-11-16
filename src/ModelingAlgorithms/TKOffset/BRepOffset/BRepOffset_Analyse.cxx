@@ -106,8 +106,10 @@ const double THE_TANGENT_MISS = 0.001;
 // hand (the issues' and the suites', 1539 edges between faces under 0.2 rad
 // that are not both planes) a fillet and the faces it blends are within
 // 6e-5 and two B-splines within 6e-4; nothing lies between that and 0.005,
-// and the creases start there. Offsets of a pair meant to be tangent miss
-// by the distance times their angle whatever is done with them.
+// where the blends that miss tangency begin (0.006 to 0.016: #962's, and
+// #613's long blends against its corner ones) and the creases after them.
+// Offsets of a pair meant to be tangent miss by the distance times their
+// angle whatever is done with them.
 const double THE_TANGENT_ANGLE_MIN = 0.001;
 
 // The angle within which two faces are tangent by the weak test: 0.1 rad,
