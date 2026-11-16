@@ -2338,6 +2338,14 @@ bool IntPatch_Intersection::CheckSingularPoints(const occ::handle<Adaptor3d_Surf
       {
         break;
       }
+      // A boundary of no length in its parameter has one point, and the
+      // step is zero: on a surface with no derivative there -- the offset of
+      // a torus by its own small radius, a fillet removed from a thick solid
+      // of the fillet's radius -- the loop never ended.
+      if (dt <= 0.)
+      {
+        break;
+      }
     }
 
     if (aD1NormMax <= aTol)
