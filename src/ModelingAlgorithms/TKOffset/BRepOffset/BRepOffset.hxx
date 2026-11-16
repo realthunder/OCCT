@@ -89,6 +89,10 @@ public:
 //!       past that the offsets are cut by each other or joined by a tube,
 //!       not left apart under a loose edge (sec 74). An invalid thick
 //!       solid that opens through none of the removed faces is refused.
+//!  5 -- a thick solid whose removed face is narrower, between two of its
+//!       tangent edges that meet at no vertex, than twice the thickness is
+//!       refused: the tubes that close the two edges pass through each
+//!       other, and the solid made of them was valid and no skin (sec 78).
 extern "C" Standard_EXPORT int BRepOffset_SetFixLevel(const int theLevel);
 
 //! The calling thread's level of BRepOffset_SetFixLevel().

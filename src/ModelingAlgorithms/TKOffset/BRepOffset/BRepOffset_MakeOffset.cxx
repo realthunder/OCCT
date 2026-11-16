@@ -6334,6 +6334,10 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
   if (!myFaces.IsEmpty())
   {
     ToContext(MapSF, aCutEdges);
+    if (myError != BRepOffset_NoError)
+    {
+      return;
+    }
   }
 
   //------------------------------------------------------
@@ -7668,6 +7672,121 @@ void BRepOffset_MakeOffset::ToContext(
       catch (Standard_Failure const&)
       {
         SHOW_TOPO_SHAPE(V, "TangentCornerFailed");
+      }
+    }
+  }
+
+  // Two tubes round tangent edges of one removed face that do not meet at a
+  // vertex are cut by nothing but that face, each on its own: where the face
+  // between the two edges is narrower than twice the thickness, each tube's
+  // edge on the face lies under the other tube, the two pass through each
+  // other, and the solid of them is valid and no skin -- a tube with its rim
+  // filleted at 1, the fillet removed 1 outward, came back 6476.7086 where
+  // the whole tube is 2391.1690. From fix level 5 that is refused: a point
+  // of a tube's edge on the removed face, on that face, nearer than the
+  // thickness (and a thousandth of it) to another tangent edge of it that
+  // has a tube and shares no vertex with this one. Not a point under the
+  // tube of an edge that does
+  // share a vertex with this one: that tube cuts this one off there (#613's
+  // corner blends at 1, 1.81 wide at one end, where the two long tubes
+  // would meet under the end's). Nor are two tubes that just touch an
+  // answer, the face twice the thickness wide: the tube's top removed 1
+  // outward, its two edges 2 apart, was an invalid solid.
+  if (BRepOffset_FixLevel() >= 5)
+  {
+    const double aT     = std::abs(myOffset);
+    const double aSlack = std::max(1.e-3 * aT, 10. * myTol);
+    const int    aNbS   = 33;
+    // the distance of a point from an edge
+    auto aDistance = [](const gp_Pnt& theP, const TopoDS_Edge& theE) {
+      double                  aF, aL;
+      TopLoc_Location         aLoc;
+      occ::handle<Geom_Curve> aC = BRep_Tool::Curve(theE, aLoc, aF, aL);
+      if (aC.IsNull())
+      {
+        return Precision::Infinite();
+      }
+      const gp_Pnt aP = theP.Transformed(aLoc.Transformation().Inverted());
+      double       aD = std::min(aP.Distance(aC->Value(aF)), aP.Distance(aC->Value(aL)));
+      GeomAPI_ProjectPointOnCurve aProj(aP, aC, aF, aL);
+      if (aProj.NbPoints() > 0)
+      {
+        aD = std::min(aD, aProj.LowerDistance());
+      }
+      return aD;
+    };
+    for (int i1 = 1; i1 <= aTangentE.Extent() && myError == BRepOffset_NoError; ++i1)
+    {
+      const TopoDS_Edge& aE1 = TopoDS::Edge(aTangentE.FindKey(i1));
+      const TopoDS_Face& aCF = TopoDS::Face(aTangentE(i1));
+      if (!aTubes.IsBound(aE1) || !myInitOffsetEdge.HasImage(aE1))
+      {
+        continue;
+      }
+      const TopoDS_Edge aRim = TopoDS::Edge(myInitOffsetEdge.Image(aE1).First());
+      double            aRF, aRL;
+      const occ::handle<Geom2d_Curve> aRC2d = BRep_Tool::CurveOnSurface(aRim, aCF, aRF, aRL);
+      if (aRC2d.IsNull() || BRep_Tool::Degenerated(aRim))
+      {
+        continue;
+      }
+      // the face's other tangent edges with a tube: those that meet this one
+      // at a vertex, and those that do not
+      TopoDS_Vertex aV11, aV12;
+      TopExp::Vertices(aE1, aV11, aV12);
+      NCollection_List<TopoDS_Shape> aBeside, anApart;
+      for (int i2 = 1; i2 <= aTangentE.Extent(); ++i2)
+      {
+        const TopoDS_Edge& aE2 = TopoDS::Edge(aTangentE.FindKey(i2));
+        if (i2 == i1 || !aTangentE(i2).IsSame(aCF) || !aTubes.IsBound(aE2)
+            || BRep_Tool::Degenerated(aE2))
+        {
+          continue;
+        }
+        TopoDS_Vertex aV21, aV22;
+        TopExp::Vertices(aE2, aV21, aV22);
+        if (aV11.IsSame(aV21) || aV11.IsSame(aV22) || aV12.IsSame(aV21) || aV12.IsSame(aV22))
+        {
+          aBeside.Append(aE2);
+        }
+        else
+        {
+          anApart.Append(aE2);
+        }
+      }
+      if (anApart.IsEmpty())
+      {
+        continue;
+      }
+      BRepAdaptor_Curve aRC(aRim);
+      IntTools_FClass2d aClass(TopoDS::Face(aCF.Oriented(TopAbs_FORWARD)), Precision::PConfusion());
+      for (int k = 0; k < aNbS && myError == BRepOffset_NoError; ++k)
+      {
+        const double u = aRF + (aRL - aRF) * (k + 0.5) / aNbS;
+        if (aClass.Perform(aRC2d->Value(u)) == TopAbs_OUT)
+        {
+          continue;
+        }
+        const gp_Pnt aP       = aRC.Value(u);
+        bool         isCutOff = false;
+        for (NCollection_List<TopoDS_Shape>::Iterator itB(aBeside); itB.More() && !isCutOff;
+             itB.Next())
+        {
+          isCutOff = aDistance(aP, TopoDS::Edge(itB.Value())) <= aT;
+        }
+        if (isCutOff)
+        {
+          continue;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itA(anApart); itA.More(); itA.Next())
+        {
+          if (aDistance(aP, TopoDS::Edge(itA.Value())) < aT + aSlack)
+          {
+            SHOW_TOPO_SHAPE(aRim, "TangentTubesThroughEachOther");
+            myError = BRepOffset_UnknownError;
+            break;
+          }
+        }
       }
     }
   }
