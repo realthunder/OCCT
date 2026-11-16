@@ -4143,8 +4143,10 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       theMO.myOffsetShape.Nullify();
     }
   };
-  const bool isInter = myInter;
-  bool       isAllPairs = false;
+  const bool               isInter    = myInter;
+  bool                     isAllPairs = false;
+  const GeomAbs_JoinType   aJoinAsked = myJoin;
+  GeomAbs_JoinType         aJoin      = myJoin;
   auto aSetUp = [&](BRepOffset_MakeOffset& theMO) {
     theMO.Initialize(aShape,
                      anOffset,
@@ -4152,7 +4154,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
                      myMode,
                      isInter || isAllPairs,
                      mySelfInter,
-                     myJoin,
+                     aJoin,
                      myThickening,
                      myRemoveIntEdges);
     theMO.AllowLinearization(isLinearizationAllowed);
@@ -4236,6 +4238,112 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     myDone  = false;
     myError = BRepOffset_UnknownError;
     myOffsetShape.Nullify();
+  }
+
+  // The Intersection join with no valid answer, where the Arc join's is the
+  // same solid: no edge between two faces that stay would have a tube (none
+  // concave inward, none convex outward) and no removed face is tangent to
+  // a face beside it, so that the two joins differ nowhere -- the offsets
+  // of the faces cut each other and reach the removed faces alike. A box
+  // with every edge chamfered, a face removed inward with the Intersection
+  // join, was invalid or refused where the Arc join is right. The Arc
+  // join's answer, then: made on another object first, so that this one
+  // keeps what it has where there is none.
+  if (isOutermost && !myThickening && !aRemoved.IsEmpty() && aJoinAsked == GeomAbs_Intersection
+      && !(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()) && myAnalyse.IsDone())
+  {
+    const ChFiDS_TypeOfConcavity aTubeType = anOffset < 0. ? ChFiDS_Concave : ChFiDS_Convex;
+    bool                         isSame    = true;
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      anEF;
+    TopExp::MapShapesAndAncestors(aShape, TopAbs_EDGE, TopAbs_FACE, anEF);
+    for (int i = 1; i <= anEF.Extent() && isSame; ++i)
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(anEF.FindKey(i));
+      if (BRep_Tool::Degenerated(anE) || anEF(i).Extent() != 2)
+      {
+        continue;
+      }
+      const TopoDS_Face& aF1  = TopoDS::Face(anEF(i).First());
+      const TopoDS_Face& aF2  = TopoDS::Face(anEF(i).Last());
+      const bool         isR1 = aRemoved.Contains(aF1), isR2 = aRemoved.Contains(aF2);
+      if (isR1 && isR2)
+      {
+        continue;
+      }
+      if (isR1 || isR2)
+      {
+        isSame = !ChFi3d::IsTangentFaces(anE, aF1, aF2, THE_CAP_TANGENT_ANGLE, GeomAbs_G1);
+        continue;
+      }
+      if (!myAnalyse.HasAncestor(anE))
+      {
+        isSame = false;
+        continue;
+      }
+      const NCollection_List<BRepOffset_Interval>& aLT = myAnalyse.Type(anE);
+      for (NCollection_List<BRepOffset_Interval>::Iterator itT(aLT); itT.More() && isSame;
+           itT.Next())
+      {
+        const ChFiDS_TypeOfConcavity aType = itT.Value().Type();
+        isSame = aType != aTubeType
+                 && (aType == ChFiDS_Convex || aType == ChFiDS_Concave
+                     || aType == ChFiDS_Tangential);
+      }
+    }
+    if (isSame)
+    {
+      aJoin = GeomAbs_Arc;
+      BRepOffset_MakeOffset aTry;
+      aSetUp(aTry);
+      bool hasArc = false;
+      try
+      {
+        aMake(aTry, Message_ProgressRange());
+        hasArc = aTry.myDone && BRepCheck_Analyzer(aTry.myOffsetShape).IsValid();
+      }
+      catch (Standard_Failure const&)
+      {
+      }
+      if (hasArc)
+      {
+        aSetUp(*this);
+        try
+        {
+          aMake(*this, Message_ProgressRange());
+        }
+        catch (Standard_Failure const&)
+        {
+          myDone = false;
+        }
+        myJoin = aJoinAsked;
+        if (myDone && BRepCheck_Analyzer(myOffsetShape).IsValid())
+        {
+          return;
+        }
+        myDone  = false;
+        myError = BRepOffset_UnknownError;
+        myOffsetShape.Nullify();
+      }
+      else if (!isInter && IsPolyhedron(aShape))
+      {
+        // or the Arc join's answer with every pair of faces intersected,
+        // which is how it makes a chamfered box (below)
+        BRepOffset_MakeOffset aTryPairs;
+        if (aMakeAllPairs(aTryPairs))
+        {
+          const bool isMade = aMakeAllPairs(*this);
+          myJoin            = aJoinAsked;
+          if (isMade)
+          {
+            return;
+          }
+          myError = BRepOffset_UnknownError;
+          myOffsetShape.Nullify();
+        }
+      }
+      aJoin = aJoinAsked;
+    }
   }
 
   // No valid answer: once more with the loops' wires taken by the way their
