@@ -157,6 +157,24 @@ public:
     EdgeMap();
 };
 
+//! While one of these lives on a thread, the loops built on it leave the
+//! edges of the set as they are: the edges of a removed face of a thick
+//! solid, which the shape given shares with the faces beside it. Where such
+//! an edge's vertex lies on a vertex the loop has from its new edges, the
+//! new edges take the edge's vertex; otherwise the edge was given theirs,
+//! and the shape given came back with an edge on a vertex its neighbours do
+//! not have -- invalid, whatever became of the thick solid.
+class BRepAlgo_LoopInputEdges
+{
+public:
+  Standard_EXPORT BRepAlgo_LoopInputEdges(
+    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theEdges);
+  Standard_EXPORT ~BRepAlgo_LoopInputEdges();
+
+private:
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* myPrevious;
+};
+
 //! While one of these lives on a thread, the loops built on it take the
 //! wires of a planar face by the way its edges run: of the regions the edges
 //! bound, those every edge has on the side its orientation gives the face.

@@ -355,6 +355,10 @@ void BRepOffset_MakeLoops::BuildOnContext(const NCollection_List<TopoDS_Shape>& 
   Loops.VerticesForSubstitute(myVerVerMap);
   TopExp_Explorer                                        exp;
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> MapExtent;
+  // The removed faces' own edges are the shape's, shared with the faces
+  // beside them: the loops leave them on their vertices.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anInputEdges;
+  BRepAlgo_LoopInputEdges                                aKeepInputEdges(anInputEdges);
 
   Message_ProgressScope aPS(theRange, "Building deepening faces", LContext.Extent());
   for (; it.More(); it.Next(), aPS.Next())
@@ -392,6 +396,7 @@ void BRepOffset_MakeLoops::BuildOnContext(const NCollection_List<TopoDS_Shape>& 
       MBound.Add(CE);
       if (Analyse.HasAncestor(CE))
       {
+        anInputEdges.Add(CE);
         // the stop of cups except for the connectivity stops between caps.
         //      if (!AsDes->HasAscendant(CE)) {
         TopoDS_Shape aReversedE = CE.Reversed();
@@ -570,11 +575,15 @@ void BRepOffset_MakeLoops::BuildOnContext(const NCollection_List<TopoDS_Shape>& 
             NewV.Orientation(V.Orientation());
             occ::handle<BRep_TVertex>& TV    = *((occ::handle<BRep_TVertex>*)&V.TShape());
             occ::handle<BRep_TVertex>& NewTV = *((occ::handle<BRep_TVertex>*)&NewV.TShape());
-            if (TV->Tolerance() > NewTV->Tolerance())
+            // A vertex of the shape given stays as it is (BRepAlgo_LoopInputEdges).
+            if (!Analyse.HasAncestor(NewV))
             {
-              NewTV->Tolerance(TV->Tolerance());
+              if (TV->Tolerance() > NewTV->Tolerance())
+              {
+                NewTV->Tolerance(TV->Tolerance());
+              }
+              NewTV->ChangePoints().Append(TV->ChangePoints());
             }
-            NewTV->ChangePoints().Append(TV->ChangePoints());
             AsDes->Replace(V, NewV);
             BB.Remove(E, V);
             BB.Add(E, NewV);

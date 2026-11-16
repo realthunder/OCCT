@@ -93,6 +93,8 @@ static char* name       = new char[100];
 
 static thread_local int _CollectingEdges;
 static thread_local int _ByOrientation;
+static thread_local const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* _InputEdges =
+  nullptr;
 static thread_local
   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     _EdgeMap;
@@ -124,6 +126,18 @@ BRepAlgo_LoopByOrientation::BRepAlgo_LoopByOrientation()
 BRepAlgo_LoopByOrientation::~BRepAlgo_LoopByOrientation()
 {
   --_ByOrientation;
+}
+
+BRepAlgo_LoopInputEdges::BRepAlgo_LoopInputEdges(
+  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theEdges)
+    : myPrevious(_InputEdges)
+{
+  _InputEdges = &theEdges;
+}
+
+BRepAlgo_LoopInputEdges::~BRepAlgo_LoopInputEdges()
+{
+  _InputEdges = myPrevious;
 }
 
 //=================================================================================================
@@ -758,6 +772,100 @@ static void StoreInMVE(
       P1 = BRep_Tool::Pnt(V1);
       if (P.IsEqual(P1, theTolConf) && !V.IsSame(V1))
       {
+        // An edge of the shape given (BRepAlgo_LoopInputEdges) keeps its
+        // vertex, and the edges stored on the other one take it: a removed
+        // face's own edges are shared with the faces beside it, and one of
+        // them put on a vertex of the new edges left the shape given with an
+        // edge whose vertex its neighbours do not have -- a tube with its
+        // rim filleted, the fillet removed inward with the Intersection join,
+        // refused, and every thick solid made of the same shape after it
+        // invalid. Two edges of the shape given are left on their own
+        // vertices.
+        if (_InputEdges != nullptr && _InputEdges->Contains(E))
+        {
+          NCollection_List<TopoDS_Shape> aLE = MVE(iV);
+          bool                           isInputV = false;
+          for (NCollection_List<TopoDS_Shape>::Iterator itE(aLE); itE.More() && !isInputV;
+               itE.Next())
+          {
+            isInputV = _InputEdges->Contains(itE.Value());
+          }
+          if (isInputV)
+          {
+            continue;
+          }
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+          for (NCollection_List<TopoDS_Shape>::Iterator itE(aLE); itE.More(); itE.Next())
+          {
+            TopoDS_Shape aE = itE.Value();
+            if (!aDone.Add(aE))
+            {
+              continue;
+            }
+            NCollection_List<TopoDS_Shape> aLV;
+            for (TopoDS_Iterator itV(aE); itV.More(); itV.Next())
+            {
+              if (itV.Value().IsSame(V))
+              {
+                aLV.Append(itV.Value());
+              }
+            }
+            for (NCollection_List<TopoDS_Shape>::Iterator itV(aLV); itV.More(); itV.Next())
+            {
+              aE.Free(true);
+              BB.Remove(aE, itV.Value());
+              BB.Add(aE, V1.Oriented(itV.Value().Orientation()));
+            }
+            SHOW_TOPO_SHAPE(aE, "KeepInputVE");
+          }
+          if (VerticesForSubstitute.IsBound(V1))
+          {
+            const TopoDS_Shape aWas = VerticesForSubstitute(V1);
+            VerticesForSubstitute.UnBind(V1);
+            if (!aWas.IsSame(V1) && !aWas.IsSame(V))
+            {
+              if (VerticesForSubstitute.IsBound(aWas))
+              {
+                VerticesForSubstitute(aWas) = V1;
+              }
+              else
+              {
+                VerticesForSubstitute.Bind(aWas, V1);
+              }
+            }
+          }
+          if (!VerticesForSubstitute.IsBound(V))
+          {
+            VerticesForSubstitute.Bind(V, V1);
+          }
+          else
+          {
+            VerticesForSubstitute(V) = V1;
+          }
+          for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator
+                 mapit(VerticesForSubstitute);
+               mapit.More();
+               mapit.Next())
+          {
+            if (mapit.Value().IsSame(V) && !mapit.Key().IsSame(V1))
+            {
+              VerticesForSubstitute(mapit.Key()) = V1;
+            }
+          }
+          if (MVE.Contains(V1))
+          {
+            MVE.ChangeFromKey(V1).Append(aLE);
+            MVE.Swap(iV, MVE.Extent());
+            MVE.RemoveLast();
+            --iV;
+          }
+          else
+          {
+            MVE.Substitute(iV, V1.Oriented(TopAbs_FORWARD), aLE);
+          }
+          SHOW_TOPO_SHAPE(V1, "KeepInputV");
+          break;
+        }
         V.Orientation(V1.Orientation());
         if (VerticesForSubstitute.IsBound(V1))
         {
