@@ -146,6 +146,18 @@ public:
   //! no such face, or no axis keeps both poles clear of it.
   Standard_EXPORT static bool TurnedOffPole(const TopoDS_Face& theF, TopoDS_Face& theTwin);
 
+  //! How far from a vertex both faces have a section of the two may end and
+  //! still be put on it (Inter3D), on the calling thread: wide, five
+  //! thousandths of the smaller face's size, or as it is, one. Returns what
+  //! was set before; not wide by default. For a thick solid's last attempt
+  //! (BRepOffset_MakeOffset::MakeThickSolid).
+  Standard_EXPORT static bool SetWideSectionSnap(const bool theIsWide);
+
+  //! Whether Inter3D(), not wide, has left a section's end off such a
+  //! vertex that the wide snap would have put on it, on the calling thread
+  //! since the last call; theToReset forgets it.
+  Standard_EXPORT static bool HasNearSectionEnd(const bool theToReset);
+
   //! A section that is a whole turn of a circle, closed on its own vertex,
   //! is started again at the point of it farthest from <theRef>, the shape
   //! the section is wanted beside: the trimming loses the piece the edge's

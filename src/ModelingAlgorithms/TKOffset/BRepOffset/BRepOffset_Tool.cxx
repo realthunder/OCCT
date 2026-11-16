@@ -759,6 +759,34 @@ static bool IsOnSurface(const occ::handle<Geom_Curve>&   C,
   return true;
 }
 
+namespace
+{
+// SetWideSectionSnap(), HasNearSectionEnd(): the calling thread's
+thread_local bool THE_IS_WIDE_SNAP = false;
+thread_local bool THE_HAS_NEAR_END = false;
+} // namespace
+
+//=================================================================================================
+
+bool BRepOffset_Tool::SetWideSectionSnap(const bool theIsWide)
+{
+  const bool aPrevious = THE_IS_WIDE_SNAP;
+  THE_IS_WIDE_SNAP     = theIsWide;
+  return aPrevious;
+}
+
+//=================================================================================================
+
+bool BRepOffset_Tool::HasNearSectionEnd(const bool theToReset)
+{
+  const bool aHas = THE_HAS_NEAR_END;
+  if (theToReset)
+  {
+    THE_HAS_NEAR_END = false;
+  }
+  return aHas;
+}
+
 //=================================================================================================
 
 void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
@@ -816,8 +844,15 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
         Bnd_Box aBox1, aBox2;
         BRepBndLib::Add(F1, aBox1);
         BRepBndLib::Add(F2, aBox2);
-        const double aSnap =
-          1.e-3 * std::min(std::sqrt(aBox1.SquareExtent()), std::sqrt(aBox2.SquareExtent()));
+        // Wider in a thick solid's last attempt (SetWideSectionSnap): round
+        // #613's corner blend, 0.5 inward, the tubes' section ends 0.0033
+        // off the vertex at the corner where the blend beside it stands 0.9
+        // deg off tangent, 0.0032 being a thousandth of the smaller tube;
+        // its mirror image ends within that.
+        const double aSize =
+          std::min(std::sqrt(aBox1.SquareExtent()), std::sqrt(aBox2.SquareExtent()));
+        const double aSnapWide = 5.e-3 * aSize;
+        const double aSnap     = THE_IS_WIDE_SNAP ? aSnapWide : 1.e-3 * aSize;
         const double aPar[2] = {CI->FirstParameter(), CI->LastParameter()};
         for (int k = 0; k < 2; ++k)
         {
@@ -843,6 +878,10 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
             {
               aBest    = aD;
               anEnds[k] = TopoDS::Vertex(aV1(j));
+            }
+            else if (aD >= aSnap && aD < aSnapWide)
+            {
+              THE_HAS_NEAR_END = true;
             }
           }
         }

@@ -4142,6 +4142,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   if (isOutermost)
   {
     theHasNearTangentCapEdge = false;
+    BRepOffset_Tool::HasNearSectionEnd(true);
   }
   // An exception out of the computation is a refusal, as an error it sets
   // is: nothing was made. Thrown on, it left the caller with a message of
@@ -4249,7 +4250,8 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       JoinEdgePieces();
     }
   }
-  if (myDone || wasDone || !theHasNearTangentCapEdge)
+  if (myDone || wasDone
+      || (!theHasNearTangentCapEdge && !BRepOffset_Tool::HasNearSectionEnd(false)))
   {
     return;
   }
@@ -4263,11 +4265,21 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   // 0.5 and not at 1; its cylinder meets the cone 1.5 deg off, and the
   // cone's offset carried down never comes to the cylinder's surface.
   // What had an answer keeps it: this is tried after a refusal only.
+  // And with a section of two faces ending near a vertex both have put on
+  // that vertex from further off (BRepOffset_Tool::SetWideSectionSnap).
   struct WideScope
   {
-    WideScope() { theIsCapTangentWide = true; }
+    WideScope()
+    {
+      theIsCapTangentWide = true;
+      BRepOffset_Tool::SetWideSectionSnap(true);
+    }
 
-    ~WideScope() { theIsCapTangentWide = false; }
+    ~WideScope()
+    {
+      theIsCapTangentWide = false;
+      BRepOffset_Tool::SetWideSectionSnap(false);
+    }
   } aWide;
   for (int aWay = 0; aWay < 2 && !myDone; ++aWay)
   {
