@@ -1459,8 +1459,17 @@ void BRepAlgo_Loop::Perform(const NCollection_List<TopoDS_Shape>* ContextFaces,
           }
           double Tol = BRep_Tool::Tolerance(aVertex);
           gp_Pnt OP  = BRep_Tool::Pnt(aVertex);
-          if ((!V1.IsNull() && OP.Distance(BRep_Tool::Pnt(V1)) < Tol)
-              || (!V2.IsNull() && OP.Distance(BRep_Tool::Pnt(V2)) < Tol))
+          // At an end of the edge where the two vertices' tolerances reach
+          // each other, not this one's alone: the section of a tube with a
+          // removed face ended 1.5e-7 from the end of the next tube's, each
+          // vertex within 1e-7, and was taken as cut there -- its piece put
+          // on the other vertex, the tube's other edges left on its own,
+          // and the shell had a free edge (a box with chamfers of 2 by 1, a
+          // chamfer removed 0.45 to 0.55 outward: refused; made at 0.4).
+          if ((!V1.IsNull()
+               && OP.Distance(BRep_Tool::Pnt(V1)) < Tol + BRep_Tool::Tolerance(V1))
+              || (!V2.IsNull()
+                  && OP.Distance(BRep_Tool::Pnt(V2)) < Tol + BRep_Tool::Tolerance(V2)))
           {
             continue;
           }
