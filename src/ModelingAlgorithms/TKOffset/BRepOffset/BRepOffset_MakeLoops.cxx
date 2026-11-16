@@ -998,10 +998,21 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
             double                        aOF, aOL, aCF, aCL;
             const occ::handle<Geom_Curve> aOC = BRep_Tool::Curve(anOld, aOF, aOL);
             const occ::handle<Geom_Curve> aCC = BRep_Tool::Curve(aCopy, aCF, aCL);
+            // The same range as far as the loop tells two vertices apart,
+            // not to the last digit: the copy ends at the parameter of the
+            // vertex it was given, which the loop took for the old one from
+            // 2e-7 away -- a box with chamfers of 1 by 3, a chamfer removed
+            // 0.05 outward, refused for a tube's edge 9 long against its
+            // copy 9.0000002 long.
+            const double aTolEnd = std::max(Loops.GetTolConf(), Precision::Confusion());
+            auto         isSameEnd = [&](const double theO, const double theC) {
+              return std::abs(theO - theC) < Precision::PConfusion()
+                     || (std::abs(theO - theC) < 0.5 * std::abs(aOL - aOF)
+                         && aOC->Value(theO).Distance(aOC->Value(theC)) < aTolEnd);
+            };
             if (!aO1.IsNull() && !aO2.IsNull() && !aC1.IsNull() && !aC2.IsNull()
                 && aO1.IsSame(aC1) && aO2.IsSame(aC2) && !aOC.IsNull() && aOC == aCC
-                && std::abs(aOF - aCF) < Precision::PConfusion()
-                && std::abs(aOL - aCL) < Precision::PConfusion())
+                && isSameEnd(aOF, aCF) && isSameEnd(aOL, aCL))
             {
               aNew      = aCopy.Oriented(anE.Orientation());
               isChanged = true;
