@@ -21,6 +21,7 @@
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepAlgo_AsDes.hxx>
 #include <BRepAlgo_Image.hxx>
 #include <BRepLib_MakeFace.hxx>
@@ -3190,6 +3191,77 @@ void BRepOffset_Inter3d::ContextIntByArc(
             {
               BRepOffset_Tool::Inter3D(CF, OF1, LInt1, LInt2, mySide, NullEdge, NullFace, NullFace);
               BRepOffset_Tool::StartSectionsFarFrom(OF1, CF, OF1, LInt1, LInt2, true);
+              // A face that touches the removed one at this vertex alone may
+              // have its offset pass through the removed face's plane beyond
+              // that face's own outline, past its corner: the facet at a
+              // corner of a box with every edge chamfered, a side removed
+              // outward. The removed face as it is has no section with it,
+              // the facet's offset stood whole through the side's plane and
+              // the shell was open round it. The removed face's plane, then
+              // -- for two planes, where the facet's offset of the vertex
+              // lies beyond the removed face, and no section but the one that
+              // passes the vertex as near as the two planes' line does:
+              // tried on any two surfaces, 153 runs of the probe that were
+              // right were not.
+              if (LInt1.IsEmpty() && !Analyse.Ancestors(EV).Contains(CF))
+              {
+                bool isAtVertexOnly = true;
+                for (TopExp_Explorer anExpFE(FEV, TopAbs_EDGE); anExpFE.More() && isAtVertexOnly;
+                     anExpFE.Next())
+                {
+                  isAtVertexOnly = !Analyse.Ancestors(anExpFE.Current()).Contains(CF);
+                }
+                BRepAdaptor_Surface aCS(CF, false), aFS(FEV, false);
+                TopoDS_Face         aWideCF;
+                double              aReach = 0.;
+                if (isAtVertexOnly && aCS.GetType() == GeomAbs_Plane
+                    && aFS.GetType() == GeomAbs_Plane)
+                {
+                  gp_Dir aNC = aCS.Plane().Axis().Direction();
+                  if (aCS.Plane().Position().Direct() == (CF.Orientation() == TopAbs_REVERSED))
+                  {
+                    aNC.Reverse();
+                  }
+                  gp_Dir aNF = aFS.Plane().Axis().Direction();
+                  if (aFS.Plane().Position().Direct() == (FEV.Orientation() == TopAbs_REVERSED))
+                  {
+                    aNF.Reverse();
+                  }
+                  // the offset's distance from the face, by the planes
+                  const gp_Pln aPF = aFS.Plane(), aPOF = BRepAdaptor_Surface(OF1, false).Plane();
+                  const double aT = gp_Vec(aPF.Location(), aPOF.Location()).Dot(gp_Vec(aNF));
+                  const double aCos = aNC.Dot(aNF);
+                  const double aSin = gp_Vec(aNC).Crossed(gp_Vec(aNF)).Magnitude();
+                  if (aT * aCos > 1.e-6 * std::abs(aT) && aSin > 0.1)
+                  {
+                    BRepOffset_Tool::EnLargeFace(CF, aWideCF, false);
+                    aReach = 1.01 * std::abs(aT) / aSin + 10. * myTol;
+                  }
+                }
+                if (!aWideCF.IsNull())
+                {
+                  NCollection_List<TopoDS_Shape> aL1, aL2;
+                  BRepOffset_Tool::Inter3D(aWideCF,
+                                           OF1,
+                                           aL1,
+                                           aL2,
+                                           mySide,
+                                           NullEdge,
+                                           NullFace,
+                                           NullFace);
+                  NCollection_List<TopoDS_Shape>::Iterator it1(aL1), it2(aL2);
+                  for (; it1.More() && it2.More(); it1.Next(), it2.Next())
+                  {
+                    BRepExtrema_DistShapeShape aDist(V, it1.Value());
+                    if (aDist.IsDone() && aDist.Value() <= aReach)
+                    {
+                      LInt1.Append(it1.Value());
+                      LInt2.Append(it2.Value());
+                    }
+                  }
+                  SHOW_TOPO_SHAPE(OF1, "CFV_E_InterWide_", LInt2);
+                }
+              }
             }
             SHOW_TOPO_SHAPE(OF1, "CFV_E_Inter_", LInt2);
             Store(CF, OF1, LInt1, LInt2);
