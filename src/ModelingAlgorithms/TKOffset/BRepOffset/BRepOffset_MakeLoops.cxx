@@ -751,6 +751,15 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
               TopExp::Vertices(E, OV1, OV2);
               NCollection_List<TopoDS_Shape> LV;
               SHOW_TOPO_SHAPE(E, "E1_");
+              // The pole a tube closes to between two vertices at one point
+              // (BRepOffset_Offset::Init) is not an edge to cut at the vertex
+              // one of them was rebuilt on: it goes in as it is, and the loop
+              // puts it on the vertex its wire reaches the pole at.
+              if (BRep_Tool::Degenerated(E) && !OV1.IsNull() && !OV2.IsNull() && !OV1.IsSame(OV2))
+              {
+                Loops.AddConstEdge(E);
+                continue;
+              }
               if (MONV.IsBound(OV1))
               {
                 TopoDS_Vertex VV = TopoDS::Vertex(MONV(OV1));

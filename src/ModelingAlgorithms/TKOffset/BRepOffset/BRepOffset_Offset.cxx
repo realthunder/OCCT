@@ -1624,6 +1624,23 @@ void BRepOffset_Offset::Init(const TopoDS_Edge&  Path,
 
   bool StartDegenerated = (V1f.IsSame(V2f));
   bool EndDegenerated   = (V1l.IsSame(V2l));
+  // The two edges may also end at one point in two vertices: the tube round
+  // the mitre between two fillets fades out at the corner of the face both
+  // are tangent to, where the two fillets' normals are one (a box with its
+  // four top edges filleted, the top removed, outward). The tube closes to a
+  // point there as it does on one vertex, and its end is the same degenerated
+  // edge. Left an edge of no length that was not flagged, the loops dropped
+  // it with the vertex they merged away, the tube's wire was open at its
+  // pole, and the solid invalid.
+  auto isOnePoint = [](const TopoDS_Vertex& theV1, const TopoDS_Vertex& theV2) {
+    return !theV1.IsNull() && !theV2.IsNull()
+           && BRep_Tool::Pnt(theV1).Distance(BRep_Tool::Pnt(theV2)) <= Precision::Confusion();
+  };
+  if (!IsClosed)
+  {
+    StartDegenerated = StartDegenerated || (FirstEdge.IsNull() && isOnePoint(V1f, V2f));
+    EndDegenerated   = EndDegenerated || (LastEdge.IsNull() && isOnePoint(V1l, V2l));
+  }
 
   bool E3rev = false;
   bool E4rev = false;

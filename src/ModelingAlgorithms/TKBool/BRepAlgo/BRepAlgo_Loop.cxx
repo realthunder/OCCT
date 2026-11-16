@@ -4346,7 +4346,66 @@ void BRepAlgo_Loop::FindLoop()
               myVerticesForSubstitute.Bind(aDV, aWV);
             }
             W.Free(true);
-            aBB.Add(W, DE);
+            // The way round the wire wants of it: from where the wire's edge
+            // reaches the pole to where its next one leaves. The pole's edge
+            // has the orientation its face gave it, and the wire may have
+            // been walked the other way round -- the tube round the mitre of
+            // two fillets, closed to a point at the corner of the face both
+            // are tangent to: the wire came back closed and unorientable.
+            // Turned only where that is plain: the other way closes the wire
+            // in (u, v) and this one does not.
+            TopAbs_Orientation anOri = DE.Orientation();
+            {
+              double                          aDF, aDL;
+              const occ::handle<Geom2d_Curve> aDC =
+                BRep_Tool::CurveOnSurface(TopoDS::Edge(DE.Oriented(TopAbs_FORWARD)),
+                                          myFace,
+                                          aDF,
+                                          aDL);
+              gp_Pnt2d aPIn, aPOut;
+              int      aNbIn = 0, aNbOut = 0;
+              for (TopoDS_Iterator aEIt(W); aEIt.More() && !aDC.IsNull(); aEIt.Next())
+              {
+                const TopoDS_Edge& aWE = TopoDS::Edge(aEIt.Value());
+                if (BRep_Tool::Degenerated(aWE) || BRep_Tool::IsClosed(aWE, myFace))
+                {
+                  continue;
+                }
+                double                          aEF, aEL;
+                const occ::handle<Geom2d_Curve> aEC =
+                  BRep_Tool::CurveOnSurface(aWE, myFace, aEF, aEL);
+                if (aEC.IsNull())
+                {
+                  continue;
+                }
+                TopoDS_Vertex aV1, aV2;
+                TopExp::Vertices(TopoDS::Edge(aWE.Oriented(TopAbs_FORWARD)), aV1, aV2);
+                const bool isRev = aWE.Orientation() == TopAbs_REVERSED;
+                if ((isRev ? aV2 : aV1).IsSame(aWV))
+                {
+                  aPOut = aEC->Value(isRev ? aEL : aEF);
+                  ++aNbOut;
+                }
+                if ((isRev ? aV1 : aV2).IsSame(aWV))
+                {
+                  aPIn = aEC->Value(isRev ? aEF : aEL);
+                  ++aNbIn;
+                }
+              }
+              if (aNbIn == 1 && aNbOut == 1)
+              {
+                const gp_Pnt2d aQ0 = aDC->Value(aDF), aQ1 = aDC->Value(aDL);
+                const double   aDFwd = aQ0.Distance(aPIn) + aQ1.Distance(aPOut);
+                const double   aDRev = aQ1.Distance(aPIn) + aQ0.Distance(aPOut);
+                const bool     isFwd = anOri != TopAbs_REVERSED;
+                const double   aDAsIs = isFwd ? aDFwd : aDRev, aDTurned = isFwd ? aDRev : aDFwd;
+                if (aDTurned < 1.e-6 && aDAsIs > 1.e-4)
+                {
+                  anOri = isFwd ? TopAbs_REVERSED : TopAbs_FORWARD;
+                }
+              }
+            }
+            aBB.Add(W, DE.Oriented(anOri));
             SHOW_TOPO_SHAPE(DE, "DegenEdgeKeptAtPoint");
             added = true;
             break;
