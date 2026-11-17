@@ -6535,6 +6535,26 @@ void ChFi3d_CoutureOnVertex(const TopoDS_Face&   F,
     //      Ecur=TopoDS::Edge(TopoDS_Shape (MapE1(i)));
     if (BRep_Tool::IsClosed(Ecur, Surf, Loc))
     {
+      // A seam of the face: the face has the edge twice. An edge can carry
+      // the two pcurves of a seam on a surface and bound a face that holds
+      // it once -- a round post fused onto a box's corner, the cylinder
+      // cut where its seam was: the post's line on the box's side is such
+      // an edge of the three quarters of the cylinder that are left. Taken
+      // for the seam, it was given as the next edge round the vertex in
+      // place of the post's rim, the post's line twice and its rim never,
+      // and two chamfers there were refused.
+      int aNbUses = 0;
+      for (TopExp_Explorer anExp(F, TopAbs_EDGE); anExp.More(); anExp.Next())
+      {
+        if (anExp.Current().IsSame(Ecur))
+        {
+          ++aNbUses;
+        }
+      }
+      if (aNbUses < 2)
+      {
+        continue;
+      }
       TopoDS_Vertex Vf, Vl;
       TopExp::Vertices(Ecur, Vf, Vl);
       if (Vf.IsSame(V) || Vl.IsSame(V))
