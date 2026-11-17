@@ -3837,6 +3837,96 @@ void BRepAlgo_Loop::FindLoop()
     IsPeriodic = true;
     SHOW_TOPO_SHAPE(myFace, "LoopSeamAcross");
   }
+  // An edge whose pcurve lies a period off the face's own outline is put
+  // beside it: a section that crosses the surface's seam where the face's
+  // outline runs along it is cut there, and its piece on the face keeps the
+  // whole section's pcurve, past the seam -- a corner blend on a torus from
+  // u = 0, removed from a thickness, had four pieces of the closing tubes'
+  // sections at 2 pi to 2 pi + 0.2. The face then spanned more than a
+  // period, its loops were searched for and not walked, and 54 faces came
+  // of nine regions. Only an edge that lies within the outline's box once
+  // moved, and not before.
+  if (IsPeriodic && TopExp_Explorer(myFace, TopAbs_EDGE).More())
+  {
+    auto aBox = [&](const TopoDS_Edge& theE, double theB[4]) {
+      double                    aF, aL;
+      occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, myFace, aF, aL);
+      if (aC2d.IsNull())
+      {
+        return false;
+      }
+      for (int k = 0; k <= 16; ++k)
+      {
+        const gp_Pnt2d aP = aC2d->Value(aF + (aL - aF) * k / 16.);
+        theB[0]           = std::min(theB[0], aP.X());
+        theB[1]           = std::max(theB[1], aP.X());
+        theB[2]           = std::min(theB[2], aP.Y());
+        theB[3]           = std::max(theB[3], aP.Y());
+      }
+      return true;
+    };
+    // the outline: the face's own edges, none of them a seam
+    double aRef[4] = {RealLast(), RealFirst(), RealLast(), RealFirst()};
+    bool   hasRef  = true;
+    for (TopExp_Explorer anExpO(myFace, TopAbs_EDGE); anExpO.More() && hasRef; anExpO.Next())
+    {
+      const TopoDS_Edge& aCE = TopoDS::Edge(anExpO.Current());
+      hasRef = !BRep_Tool::IsClosed(aCE, myFace) && aBox(aCE, aRef);
+    }
+    const double aPU = S->IsUPeriodic() ? S->UPeriod() : 0.;
+    const double aPV = S->IsVPeriodic() ? S->VPeriod() : 0.;
+    if (hasRef && aRef[1] - aRef[0] < 0.5 * (aPU > 0. ? aPU : RealLast())
+        && aRef[3] - aRef[2] < 0.5 * (aPV > 0. ? aPV : RealLast()))
+    {
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
+      BRep_Builder                                           aBB;
+      for (int i = 1; i <= MVE.Extent(); ++i)
+      {
+        for (itl.Initialize(MVE(i)); itl.More(); itl.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(itl.Value());
+          if (!aDone.Add(anE) || BRep_Tool::IsClosed(anE, myFace))
+          {
+            continue;
+          }
+          double aB[4] = {RealLast(), RealFirst(), RealLast(), RealFirst()};
+          if (!aBox(anE, aB))
+          {
+            continue;
+          }
+          const double aTolU = 1.e-3 * (aRef[1] - aRef[0]) + Precision::PConfusion();
+          const double aTolV = 1.e-3 * (aRef[3] - aRef[2]) + Precision::PConfusion();
+          auto         aShift = [](const double theLo,
+                           const double theHi,
+                           const double theRLo,
+                           const double theRHi,
+                           const double theP,
+                           const double theTol) {
+            if (theP <= 0. || (theLo >= theRLo - theTol && theHi <= theRHi + theTol))
+            {
+              return 0.;
+            }
+            const double aD =
+              theP * std::round((0.5 * (theRLo + theRHi) - 0.5 * (theLo + theHi)) / theP);
+            return (aD != 0. && theLo + aD >= theRLo - theTol && theHi + aD <= theRHi + theTol)
+                     ? aD
+                     : 0.;
+          };
+          const double aDU = aShift(aB[0], aB[1], aRef[0], aRef[1], aPU, aTolU);
+          const double aDV = aShift(aB[2], aB[3], aRef[2], aRef[3], aPV, aTolV);
+          if (aDU == 0. && aDV == 0.)
+          {
+            continue;
+          }
+          double                    aF, aL;
+          occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(anE, myFace, aF, aL);
+          aC2d = occ::down_cast<Geom2d_Curve>(aC2d->Translated(gp_Vec2d(aDU, aDV)));
+          aBB.UpdateEdge(anE, aC2d, myFace, BRep_Tool::Tolerance(anE));
+          SHOW_TOPO_SHAPE(anE, "PCurveBesideOutline");
+        }
+      }
+    }
+  }
   if (IsPeriodic && DegenEdges.IsEmpty() && IsInOnePeriod(MVE, myFace, S))
   {
     IsPeriodic = false;
