@@ -3975,6 +3975,108 @@ static bool IsInsideOut(const TopoDS_Shape& theResult)
   return aG.Mass() < 0.;
 }
 
+//=======================================================================
+// function : HoldsItsShape
+// purpose  : A thick solid made outward that has the inside of the shape it
+//            is made of for material. The skin lies outside the shape, and
+//            a solid that holds what is behind the faces that stay is never
+//            right; it can be "valid" too: a stadium with its top edge
+//            filleted, an end fillet removed 1.15 outward, came back one
+//            closed shell of 5798.4033 -- the skin and the stadium with it
+//            -- between 1338.6259 at 1.1 and a refusal at 1.2. Read at
+//            points a tenth of the thickness behind the faces that stay
+//            (and inside the shape there): two of them in the result, and
+//            it is wrong. At every fix level: nothing is released that
+//            a document could have been saved with.
+//=======================================================================
+static bool HoldsItsShape(
+  const TopoDS_Shape&                                                  theShape,
+  const TopoDS_Shape&                                                  theResult,
+  const double                                                         theOffset,
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theRemoved)
+{
+  if (theOffset <= 0. || theRemoved.IsEmpty() || theShape.IsNull() || theResult.IsNull()
+      || !TopExp_Explorer(theResult, TopAbs_SOLID).More())
+  {
+    return false;
+  }
+  // one solid, as it is or in a compound
+  TopExp_Explorer aSolids(theShape, TopAbs_SOLID);
+  if (!aSolids.More())
+  {
+    return false;
+  }
+  const TopoDS_Shape aSolid = aSolids.Current();
+  aSolids.Next();
+  if (aSolids.More())
+  {
+    return false;
+  }
+  try
+  {
+    occ::handle<IntTools_Context> aCtx = new IntTools_Context;
+    BRepClass3d_SolidClassifier   aInShape(aSolid);
+    BRepClass3d_SolidClassifier   aInResult(theResult);
+    const double                  aDepth = 0.1 * theOffset;
+    int                           aNbRead = 0, aNbHeld = 0;
+    for (TopExp_Explorer anExp(aSolid, TopAbs_FACE); anExp.More() && aNbRead < 6; anExp.Next())
+    {
+      const TopoDS_Face& aF = TopoDS::Face(anExp.Current());
+      if (theRemoved.Contains(aF))
+      {
+        continue;
+      }
+      const BRepAdaptor_Surface aSurf(aF);
+      double                    aU1, aU2, aV1, aV2;
+      BRepTools::UVBounds(aF, aU1, aU2, aV1, aV2);
+      bool isRead = false;
+      for (int i = 1; i <= 3 && !isRead; ++i)
+      {
+        for (int j = 1; j <= 3 && !isRead; ++j)
+        {
+          const gp_Pnt2d aP2d(aU1 + (aU2 - aU1) * (i - 0.5) / 3.,
+                              aV1 + (aV2 - aV1) * (j - 0.5) / 3.);
+          if (!aCtx->IsPointInFace(aF, aP2d))
+          {
+            continue;
+          }
+          gp_Pnt aP;
+          gp_Vec aDU, aDV;
+          aSurf.D1(aP2d.X(), aP2d.Y(), aP, aDU, aDV);
+          gp_Vec aN = aDU.Crossed(aDV);
+          if (aN.Magnitude() < gp::Resolution())
+          {
+            continue;
+          }
+          aN.Normalize();
+          if (aF.Orientation() == TopAbs_REVERSED)
+          {
+            aN.Reverse();
+          }
+          const gp_Pnt aBehind = aP.Translated(-aDepth * aN);
+          aInShape.Perform(aBehind, Precision::Confusion());
+          if (aInShape.State() != TopAbs_IN)
+          {
+            continue;
+          }
+          isRead = true;
+          ++aNbRead;
+          aInResult.Perform(aBehind, Precision::Confusion());
+          if (aInResult.State() == TopAbs_IN)
+          {
+            ++aNbHeld;
+          }
+        }
+      }
+    }
+    return aNbHeld >= 2 && 2 * aNbHeld > aNbRead;
+  }
+  catch (Standard_Failure const&)
+  {
+    return false;
+  }
+}
+
 //=================================================================================================
 
 //! How deep in thick solids the thread is: one makes others, of the pieces
@@ -4136,7 +4238,11 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     --theThickSolidDepth;
     if (theMO.myDone
         && (IsRunaway(theMO.myInitialShape, theMO.myOffsetShape, theMO.myOffset)
-            || (!aRemoved.IsEmpty() && IsInsideOut(theMO.myOffsetShape))))
+            || (!aRemoved.IsEmpty() && IsInsideOut(theMO.myOffsetShape))
+            || HoldsItsShape(theMO.myInitialShape,
+                             theMO.myOffsetShape,
+                             theMO.myOffset,
+                             aRemoved)))
     {
       theMO.myDone  = false;
       theMO.myError = BRepOffset_UnknownError;
