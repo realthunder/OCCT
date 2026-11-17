@@ -4059,6 +4059,42 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           ratio = tolv / tolu;
         }
 
+        // An end read a period off the face is put on it: a stripe's pcurve
+        // on a periodic face can lie a whole turn from the face's own edges
+        // -- a chamfer's line on a cylinder at u + 2 pi, the cylinder's rim
+        // at u. The curve to the next was then drawn from one to the other,
+        // 6.5 long round the cylinder for 0.36, and crossed the cork of the
+        // corner at the chamfer's other end ("fillets have too big
+        // radiuses"): two chamfers at a vertex of a plane, a cylinder and
+        // its rim refused, each alone made. Not on a face with a seam
+        // there, which the block below reframes.
+        if (!couture && (Asurf->IsUPeriodic() || Asurf->IsVPeriodic()))
+        {
+          double aU1, aU2, aV1, aV2;
+          BRepTools::UVBounds(TopoDS::Face(Fvive.Value(ic, icplus)), aU1, aU2, aV1, aV2);
+          auto aOnFace = [](const double theX,
+                            const double theLo,
+                            const double theHi,
+                            const double theP) {
+            const double aTol = 1.e-3 * theP;
+            if (theX >= theLo - aTol && theX <= theHi + aTol)
+            {
+              return theX;
+            }
+            const double aX = theX + theP * std::round((0.5 * (theLo + theHi) - theX) / theP);
+            return (aX >= theLo - aTol && aX <= theHi + aTol) ? aX : theX;
+          };
+          if (Asurf->IsUPeriodic())
+          {
+            p2d1.SetX(aOnFace(p2d1.X(), aU1, aU2, Asurf->UPeriod()));
+            p2d2.SetX(aOnFace(p2d2.X(), aU1, aU2, Asurf->UPeriod()));
+          }
+          if (Asurf->IsVPeriodic())
+          {
+            p2d1.SetY(aOnFace(p2d1.Y(), aV1, aV2, Asurf->VPeriod()));
+            p2d2.SetY(aOnFace(p2d2.Y(), aV1, aV2, Asurf->VPeriod()));
+          }
+        }
         // in case of a sewing edge the parameters are reframed
         if (couture)
         {
