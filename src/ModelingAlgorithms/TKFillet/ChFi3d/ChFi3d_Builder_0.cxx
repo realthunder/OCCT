@@ -272,6 +272,14 @@ bool& ChFi3d_PlateStepBackOnEdge()
 
 //=================================================================================================
 
+bool& ChFi3d_StraightChamferCorner()
+{
+  thread_local bool isStraight = false;
+  return isStraight;
+}
+
+//=================================================================================================
+
 double ChFi3d_InPeriod(const double U, const double UFirst, const double ULast, const double Eps)
 {
   const double period = ULast - UFirst;

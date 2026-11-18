@@ -4326,6 +4326,17 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                                        "corner cannot be reached on the face");
               }
             }
+            else if (ChFi3d_StraightChamferCorner() && Asurf->GetType() == GeomAbs_Plane)
+            {
+              // Chamfers made again after the plate's result was invalid:
+              // on a plane, the straight line between the two ends. The
+              // batten leaves each end along the sharp edge beside it, and
+              // where that edge is 10 deg off the chamfer's section, it
+              // crossed the section (#962's arm, a vertical edge broken by
+              // a shelf, the edges above and below it chamfered together:
+              // a corner patch with a wire through itself).
+              CalculDroite(p2d1, xdir, ydir, pcurve);
+            }
             else
             {
               CalculBatten(Asurf,

@@ -3628,6 +3628,92 @@ void ChFi3d_Builder::Compute()
         ComputeSetbackFallback();
       }
     }
+    // Chamfers only, the result invalid still where a corner was the plate,
+    // after every fallback above: the corners made again with straight lines
+    // joining the chamfers' ends on planes (ChFi3d_StraightChamferCorner),
+    // kept where valid and on the terms the step back's result is kept on;
+    // else the invalid result as it was. Last, so that only a result about
+    // to be refused pays for it: before the setback fallbacks a chamfer they
+    // would make valid was computed twice more.
+    bool isAllChamfers = !myListStripe.IsEmpty();
+    for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe);
+         itS.More() && isAllChamfers;
+         itS.Next())
+    {
+      isAllChamfers = !occ::down_cast<ChFiDS_ChamfSpine>(itS.Value()->Spine()).IsNull();
+    }
+    // whether the result is valid, where this looked: RefuseInvalid below
+    // does not look again (a whole BRepCheck a chamfer, 3 per cent of a
+    // sweep's sound ones)
+    int aKnownValid = -1;
+    if (done && isAllChamfers && !aPlates.IsEmpty())
+    {
+      aKnownValid = BRepCheck_Analyzer(myShapeResult).IsValid() ? 1 : 0;
+    }
+    if (aKnownValid == 0)
+    {
+      double aSizeMin = Precision::Infinite(), aSizeMax = 0.;
+      for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();
+           itS.Next())
+      {
+        const occ::handle<ChFiDS_ChamfSpine> aSp =
+          occ::down_cast<ChFiDS_ChamfSpine>(itS.Value()->Spine());
+        double aD1 = 0., aD2 = 0., anAng = 0.;
+        switch (aSp->IsChamfer())
+        {
+          case ChFiDS_Sym:
+            aSp->GetDist(aD1);
+            aD2 = aD1;
+            break;
+          case ChFiDS_TwoDist:
+            aSp->Dists(aD1, aD2);
+            break;
+          case ChFiDS_DistAngle:
+            aSp->GetDistAngle(aD1, anAng);
+            aD2 = aD1;
+            break;
+        }
+        aSizeMin = std::min(aSizeMin, std::min(aD1, aD2));
+        aSizeMax = std::max(aSizeMax, std::max(aD1, aD2));
+      }
+      // as for the step back above: the input's or a twentieth of the
+      // smallest size
+      const double aMaxTol = std::max(MaxEdgeTolerance(myShape), 0.05 * aSizeMin);
+      auto         FreshComputation = [&]() {
+        Reset();
+        myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
+      };
+      struct StraightGuard
+      {
+        StraightGuard() { ChFi3d_StraightChamferCorner() = true; }
+
+        ~StraightGuard() { ChFi3d_StraightChamferCorner() = false; }
+      };
+      const TopoDS_Shape anInvalid = myShapeResult;
+      bool               isKept    = false;
+      try
+      {
+        OCC_CATCH_SIGNALS
+        StraightGuard aStraight;
+        FreshComputation();
+        Compute();
+        isKept = done && IsValidResult(myShapeResult, aMaxTol)
+                 && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+                 && !HasFoldNear(myShapeResult, myShape, aPlates, 3. * aSizeMax);
+      }
+      catch (Standard_Failure const&)
+      {
+        isKept = false;
+      }
+      if (!isKept)
+      {
+        // the invalid result back, for RefuseInvalid to refuse and
+        // BadShape() to give
+        myShapeResult = anInvalid;
+        done          = true;
+      }
+      aKnownValid = isKept ? 1 : 0;
+    }
     // A result BRepCheck finds invalid is no result: refused, the computation
     // not done, the shape kept for BadShape(). Before the long extension,
     // which may make it valid, and after it, which may give it back as it was.
@@ -3636,9 +3722,10 @@ void ChFi3d_Builder::Compute()
     // edges (ChFi3d_ChBuilder::PerformTwoCorner) and left an edge looser
     // than the input's or a twentieth of the chamfer, the terms the setback
     // fallback takes a result on
-    const auto RefuseInvalid = [this]() {
+    const auto RefuseInvalid = [this](const int theKnownValid) {
       if (done
-          && (!BRepCheck_Analyzer(myShapeResult).IsValid()
+          && ((theKnownValid >= 0 ? theKnownValid == 0
+                                  : !BRepCheck_Analyzer(myShapeResult).IsValid())
               || (ChFi3d_SnapSlivers() && ChFi3d_HasSliverLeft(myShapeResult, myShape, tolapp3d))
               || (ChFi3d_TwoChamferCorner() > 0.
                   && MaxEdgeTolerance(myShapeResult)
@@ -3649,12 +3736,12 @@ void ChFi3d_Builder::Compute()
         done      = false;
       }
     };
-    RefuseInvalid();
+    RefuseInvalid(aKnownValid);
     if (!done)
     {
       ComputeLongExtension();
     }
-    RefuseInvalid();
+    RefuseInvalid(-1);
     if (aFailure && !done)
     {
       std::rethrow_exception(aFailure);

@@ -139,6 +139,12 @@ void ChFi3d_SetSpineSetback(const occ::handle<ChFiDS_Spine>& theSpine,
 //! invalid where a corner was the plate, set back or not.
 bool& ChFi3d_PlateStepBackOnEdge();
 
+//! On for a chamfer's corners made again after the plate's result was
+//! invalid: a corner of several edges joins two chamfers' ends on a plane
+//! by a straight line, not by a batten (ChFi3d_Builder::Compute,
+//! PerformMoreThreeCorner).
+bool& ChFi3d_StraightChamferCorner();
+
 void ChFi3d_Boite(const gp_Pnt2d& p1,
                   const gp_Pnt2d& p2,
                   double&         mu,
