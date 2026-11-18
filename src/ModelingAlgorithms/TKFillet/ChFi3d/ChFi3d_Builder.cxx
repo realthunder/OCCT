@@ -20,6 +20,7 @@
 #include <BRepLib.hxx>
 #include <BRepLib_CheckCurveOnSurface.hxx>
 #include <BRepTopAdaptor_TopolTool.hxx>
+#include <ChFi3d.hxx>
 #include <ChFi3d_Builder.hxx>
 #include <ChFi3d_Builder_0.hxx>
 #include <ChFiDS_CommonPoint.hxx>
@@ -3727,6 +3728,99 @@ void ChFi3d_Builder::Compute()
           isKept = false;
         }
         THE_OPPOSITE_CORNERS.Clear();
+      }
+      // Last, the plate's corners set back, as the computation does where
+      // it fails at them: the fallback above that does so for an invalid
+      // result takes fillets only. Only at a vertex none of whose edges
+      // stays sharp (each chamfered, or tangent): where one does the corner
+      // set back is no longer the chamfers' (#962's tooth, up to 7 cubes of
+      // the size from the edges alone put together; the cases the fillet
+      // suite refuses), and the plate's invalid corner is refused. #474's coil, the four edges of a
+      // vertex chamfered at 1: a corner that failed was set back and made;
+      // once it was built, invalid, the chamfers were refused. Each corner
+      // alone first, in the order the vertices are kept, then all of them.
+      const auto IsAllChamfered = [&](const TopoDS_Shape& theV) {
+        if (!myVEMap.Contains(theV))
+        {
+          return false;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itE(myVEMap.FindFromKey(theV)); itE.More();
+             itE.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+          if (BRep_Tool::Degenerated(anE))
+          {
+            continue;
+          }
+          bool isOn = false;
+          for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe);
+               itS.More() && !isOn;
+               itS.Next())
+          {
+            isOn = itS.Value()->Spine()->Index(anE) > 0;
+          }
+          if (!isOn && myEFMap.Contains(anE) && myEFMap.FindFromKey(anE).Extent() == 2)
+          {
+            // smooth: no edge for a chamfer either
+            const TopoDS_Face& aF1 = TopoDS::Face(myEFMap.FindFromKey(anE).First());
+            const TopoDS_Face& aF2 = TopoDS::Face(myEFMap.FindFromKey(anE).Last());
+            isOn = !aF1.IsSame(aF2) && ChFi3d::IsTangentFaces(anE, aF1, aF2);
+          }
+          if (!isOn)
+          {
+            return false;
+          }
+        }
+        return true;
+      };
+      if (!isKept && !aPlates.IsEmpty() && CornerSetbackFallback() > 0.)
+      {
+        NCollection_List<NCollection_List<TopoDS_Shape>> aTries;
+        NCollection_List<TopoDS_Shape>                   anAll;
+        bool                                             isEvery = true;
+        for (int j = 1; j <= myVDataMap.Extent(); j++)
+        {
+          if (aPlates.Contains(myVDataMap.FindKey(j)))
+          {
+            if (!IsAllChamfered(myVDataMap.FindKey(j)))
+            {
+              isEvery = false;
+              continue;
+            }
+            NCollection_List<TopoDS_Shape> anOne;
+            anOne.Append(myVDataMap.FindKey(j));
+            aTries.Append(anOne);
+            anAll.Append(myVDataMap.FindKey(j));
+          }
+        }
+        if (isEvery && anAll.Extent() > 1)
+        {
+          aTries.Append(anAll);
+        }
+        for (NCollection_List<NCollection_List<TopoDS_Shape>>::Iterator itT(aTries);
+             itT.More() && !isKept;
+             itT.Next())
+        {
+          try
+          {
+            OCC_CATCH_SIGNALS
+            FreshComputation();
+            Compute();
+            if (done)
+            {
+              badvertices = itT.Value();
+              done        = false;
+              ComputeSetbackFallback();
+            }
+            isKept = done && IsValidResult(myShapeResult, aMaxTol)
+                     && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+                     && !HasFoldNear(myShapeResult, myShape, aPlates, 3. * aSizeMax);
+          }
+          catch (Standard_Failure const&)
+          {
+            isKept = false;
+          }
+        }
       }
       if (!isKept)
       {

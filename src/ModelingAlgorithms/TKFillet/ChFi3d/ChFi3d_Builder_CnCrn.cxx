@@ -2394,7 +2394,16 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
             {
               angedg = std::abs(ChFi3d_AngleEdge(Vcom, Arc, cp1.Arc()));
             }
-            if (!cp1.Arc().IsSame(Arc) && std::abs(angedg - M_PI) < 0.01)
+            // An arc that carries the edge on: one with a vertex in common,
+            // in line with it there. Found nowhere, the angle stayed a
+            // straight one, and an arc the edge never reaches took the
+            // edge's place: #962's tooth, the upright two faces down the
+            // wall for the edge at the corner (two chamfers refused). From
+            // fix level 4 only: at levels 2 and 3 it would make #474's coil,
+            // whose fillets at two vertices level 2 made tighter, as level 1
+            // did (level 4 makes them as level 2 does).
+            const bool isCarrier = trouve || ChFi3d_FixLevel() < 4;
+            if (isCarrier && !cp1.Arc().IsSame(Arc) && std::abs(angedg - M_PI) < 0.01)
             {
               Evive.SetValue(ic, cp1.Arc());
               ChFi3d_edge_common_faces(myEFMap(cp1.Arc()), F1, F2);
@@ -2437,7 +2446,8 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
             {
               angedg = std::abs(ChFi3d_AngleEdge(Vcom, Arc, cp2.Arc()));
             }
-            if (!cp2.Arc().IsSame(Arc) && std::abs(angedg - M_PI) < 0.01)
+            const bool isCarrier = trouve || ChFi3d_FixLevel() < 4;
+            if (isCarrier && !cp2.Arc().IsSame(Arc) && std::abs(angedg - M_PI) < 0.01)
             {
               Evive.SetValue(ic, cp2.Arc());
               ChFi3d_edge_common_faces(myEFMap(cp2.Arc()), F1, F2);
