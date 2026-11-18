@@ -3628,13 +3628,22 @@ void ChFi3d_Builder::Compute()
         ComputeSetbackFallback();
       }
     }
-    // Chamfers only, the result invalid still where a corner was the plate,
-    // after every fallback above: the corners made again with straight lines
-    // joining the chamfers' ends on planes (ChFi3d_StraightChamferCorner),
-    // kept where valid and on the terms the step back's result is kept on;
-    // else the invalid result as it was. Last, so that only a result about
-    // to be refused pays for it: before the setback fallbacks a chamfer they
-    // would make valid was computed twice more.
+    // Chamfers only, the result invalid still after every fallback above,
+    // where a corner was the plate or two chamfers end on no common face:
+    // first the corners made again with straight lines joining the
+    // chamfers' ends on planes (ChFi3d_StraightChamferCorner); then the
+    // opposite corners (PerformOppositeCorner) once more. Each kept where
+    // valid on the terms the fallbacks keep a result on -- no edge looser
+    // than the input's or a twentieth of the smallest chamfer, every chamfer
+    // made, no fold -- else the invalid result put back. ComputeOppositeCorners
+    // sizes its bound by the fillets alone, so that for chamfers it takes an
+    // opposite corner only where it is as tight as the input: so it put the
+    // exact corner in place of a valid but loose plate on #631's Fillet (E15
+    // with E24, the union of the two chamfers to the last digit for one 0.27
+    // off it), and left #962's arm with the plate's invalid one, which the
+    // opposite corner on these terms makes. Last, so that only a result about
+    // to be refused pays for them: the straight lines before the setback
+    // fallbacks computed a chamfer they make valid twice more.
     bool isAllChamfers = !myListStripe.IsEmpty();
     for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe);
          itS.More() && isAllChamfers;
@@ -3646,7 +3655,7 @@ void ChFi3d_Builder::Compute()
     // does not look again (a whole BRepCheck a chamfer, 3 per cent of a
     // sweep's sound ones)
     int aKnownValid = -1;
-    if (done && isAllChamfers && !aPlates.IsEmpty())
+    if (done && isAllChamfers && (!aPlates.IsEmpty() || !THE_OPPOSITE_SEEN.IsEmpty()))
     {
       aKnownValid = BRepCheck_Analyzer(myShapeResult).IsValid() ? 1 : 0;
     }
@@ -3656,54 +3665,68 @@ void ChFi3d_Builder::Compute()
       for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();
            itS.Next())
       {
-        const occ::handle<ChFiDS_ChamfSpine> aSp =
-          occ::down_cast<ChFiDS_ChamfSpine>(itS.Value()->Spine());
-        double aD1 = 0., aD2 = 0., anAng = 0.;
-        switch (aSp->IsChamfer())
+        const double aSize = ChFi3d_ChamferSize(itS.Value()->Spine());
+        if (aSize > 0.)
         {
-          case ChFiDS_Sym:
-            aSp->GetDist(aD1);
-            aD2 = aD1;
-            break;
-          case ChFiDS_TwoDist:
-            aSp->Dists(aD1, aD2);
-            break;
-          case ChFiDS_DistAngle:
-            aSp->GetDistAngle(aD1, anAng);
-            aD2 = aD1;
-            break;
+          aSizeMin = std::min(aSizeMin, aSize);
+          aSizeMax = std::max(aSizeMax, aSize);
         }
-        aSizeMin = std::min(aSizeMin, std::min(aD1, aD2));
-        aSizeMax = std::max(aSizeMax, std::max(aD1, aD2));
       }
-      // as for the step back above: the input's or a twentieth of the
-      // smallest size
-      const double aMaxTol = std::max(MaxEdgeTolerance(myShape), 0.05 * aSizeMin);
+      const double aMaxTol = std::max(MaxEdgeTolerance(myShape),
+                                      Precision::IsInfinite(aSizeMin) ? 0. : 0.05 * aSizeMin);
       auto         FreshComputation = [&]() {
         Reset();
         myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
       };
-      struct StraightGuard
-      {
-        StraightGuard() { ChFi3d_StraightChamferCorner() = true; }
-
-        ~StraightGuard() { ChFi3d_StraightChamferCorner() = false; }
-      };
       const TopoDS_Shape anInvalid = myShapeResult;
       bool               isKept    = false;
-      try
+      if (!aPlates.IsEmpty())
       {
-        OCC_CATCH_SIGNALS
-        StraightGuard aStraight;
-        FreshComputation();
-        Compute();
-        isKept = done && IsValidResult(myShapeResult, aMaxTol)
-                 && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
-                 && !HasFoldNear(myShapeResult, myShape, aPlates, 3. * aSizeMax);
+        struct StraightGuard
+        {
+          StraightGuard() { ChFi3d_StraightChamferCorner() = true; }
+
+          ~StraightGuard() { ChFi3d_StraightChamferCorner() = false; }
+        };
+        try
+        {
+          OCC_CATCH_SIGNALS
+          StraightGuard aStraight;
+          FreshComputation();
+          Compute();
+          isKept = done && IsValidResult(myShapeResult, aMaxTol)
+                   && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+                   && !HasFoldNear(myShapeResult, myShape, aPlates, 3. * aSizeMax);
+        }
+        catch (Standard_Failure const&)
+        {
+          isKept = false;
+        }
       }
-      catch (Standard_Failure const&)
+      if (!isKept && !THE_OPPOSITE_SEEN.IsEmpty())
       {
-        isKept = false;
+        // as ComputeOppositeCorners does for fillets
+        THE_OPPOSITE_CORNERS.Assign(THE_OPPOSITE_SEEN);
+        try
+        {
+          OCC_CATCH_SIGNALS
+          struct PastEndGuard
+          {
+            PastEndGuard() { TopOpeBRepBuild_PaveSet_PastEndPaves() = true; }
+
+            ~PastEndGuard() { TopOpeBRepBuild_PaveSet_PastEndPaves() = false; }
+          } aPastEnd;
+          FreshComputation();
+          Compute();
+          isKept = done && IsValidResult(myShapeResult, aMaxTol)
+                   && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+                   && !HasFoldNear(myShapeResult, myShape, {}, 0.);
+        }
+        catch (Standard_Failure const&)
+        {
+          isKept = false;
+        }
+        THE_OPPOSITE_CORNERS.Clear();
       }
       if (!isKept)
       {
