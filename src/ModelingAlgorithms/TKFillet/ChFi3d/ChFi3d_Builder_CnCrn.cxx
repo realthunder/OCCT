@@ -3201,6 +3201,49 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         // that, and the plate over the whole top of the post (#523's box,
         // the post's line and the box's top edge chamfered: valid, the
         // top's chamfer 4 round the post).
+        // The parameter a common point gives this edge: its own, on the edge
+        // or on an arc that meets it. On an arc that does not, that arc's
+        // parameter is no place on this edge, and it was taken as one: the
+        // edge's point went anywhere along it -- #273's handle, two
+        // chamfers at 0.3, 7.86 along an edge of 8.03 from the vertex, the
+        // result valid with a vertex of 698 and a third of the points about
+        // the vertex on the wrong side; #309's, #962's alike. From fix
+        // level 4 the point's projection onto the edge; and where it
+        // projects off the edge (the stripe's line ran on past the vertex)
+        // the edge is cut as far from the vertex as the point is.
+        const auto ParOnSharp = [&](const ChFiDS_CommonPoint& theCP) {
+          const TopoDS_Edge& anE = TopoDS::Edge(Evive.Value(ic));
+          if (theCP.Arc().IsSame(anE) || ChFi3d_FixLevel() < 4)
+          {
+            return theCP.ParameterOnArc();
+          }
+          TopoDS_Vertex aVcom;
+          bool          isNext = false;
+          ChFi3d_cherche_vertex(anE, theCP.Arc(), aVcom, isNext);
+          if (isNext)
+          {
+            return theCP.ParameterOnArc();
+          }
+          Extrema_ExtPC anExt(theCP.Point(), C);
+          double        aBest = Precision::Infinite(), aPar = BRep_Tool::Parameter(V1, anE);
+          for (int k = 1; anExt.IsDone() && k <= anExt.NbExt(); k++)
+          {
+            if (anExt.SquareDistance(k) < aBest)
+            {
+              aBest = anExt.SquareDistance(k);
+              aPar  = anExt.Point(k).Parameter();
+            }
+          }
+          if (Precision::IsInfinite(aBest))
+          {
+            double aU = 0.;
+            if (EdgeParamAtSetback(anE, V1, theCP.Point().Distance(sommet), aU))
+            {
+              aPar = aU;
+            }
+          }
+          return aPar;
+        };
         auto isOnSharp = [&](const ChFiDS_CommonPoint& theCP) {
           if (!theCP.IsOnArc())
           {
@@ -3245,7 +3288,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           if (d2 < d1 && isOnSharp(cp1))
           {
             // cp1 is chosen
-            p.SetValue(ic, icmoins, cp1.ParameterOnArc());
+            p.SetValue(ic, icmoins, ParOnSharp(cp1));
             p.SetValue(ic, icplus, p.Value(ic, icmoins));
             isfirst = (sens.Value(icplus) == 1);
             jfp     = 3 - jf.Value(icplus);
@@ -3259,7 +3302,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           else if (isOnSharp(cp2))
           {
             // cp2 is chosen
-            p.SetValue(ic, icmoins, cp2.ParameterOnArc());
+            p.SetValue(ic, icmoins, ParOnSharp(cp2));
             p.SetValue(ic, icplus, p.Value(ic, icmoins));
             isfirst = (sens.Value(icmoins) == 1);
             Calcul_Param(CD.Value(icmoins), jf.Value(icmoins), i.Value(icmoins, ic), isfirst, para);
@@ -3279,7 +3322,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                 && cp1.IsOnArc())
             {
               // it is very close to cp1
-              p.SetValue(ic, icmoins, cp1.ParameterOnArc());
+              p.SetValue(ic, icmoins, ParOnSharp(cp1));
               ponctuel.SetValue(ic, true);
               p.SetValue(ic, icplus, p.Value(ic, icmoins));
               isfirst = (sens.Value(icplus) == 1);
@@ -3299,7 +3342,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
             {
               // it is very close to cp2
               ponctuel.SetValue(icmoins, true);
-              p.SetValue(ic, icmoins, cp2.ParameterOnArc());
+              p.SetValue(ic, icmoins, ParOnSharp(cp2));
               p.SetValue(ic, icplus, p.Value(ic, icmoins));
               isfirst = (sens.Value(icmoins) == 1);
               Calcul_Param(CD.Value(icmoins),
