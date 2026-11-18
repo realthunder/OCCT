@@ -145,6 +145,12 @@ bool& ChFi3d_PlateStepBackOnEdge();
 //! PerformMoreThreeCorner).
 bool& ChFi3d_StraightChamferCorner();
 
+//! On for a computation made again after everything else left nothing
+//! valid: a corner of several edges does not step a sharp edge back to the
+//! common point of a stripe whose line runs on past its spine's end
+//! (ChFi3d_Builder::Compute, PerformMoreThreeCorner).
+bool& ChFi3d_CutStepBackAtSpineEnd();
+
 void ChFi3d_Boite(const gp_Pnt2d& p1,
                   const gp_Pnt2d& p2,
                   double&         mu,

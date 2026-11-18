@@ -3831,6 +3831,77 @@ void ChFi3d_Builder::Compute()
       }
       aKnownValid = isKept ? 1 : 0;
     }
+    // Nothing valid still, of fillets or chamfers: once more with the
+    // corners of several edges not stepping a sharp edge back to the common
+    // point of a stripe that runs on past its spine's end
+    // (ChFi3d_CutStepBackAtSpineEnd). From fix level 4; kept on the terms
+    // the fallbacks above keep a result on, else what there was.
+    if (ChFi3d_FixLevel() >= 4 && !myListStripe.IsEmpty())
+    {
+      if (done && aKnownValid < 0)
+      {
+        // RefuseInvalid's own look, taken here
+        aKnownValid = BRepCheck_Analyzer(myShapeResult).IsValid() ? 1 : 0;
+      }
+      if (!done || aKnownValid == 0)
+      {
+        double aSizeMin = Precision::Infinite(), aSizeMax = 0.;
+        for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe); itS.More();
+             itS.Next())
+        {
+          double aSize = ChFi3d_ChamferSize(itS.Value()->Spine());
+          const occ::handle<ChFiDS_FilSpine> aFil =
+            occ::down_cast<ChFiDS_FilSpine>(itS.Value()->Spine());
+          if (!aFil.IsNull())
+          {
+            for (int k = 1; k <= aFil->NbEdges(); k++)
+            {
+              aSize = std::max(aSize, LargestRadiusAt(aFil, k));
+            }
+          }
+          if (aSize > 0.)
+          {
+            aSizeMin = std::min(aSizeMin, aSize);
+            aSizeMax = std::max(aSizeMax, aSize);
+          }
+        }
+        const double aMaxTol = std::max(MaxEdgeTolerance(myShape),
+                                        Precision::IsInfinite(aSizeMin) ? 0. : 0.05 * aSizeMin);
+        const bool         wasDone  = done;
+        const TopoDS_Shape aBefore  = myShapeResult;
+        bool               isKept   = false;
+        struct CutGuard
+        {
+          CutGuard() { ChFi3d_CutStepBackAtSpineEnd() = true; }
+
+          ~CutGuard() { ChFi3d_CutStepBackAtSpineEnd() = false; }
+        };
+        try
+        {
+          OCC_CATCH_SIGNALS
+          CutGuard aCut;
+          Reset();
+          myCoup = new TopOpeBRepBuild_HBuilder(myCoup->BuildTool());
+          Compute();
+          isKept = done && IsValidResult(myShapeResult, aMaxTol)
+                   && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
+                   && !HasFoldNear(myShapeResult, myShape, {}, 0.);
+        }
+        catch (Standard_Failure const&)
+        {
+          isKept = false;
+        }
+        if (isKept)
+        {
+          aKnownValid = 1;
+        }
+        else
+        {
+          myShapeResult = aBefore;
+          done          = wasDone;
+        }
+      }
+    }
     // A result BRepCheck finds invalid is no result: refused, the computation
     // not done, the shape kept for BadShape(). Before the long extension,
     // which may make it valid, and after it, which may give it back as it was.

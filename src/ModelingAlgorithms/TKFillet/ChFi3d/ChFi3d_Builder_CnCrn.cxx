@@ -3244,6 +3244,26 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           }
           return aPar;
         };
+        // A stripe whose line runs on past its spine's end -- over the
+        // whole face, or along the next edge -- is cut at that end where
+        // the corner starts (CutAtSpineEnd); its common point, out there,
+        // is no place to step this edge back to. #962's tooth, a chamfer
+        // of 0.3 on the top's continuation with the foot, the chamfer's
+        // line on the wall 3.5 past the vertex at the wall's end -- the
+        // edge beside it cut there, the corner's patch 23 long. Only in a
+        // computation made again when nothing else is valid
+        // (ChFi3d_CutStepBackAtSpineEnd): everywhere, it made the corners
+        // the opposite corner makes exact a plate 0.09 cubes off them.
+        bool       isFar1 = false, isFar2 = false;
+        const auto IsPastSpineEnd = [&](const int theIc, const int theJf, const bool theIsFirst) {
+          if (!ChFi3d_CutStepBackAtSpineEnd())
+          {
+            return false;
+          }
+          double aPar = 0.;
+          Calcul_Param(CD.Value(theIc), theJf, i.Value(theIc, ic), theIsFirst, aPar);
+          return CutAtSpineEnd(CD.Value(theIc), theIsFirst, aPar) != aPar;
+        };
         auto isOnSharp = [&](const ChFiDS_CommonPoint& theCP) {
           if (!theCP.IsOnArc())
           {
@@ -3266,6 +3286,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                   ->Value(i.Value(icplus, ic))
                   ->ChangeVertex(isfirst, jfp);
           d1 = cp1.Point().Distance(sommet);
+          isFar1 = IsPastSpineEnd(icplus, jfp, isfirst);
+          if (isFar1)
+          {
+            d1 = 0.;
+          }
         }
         if (!sharp.Value(icmoins))
         {
@@ -3275,6 +3300,11 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
                   ->Value(i.Value(icmoins, ic))
                   ->ChangeVertex(isfirst, jf.Value(icmoins));
           d2 = cp2.Point().Distance(sommet);
+          isFar2 = IsPastSpineEnd(icmoins, jf.Value(icmoins), isfirst);
+          if (isFar2)
+          {
+            d2 = 0.;
+          }
         }
         bool samecompoint = false;
         if (!sharp.Value(icmoins) && !sharp.Value(icplus))
@@ -3285,7 +3315,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         {
           // step back till Common Points
           // without leaving the Edge ??
-          if (d2 < d1 && isOnSharp(cp1))
+          if (d2 < d1 && !isFar1 && isOnSharp(cp1))
           {
             // cp1 is chosen
             p.SetValue(ic, icmoins, ParOnSharp(cp1));
@@ -3299,7 +3329,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
               tolcp = cp1.Tolerance();
             }
           }
-          else if (isOnSharp(cp2))
+          else if (!isFar2 && isOnSharp(cp2))
           {
             // cp2 is chosen
             p.SetValue(ic, icmoins, ParOnSharp(cp2));
@@ -3319,7 +3349,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           if (!sharp.Value(icplus))
           {
             if ((cp1.Point().Distance(PE) < cp1.Tolerance() || samecompoint || nconges == 1)
-                && cp1.IsOnArc())
+                && cp1.IsOnArc() && !isFar1)
             {
               // it is very close to cp1
               p.SetValue(ic, icmoins, ParOnSharp(cp1));
@@ -3338,7 +3368,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           if (!sharp.Value(icmoins))
           {
             if ((cp2.Point().Distance(PE) < cp2.Tolerance() || samecompoint || nconges == 1)
-                && cp2.IsOnArc())
+                && cp2.IsOnArc() && !isFar2)
             {
               // it is very close to cp2
               ponctuel.SetValue(icmoins, true);

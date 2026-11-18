@@ -280,6 +280,14 @@ bool& ChFi3d_StraightChamferCorner()
 
 //=================================================================================================
 
+bool& ChFi3d_CutStepBackAtSpineEnd()
+{
+  thread_local bool isCut = false;
+  return isCut;
+}
+
+//=================================================================================================
+
 double ChFi3d_InPeriod(const double U, const double UFirst, const double ULast, const double Eps)
 {
   const double period = ULast - UFirst;
