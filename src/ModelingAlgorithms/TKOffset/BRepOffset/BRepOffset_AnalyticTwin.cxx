@@ -30,6 +30,7 @@
 #include <GeomConvert_CurveToAnaCurve.hxx>
 #include <GeomConvert_SurfToAnaSurf.hxx>
 #include <GeomLib_IsPlanarSurface.hxx>
+#include <GeomLib.hxx>
 #include <GeomProjLib.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
@@ -137,6 +138,63 @@ bool widestGap(std::vector<double> theAngles,
   return false;
 }
 
+//! The plane a B-spline or Bezier surface's poles lie on, each within the
+//! twin's tolerance of it; false where they do not. The test the offset has
+//! (GeomLib_IsPlanarSurface) holds the root of the points' least moment of
+//! inertia against the tolerance, and that root is 1e-7 by rounding alone
+//! on a slope 27 long: a wedge's slope with a fillet beside it was no plane
+//! by it, its poles 4e-15 off one.
+bool planeOfPoles(const occ::handle<Geom_Surface>& theS, gp_Pln& thePln)
+{
+  std::vector<gp_Pnt> aPoles;
+  if (occ::handle<Geom_BSplineSurface> aBS = occ::down_cast<Geom_BSplineSurface>(theS))
+  {
+    for (int i = 1; i <= aBS->NbUPoles(); ++i)
+    {
+      for (int j = 1; j <= aBS->NbVPoles(); ++j)
+      {
+        aPoles.push_back(aBS->Pole(i, j));
+      }
+    }
+  }
+  else if (occ::handle<Geom_BezierSurface> aBz = occ::down_cast<Geom_BezierSurface>(theS))
+  {
+    for (int i = 1; i <= aBz->NbUPoles(); ++i)
+    {
+      for (int j = 1; j <= aBz->NbVPoles(); ++j)
+      {
+        aPoles.push_back(aBz->Pole(i, j));
+      }
+    }
+  }
+  if (aPoles.size() < 3)
+  {
+    return false;
+  }
+  NCollection_Array1<gp_Pnt> anArr(1, static_cast<int>(aPoles.size()));
+  for (size_t i = 0; i < aPoles.size(); ++i)
+  {
+    anArr(static_cast<int>(i) + 1) = aPoles[i];
+  }
+  gp_Pnt aBary;
+  gp_Dir aDX, aDY;
+  double aGx = 0., aGy = 0., aGz = 0.;
+  GeomLib::Inertia(anArr, aBary, aDX, aDY, aGx, aGy, aGz);
+  if (aGy <= Precision::Confusion())
+  {
+    return false;
+  }
+  thePln = gp_Pln(gp_Ax3(aBary, aDX ^ aDY, aDX));
+  for (const gp_Pnt& aP : aPoles)
+  {
+    if (thePln.Distance(aP) > THE_TWIN_TOL)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 //! The normal of a surface at a point's parameters, as its derivatives have
 //! it; false where they have none.
 bool normalAt(const occ::handle<Geom_Surface>& theS, const double theU, const double theV,
@@ -219,11 +277,16 @@ occ::handle<Geom_Surface> analyticSurface(const TopoDS_Face& theF, double& theVM
     // a plane the conversion passes over (a wedge's slope), by the test the
     // offset has for it
     GeomLib_IsPlanarSurface aPlanar(aS, THE_TWIN_TOL);
-    if (!aPlanar.IsPlanar())
+    gp_Pln                  aPln;
+    if (aPlanar.IsPlanar())
+    {
+      aPln = aPlanar.Plan();
+    }
+    else if (!planeOfPoles(aS, aPln))
     {
       return aNull;
     }
-    aNew = new Geom_Plane(aPlanar.Plan());
+    aNew = new Geom_Plane(aPln);
   }
   else if (aConv.Gap() > THE_TWIN_TOL || !isTwinSurface(aNew))
   {
