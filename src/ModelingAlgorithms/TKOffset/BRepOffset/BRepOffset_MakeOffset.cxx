@@ -1017,6 +1017,12 @@ static void EvalMax(const TopoDS_Shape& S, double& Tol)
   }
 }
 
+//! In a thick solid's last attempt (MakeThickSolid), the tangent edges of
+//! the tubes of one removed face that ToContext() found passing through
+//! each other, two by two: for Intersection3D() to cut each tube by the
+//! other, and MakeOffsetShape() to drop what of each lies within the other.
+static thread_local NCollection_List<TopoDS_Shape> theTubePairs;
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::SetFaces()
@@ -1456,6 +1462,162 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
     if (myError != BRepOffset_NoError)
     {
       return;
+    }
+  }
+
+  // Two tubes of a removed face cut by each other (Intersection3D, a thick
+  // solid's last attempt): of each, what lies within the other is no face
+  // of the wall, and between their two edges on the removed face that face
+  // is rim like the strips beside it. The loops keep those pieces of the
+  // tubes -- every edge of them is shared, the section by the four pieces
+  // of the two tubes -- and make no face of the rim between the edges: the
+  // solid had a groove along the middle of the rim, down to the section,
+  // on an edge with four faces (#613's long blend in one face, at 1 either
+  // way: two pieces of 6.196 and 6.236 outward). A piece with a point
+  // nearer than the thickness to the other tube's edge is dropped, and the
+  // rim closed between the edges it had on the removed face; where that
+  // face of the rim cannot be made the pieces stay.
+  if (!theTubePairs.IsEmpty())
+  {
+    // the rims' faces, and each of their edges with the way it runs there
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aRimOfEdge;
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aCapOfRim;
+    for (int i = 1; i <= myFaces.Extent(); ++i)
+    {
+      const TopoDS_Shape aCap =
+        myInitOffsetFace.HasImage(myFaces(i)) ? myInitOffsetFace.Image(myFaces(i)).First()
+                                              : myFaces(i);
+      if (!myImageOffset.HasImage(aCap))
+      {
+        continue;
+      }
+      NCollection_List<TopoDS_Shape> aRims;
+      myImageOffset.LastImage(aCap, aRims);
+      for (NCollection_List<TopoDS_Shape>::Iterator itR(aRims); itR.More(); itR.Next())
+      {
+        aCapOfRim.Bind(itR.Value(), aCap);
+        for (TopExp_Explorer anExp(itR.Value().Oriented(TopAbs_FORWARD), TopAbs_EDGE);
+             anExp.More();
+             anExp.Next())
+        {
+          if (!aRimOfEdge.IsBound(anExp.Current()))
+          {
+            aRimOfEdge.Bind(anExp.Current(), itR.Value());
+          }
+        }
+      }
+    }
+    occ::handle<IntTools_Context> aCtx = new IntTools_Context;
+    for (NCollection_List<TopoDS_Shape>::Iterator itP(theTubePairs); itP.More(); itP.Next())
+    {
+      TopoDS_Shape aPair[2];
+      aPair[0] = itP.Value();
+      itP.Next();
+      aPair[1] = itP.Value();
+      NCollection_List<TopoDS_Shape> aDropped;
+      for (int iT = 0; iT < 2; ++iT)
+      {
+        const TopoDS_Shape& anE     = aPair[iT];
+        const TopoDS_Edge&  anOther = TopoDS::Edge(aPair[1 - iT]);
+        if (!myInitOffsetFace.HasImage(anE))
+        {
+          continue;
+        }
+        const TopoDS_Shape aTF = myInitOffsetFace.Image(anE).First();
+        double                  aF, aL;
+        TopLoc_Location         aLoc;
+        occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anOther, aLoc, aF, aL);
+        if (!myImageOffset.HasImage(aTF) || aC.IsNull())
+        {
+          continue;
+        }
+        NCollection_List<TopoDS_Shape> aPieces;
+        myImageOffset.LastImage(aTF, aPieces);
+        if (aPieces.Extent() < 2)
+        {
+          continue;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(aPieces); itF.More(); itF.Next())
+        {
+          const TopoDS_Face& aPiece = TopoDS::Face(itF.Value());
+          gp_Pnt             aP;
+          gp_Pnt2d           aP2d;
+          if (aPiece.IsSame(aTF) || BOPTools_AlgoTools3D::PointInFace(aPiece, aP, aP2d, aCtx) != 0)
+          {
+            continue;
+          }
+          aP.Transform(aLoc.Transformation().Inverted());
+          double aD = std::min(aP.Distance(aC->Value(aF)), aP.Distance(aC->Value(aL)));
+          GeomAPI_ProjectPointOnCurve aProj(aP, aC, aF, aL);
+          if (aProj.NbPoints() > 0)
+          {
+            aD = std::min(aD, aProj.LowerDistance());
+          }
+          if (aD < std::abs(myOffset) * (1. - 1.e-3))
+          {
+            aDropped.Append(aPiece);
+          }
+        }
+      }
+      if (aDropped.IsEmpty())
+      {
+        continue;
+      }
+      // the rim between the dropped pieces' edges on the removed face
+      TopoDS_Wire  aWire;
+      TopoDS_Shape aRim;
+      BRep_Builder aBB;
+      aBB.MakeWire(aWire);
+      int aNbE = 0;
+      for (NCollection_List<TopoDS_Shape>::Iterator itD(aDropped); itD.More(); itD.Next())
+      {
+        for (TopExp_Explorer anExp(itD.Value().Oriented(TopAbs_FORWARD), TopAbs_EDGE);
+             anExp.More();
+             anExp.Next())
+        {
+          const TopoDS_Shape* aR = aRimOfEdge.Seek(anExp.Current());
+          if (!aR)
+          {
+            continue;
+          }
+          // as the strip beside it has it, the other way
+          for (TopExp_Explorer anExpR(aR->Oriented(TopAbs_FORWARD), TopAbs_EDGE); anExpR.More();
+               anExpR.Next())
+          {
+            if (anExpR.Current().IsSame(anExp.Current()))
+            {
+              aBB.Add(aWire, anExpR.Current().Reversed());
+              ++aNbE;
+              break;
+            }
+          }
+          if (aRim.IsNull())
+          {
+            aRim = *aR;
+          }
+        }
+      }
+      TopoDS_Face aLens;
+      bool        isMade = aNbE >= 2 && !aRim.IsNull();
+      if (isMade)
+      {
+        aWire.Closed(BRep_Tool::IsClosed(aWire));
+        aLens = TopoDS::Face(aRim.EmptyCopied().Oriented(TopAbs_FORWARD));
+        aBB.Add(aLens, aWire);
+        aLens.Orientation(aRim.Orientation());
+        isMade = aWire.Closed() && BRepCheck_Analyzer(aLens).IsValid();
+      }
+      if (!isMade)
+      {
+        continue;
+      }
+      for (NCollection_List<TopoDS_Shape>::Iterator itD(aDropped); itD.More(); itD.Next())
+      {
+        SHOW_TOPO_SHAPE(itD.Value(), "TubePieceWithinTheOther");
+        myImageOffset.Remove(itD.Value());
+      }
+      SHOW_TOPO_SHAPE(aLens, "RimBetweenTubes");
+      myImageOffset.Add(aCapOfRim(aRim), aLens);
     }
   }
 
@@ -4119,10 +4281,6 @@ static thread_local bool theHasNearTangentCapEdge = false;
 //! face, with no vertex in common, passing through each other: the last
 //! attempt has something to do then too.
 static thread_local bool theHasTubesThroughEachOther = false;
-
-//! In that last attempt, the tangent edges of such tubes, two by two, for
-//! Intersection3D() to cut each tube by the other.
-static thread_local NCollection_List<TopoDS_Shape> theTubePairs;
 
 //! Whether Intersection3D() cut such a pair.
 static thread_local bool theHasCutTubePair = false;
