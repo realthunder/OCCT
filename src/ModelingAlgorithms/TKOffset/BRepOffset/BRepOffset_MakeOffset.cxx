@@ -4375,7 +4375,44 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   }
   const NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     aNoMore;
+  // The twin's faces and edges that stay, or what the twin's thick solid
+  // made of them, are the shape's own made again: Modified() answers with
+  // them, by myImageOffset, so that a face of the result on a plane or a
+  // cylinder is known for the B-spline face it stands for.
+  NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> aKept;
+  for (int aPass = 0; aPass < 2; ++aPass)
+  {
+    for (TopExp_Explorer anExp(aTwin, aPass == 0 ? TopAbs_FACE : TopAbs_EDGE); anExp.More();
+         anExp.Next())
+    {
+      const TopoDS_Shape& aT = anExp.Current();
+      const TopoDS_Shape* anO = anOrigin.Seek(aT);
+      if (!anO || aTwinRemoved.Contains(aT) || aKept.IsBound(*anO))
+      {
+        continue;
+      }
+      NCollection_List<TopoDS_Shape> aLIm = aMO.Modified(aT);
+      if (aLIm.IsEmpty() && !aMO.IsDeleted(aT))
+      {
+        aLIm.Append(aT);
+      }
+      if (!aLIm.IsEmpty())
+      {
+        aKept.Bind(*anO, aLIm);
+      }
+    }
+  }
   TakeThickSolidOf(aMO, anOrigin, aNoMore);
+  myImageOffset.Clear();
+  for (NCollection_DataMap<TopoDS_Shape,
+                           NCollection_List<TopoDS_Shape>,
+                           TopTools_ShapeMapHasher>::Iterator anIt(aKept);
+       anIt.More();
+       anIt.Next())
+  {
+    myImageOffset.SetRoot(anIt.Key());
+    myImageOffset.Bind(anIt.Key(), anIt.Value());
+  }
 }
 
 //=======================================================================
@@ -12489,9 +12526,12 @@ const NCollection_List<TopoDS_Shape>& BRepOffset_MakeOffset::Modified(const Topo
   // #360's plate, 4 inward, were faces of the result no element of the
   // input answered for, and whoever names a result by its history had to
   // name them by their neighbours.
+  // A face made planar (IsPlanar) was made again under its plane.
   const TopAbs_ShapeEnum aType = theShape.ShapeType();
+  const TopoDS_Shape*    aPlan = aType == TopAbs_FACE ? myFacePlanfaceMap.Seek(theShape) : nullptr;
+  const TopoDS_Shape&    aKey  = aPlan ? *aPlan : theShape;
   if (myGenerated.IsEmpty() && (aType == TopAbs_FACE || aType == TopAbs_EDGE)
-      && !myFaces.Contains(theShape) && myImageOffset.HasImage(theShape))
+      && !myFaces.Contains(aKey) && myImageOffset.HasImage(aKey))
   {
     if (myResMap.IsEmpty())
     {
@@ -12500,7 +12540,7 @@ const NCollection_List<TopoDS_Shape>& BRepOffset_MakeOffset::Modified(const Topo
     if (!myResMap.Contains(theShape))
     {
       NCollection_List<TopoDS_Shape> aLIm;
-      myImageOffset.LastImage(theShape, aLIm);
+      myImageOffset.LastImage(aKey, aLIm);
       for (NCollection_List<TopoDS_Shape>::Iterator it(aLIm); it.More(); it.Next())
       {
         if (it.Value().ShapeType() == aType && !it.Value().IsSame(theShape)
