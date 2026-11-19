@@ -4312,6 +4312,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
                  myThickening,
                  myRemoveIntEdges);
   aMO.AllowLinearization(myIsLinearizationAllowed);
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aTwinRemoved;
   for (int i = 1; i <= aRemoved.Extent(); ++i)
   {
     const TopoDS_Shape* aF = aTwinOf.Seek(aRemoved(i));
@@ -4320,6 +4321,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       return;
     }
     aMO.AddFace(TopoDS::Face(*aF));
+    aTwinRemoved.Add(*aF);
   }
   for (NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator anIt(
          aFaceOffsets);
@@ -4342,7 +4344,32 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     return;
   }
   theIsOnAnalyticTwin = false;
-  if (!aMO.IsDone() || !IsSoundSolid(aMO.Shape()))
+  // An answer nothing asked to see before: sound, open through the faces
+  // removed, and with the offset of a face that stays in it, or none. A
+  // shaft in two steps with a fillet between them, as B-splines, its end
+  // removed 1 inward: the twin's thick solid was valid, sound and 4131.4075
+  // where the skin is 1424.3925 -- the shaft with a dent, every offset
+  // dropped and the rim's faces left.
+  if (!aMO.IsDone() || !IsSoundSolid(aMO.Shape()) || OpensNowhere(aMO.Shape(), aTwinRemoved))
+  {
+    return;
+  }
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aResultFaces;
+  TopExp::MapShapes(aMO.Shape(), TopAbs_FACE, aResultFaces);
+  bool hasOffset = false;
+  for (TopExp_Explorer anExp(aTwin, TopAbs_FACE); anExp.More() && !hasOffset; anExp.Next())
+  {
+    if (aTwinRemoved.Contains(anExp.Current()))
+    {
+      continue;
+    }
+    const NCollection_List<TopoDS_Shape>& aLIm = aMO.Generated(anExp.Current());
+    for (NCollection_List<TopoDS_Shape>::Iterator it(aLIm); it.More() && !hasOffset; it.Next())
+    {
+      hasOffset = aResultFaces.Contains(it.Value()) && !it.Value().IsSame(anExp.Current());
+    }
+  }
+  if (!hasOffset)
   {
     return;
   }
