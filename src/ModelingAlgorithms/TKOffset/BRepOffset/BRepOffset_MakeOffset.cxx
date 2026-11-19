@@ -4517,6 +4517,11 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   // The answer, of the shape as given or of its twin; then, from level 5,
   // none where an edge of it is on more than two faces.
   const bool isManifoldAsked = BRepOffset_FixLevel() >= 5;
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aRemovedAsked =
+    myOriginalFaces;
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aFaceOffsetsAsked =
+    myFaceOffset;
+  const double anOffsetAsked = myOffset;
   auto       aMakeIt         = [&]() {
   // What it is asked for, to be asked of the twin.
   const TopoDS_Shape                                                  aShape   = myInitialShape;
@@ -4668,6 +4673,89 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   {
     myDone  = false;
     myError = BRepOffset_UnknownError;
+  }
+  // Nor one with a face's offset on the wrong side of it: the wall between
+  // a face and its offset lies behind the offset, the face one thickness
+  // back along the offset's normal. A cup turned of a wall 1.955 thick,
+  // its bottom removed 1 inward: the offsets of the wall's two sides pass
+  // each other, never meeting, and the ring between them under the rim came
+  // out facing up -- valid, 2509.0262 for 2438.3, a slit in the wall counted
+  // as material twice. The face lay one thickness in front of the ring.
+  if (isManifoldAsked && myDone && !aRemovedAsked.IsEmpty())
+  {
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aResultFaces;
+    TopExp::MapShapes(myOffsetShape, TopAbs_FACE, aResultFaces);
+    occ::handle<IntTools_Context> aCtx      = new IntTools_Context();
+    bool                          isFlipped = false;
+    for (TopExp_Explorer anExp(myInitialShape, TopAbs_FACE); anExp.More() && !isFlipped;
+         anExp.Next())
+    {
+      const TopoDS_Face& aF = TopoDS::Face(anExp.Current());
+      if (aRemovedAsked.Contains(aF))
+      {
+        continue;
+      }
+      const double* aOwn = aFaceOffsetsAsked.Seek(aF);
+      const double  aT   = std::abs(aOwn ? *aOwn : anOffsetAsked);
+      if (aT < Precision::Confusion())
+      {
+        continue;
+      }
+      TopLoc_Location           aLoc;
+      occ::handle<Geom_Surface> aS = BRep_Tool::Surface(aF, aLoc);
+      if (aS.IsNull())
+      {
+        continue;
+      }
+      aS = occ::down_cast<Geom_Surface>(aS->Transformed(aLoc.Transformation()));
+      const NCollection_List<TopoDS_Shape> aLIm = Generated(aF);
+      for (NCollection_List<TopoDS_Shape>::Iterator it(aLIm); it.More() && !isFlipped; it.Next())
+      {
+        const int anIdx = aResultFaces.FindIndex(it.Value());
+        if (anIdx == 0 || it.Value().IsSame(aF))
+        {
+          continue;
+        }
+        const TopoDS_Face& anIm = TopoDS::Face(aResultFaces(anIdx));
+        try
+        {
+          gp_Pnt   aP;
+          gp_Pnt2d aP2d;
+          gp_Dir   aN;
+          if (BOPTools_AlgoTools3D::PointInFace(anIm, aP, aP2d, aCtx) != 0)
+          {
+            continue;
+          }
+          BOPTools_AlgoTools3D::GetNormalToSurface(BRep_Tool::Surface(anIm),
+                                                   aP2d.X(),
+                                                   aP2d.Y(),
+                                                   aN);
+          gp_Vec aM(aN);
+          aM.Transform(anIm.Location().Transformation());
+          if (anIm.Orientation() == TopAbs_REVERSED)
+          {
+            aM.Reverse();
+          }
+          // the face in front of its offset first: it is there in no
+          // right answer, and the second projection is not made
+          GeomAPI_ProjectPointOnSurf aFront(aP.Translated(aT * aM), aS);
+          if (aFront.NbPoints() == 0 || aFront.LowerDistance() >= 1.e-3 * aT)
+          {
+            continue;
+          }
+          GeomAPI_ProjectPointOnSurf aBack(aP.Translated(-aT * aM), aS);
+          isFlipped = aBack.NbPoints() > 0 && aBack.LowerDistance() > 0.5 * aT;
+        }
+        catch (Standard_Failure const&)
+        {
+        }
+      }
+    }
+    if (isFlipped)
+    {
+      myDone  = false;
+      myError = BRepOffset_UnknownError;
+    }
   }
   if (isManifoldAsked && myDone)
   {
