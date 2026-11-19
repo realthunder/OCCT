@@ -5068,9 +5068,12 @@ void BRepOffset_MakeOffset::MakeThickSolidOrRunaway(const Message_ProgressRange&
     {
       NbF++;
       TopoDS_Shape F = exp.Current();
-      if (myImageOffset.HasImage(F))
+      // A face that was made planar (IsPlanar) was rebuilt under its plane.
+      const TopoDS_Shape* aPlanface = myFacePlanfaceMap.Seek(F);
+      const TopoDS_Shape& aKey      = aPlanface ? *aPlanface : F;
+      if (myImageOffset.HasImage(aKey))
       {
-        F = myImageOffset.Image(F).First();
+        F = myImageOffset.Image(aKey).First();
       }
       Glue.Add(F);
     }
