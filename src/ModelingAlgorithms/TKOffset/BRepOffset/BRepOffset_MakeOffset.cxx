@@ -4403,7 +4403,42 @@ static bool OpensNowhere(
   return true;
 }
 
-//! Set while a thick solid is made of an analytic twin (MakeThickSolid).
+//! Whether an edge of the shape is on more than two faces, a seam counted
+//! twice on its face: two sheets of the boundary touch along it, and what
+//! they bound is no solid, though BRepCheck takes it -- a cylinder with its
+//! top chamfered, the chamfer removed 1 inward, came back valid with its
+//! cavity closed and touching the skin along a circle, four faces on it.
+static bool HasEdgeOnMoreThanTwoFaces(const TopoDS_Shape& theShape)
+{
+  NCollection_DataMap<TopoDS_Shape, int, TopTools_ShapeMapHasher> aUses;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>          aFaces;
+  for (TopExp_Explorer aFExp(theShape, TopAbs_FACE); aFExp.More(); aFExp.Next())
+  {
+    if (!aFaces.Add(aFExp.Current()))
+    {
+      continue;
+    }
+    for (TopExp_Explorer anEExp(aFExp.Current(), TopAbs_EDGE); anEExp.More(); anEExp.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(anEExp.Current());
+      if (BRep_Tool::Degenerated(anE))
+      {
+        continue;
+      }
+      int* aN = aUses.ChangeSeek(anE);
+      if (!aN)
+      {
+        aUses.Bind(anE, 1);
+      }
+      else if (++(*aN) > 2)
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 static thread_local bool theIsOnAnalyticTwin = false;
 
 //=======================================================================
@@ -4428,6 +4463,10 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     MakeThickSolidAsGiven(theRange);
     return;
   }
+  // The answer, of the shape as given or of its twin; then, from level 5,
+  // none where an edge of it is on more than two faces.
+  const bool isManifoldAsked = BRepOffset_FixLevel() >= 5;
+  auto       aMakeIt         = [&]() {
   // What it is asked for, to be asked of the twin.
   const TopoDS_Shape                                                  aShape   = myInitialShape;
   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aRemoved = myOriginalFaces;
@@ -4437,7 +4476,8 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   const bool             isInter  = myInter;
   const GeomAbs_JoinType aJoin    = myJoin;
   MakeThickSolidAsGiven(theRange);
-  if (myDone && BRepCheck_Analyzer(myOffsetShape).IsValid())
+  if (myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()
+      && !(isManifoldAsked && HasEdgeOnMoreThanTwoFaces(myOffsetShape)))
   {
     return;
   }
@@ -4570,6 +4610,13 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   {
     myImageOffset.SetRoot(anIt.Key());
     myImageOffset.Bind(anIt.Key(), anIt.Value());
+  }
+  };
+  aMakeIt();
+  if (isManifoldAsked && myDone && HasEdgeOnMoreThanTwoFaces(myOffsetShape))
+  {
+    myDone  = false;
+    myError = BRepOffset_UnknownError;
   }
 }
 
