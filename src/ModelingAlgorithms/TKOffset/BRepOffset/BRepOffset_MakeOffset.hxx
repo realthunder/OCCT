@@ -162,6 +162,20 @@ private:
   //! false, doing nothing, where there is no such face or it can stay whole.
   Standard_EXPORT bool MakeThickSolidOfSplit(const Message_ProgressRange& theRange);
 
+  //! MakeThickSolid of the shape as it is given, which MakeThickSolid tries
+  //! first; refused, it is asked of the shape's analytic twin.
+  Standard_EXPORT void MakeThickSolidAsGiven(const Message_ProgressRange& theRange);
+
+  //! Takes the thick solid <theMO> made of a solid standing for this one's,
+  //! its images given back under the faces and edges of the solid given:
+  //! <theOrigin> has what each part is a part of, <theMore> what else.
+  Standard_EXPORT void TakeThickSolidOf(
+    BRepOffset_MakeOffset&                                                          theMO,
+    const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theOrigin,
+    const NCollection_DataMap<TopoDS_Shape,
+                              NCollection_List<TopoDS_Shape>,
+                              TopTools_ShapeMapHasher>&                             theMore);
+
   //! MakeThickSolid but for its last check: a result that reaches far past
   //! the shape, a face left unbounded, is refused there.
   Standard_EXPORT void MakeThickSolidOrRunaway(const Message_ProgressRange& theRange);

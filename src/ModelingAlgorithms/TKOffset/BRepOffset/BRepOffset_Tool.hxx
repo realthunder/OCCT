@@ -158,6 +158,18 @@ public:
   //! since the last call; theToReset forgets it.
   Standard_EXPORT static bool HasNearSectionEnd(const bool theToReset);
 
+  //! The analytic twin of a solid: the same solid with each face whose
+  //! B-spline or Bezier surface is a plane, a cylinder or a cone on that
+  //! surface, and each edge between such faces whose curve is a line or a
+  //! circle on that curve -- to Precision::Confusion(), and where the twin
+  //! comes out valid with the solid's volume and area. <theOrigin> has, for
+  //! each face, edge and vertex of the twin, the solid's it stands for.
+  //! False, and no twin, where nothing is to convert or it cannot be made.
+  Standard_EXPORT static bool AnalyticTwin(
+    const TopoDS_Shape&                                                       theSolid,
+    TopoDS_Shape&                                                             theTwin,
+    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theOrigin);
+
   //! A section that is a whole turn of a circle, closed on its own vertex,
   //! is started again at the point of it farthest from <theRef>, the shape
   //! the section is wanted beside: the trimming loses the piece the edge's

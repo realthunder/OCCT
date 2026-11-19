@@ -6,6 +6,7 @@ set(OCCT_BRepOffset_FILES
   BRepOffset.hxx
   BRepOffset_Analyse.cxx
   BRepOffset_Analyse.hxx
+  BRepOffset_AnalyticTwin.cxx
 
   BRepOffset_Error.hxx
   BRepOffset_Inter2d.cxx

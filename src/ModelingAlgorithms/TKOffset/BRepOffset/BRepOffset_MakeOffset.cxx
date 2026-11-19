@@ -3150,6 +3150,114 @@ static void PutJoinedEdgesOnIsos(const TopoDS_Shape&                   theShape,
 }
 
 //=======================================================================
+// function : TakeThickSolidOf
+// purpose  : The thick solid an object made of a solid standing for this
+//            one's: its shape, and its images under the faces and edges of
+//            the solid given (theOrigin, from each part to what it is a part
+//            of; theMore, what else it is a part of).
+//=======================================================================
+void BRepOffset_MakeOffset::TakeThickSolidOf(
+  BRepOffset_MakeOffset&                                                          theMO,
+  const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>& theOrigin,
+  const NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+    theMore)
+{
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aFaces;
+  TopExp::MapShapes(myInitialShape, TopAbs_FACE, aFaces);
+  myOffsetShape = theMO.Shape();
+
+  // History: each root of the object's images under the shape it is a part
+  // of, a removed face's twin under the face.
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aTwinOf;
+  for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIt(
+         theMO.myFacePlanfaceMap);
+       anIt.More();
+       anIt.Next())
+  {
+    aTwinOf.Bind(anIt.Value(), anIt.Key());
+  }
+  auto aRebind = [&](const BRepAlgo_Image& theFrom, BRepAlgo_Image& theTo) {
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>
+      anIm;
+    for (NCollection_List<TopoDS_Shape>::Iterator anIt(theFrom.Roots()); anIt.More(); anIt.Next())
+    {
+      TopoDS_Shape aRoot = anIt.Value();
+      if (const TopoDS_Shape* aFace = aTwinOf.Seek(aRoot))
+      {
+        aRoot = *aFace;
+      }
+      NCollection_List<TopoDS_Shape> aRoots;
+      if (const TopoDS_Shape* anOrig = theOrigin.Seek(aRoot))
+      {
+        aRoots.Append(*anOrig);
+        if (const NCollection_List<TopoDS_Shape>* aMore = theMore.Seek(aRoot))
+        {
+          for (NCollection_List<TopoDS_Shape>::Iterator anItM(*aMore); anItM.More(); anItM.Next())
+          {
+            aRoots.Append(anItM.Value());
+          }
+        }
+      }
+      else
+      {
+        aRoots.Append(aRoot);
+      }
+      NCollection_List<TopoDS_Shape> aLIm;
+      theFrom.LastImage(anIt.Value(), aLIm);
+      for (NCollection_List<TopoDS_Shape>::Iterator anItR(aRoots); anItR.More(); anItR.Next())
+      {
+        NCollection_List<TopoDS_Shape>* aL = anIm.ChangeSeek(anItR.Value());
+        if (!aL)
+        {
+          aL = &anIm(anIm.Add(anItR.Value(), NCollection_List<TopoDS_Shape>()));
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator anItIm(aLIm); anItIm.More();
+             anItIm.Next())
+        {
+          aL->Append(anItIm.Value());
+        }
+      }
+    }
+    theTo.Clear();
+    for (int i = 1; i <= anIm.Extent(); ++i)
+    {
+      if (!anIm(i).IsEmpty())
+      {
+        theTo.SetRoot(anIm.FindKey(i));
+        theTo.Bind(anIm.FindKey(i), anIm(i));
+      }
+    }
+  };
+  aRebind(theMO.myInitOffsetFace, myInitOffsetFace);
+  aRebind(theMO.myInitOffsetEdge, myInitOffsetEdge);
+
+  // Vertices find their images through the edges they bound (Generated).
+  TopoDS_Compound aStay;
+  BRep_Builder().MakeCompound(aStay);
+  for (int i = 1; i <= aFaces.Extent(); ++i)
+  {
+    if (!myOriginalFaces.Contains(aFaces(i)))
+    {
+      BRep_Builder().Add(aStay, aFaces(i));
+    }
+  }
+  double aTol = myTol;
+  EvalMax(myInitialShape, aTol);
+  const double aTolAngleCoeff =
+    std::min(aTol / (std::abs(myOffset * 0.5) + Precision::Confusion()), 1.0);
+  {
+    const TangencyOffset aTangencyOffset(myOffset, myFaceOffset);
+    myAnalyse.Perform(aStay, 4 * std::asin(aTolAngleCoeff));
+  }
+
+  myResMap.Clear();
+  myError = BRepOffset_NoError;
+  myDone  = true;
+}
+
+//=======================================================================
 // function : MakeThickSolidOfSplit
 // purpose  : A face of a sphere that runs from pole to pole on half a turn
 //            or more has a whole great circle, or more, for its outline: no
@@ -3475,97 +3583,7 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
         const NCollection_DataMap<TopoDS_Shape,
                                   NCollection_List<TopoDS_Shape>,
                                   TopTools_ShapeMapHasher>&                             theMore) {
-      myOffsetShape = theMO.Shape();
-
-    // History: each root of the object's images under the shape it is a part
-    // of, a removed face's twin under the face.
-    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aTwinOf;
-    for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIt(
-           theMO.myFacePlanfaceMap);
-         anIt.More();
-         anIt.Next())
-    {
-      aTwinOf.Bind(anIt.Value(), anIt.Key());
-    }
-    auto aRebind = [&](const BRepAlgo_Image& theFrom, BRepAlgo_Image& theTo) {
-      NCollection_IndexedDataMap<TopoDS_Shape,
-                                 NCollection_List<TopoDS_Shape>,
-                                 TopTools_ShapeMapHasher>
-        anIm;
-      for (NCollection_List<TopoDS_Shape>::Iterator anIt(theFrom.Roots()); anIt.More(); anIt.Next())
-      {
-        TopoDS_Shape aRoot = anIt.Value();
-        if (const TopoDS_Shape* aFace = aTwinOf.Seek(aRoot))
-        {
-          aRoot = *aFace;
-        }
-        NCollection_List<TopoDS_Shape> aRoots;
-        if (const TopoDS_Shape* anOrig = theOrigin.Seek(aRoot))
-        {
-          aRoots.Append(*anOrig);
-          if (const NCollection_List<TopoDS_Shape>* aMore = theMore.Seek(aRoot))
-          {
-            for (NCollection_List<TopoDS_Shape>::Iterator anItM(*aMore); anItM.More(); anItM.Next())
-            {
-              aRoots.Append(anItM.Value());
-            }
-          }
-        }
-        else
-        {
-          aRoots.Append(aRoot);
-        }
-        NCollection_List<TopoDS_Shape> aLIm;
-        theFrom.LastImage(anIt.Value(), aLIm);
-        for (NCollection_List<TopoDS_Shape>::Iterator anItR(aRoots); anItR.More(); anItR.Next())
-        {
-          NCollection_List<TopoDS_Shape>* aL = anIm.ChangeSeek(anItR.Value());
-          if (!aL)
-          {
-            aL = &anIm(anIm.Add(anItR.Value(), NCollection_List<TopoDS_Shape>()));
-          }
-          for (NCollection_List<TopoDS_Shape>::Iterator anItIm(aLIm); anItIm.More();
-               anItIm.Next())
-          {
-            aL->Append(anItIm.Value());
-          }
-        }
-      }
-      theTo.Clear();
-      for (int i = 1; i <= anIm.Extent(); ++i)
-      {
-        if (!anIm(i).IsEmpty())
-        {
-          theTo.SetRoot(anIm.FindKey(i));
-          theTo.Bind(anIm.FindKey(i), anIm(i));
-        }
-      }
-    };
-    aRebind(theMO.myInitOffsetFace, myInitOffsetFace);
-    aRebind(theMO.myInitOffsetEdge, myInitOffsetEdge);
-
-    // Vertices find their images through the edges they bound (Generated).
-    TopoDS_Compound aStay;
-    BRep_Builder().MakeCompound(aStay);
-    for (int i = 1; i <= aFaces.Extent(); ++i)
-    {
-      if (!myOriginalFaces.Contains(aFaces(i)))
-      {
-        BRep_Builder().Add(aStay, aFaces(i));
-      }
-    }
-    double aTol = myTol;
-    EvalMax(myInitialShape, aTol);
-    const double aTolAngleCoeff =
-      std::min(aTol / (std::abs(myOffset * 0.5) + Precision::Confusion()), 1.0);
-    {
-      const TangencyOffset aTangencyOffset(myOffset, myFaceOffset);
-      myAnalyse.Perform(aStay, 4 * std::asin(aTolAngleCoeff));
-    }
-
-    myResMap.Clear();
-    myError = BRepOffset_NoError;
-    myDone  = true;
+      TakeThickSolidOf(theMO, theOrigin, theMore);
     };
 
   // A sphere removed and grown outward, every face of it removed and the
@@ -4227,7 +4245,117 @@ static bool OpensNowhere(
   return true;
 }
 
+//! Set while a thick solid is made of an analytic twin (MakeThickSolid).
+static thread_local bool theIsOnAnalyticTwin = false;
+
+//=======================================================================
+// function : MakeThickSolid
+// purpose  : The thick solid of the shape as it is given; and, refused or
+//            invalid, of its analytic twin where it has one
+//            (BRepOffset_Tool::AnalyticTwin): a solid whose planes,
+//            cylinders, cones, lines and circles are B-splines -- one scaled
+//            or converted, or read from a file that has them so -- is offset
+//            by what is made for B-splines, tubes swept along B-spline lines
+//            and their sections found by approximation, and was refused
+//            where the same solid in analytic form is made: half the runs
+//            of the probe's shapes turned to B-splines. The twin's answer
+//            is taken where it is valid and nowhere through itself, and its
+//            images come back under the faces and edges given. What had an
+//            answer keeps it.
+//=======================================================================
 void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange)
+{
+  if (theThickSolidDepth != 0 || theIsOnAnalyticTwin || myThickening || myOriginalFaces.IsEmpty())
+  {
+    MakeThickSolidAsGiven(theRange);
+    return;
+  }
+  // What it is asked for, to be asked of the twin.
+  const TopoDS_Shape                                                  aShape   = myInitialShape;
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aRemoved = myOriginalFaces;
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aFaceOffsets =
+    myFaceOffset;
+  const double           anOffset = myOffset;
+  const bool             isInter  = myInter;
+  const GeomAbs_JoinType aJoin    = myJoin;
+  MakeThickSolidAsGiven(theRange);
+  if (myDone && BRepCheck_Analyzer(myOffsetShape).IsValid())
+  {
+    return;
+  }
+  TopoDS_Shape aGiven = aShape;
+  while (!aGiven.IsNull() && aGiven.ShapeType() == TopAbs_COMPOUND && aGiven.NbChildren() == 1)
+  {
+    aGiven = TopoDS_Iterator(aGiven).Value();
+  }
+  TopoDS_Shape                                                             aTwin;
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> anOrigin, aTwinOf;
+  if (!BRepOffset_Tool::AnalyticTwin(aGiven, aTwin, anOrigin))
+  {
+    return;
+  }
+  for (NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIt(
+         anOrigin);
+       anIt.More();
+       anIt.Next())
+  {
+    aTwinOf.Bind(anIt.Value(), anIt.Key());
+  }
+  BRepOffset_MakeOffset aMO;
+  aMO.Initialize(aTwin,
+                 anOffset,
+                 myTol,
+                 myMode,
+                 isInter,
+                 mySelfInter,
+                 aJoin,
+                 myThickening,
+                 myRemoveIntEdges);
+  aMO.AllowLinearization(myIsLinearizationAllowed);
+  for (int i = 1; i <= aRemoved.Extent(); ++i)
+  {
+    const TopoDS_Shape* aF = aTwinOf.Seek(aRemoved(i));
+    if (!aF)
+    {
+      return;
+    }
+    aMO.AddFace(TopoDS::Face(*aF));
+  }
+  for (NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator anIt(
+         aFaceOffsets);
+       anIt.More();
+       anIt.Next())
+  {
+    if (const TopoDS_Shape* aF = aTwinOf.Seek(anIt.Key()))
+    {
+      aMO.SetOffsetOnFace(TopoDS::Face(*aF), anIt.Value());
+    }
+  }
+  theIsOnAnalyticTwin = true;
+  try
+  {
+    aMO.MakeThickSolid(Message_ProgressRange());
+  }
+  catch (Standard_Failure const&)
+  {
+    theIsOnAnalyticTwin = false;
+    return;
+  }
+  theIsOnAnalyticTwin = false;
+  if (!aMO.IsDone() || !IsSoundSolid(aMO.Shape()))
+  {
+    return;
+  }
+  const NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    aNoMore;
+  TakeThickSolidOf(aMO, anOrigin, aNoMore);
+}
+
+//=======================================================================
+// function : MakeThickSolidAsGiven
+// purpose  : MakeThickSolid of the shape as it is given.
+//=======================================================================
+void BRepOffset_MakeOffset::MakeThickSolidAsGiven(const Message_ProgressRange& theRange)
 {
   // What it is asked for, to be asked again.
   const TopoDS_Shape                                                  aShape  = myInitialShape;
