@@ -4097,6 +4097,18 @@ static thread_local bool theIsCapTangentWide = false;
 //! last attempt has something to do otherwise.
 static thread_local bool theHasNearTangentCapEdge = false;
 
+//! Whether ToContext() found two tubes round tangent edges of one removed
+//! face, with no vertex in common, passing through each other: the last
+//! attempt has something to do then too.
+static thread_local bool theHasTubesThroughEachOther = false;
+
+//! In that last attempt, the tangent edges of such tubes, two by two, for
+//! Intersection3D() to cut each tube by the other.
+static thread_local NCollection_List<TopoDS_Shape> theTubePairs;
+
+//! Whether Intersection3D() cut such a pair.
+static thread_local bool theHasCutTubePair = false;
+
 //! A solid that is valid and passes through itself nowhere. BRepCheck looks
 //! at each face and at the shell's edges, two faces a side each: a skin whose
 //! pockets were closed over, each a box of its own inside it, lid on lid with
@@ -4319,7 +4331,8 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   const bool isOutermost = theThickSolidDepth == 0;
   if (isOutermost)
   {
-    theHasNearTangentCapEdge = false;
+    theHasNearTangentCapEdge    = false;
+    theHasTubesThroughEachOther = false;
     BRepOffset_Tool::HasNearSectionEnd(true);
   }
   // An exception out of the computation is a refusal, as an error it sets
@@ -4561,7 +4574,8 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   {
     return;
   }
-  if (theHasNearTangentCapEdge || BRepOffset_Tool::HasNearSectionEnd(false))
+  if (theHasNearTangentCapEdge || theHasTubesThroughEachOther
+      || BRepOffset_Tool::HasNearSectionEnd(false))
   {
     // Refused both ways, and a removed face has an edge along which its
     // neighbour is nearly tangent to it: past what the analysis takes for
@@ -4575,6 +4589,10 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     // What had an answer keeps it: this is tried after a refusal only.
     // And with a section of two faces ending near a vertex both have put on
     // that vertex from further off (BRepOffset_Tool::SetWideSectionSnap).
+    // And with two tubes of one removed face that pass through each other
+    // cut by each other (theTubePairs): a blend narrower than twice the
+    // thickness, which the two rims close over where it is -- #613's long
+    // blends, 3.21 wide at their ends and 1.75 in the middle, at 1.
     struct WideScope
     {
       WideScope()
@@ -4585,6 +4603,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
 
       ~WideScope()
       {
+        theTubePairs.Clear();
         theIsCapTangentWide = false;
         BRepOffset_Tool::SetWideSectionSnap(false);
       }
@@ -4597,6 +4616,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
         aByOrientation.reset(new BRepAlgo_LoopByOrientation);
       }
       aSetUp(*this);
+      theHasCutTubePair = false;
       try
       {
         aMake(*this, Message_ProgressRange());
@@ -4606,6 +4626,15 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
         myDone = false;
       }
       if (myDone && !IsSoundSolid(myOffsetShape))
+      {
+        myDone = false;
+      }
+      // Nor is it an answer where, with two tubes cut by each other, the
+      // solid opens through none of the faces removed: one narrower all
+      // along than twice the thickness, the rims closed over the whole of
+      // it and the part hollow with no way in (#613's blends up to the
+      // ridge, 1.8 wide, at 1). Refused, as it was.
+      if (myDone && theHasCutTubePair && OpensNowhere(myOffsetShape, aRemoved))
       {
         myDone = false;
       }
@@ -8016,11 +8045,15 @@ void BRepOffset_MakeOffset::ToContext(
   // would meet under the end's). Nor are two tubes that just touch an
   // answer, the face twice the thickness wide: the tube's top removed 1
   // outward, its two edges 2 apart, was an invalid solid.
-  if (BRepOffset_FixLevel() >= 5)
+  // Refused, the thick solid is made once more with such tubes cut by each
+  // other (MakeThickSolid's last attempt): they are found at every level
+  // for that, and handed on to Intersection3D() there.
+  theTubePairs.Clear();
   {
-    const double aT     = std::abs(myOffset);
-    const double aSlack = std::max(1.e-3 * aT, 10. * myTol);
-    const int    aNbS   = 33;
+    const bool   isRefused = BRepOffset_FixLevel() >= 5 && !theIsCapTangentWide;
+    const double aT        = std::abs(myOffset);
+    const double aSlack    = std::max(1.e-3 * aT, 10. * myTol);
+    const int    aNbS      = 33;
     // the distance of a point from an edge
     auto aDistance = [](const gp_Pnt& theP, const TopoDS_Edge& theE) {
       double                  aF, aL;
@@ -8102,14 +8135,38 @@ void BRepOffset_MakeOffset::ToContext(
         {
           continue;
         }
-        for (NCollection_List<TopoDS_Shape>::Iterator itA(anApart); itA.More(); itA.Next())
+        for (NCollection_List<TopoDS_Shape>::Iterator itA(anApart); itA.More();)
         {
-          if (aDistance(aP, TopoDS::Edge(itA.Value())) < aT + aSlack)
+          if (aDistance(aP, TopoDS::Edge(itA.Value())) >= aT + aSlack)
           {
-            SHOW_TOPO_SHAPE(aRim, "TangentTubesThroughEachOther");
+            itA.Next();
+            continue;
+          }
+          SHOW_TOPO_SHAPE(aRim, "TangentTubesThroughEachOther");
+          theHasTubesThroughEachOther = true;
+          if (isRefused)
+          {
             myError = BRepOffset_UnknownError;
             break;
           }
+          if (theIsCapTangentWide)
+          {
+            // once for the two of them
+            bool isKnown = false;
+            for (NCollection_List<TopoDS_Shape>::Iterator itP(theTubePairs); itP.More() && !isKnown;
+                 itP.Next())
+            {
+              const TopoDS_Shape& aP1 = itP.Value();
+              itP.Next();
+              isKnown = aP1.IsSame(itA.Value()) && itP.Value().IsSame(aE1);
+            }
+            if (!isKnown)
+            {
+              theTubePairs.Append(aE1);
+              theTubePairs.Append(itA.Value());
+            }
+          }
+          anApart.Remove(itA);
         }
       }
     }
@@ -8776,6 +8833,30 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
                             myInitOffsetFace);
           }
         }
+      }
+    }
+    // Two tubes of one removed face that pass through each other, in a thick
+    // solid's last attempt (ToContext): each is cut by the other. No section
+    // found, they still pass through each other, which from fix level 5 is
+    // refused.
+    for (NCollection_List<TopoDS_Shape>::Iterator itP(theTubePairs); itP.More(); itP.Next())
+    {
+      const TopoDS_Shape aE1 = itP.Value();
+      itP.Next();
+      const TopoDS_Shape& aE2 = itP.Value();
+      if (!myInitOffsetFace.HasImage(aE1) || !myInitOffsetFace.HasImage(aE2))
+      {
+        continue;
+      }
+      theHasCutTubePair = true;
+      const int aNbNew  = NewEdges.Extent();
+      Inter.FaceInter(TopoDS::Face(myInitOffsetFace.Image(aE1).First()),
+                      TopoDS::Face(myInitOffsetFace.Image(aE2).First()),
+                      myInitOffsetFace);
+      if (NewEdges.Extent() == aNbNew && BRepOffset_FixLevel() >= 5)
+      {
+        myError = BRepOffset_UnknownError;
+        return;
       }
     }
   }
