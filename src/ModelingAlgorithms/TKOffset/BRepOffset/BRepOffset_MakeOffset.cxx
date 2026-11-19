@@ -4439,6 +4439,57 @@ static bool HasEdgeOnMoreThanTwoFaces(const TopoDS_Shape& theShape)
   return false;
 }
 
+//! An edge of the result that lies further off one of its pcurves than its
+//! tolerance says, by no more than 1e-6, is given the tolerance it has: by
+//! the measure BOP's check of a shape takes (BOPTools_AlgoTools::
+//! ComputeTolerance), 5 per cent over. A section's tolerance is what its
+//! curve and pcurves part by at the points they were fitted or compared at,
+//! and between those they part by a little more: a box with every edge
+//! filleted, a fillet removed 1 outward, had four edges 1.4e-7 off under a
+//! tolerance of 1.4e-7, and BOP named each (BOPAlgo_InvalidCurveOnSurface).
+//! The edges of the shape given are left as they are, and those further
+//! off: that is no rounding.
+static void SettleEdgeTolerances(const TopoDS_Shape& theResult, const TopoDS_Shape& theGiven)
+{
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aGiven;
+  TopExp::MapShapes(theGiven, TopAbs_EDGE, aGiven);
+  BRep_Builder aB;
+  for (TopExp_Explorer aFExp(theResult, TopAbs_FACE); aFExp.More(); aFExp.Next())
+  {
+    const TopoDS_Face& aF = TopoDS::Face(aFExp.Current());
+    for (TopExp_Explorer anEExp(aF, TopAbs_EDGE); anEExp.More(); anEExp.Next())
+    {
+      const TopoDS_Edge& anE = TopoDS::Edge(anEExp.Current());
+      if (aGiven.Contains(anE) || BRep_Tool::Degenerated(anE))
+      {
+        continue;
+      }
+      double aD = 0., aT = 0.;
+      try
+      {
+        if (!BOPTools_AlgoTools::ComputeTolerance(aF, anE, aD, aT))
+        {
+          continue;
+        }
+      }
+      catch (Standard_Failure const&)
+      {
+        continue;
+      }
+      if (aD > BRep_Tool::Tolerance(anE) && aD <= 1.e-6)
+      {
+        const double aTol = 1.05 * aD;
+        aB.UpdateEdge(anE, aTol);
+        for (TopoDS_Iterator anItV(anE); anItV.More(); anItV.Next())
+        {
+          aB.UpdateVertex(TopoDS::Vertex(anItV.Value()), aTol);
+        }
+      }
+    }
+  }
+}
+
+//! Set while a thick solid is made of an analytic twin (MakeThickSolid).
 static thread_local bool theIsOnAnalyticTwin = false;
 
 //=======================================================================
@@ -4617,6 +4668,10 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   {
     myDone  = false;
     myError = BRepOffset_UnknownError;
+  }
+  if (isManifoldAsked && myDone)
+  {
+    SettleEdgeTolerances(myOffsetShape, myInitialShape);
   }
 }
 
