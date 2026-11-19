@@ -3953,6 +3953,26 @@ static void collectShapeAspect(const occ::handle<StepRepr_ShapeAspect>&         
            || theSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
   {
     theSAs.Append(theSA);
+    // A datum feature may be given through other shape aspects, the geometry
+    // on those: a shape_aspect_relationship from it to each (NIST FTC-08)
+    if (theSA->IsKind(STANDARD_TYPE(StepDimTol_DatumFeature)))
+    {
+      for (Interface_EntityIterator anIter = aGraph.Sharings(theSA); anIter.More();
+           anIter.Next())
+      {
+        occ::handle<StepRepr_ShapeAspectRelationship> aSAR =
+          occ::down_cast<StepRepr_ShapeAspectRelationship>(anIter.Value());
+        if (aSAR.IsNull() || anIter.Value()->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation))
+            || aSAR->RelatingShapeAspect() != theSA || aSAR->RelatedShapeAspect().IsNull()
+            || aSAR->RelatedShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_Datum))
+            || aSAR->RelatedShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_DatumFeature))
+            || aSAR->RelatedShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
+        {
+          continue;
+        }
+        collectShapeAspect(aSAR->RelatedShapeAspect(), theWS, theSAs);
+      }
+    }
     return;
   }
   else
@@ -4047,6 +4067,9 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
       readAnnotation(aTR, aSAR->RelatingShapeAspect(), aDatObj, theLocalFactors);
     }
   }
+  // The datum itself may carry the geometry: a GISU on the datum, not on its
+  // feature (NIST CTC-02, CTC-03, FTC-06, STC-08)
+  aSAs.Append(theDat);
 
   // Collect shape labels
   for (int i = 1; i <= aSAs.Length(); i++)
@@ -4062,12 +4085,14 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
       continue;
     }
 
-    // Process all connected GISU
+    // Process all connected GISU, and the plain item_identified_representation_usage a
+    // datum feature on several faces may be given with (a set_representation_item):
+    // an item that is not a shape finds no label
     Interface_EntityIterator anIter = aGraph.Sharings(aSA);
     for (; anIter.More(); anIter.Next())
     {
-      occ::handle<StepAP242_GeometricItemSpecificUsage> aGISU =
-        occ::down_cast<StepAP242_GeometricItemSpecificUsage>(anIter.Value());
+      occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aGISU =
+        occ::down_cast<StepAP242_ItemIdentifiedRepresentationUsage>(anIter.Value());
       if (aGISU.IsNull())
       {
         continue;
@@ -4117,8 +4142,9 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
       Interface_EntityIterator          aSAIter = aGraph.Sharings(aSA);
       for (; aSAIter.More(); aSAIter.Next())
       {
-        occ::handle<StepAP242_GeometricItemSpecificUsage> aGISU =
-          occ::down_cast<StepAP242_GeometricItemSpecificUsage>(aSAIter.Value());
+        // As for a datum feature: GISU or the plain usage
+        occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aGISU =
+          occ::down_cast<StepAP242_ItemIdentifiedRepresentationUsage>(aSAIter.Value());
         if (aGISU.IsNull())
         {
           continue;
