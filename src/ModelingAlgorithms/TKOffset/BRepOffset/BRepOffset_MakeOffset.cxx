@@ -5263,8 +5263,11 @@ void BRepOffset_MakeOffset::MakeThickSolidAsGiven(const Message_ProgressRange& t
       {
         theMO.myDone = false;
       }
+      // (From fix level 5 a solid that opens nowhere is an answer too: the
+      // walls closed over the whole of a removed face narrower than twice
+      // the thickness, the part hollow with no way in.)
       isMade = theMO.myDone && IsSoundSolid(theMO.myOffsetShape)
-               && !OpensNowhere(theMO.myOffsetShape, aRemoved)
+               && (BRepOffset_FixLevel() >= 5 || !OpensNowhere(theMO.myOffsetShape, aRemoved))
                && IsNoHeavierThanASkin(theMO.myOffsetShape, anOffset);
       if (isMade && aWay == 1)
       {
