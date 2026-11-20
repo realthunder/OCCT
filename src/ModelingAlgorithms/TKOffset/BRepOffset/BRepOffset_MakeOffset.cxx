@@ -4323,6 +4323,23 @@ static bool IsPolyhedron(const TopoDS_Shape& theShape)
   return true;
 }
 
+//! Whether every face of the shape lies on a plane, a cylinder, a cone, a
+//! sphere or a torus.
+static bool IsOfElementarySurfaces(const TopoDS_Shape& theShape)
+{
+  for (TopExp_Explorer anExp(theShape, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    const GeomAbs_SurfaceType aType =
+      BRepAdaptor_Surface(TopoDS::Face(anExp.Current()), false).GetType();
+    if (aType != GeomAbs_Plane && aType != GeomAbs_Cylinder && aType != GeomAbs_Cone
+        && aType != GeomAbs_Sphere && aType != GeomAbs_Torus)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 //! Whether the solid weighs no more than a skin of its thickness can: half
 //! the thickness times its area. A wall between a surface and its offset is
 //! the thickness times the mean of the two areas, less where the offsets of
@@ -5611,7 +5628,10 @@ void BRepOffset_MakeOffset::MakeThickSolidAsGiven(const Message_ProgressRange& t
   // the faces removed and weighs no more than a skin can. Of planes only:
   // tried on any shape, three of #613's blends at 1 came back sound solids
   // of 43667, the part being 21192.
-  if (!myDone && !isInter && IsPolyhedron(aShape))
+  if (!myDone && !isInter
+      && (IsPolyhedron(aShape)
+          || (BRepOffset_FixLevel() >= 5 && aJoinAsked == GeomAbs_Arc
+              && IsOfElementarySurfaces(aShape))))
   {
     aMakeAllPairs(*this);
   }
