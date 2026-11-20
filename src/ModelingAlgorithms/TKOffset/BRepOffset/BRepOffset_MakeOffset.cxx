@@ -4439,6 +4439,212 @@ static bool HasEdgeOnMoreThanTwoFaces(const TopoDS_Shape& theShape)
   return false;
 }
 
+//! A vertex of a thick solid inside the wall of a face that stays: nearer to
+//! the face than its thickness, on the wall's side of it, the foot of its
+//! normal within the face. The wall is material and no boundary of the
+//! solid passes through it: the offsets of two faces nearer each other than
+//! twice the thickness have passed each other and were not cut by each
+//! other.
+static bool HasVertexInAWall(
+  const TopoDS_Shape&                                                  theResult,
+  const TopoDS_Shape&                                                  theGiven,
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& theRemoved,
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theFaceOffsets,
+  const double                                                         theOffset)
+{
+  struct Wall
+  {
+    TopoDS_Face               Face;
+    Bnd_Box                   Box;
+    double                    Offset;
+  };
+  NCollection_List<Wall> aWalls;
+  for (TopExp_Explorer anExp(theGiven, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Face& aF = TopoDS::Face(anExp.Current());
+    if (theRemoved.Contains(aF))
+    {
+      continue;
+    }
+    const double* aOwn = theFaceOffsets.Seek(aF);
+    Wall          aW;
+    aW.Offset = aOwn ? *aOwn : theOffset;
+    if (std::abs(aW.Offset) < Precision::Confusion())
+    {
+      continue;
+    }
+    if (BRep_Tool::Surface(aF).IsNull())
+    {
+      continue;
+    }
+    aW.Face = aF;
+    BRepBndLib::Add(aF, aW.Box);
+    aW.Box.Enlarge(std::abs(aW.Offset));
+    aWalls.Append(aW);
+  }
+  // the surfaces of the faces removed: a wall ends on them, and a vertex
+  // there is on the solid's boundary by that
+  std::vector<std::unique_ptr<GeomAPI_ProjectPointOnSurf>> aRims;
+  for (int i = 1; i <= theRemoved.Extent(); ++i)
+  {
+    TopLoc_Location           aLoc;
+    occ::handle<Geom_Surface> aS = BRep_Tool::Surface(TopoDS::Face(theRemoved(i)), aLoc);
+    if (!aS.IsNull())
+    {
+      try
+      {
+        std::unique_ptr<GeomAPI_ProjectPointOnSurf> aPr(new GeomAPI_ProjectPointOnSurf);
+        const occ::handle<Geom_Surface> aRS =
+          occ::down_cast<Geom_Surface>(aS->Transformed(aLoc.Transformation()));
+        double aU1 = 0., aU2 = 0., aV1 = 0., aV2 = 0.;
+        aRS->Bounds(aU1, aU2, aV1, aV2);
+        aPr->Init(aRS, aU1, aU2, aV1, aV2);
+        aRims.push_back(std::move(aPr));
+      }
+      catch (Standard_Failure const&)
+      {
+      }
+    }
+  }
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aGivenVertices, aVertices;
+  TopExp::MapShapes(theGiven, TopAbs_VERTEX, aGivenVertices);
+  TopExp::MapShapes(theResult, TopAbs_VERTEX, aVertices);
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    aVE;
+  TopExp::MapShapesAndAncestors(theResult, TopAbs_VERTEX, TopAbs_EDGE, aVE);
+  occ::handle<IntTools_Context> aCtx = new IntTools_Context();
+  for (int i = 1; i <= aVertices.Extent(); ++i)
+  {
+    const TopoDS_Vertex& aV = TopoDS::Vertex(aVertices(i));
+    if (aGivenVertices.Contains(aV))
+    {
+      continue;
+    }
+    const gp_Pnt aP    = BRep_Tool::Pnt(aV);
+    const double aVTol = BRep_Tool::Tolerance(aV);
+    // on a removed face's surface with every edge it has: the walls end
+    // there, and where two have closed over the face the rim is all there is
+    bool         isOnRim = false;
+    const double aRimTol = std::max(1.e-3 * std::abs(theOffset), 10. * aVTol);
+    for (size_t aR = 0; aR < aRims.size() && !isOnRim; ++aR)
+    {
+      try
+      {
+        GeomAPI_ProjectPointOnSurf& aProj = *aRims[aR];
+        aProj.Perform(aP);
+        isOnRim = aProj.NbPoints() > 0 && aProj.LowerDistance() < aRimTol;
+        const NCollection_List<TopoDS_Shape>* anEdges = aVE.Seek(aV);
+        const NCollection_List<TopoDS_Shape>  aNoEdges;
+        for (NCollection_List<TopoDS_Shape>::Iterator itE(anEdges ? *anEdges : aNoEdges);
+             itE.More() && isOnRim;
+             itE.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(itE.Value());
+          if (BRep_Tool::Degenerated(anE))
+          {
+            continue;
+          }
+          double                  aF = 0., aL = 0.;
+          occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anE, aF, aL);
+          if (aC.IsNull())
+          {
+            continue;
+          }
+          aProj.Perform(aC->Value(0.5 * (aF + aL)));
+          isOnRim = aProj.NbPoints() > 0 && aProj.LowerDistance() < aRimTol;
+        }
+      }
+      catch (Standard_Failure const&)
+      {
+      }
+    }
+    if (isOnRim)
+    {
+      continue;
+    }
+    for (NCollection_List<Wall>::Iterator it(aWalls); it.More(); it.Next())
+    {
+      const Wall& aW = it.Value();
+      if (aW.Box.IsOut(aP))
+      {
+        continue;
+      }
+      const double aT      = std::abs(aW.Offset);
+      const double aMargin = std::max(1.e-3 * aT, 10. * aVTol);
+      try
+      {
+        GeomAPI_ProjectPointOnSurf& aProj = aCtx->ProjPS(aW.Face);
+        aProj.Perform(aP);
+        for (int k = 1; k <= aProj.NbPoints(); ++k)
+        {
+          const double aD = aProj.Distance(k);
+          if (aD < aMargin || aD > aT - aMargin)
+          {
+            continue;
+          }
+          double aU = 0., aVv = 0.;
+          aProj.Parameters(k, aU, aVv);
+          gp_Dir aN;
+          BOPTools_AlgoTools3D::GetNormalToSurface(BRep_Tool::Surface(aW.Face), aU, aVv, aN);
+          gp_Vec aOut(aN);
+          if (aW.Face.Orientation() == TopAbs_REVERSED)
+          {
+            aOut.Reverse();
+          }
+          // the wall is outside the face for a positive offset
+          const double aSide = gp_Vec(aProj.Point(k), aP).Dot(aOut);
+          if ((aSide > 0.) != (aW.Offset > 0.))
+          {
+            continue;
+          }
+          TopAbs_State aState = aCtx->FClass2d(aW.Face).Perform(gp_Pnt2d(aU, aVv));
+          if (aState == TopAbs_ON)
+          {
+            // on the face's seam is within it: on its outline only where an
+            // edge that is no seam is near
+            aState = TopAbs_IN;
+            const gp_Pnt aFoot = aProj.Point(k);
+            for (TopExp_Explorer anExpE(aW.Face, TopAbs_EDGE);
+                 anExpE.More() && aState == TopAbs_IN;
+                 anExpE.Next())
+            {
+              const TopoDS_Edge& anE = TopoDS::Edge(anExpE.Current());
+              if (BRep_Tool::Degenerated(anE) || BRep_Tool::IsClosed(anE, aW.Face))
+              {
+                continue;
+              }
+              double                  aF = 0., aL = 0.;
+              occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anE, aF, aL);
+              if (aC.IsNull())
+              {
+                continue;
+              }
+              double aDE = std::min(aFoot.Distance(aC->Value(aF)), aFoot.Distance(aC->Value(aL)));
+              GeomAPI_ProjectPointOnCurve aProjC(aFoot, aC, aF, aL);
+              if (aProjC.NbPoints() > 0)
+              {
+                aDE = std::min(aDE, aProjC.LowerDistance());
+              }
+              if (aDE < aMargin)
+              {
+                aState = TopAbs_ON;
+              }
+            }
+          }
+          if (aState == TopAbs_IN)
+          {
+            return true;
+          }
+        }
+      }
+      catch (Standard_Failure const&)
+      {
+      }
+    }
+  }
+  return false;
+}
+
 //! An edge of the result that lies further off one of its pcurves than its
 //! tolerance says, by no more than 1e-6, is given the tolerance it has: by
 //! the measure BOP's check of a shape takes (BOPTools_AlgoTools::
@@ -4521,8 +4727,11 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     myOriginalFaces;
   const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher> aFaceOffsetsAsked =
     myFaceOffset;
-  const double anOffsetAsked = myOffset;
-  auto       aMakeIt         = [&]() {
+  const double       anOffsetAsked        = myOffset;
+  const TopoDS_Shape aShapeAsked          = myInitialShape;
+  const bool         isInterAsked         = myInter;
+  const bool         isLinearizationAsked = myIsLinearizationAllowed;
+  auto               aMakeIt              = [&]() {
   // What it is asked for, to be asked of the twin.
   const TopoDS_Shape                                                  aShape   = myInitialShape;
   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aRemoved = myOriginalFaces;
@@ -4681,8 +4890,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   // each other, never meeting, and the ring between them under the rim came
   // out facing up -- valid, 2509.0262 for 2438.3, a slit in the wall counted
   // as material twice. The face lay one thickness in front of the ring.
-  if (isManifoldAsked && myDone && !aRemovedAsked.IsEmpty())
-  {
+  auto aIsThroughAWall = [&]() -> bool {
     NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aResultFaces;
     TopExp::MapShapes(myOffsetShape, TopAbs_FACE, aResultFaces);
     occ::handle<IntTools_Context> aCtx      = new IntTools_Context();
@@ -4709,6 +4917,8 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       }
       aS = occ::down_cast<Geom_Surface>(aS->Transformed(aLoc.Transformation()));
       const NCollection_List<TopoDS_Shape> aLIm = Generated(aF);
+      GeomAPI_ProjectPointOnSurf           aOnF;
+      bool                                 isOnF = false;
       for (NCollection_List<TopoDS_Shape>::Iterator it(aLIm); it.More() && !isFlipped; it.Next())
       {
         const int anIdx = aResultFaces.FindIndex(it.Value());
@@ -4738,20 +4948,79 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
           }
           // the face in front of its offset first: it is there in no
           // right answer, and the second projection is not made
-          GeomAPI_ProjectPointOnSurf aFront(aP.Translated(aT * aM), aS);
-          if (aFront.NbPoints() == 0 || aFront.LowerDistance() >= 1.e-3 * aT)
+          if (!isOnF)
+          {
+            double aU1 = 0., aU2 = 0., aV1 = 0., aV2 = 0.;
+            aS->Bounds(aU1, aU2, aV1, aV2);
+            aOnF.Init(aS, aU1, aU2, aV1, aV2);
+            isOnF = true;
+          }
+          aOnF.Perform(aP.Translated(aT * aM));
+          if (aOnF.NbPoints() == 0 || aOnF.LowerDistance() >= 1.e-3 * aT)
           {
             continue;
           }
-          GeomAPI_ProjectPointOnSurf aBack(aP.Translated(-aT * aM), aS);
-          isFlipped = aBack.NbPoints() > 0 && aBack.LowerDistance() > 0.5 * aT;
+          aOnF.Perform(aP.Translated(-aT * aM));
+          isFlipped = aOnF.NbPoints() > 0 && aOnF.LowerDistance() > 0.5 * aT;
         }
         catch (Standard_Failure const&)
         {
         }
       }
     }
-    if (isFlipped)
+    return isFlipped
+           || HasVertexInAWall(myOffsetShape,
+                               myInitialShape,
+                               aRemovedAsked,
+                               aFaceOffsetsAsked,
+                               anOffsetAsked);
+  };
+  // Such an answer is made again with every pair of faces intersected, not
+  // only those across an edge (the caller's Intersection, which it did not
+  // ask for): the offsets of two walls that pass each other share no edge,
+  // and nothing else cuts one by the other. Taken where it is valid, has
+  // no edge on more than two faces and is through no wall; refused
+  // otherwise. The cup's bottom removed 0.95, 1 and 1.2 inward: 2388.3108,
+  // 2433.3864 and 2527.0493, the wall solid and a pocket in the bottom.
+  if (isManifoldAsked && myDone && !aRemovedAsked.IsEmpty() && aIsThroughAWall())
+  {
+    bool isMade = false;
+    if (!isInterAsked)
+    {
+      Initialize(aShapeAsked,
+                 anOffsetAsked,
+                 myTol,
+                 myMode,
+                 true,
+                 mySelfInter,
+                 myJoin,
+                 myThickening,
+                 myRemoveIntEdges);
+      AllowLinearization(isLinearizationAsked);
+      for (int i = 1; i <= aRemovedAsked.Extent(); ++i)
+      {
+        AddFace(TopoDS::Face(aRemovedAsked(i)));
+      }
+      for (NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator anIt(
+             aFaceOffsetsAsked);
+           anIt.More();
+           anIt.Next())
+      {
+        SetOffsetOnFace(TopoDS::Face(anIt.Key()), anIt.Value());
+      }
+      try
+      {
+        aMakeIt();
+      }
+      catch (Standard_Failure const&)
+      {
+        myDone = false;
+      }
+      isMade = myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()
+               && !HasEdgeOnMoreThanTwoFaces(myOffsetShape) && !aIsThroughAWall();
+      myInter = false;
+    }
+    if (!isMade)
     {
       myDone  = false;
       myError = BRepOffset_UnknownError;
