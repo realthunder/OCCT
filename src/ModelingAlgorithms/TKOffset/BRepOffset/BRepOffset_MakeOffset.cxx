@@ -5443,7 +5443,8 @@ void BRepOffset_MakeOffset::MakeThickSolidAsGiven(const Message_ProgressRange& t
       // along than twice the thickness, the rims closed over the whole of
       // it and the part hollow with no way in (#613's blends up to the
       // ridge, 1.8 wide, at 1). Refused, as it was.
-      if (myDone && theHasCutTubePair && OpensNowhere(myOffsetShape, aRemoved))
+      if (myDone && theHasCutTubePair && BRepOffset_FixLevel() < 5
+          && OpensNowhere(myOffsetShape, aRemoved))
       {
         myDone = false;
       }
