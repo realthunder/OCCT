@@ -4940,8 +4940,13 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
                                                    aP2d.X(),
                                                    aP2d.Y(),
                                                    aN);
+          // (the surface BRep_Tool gives of a face is where the face is:
+          // its normal is not to be moved by the face's location again --
+          // moved twice, the box with its upright and its bottom edges
+          // rounded, turned half round, had its top "in front of its
+          // offset" with an upright fillet removed 0.5 outward, and was
+          // refused)
           gp_Vec aM(aN);
-          aM.Transform(anIm.Location().Transformation());
           if (anIm.Orientation() == TopAbs_REVERSED)
           {
             aM.Reverse();
