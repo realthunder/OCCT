@@ -830,73 +830,75 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
   // the walked points where that lies as near the surfaces, the points
   // joined otherwise.
   NCollection_Sequence<occ::handle<Geom_Curve>> aWalked;
+  double                                        aLimit = 0.;
   {
     Bnd_Box aBox1, aBox2;
     BRepBndLib::Add(F1, aBox1);
     BRepBndLib::Add(F2, aBox2);
-    const double aLimit =
-      1.e-3 * std::min(std::sqrt(aBox1.SquareExtent()), std::sqrt(aBox2.SquareExtent()));
-    auto aStray = [&](const occ::handle<Geom_Curve>& theC) {
-      double       aMax = 0.;
-      const double aF = theC->FirstParameter(), aL = theC->LastParameter();
-      for (int k = 1; k < 16; ++k)
-      {
-        const gp_Pnt aP = theC->Value(aF + (aL - aF) * k / 16.);
-        for (const occ::handle<Geom_Surface>& aS : {S1, S2})
-        {
-          GeomAPI_ProjectPointOnSurf aProj(aP, aS);
-          if (aProj.NbPoints() == 0)
-          {
-            return Precision::Infinite();
-          }
-          aMax = std::max(aMax, aProj.LowerDistance());
-        }
-      }
-      return aMax;
-    };
-    bool isAstray = false;
-    for (int i = 1; Inter.IsDone() && i <= Inter.NbLines() && !isAstray; ++i)
+    aLimit = 1.e-3 * std::min(std::sqrt(aBox1.SquareExtent()), std::sqrt(aBox2.SquareExtent()));
+  }
+  auto aStray = [&](const occ::handle<Geom_Curve>& theC) {
+    double       aMax = 0.;
+    const double aF = theC->FirstParameter(), aL = theC->LastParameter();
+    for (int k = 1; k < 16; ++k)
     {
-      isAstray = !ToSmall(Inter.Line(i)) && aStray(Inter.Line(i)) > aLimit;
+      const gp_Pnt aP = theC->Value(aF + (aL - aF) * k / 16.);
+      for (const occ::handle<Geom_Surface>& aS : {S1, S2})
+      {
+        GeomAPI_ProjectPointOnSurf aProj(aP, aS);
+        if (aProj.NbPoints() == 0)
+        {
+          return Precision::Infinite();
+        }
+        aMax = std::max(aMax, aProj.LowerDistance());
+      }
     }
-    if (isAstray)
+    return aMax;
+  };
+  bool isAstray = false;
+  for (int i = 1; Inter.IsDone() && i <= Inter.NbLines() && !isAstray; ++i)
+  {
+    isAstray = !ToSmall(Inter.Line(i)) && aStray(Inter.Line(i)) > aLimit;
+  }
+  if (isAstray)
+  {
+    GeomInt_IntSS aPlain;
+    aPlain.Perform(AS1, AS2, Precision::Confusion(), false, false, false);
+    bool isRight = aPlain.IsDone() && aPlain.NbLines() > 0;
+    for (int i = 1; isRight && i <= aPlain.NbLines(); ++i)
     {
-      GeomInt_IntSS aPlain;
-      aPlain.Perform(AS1, AS2, Precision::Confusion(), false, false, false);
-      bool isRight = aPlain.IsDone() && aPlain.NbLines() > 0;
-      for (int i = 1; isRight && i <= aPlain.NbLines(); ++i)
+      occ::handle<Geom_Curve> aC = aPlain.Line(i);
+      if (ToSmall(aC))
       {
-        occ::handle<Geom_Curve> aC = aPlain.Line(i);
-        if (ToSmall(aC))
+        continue;
+      }
+      const double aDev = aStray(aC);
+      isRight           = aDev <= aLimit;
+      occ::handle<Geom_BSplineCurve> aBS = occ::down_cast<Geom_BSplineCurve>(aC);
+      if (isRight && !aBS.IsNull() && aBS->Degree() == 1 && aBS->NbPoles() > 3)
+      {
+        try
         {
-          continue;
-        }
-        const double aDev = aStray(aC);
-        isRight           = aDev <= aLimit;
-        occ::handle<Geom_BSplineCurve> aBS = occ::down_cast<Geom_BSplineCurve>(aC);
-        if (isRight && !aBS.IsNull() && aBS->Degree() == 1 && aBS->NbPoles() > 3)
-        {
-          try
+          GeomAPI_PointsToBSpline aFit(aBS->Poles(), 3, 8, GeomAbs_C2, Precision::Confusion());
+          if (aFit.IsDone() && aStray(aFit.Curve()) <= aDev)
           {
-            GeomAPI_PointsToBSpline aFit(aBS->Poles(), 3, 8, GeomAbs_C2, Precision::Confusion());
-            if (aFit.IsDone() && aStray(aFit.Curve()) <= aDev)
-            {
-              aC = aFit.Curve();
-            }
-          }
-          catch (Standard_Failure const&)
-          {
+            aC = aFit.Curve();
           }
         }
-        aWalked.Append(aC);
+        catch (Standard_Failure const&)
+        {
+        }
       }
-      if (!isRight)
-      {
-        aWalked.Clear();
-      }
+      aWalked.Append(aC);
+    }
+    if (!isRight)
+    {
+      aWalked.Clear();
     }
   }
   const bool isWalked = !aWalked.IsEmpty();
+  GeomInt_IntSS aPlainInter; // the lines as walked, made when one is asked for
+  bool          isPlainDone = false;
 
   if (Inter.IsDone())
   {
@@ -911,6 +913,7 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
       TopoDS_Vertex anEnds[2];
       gp_Pnt        anEndPnts[2];
       bool          isMoved = false;
+      bool          isLineWalked = false;
       // An end near a vertex both tubes have -- where two tubes round the
       // tangent edges of a removed face start, both on the offsets of the
       // faces beside it: there the tubes all but touch, and their section
@@ -933,6 +936,8 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
         const double aSnapWide = 5.e-3 * aSize;
         const double aSnap     = THE_IS_WIDE_SNAP ? aSnapWide : 1.e-3 * aSize;
         const double aPar[2] = {CI->FirstParameter(), CI->LastParameter()};
+        const gp_Pnt aEndWas[2] = {CI->Value(aPar[0]), CI->Value(aPar[1])};
+        auto         aP_End     = [&](const int theK) { return aEndWas[theK]; };
         for (int k = 0; k < 2; ++k)
         {
           const gp_Pnt aP    = CI->Value(aPar[k]);
@@ -972,8 +977,130 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
         {
           continue;
         }
+        // An end the walk left off the vertex, from level 5: the line as
+        // walked, ending on the vertex, a curve fitted to its points. The
+        // box with its upright and its bottom edges rounded, turned half
+        // round, an upright fillet removed 0.5 outward: the tubes round the
+        // fillet's straight and its round edge touch at the vertex, and the
+        // walk of their section ended 7.2e-5 beside it; the curve fitted by
+        // the intersection left the walked points there, 2.5e-4 off them
+        // 5e-4 before its end, and with its end put on the vertex its last
+        // 1e-4 lay 37 deg off the rest, along the edge beside it. The
+        // walked points but the last lie on a straight course to the vertex.
+        // Only between tubes that are cylinders and tori: between the
+        // B-spline tubes of #613's blends the walked line refitted lost
+        // answers the moved end below has (the ridge blends at 1, the side
+        // blends at 0.5 and 1).
+        auto aIsRound = [](const occ::handle<GeomAdaptor_Surface>& theS) {
+          return theS->GetType() == GeomAbs_Cylinder || theS->GetType() == GeomAbs_Torus;
+        };
+        if (!isWalked && aIsRound(AS1) && aIsRound(AS2) && BRepOffset_FixLevel() >= 5)
+        {
+          bool isOff = false;
+          for (int k = 0; k < 2; ++k)
+          {
+            isOff = isOff
+                    || (!anEnds[k].IsNull()
+                        && aP_End(k).Distance(BRep_Tool::Pnt(anEnds[k])) > Precision::Confusion());
+          }
+          // ... and only where the curve is off the tubes by more than it
+          // was asked to be, read at 16 points along it and six within its
+          // last 3 hundredths at such an end: 4.1e-6, 1.9e-6, 1.5e-6 where
+          // the walked line helped, 1.7e-8 at a stadium's end fillet 1.25
+          // inward with an end 1.2e-7 off the vertex, where it lost the
+          // answer.
+          auto aStrayNearEnds = [&](const occ::handle<Geom_Curve>& theC) {
+            double       aMax = 0.;
+            const double aF = theC->FirstParameter(), aL = theC->LastParameter();
+            auto         aRead = [&](const double theK) {
+              const gp_Pnt aP = theC->Value(aF + (aL - aF) * theK);
+              for (const occ::handle<Geom_Surface>& aS : {S1, S2})
+              {
+                GeomAPI_ProjectPointOnSurf aProj(aP, aS);
+                if (aProj.NbPoints() > 0)
+                {
+                  aMax = std::max(aMax, aProj.LowerDistance());
+                }
+              }
+            };
+            for (int k = 1; k < 16; ++k)
+            {
+              aRead(k / 16.);
+            }
+            for (const double aK : {1.e-4, 3.e-4, 1.e-3, 3.e-3, 1.e-2, 3.e-2})
+            {
+              if (!anEnds[0].IsNull())
+              {
+                aRead(aK);
+              }
+              if (!anEnds[1].IsNull())
+              {
+                aRead(1. - aK);
+              }
+            }
+            return aMax;
+          };
+          const double aWas = isOff ? aStrayNearEnds(CI) : 0.;
+          isOff             = isOff && aWas > Precision::Confusion();
+          if (isOff && !isPlainDone)
+          {
+            isPlainDone = true;
+            try
+            {
+              aPlainInter.Perform(AS1, AS2, Precision::Confusion(), false, false, false);
+            }
+            catch (Standard_Failure const&)
+            {
+            }
+          }
+          for (int j = 1; isOff && aPlainInter.IsDone() && j <= aPlainInter.NbLines(); ++j)
+          {
+            occ::handle<Geom_BSplineCurve> aPL =
+              occ::down_cast<Geom_BSplineCurve>(aPlainInter.Line(j));
+            if (aPL.IsNull() || aPL->Degree() != 1 || aPL->NbPoles() < 4)
+            {
+              continue;
+            }
+            // the same line, the same way or the other
+            const gp_Pnt aQ[2]  = {aPL->Pole(1), aPL->Pole(aPL->NbPoles())};
+            const double aNear  = 1.e-6;
+            const bool   isSame = aQ[0].Distance(aP_End(0)) < aNear && aQ[1].Distance(aP_End(1)) < aNear;
+            const bool   isRev  = aQ[0].Distance(aP_End(1)) < aNear && aQ[1].Distance(aP_End(0)) < aNear;
+            if (!isSame && !isRev)
+            {
+              continue;
+            }
+            NCollection_Array1<gp_Pnt> aPnts(1, aPL->NbPoles());
+            for (int m = 1; m <= aPL->NbPoles(); ++m)
+            {
+              aPnts(m) = aPL->Pole(isSame ? m : aPL->NbPoles() + 1 - m);
+            }
+            if (!anEnds[0].IsNull())
+            {
+              aPnts(1) = BRep_Tool::Pnt(anEnds[0]);
+            }
+            if (!anEnds[1].IsNull())
+            {
+              aPnts(aPnts.Upper()) = BRep_Tool::Pnt(anEnds[1]);
+            }
+            try
+            {
+              GeomAPI_PointsToBSpline aFit(aPnts, 3, 8, GeomAbs_C2, Precision::Confusion());
+              if (aFit.IsDone() && !aFit.Curve().IsNull() && aStrayNearEnds(aFit.Curve()) < aWas)
+              {
+                CI           = aFit.Curve();
+                isLineWalked = true;
+              }
+            }
+            catch (Standard_Failure const&)
+            {
+            }
+            break;
+          }
+        }
         // The curve's end moved onto the vertex, its pcurves' with it: a
         // B-spline ends on its end pole. Otherwise the vertex covers it.
+        const double aParNow[2] = {CI->FirstParameter(), CI->LastParameter()};
         occ::handle<Geom_BSplineCurve> aBS = occ::down_cast<Geom_BSplineCurve>(CI);
         isMoved = !aBS.IsNull() && !aBS->IsPeriodic() && !S1->IsUPeriodic()
                   && !S1->IsVPeriodic() && !S2->IsUPeriodic() && !S2->IsVPeriodic();
@@ -996,19 +1123,19 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
             anEndPnts[k] = BRep_Tool::Pnt(anEnds[k]);
             if (!isMoved)
             {
-              B.UpdateVertex(anEnds[k], 1.01 * CI->Value(aPar[k]).Distance(anEndPnts[k]));
+              B.UpdateVertex(anEnds[k], 1.01 * CI->Value(aParNow[k]).Distance(anEndPnts[k]));
             }
           }
         }
         if (!anEnds[0].IsNull() || !anEnds[1].IsNull())
         {
           BRepLib_MakeEdge aME(CI,
-                               anEnds[0].IsNull() ? BRepLib_MakeVertex(CI->Value(aPar[0])).Vertex()
+                               anEnds[0].IsNull() ? BRepLib_MakeVertex(CI->Value(aParNow[0])).Vertex()
                                                   : anEnds[0],
-                               anEnds[1].IsNull() ? BRepLib_MakeVertex(CI->Value(aPar[1])).Vertex()
+                               anEnds[1].IsNull() ? BRepLib_MakeVertex(CI->Value(aParNow[1])).Vertex()
                                                   : anEnds[1],
-                               aPar[0],
-                               aPar[1]);
+                               aParNow[0],
+                               aParNow[1]);
           if (aME.IsDone())
           {
             E = aME.Edge();
@@ -1040,7 +1167,7 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
         }
         theC2 = aBS2;
       };
-      if (!isWalked && Inter.HasLineOnS1(i))
+      if (!isWalked && !isLineWalked && Inter.HasLineOnS1(i))
       {
         occ::handle<Geom2d_Curve> C2 = Inter.LineOnS1(i);
         aMoveEnds(C2, S1);
@@ -1051,7 +1178,7 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
       {
         BuildPCurves(E, F1);
       }
-      if (!isWalked && Inter.HasLineOnS2(i))
+      if (!isWalked && !isLineWalked && Inter.HasLineOnS2(i))
       {
         occ::handle<Geom2d_Curve> C2 = Inter.LineOnS2(i);
         aMoveEnds(C2, S2);
