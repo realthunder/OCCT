@@ -4645,6 +4645,121 @@ static bool HasVertexInAWall(
   return false;
 }
 
+//! How convex a face is across one of its edges, at the edge's middle: the
+//! normal curvature of its surface in the direction square to the edge,
+//! positive where the surface bends away from the face's outer side (a
+//! cylinder or a sphere seen from outside). False where it cannot be read.
+static bool ConvexityAcross(const TopoDS_Edge& theE, const TopoDS_Face& theF, double& theC)
+{
+  double                    aF = 0., aL = 0.;
+  occ::handle<Geom2d_Curve> aPC = BRep_Tool::CurveOnSurface(theE, theF, aF, aL);
+  occ::handle<Geom_Surface> aS  = BRep_Tool::Surface(theF);
+  if (aPC.IsNull() || aS.IsNull())
+  {
+    return false;
+  }
+  gp_Pnt2d aUV;
+  gp_Vec2d aT2d;
+  aPC->D1(0.5 * (aF + aL), aUV, aT2d);
+  gp_Pnt aP;
+  gp_Vec aDU, aDV, aD2U, aD2V, aDUV;
+  aS->D2(aUV.X(), aUV.Y(), aP, aDU, aDV, aD2U, aD2V, aDUV);
+  gp_Vec aN = aDU ^ aDV;
+  if (aN.Magnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  aN.Normalize();
+  const gp_Vec aT = aDU * aT2d.X() + aDV * aT2d.Y();
+  const gp_Vec aD = aN ^ aT;
+  if (aD.Magnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  // aD = a * aDU + b * aDV
+  const double aE = aDU.Dot(aDU), aFF = aDU.Dot(aDV), aG = aDV.Dot(aDV);
+  const double aDet = aE * aG - aFF * aFF;
+  if (std::abs(aDet) < gp::Resolution())
+  {
+    return false;
+  }
+  const double a = (aD.Dot(aDU) * aG - aD.Dot(aDV) * aFF) / aDet;
+  const double b = (aD.Dot(aDV) * aE - aD.Dot(aDU) * aFF) / aDet;
+  const double aK =
+    (aD2U.Dot(aN) * a * a + 2. * aDUV.Dot(aN) * a * b + aD2V.Dot(aN) * b * b) / aD.SquareMagnitude();
+  theC = theF.Orientation() == TopAbs_REVERSED ? aK : -aK;
+  return true;
+}
+
+//! The Arc join's thick solid and the Intersection join's differ nowhere:
+//! no edge between two faces that stay would have a tube (none concave
+//! inward, none convex outward), and where a removed face is tangent to a
+//! face beside it, that face's offset carried on never comes to the removed
+//! face -- no more convex across the edge than the removed face outward, no
+//! less inward.
+static bool JoinsDifferNowhere(
+  const TopoDS_Shape&                                                       theShape,
+  const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>&      theRemoved,
+  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theFaceOffsets,
+  const double                                                              theOffset,
+  const double                                                              theTol)
+{
+  BRepOffset_Analyse anAnalyse;
+  anAnalyse.Perform(theShape, analyseTolAngle(theTol, theOffset));
+  const ChFiDS_TypeOfConcavity aTubeType = theOffset < 0. ? ChFiDS_Concave : ChFiDS_Convex;
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    anEF;
+  TopExp::MapShapesAndAncestors(theShape, TopAbs_EDGE, TopAbs_FACE, anEF);
+  for (int i = 1; i <= anEF.Extent(); ++i)
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(anEF.FindKey(i));
+    if (BRep_Tool::Degenerated(anE) || anEF(i).Extent() != 2)
+    {
+      continue;
+    }
+    const TopoDS_Face& aF1  = TopoDS::Face(anEF(i).First());
+    const TopoDS_Face& aF2  = TopoDS::Face(anEF(i).Last());
+    const bool         isR1 = theRemoved.Contains(aF1), isR2 = theRemoved.Contains(aF2);
+    if ((isR1 && isR2) || aF1.IsSame(aF2))
+    {
+      continue;
+    }
+    if (isR1 || isR2)
+    {
+      if (!ChFi3d::IsTangentFaces(anE, aF1, aF2, THE_CAP_TANGENT_ANGLE, GeomAbs_G1))
+      {
+        continue;
+      }
+      const TopoDS_Face& aRF  = isR1 ? aF1 : aF2;
+      const TopoDS_Face& aNF  = isR1 ? aF2 : aF1;
+      const double*      aOwn = theFaceOffsets.Seek(aNF);
+      const double       aT   = aOwn ? *aOwn : theOffset;
+      double             aCR = 0., aCN = 0.;
+      if (!ConvexityAcross(anE, aRF, aCR) || !ConvexityAcross(anE, aNF, aCN)
+          || aT * (aCN - aCR) > 1.e-9)
+      {
+        return false;
+      }
+      continue;
+    }
+    if (!anAnalyse.HasAncestor(anE))
+    {
+      return false;
+    }
+    const NCollection_List<BRepOffset_Interval>& aLT = anAnalyse.Type(anE);
+    for (NCollection_List<BRepOffset_Interval>::Iterator itT(aLT); itT.More(); itT.Next())
+    {
+      const ChFiDS_TypeOfConcavity aType = itT.Value().Type();
+      if (aType == aTubeType
+          || (aType != ChFiDS_Convex && aType != ChFiDS_Concave && aType != ChFiDS_Tangential))
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 //! An edge of the result that lies further off one of its pcurves than its
 //! tolerance says, by no more than 1e-6, is given the tolerance it has: by
 //! the measure BOP's check of a shape takes (BOPTools_AlgoTools::
@@ -4731,6 +4846,7 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   const TopoDS_Shape aShapeAsked          = myInitialShape;
   const bool         isInterAsked         = myInter;
   const bool         isLinearizationAsked = myIsLinearizationAllowed;
+  const double       aTolAsked            = myTol;
   auto               aMakeIt              = [&]() {
   // What it is asked for, to be asked of the twin.
   const TopoDS_Shape                                                  aShape   = myInitialShape;
@@ -4878,6 +4994,57 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   }
   };
   aMakeIt();
+  const GeomAbs_JoinType aJoinAsked = myJoin;
+  auto                   anAskAgain = [&](const bool theIsInter, const GeomAbs_JoinType theJoin) {
+    // (the analysis keeps the types of its edges from one Perform to the
+    // next, the Intersection join's tangent caps among them)
+    myAnalyse.Clear();
+    Initialize(aShapeAsked,
+               anOffsetAsked,
+               aTolAsked,
+               myMode,
+               theIsInter,
+               mySelfInter,
+               theJoin,
+               myThickening,
+               myRemoveIntEdges);
+    AllowLinearization(isLinearizationAsked);
+    for (int i = 1; i <= aRemovedAsked.Extent(); ++i)
+    {
+      AddFace(TopoDS::Face(aRemovedAsked(i)));
+    }
+    for (NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator anIt(
+           aFaceOffsetsAsked);
+         anIt.More();
+         anIt.Next())
+    {
+      SetOffsetOnFace(TopoDS::Face(anIt.Key()), anIt.Value());
+    }
+    try
+    {
+      aMakeIt();
+    }
+    catch (Standard_Failure const&)
+    {
+      myDone = false;
+    }
+    myInter = isInterAsked;
+    myJoin  = aJoinAsked;
+  };
+  // From fix level 5: the Intersection join with no valid answer, where the
+  // two joins differ nowhere (JoinsDifferNowhere), is given the Arc join's,
+  // made with all the Arc join has. The checks below judge it as any other.
+  if (isManifoldAsked && aJoinAsked == GeomAbs_Intersection
+      && !(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid())
+      && JoinsDifferNowhere(aShapeAsked, aRemovedAsked, aFaceOffsetsAsked, anOffsetAsked, myTol))
+  {
+    anAskAgain(isInterAsked, GeomAbs_Arc);
+    if (!(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()))
+    {
+      myDone  = false;
+      myError = BRepOffset_UnknownError;
+    }
+  }
   if (isManifoldAsked && myDone && HasEdgeOnMoreThanTwoFaces(myOffsetShape))
   {
     myDone  = false;
@@ -4992,38 +5159,9 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     bool isMade = false;
     if (!isInterAsked)
     {
-      Initialize(aShapeAsked,
-                 anOffsetAsked,
-                 myTol,
-                 myMode,
-                 true,
-                 mySelfInter,
-                 myJoin,
-                 myThickening,
-                 myRemoveIntEdges);
-      AllowLinearization(isLinearizationAsked);
-      for (int i = 1; i <= aRemovedAsked.Extent(); ++i)
-      {
-        AddFace(TopoDS::Face(aRemovedAsked(i)));
-      }
-      for (NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator anIt(
-             aFaceOffsetsAsked);
-           anIt.More();
-           anIt.Next())
-      {
-        SetOffsetOnFace(TopoDS::Face(anIt.Key()), anIt.Value());
-      }
-      try
-      {
-        aMakeIt();
-      }
-      catch (Standard_Failure const&)
-      {
-        myDone = false;
-      }
+      anAskAgain(true, aJoinAsked);
       isMade = myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()
                && !HasEdgeOnMoreThanTwoFaces(myOffsetShape) && !aIsThroughAWall();
-      myInter = false;
     }
     if (!isMade)
     {
