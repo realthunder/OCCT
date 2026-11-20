@@ -88,6 +88,12 @@ void RWStepAP242_RWItemIdentifiedRepresentationUsage::ReadStep(
                              ach,
                              nbSub))
   {
+    // A typed set_representation_item, SET_REPRESENTATION_ITEM((#1,#2)), is a
+    // sub-record whose one parameter is the list
+    if (data->NbParams(nbSub) == 1 && data->ParamType(nbSub, 1) == Interface_ParamSub)
+    {
+      nbSub = data->SubListNumber(nbSub, 1, false);
+    }
     int nbElements = data->NbParams(nbSub);
     anItems = new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, nbElements);
     for (int i = 1; i <= nbElements; i++)
