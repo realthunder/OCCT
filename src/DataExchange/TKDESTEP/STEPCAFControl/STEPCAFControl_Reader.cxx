@@ -4048,8 +4048,11 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
   NCollection_Sequence<TDF_Label>               aShapeLabels;
   occ::handle<XCAFDimTolObjects_DatumObject>    aDatObj = new XCAFDimTolObjects_DatumObject();
 
-  // Collect all links to shapes
-  NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
+  // Collect all links to shapes. The datum features themselves too: a
+  // composite one is collected as its components, and is what a
+  // presentation's draughting_model_item_association names -- a saved view
+  // listing the presentation found no datum for it.
+  NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs, aRelatingSAs;
   Interface_EntityIterator                                anIterD = aGraph.Sharings(theDat);
   for (anIterD.Start(); anIterD.More(); anIterD.Next())
   {
@@ -4060,6 +4063,7 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
       continue;
     }
     collectShapeAspect(aSAR->RelatingShapeAspect(), theWS, aSAs);
+    aRelatingSAs.Append(aSAR->RelatingShapeAspect());
     occ::handle<StepDimTol_DatumFeature> aDF =
       occ::down_cast<StepDimTol_DatumFeature>(aSAR->RelatingShapeAspect());
     if (!aSAR->RelatingShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
@@ -4337,6 +4341,14 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
         continue;
       }
       myGDTMap.Bind(aSA, aDatL);
+    }
+    for (int i = 1; i <= aRelatingSAs.Length(); i++)
+    {
+      const occ::handle<StepRepr_ShapeAspect>& aSA = aRelatingSAs.Value(i);
+      if (!aSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
+      {
+        myGDTMap.Bind(aSA, aDatL);
+      }
     }
     aDGTTool->Lock(aDatL);
     aDat = XCAFDoc_Datum::Set(aDatL);
@@ -6672,17 +6684,28 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
     anObj->SetType(aType);
     occ::handle<Geom_CartesianPoint> aPoint =
       StepToGeom::MakeCartesianPoint(aViewVolume->ProjectionPoint(), aLocalFactors);
-    anObj->SetProjectionPoint(aPoint->Pnt());
-    anObj->SetZoomFactor(aViewVolume->ViewPlaneDistance());
-    anObj->SetWindowHorizontalSize(aViewVolume->ViewWindow()->SizeInX());
-    anObj->SetWindowVerticalSize(aViewVolume->ViewWindow()->SizeInY());
+    // The projection point is in the view reference system's coordinates
+    // (ISO 10303-46): in the model, the eye is where that system puts it --
+    // its origin, for a point at (0,0,0) as files write it. Taken as a model
+    // point, every view was centred on a line through the model's origin.
+    const gp_Ax2  aViewSystem = anAxis->Ax2();
+    gp_XYZ        anEye       = aViewSystem.Location().XYZ()
+                     + aViewSystem.XDirection().XYZ() * aPoint->Pnt().X()
+                     + aViewSystem.YDirection().XYZ() * aPoint->Pnt().Y()
+                     + aViewSystem.Direction().XYZ() * aPoint->Pnt().Z();
+    anObj->SetProjectionPoint(gp_Pnt(anEye));
+    // Lengths, in the document's unit as the points are
+    const double aFactor = aLocalFactors.LengthFactor();
+    anObj->SetZoomFactor(aViewVolume->ViewPlaneDistance() * aFactor);
+    anObj->SetWindowHorizontalSize(aViewVolume->ViewWindow()->SizeInX() * aFactor);
+    anObj->SetWindowVerticalSize(aViewVolume->ViewWindow()->SizeInY() * aFactor);
     if (aViewVolume->FrontPlaneClipping())
     {
-      anObj->SetFrontPlaneDistance(aViewVolume->FrontPlaneDistance());
+      anObj->SetFrontPlaneDistance(aViewVolume->FrontPlaneDistance() * aFactor);
     }
     if (aViewVolume->BackPlaneClipping())
     {
-      anObj->SetBackPlaneDistance(aViewVolume->BackPlaneDistance());
+      anObj->SetBackPlaneDistance(aViewVolume->BackPlaneDistance() * aFactor);
     }
     anObj->SetViewVolumeSidesClipping(aViewVolume->ViewVolumeSidesClipping());
     // Clipping plane
