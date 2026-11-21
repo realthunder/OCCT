@@ -25,6 +25,8 @@
 #include <BRep_Builder.hxx>
 #include <GeomToStep_MakeAxis2Placement3d.hxx>
 #include <GeomToStep_MakeCartesianPoint.hxx>
+#include <GeomToStep_MakePlane.hxx>
+#include <gp_Pln.hxx>
 #include <HeaderSection_FileSchema.hxx>
 #include <Interface_EntityIterator.hxx>
 #include <Interface_Static.hxx>
@@ -186,6 +188,8 @@
 #include <StepRepr_MechanicalDesignAndDraughtingRelationship.hxx>
 #include <StepRepr_RepresentationMap.hxx>
 #include <StepVisual_CameraModelD3.hxx>
+#include <StepVisual_CameraModelD3MultiClipping.hxx>
+#include <StepVisual_CameraModelD3MultiClippingInterectionSelect.hxx>
 #include <StepVisual_PlanarBox.hxx>
 #include <StepVisual_ViewVolume.hxx>
 #include <Precision.hxx>
@@ -206,6 +210,7 @@
 #include <XCAFDoc_Dimension.hxx>
 #include <XCAFDoc_DimTol.hxx>
 #include <XCAFDoc_DimTolTool.hxx>
+#include <XCAFDoc_ClippingPlaneTool.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_GeomTolerance.hxx>
 #include <XCAFDoc_GraphNode.hxx>
@@ -5478,8 +5483,58 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
                     anObj->HasBackPlaneClipping(),
                     anObj->HasViewVolumeSidesClipping(),
                     aWindow);
-      occ::handle<StepVisual_CameraModelD3> aCamera = new StepVisual_CameraModelD3();
-      aCamera->Init(aName, aSystem, aVolume);
+      // Its clipping planes, cutting all together (the intersection of
+      // what each keeps): a plain camera without, one clipping with
+      NCollection_Sequence<TDF_Label> aPlaneLabels;
+      aViewTool->GetRefClippingPlaneLabel(aViewL, aPlaneLabels);
+      occ::handle<XCAFDoc_ClippingPlaneTool> aPlaneTool =
+        XCAFDoc_DocumentTool::ClippingPlaneTool(aRootIter.Value());
+      NCollection_Sequence<occ::handle<StepGeom_Plane>> aPlanes;
+      for (NCollection_Sequence<TDF_Label>::Iterator aPlaneIter(aPlaneLabels); aPlaneIter.More();
+           aPlaneIter.Next())
+      {
+        gp_Pln                                aPln;
+        occ::handle<TCollection_HAsciiString> aPlaneName;
+        bool                                  aCapping = false;
+        if (aPlaneTool.IsNull()
+            || !aPlaneTool->GetClippingPlane(aPlaneIter.Value(), aPln, aPlaneName, aCapping))
+        {
+          continue;
+        }
+        GeomToStep_MakePlane aMaker(aPln, theLocalFactors);
+        if (!aMaker.IsDone())
+        {
+          continue;
+        }
+        occ::handle<StepGeom_Plane> aPlane = aMaker.Value();
+        aPlane->SetName(aPlaneName.IsNull() ? new TCollection_HAsciiString()
+                                            : new TCollection_HAsciiString(aPlaneName));
+        aPlanes.Append(aPlane);
+      }
+      occ::handle<StepVisual_CameraModelD3> aCamera;
+      if (aPlanes.IsEmpty())
+      {
+        aCamera = new StepVisual_CameraModelD3();
+        aCamera->Init(aName, aSystem, aVolume);
+      }
+      else
+      {
+        occ::handle<NCollection_HArray1<StepVisual_CameraModelD3MultiClippingInterectionSelect>>
+          aClipping =
+            new NCollection_HArray1<StepVisual_CameraModelD3MultiClippingInterectionSelect>(
+              1,
+              aPlanes.Length());
+        for (int i = 1; i <= aPlanes.Length(); i++)
+        {
+          StepVisual_CameraModelD3MultiClippingInterectionSelect aSelect;
+          aSelect.SetValue(aPlanes.Value(i));
+          aClipping->SetValue(i, aSelect);
+        }
+        occ::handle<StepVisual_CameraModelD3MultiClipping> aClippingCamera =
+          new StepVisual_CameraModelD3MultiClipping();
+        aClippingCamera->Init(aName, aSystem, aVolume, aClipping);
+        aCamera = aClippingCamera;
+      }
 
       // Its items: the camera, the shapes it shows -- each one's
       // representation mapped through the camera -- and the presentations

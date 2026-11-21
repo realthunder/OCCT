@@ -6725,9 +6725,10 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
     }
 
     // Collect shapes and GDTs
+    // A camera in no draughting model read is no view; the others still are
     if (aDModel.IsNull())
     {
-      return false;
+      continue;
     }
     NCollection_Sequence<TDF_Label> aShapes, aGDTs;
     Interface_EntityIterator        anIter = aGraph.Shareds(aDModel);

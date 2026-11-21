@@ -4522,6 +4522,15 @@ int RWStepAP214_ReadWriteModule::CaseStep(
       {
         return 337;
       }
+      // A saved view's draughting model that is also a tessellated shape
+      // representation (NIST FTC-07, STC-06): read as the characterized
+      // one, its representation all there is to read
+      else if (types(1).IsEqual(StepType(402)) && types(2).IsEqual(StepType(714))
+               && types(3).IsEqual(StepType(441)) && types(4).IsEqual(StepType(245))
+               && types(5).IsEqual(StepType(262)) && types(6).IsEqual(StepType(807)))
+      {
+        return 715;
+      }
     }
     else if (NbComp == 5)
     {
@@ -4653,6 +4662,12 @@ int RWStepAP214_ReadWriteModule::CaseStep(
       }
       else if (types(1).IsEqual(StepType(402)) && types(2).IsEqual(StepType(714))
                && types(3).IsEqual(StepType(441)) && types(4).IsEqual(StepType(245)))
+      {
+        return 715;
+      }
+      // The same without being characterized (NIST FTC-08, FTC-10, FTC-11)
+      else if (types(1).IsEqual(StepType(441)) && types(2).IsEqual(StepType(245))
+               && types(3).IsEqual(StepType(262)) && types(4).IsEqual(StepType(807)))
       {
         return 715;
       }
