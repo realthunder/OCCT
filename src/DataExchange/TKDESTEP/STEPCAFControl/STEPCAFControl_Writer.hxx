@@ -17,6 +17,7 @@
 #define _STEPCAFControl_Writer_HeaderFile
 
 #include <TopoDS_Shape.hxx>
+#include <Quantity_Color.hxx>
 #include <Standard_Transient.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_DataMap.hxx>
@@ -223,6 +224,12 @@ public:
 
   bool GetDimTolMode() const { return myGDTMode; }
 
+  //! Set the colour GD&T presentations are drawn in (AP242): white unless
+  //! set, as it always was.
+  void SetGDTPresentationColor(const Quantity_Color& theColor) { myGDTPrsColor = theColor; }
+
+  const Quantity_Color& GetGDTPresentationColor() const { return myGDTPrsColor; }
+
   //! Set flag for indicate write material or not.
   void SetMaterialMode(const bool theMaterialMode) { myMatMode = theMaterialMode; }
 
@@ -382,6 +389,7 @@ protected:
     occ::handle<StepAP242_GeometricItemSpecificUsage>& theGISU);
 
   void writePresentation(const occ::handle<XSControl_WorkSession>&    theWS,
+                         const TDF_Label&                             theLabel,
                          const TopoDS_Shape&                          thePresentation,
                          const occ::handle<TCollection_HAsciiString>& thePrsName,
                          const bool                                   theHasSemantic,
@@ -390,6 +398,14 @@ protected:
                          const gp_Pnt&                                theTextPosition,
                          const occ::handle<Standard_Transient>&       theDimension,
                          const StepData_Factors& theLocalFactors = StepData_Factors());
+
+  //! The saved views of the documents written (XCAFDoc_ViewTool): a
+  //! draughting model each, with its camera, the presentations of the GD&T
+  //! it shows and the shapes it shows mapped into it, as the CAx-IF practice
+  //! and the reader have them. Called once the GD&T is written.
+  void writeViews(const occ::handle<XSControl_WorkSession>&          theWS,
+                  const occ::handle<StepRepr_RepresentationContext>& theRC,
+                  const StepData_Factors&                            theLocalFactors);
 
   occ::handle<StepDimTol_Datum> writeDatumAP242(
     const occ::handle<XSControl_WorkSession>& theWS,
@@ -428,11 +444,17 @@ private:
   NCollection_DataMap<TopoDS_Shape, occ::handle<Standard_Transient>, TopTools_ShapeMapHasher>
                                                                      myMapCompMDGPR;
   bool                                                               myGDTMode;
+  Quantity_Color myGDTPrsColor = Quantity_Color(Quantity_NOC_WHITE);
   bool                                                               myMatMode;
   bool                                                               myVisMatMode;
   bool                                                               myIsCleanDuplicates;
   NCollection_DynamicArray<occ::handle<StepRepr_RepresentationItem>> myGDTAnnotations;
   occ::handle<StepVisual_DraughtingModel>                            myGDTPresentationDM;
+  //! The presentation of each GD&T label written: its draughting callout,
+  //! and its annotation plane when it has one -- what a view of it lists
+  NCollection_DataMap<TDF_Label,
+                      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>>
+    myGDTPrsItems;
   occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>>
                                                myGDTPrsCurveStyle;
   occ::handle<StepRepr_ProductDefinitionShape> myGDTCommonPDS;

@@ -25,6 +25,8 @@
 #include <BRep_Builder.hxx>
 #include <GeomToStep_MakeAxis2Placement3d.hxx>
 #include <GeomToStep_MakeCartesianPoint.hxx>
+#include <GeomToStep_MakePlane.hxx>
+#include <gp_Pln.hxx>
 #include <HeaderSection_FileSchema.hxx>
 #include <Interface_EntityIterator.hxx>
 #include <Interface_Static.hxx>
@@ -95,6 +97,7 @@
 #include <StepDimTol_ToleranceZoneForm.hxx>
 #include <StepDimTol_TotalRunoutTolerance.hxx>
 #include <StepGeom_Axis2Placement3d.hxx>
+#include <StepGeom_Axis2Placement.hxx>
 #include <StepGeom_CartesianPoint.hxx>
 #include <StepGeom_Direction.hxx>
 #include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>
@@ -181,6 +184,15 @@
 #include <Transfer_Binder.hxx>
 #include <Transfer_FinderProcess.hxx>
 #include <Transfer_TransientListBinder.hxx>
+#include <StepRepr_MappedItem.hxx>
+#include <StepRepr_MechanicalDesignAndDraughtingRelationship.hxx>
+#include <StepRepr_RepresentationMap.hxx>
+#include <StepVisual_CameraModelD3.hxx>
+#include <StepVisual_CameraModelD3MultiClipping.hxx>
+#include <StepVisual_CameraModelD3MultiClippingInterectionSelect.hxx>
+#include <StepVisual_PlanarBox.hxx>
+#include <StepVisual_ViewVolume.hxx>
+#include <Precision.hxx>
 #include <TransferBRep.hxx>
 #include <TransferBRep_ShapeMapper.hxx>
 #include <XCAFDimTolObjects_DatumObject.hxx>
@@ -198,6 +210,7 @@
 #include <XCAFDoc_Dimension.hxx>
 #include <XCAFDoc_DimTol.hxx>
 #include <XCAFDoc_DimTolTool.hxx>
+#include <XCAFDoc_ClippingPlaneTool.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_GeomTolerance.hxx>
 #include <XCAFDoc_GraphNode.hxx>
@@ -207,6 +220,9 @@
 #include <XCAFDoc_ShapeTool.hxx>
 #include <XCAFDoc_Volume.hxx>
 #include <XCAFDoc_VisMaterialTool.hxx>
+#include <XCAFDoc_View.hxx>
+#include <XCAFDoc_ViewTool.hxx>
+#include <XCAFView_Object.hxx>
 #include <XCAFPrs_Style.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <XSAlgo.hxx>
@@ -291,6 +307,7 @@ void STEPCAFControl_Writer::Init(const occ::handle<XSControl_WorkSession>& theWS
   myPureRefLabels.Clear();
   myRootLabels.Clear();
   myGDTPresentationDM = new StepVisual_DraughtingModel();
+  myGDTPrsItems.Clear();
   myGDTPrsCurveStyle =
     new NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>(1, 1);
 }
@@ -3135,6 +3152,13 @@ occ::handle<StepRepr_ShapeAspect> STEPCAFControl_Writer::writeShapeAspect(
     new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
   occ::handle<StepRepr_RepresentationItem> anIdentifiedItem =
     occ::down_cast<StepRepr_RepresentationItem>(anEnt);
+  if (anIdentifiedItem.IsNull())
+  {
+    // What the shape was written as is no item to identify (a tessellated
+    // shape's face): a usage of a null item leaves a model that cannot be
+    // written
+    return nullptr;
+  }
   anReprItems->SetValue(1, anIdentifiedItem);
   occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
   for (Interface_EntityIterator aSharingIter = aGraph.Sharings(aPDS);
@@ -3163,6 +3187,7 @@ occ::handle<StepRepr_ShapeAspect> STEPCAFControl_Writer::writeShapeAspect(
 //======================================================================
 void STEPCAFControl_Writer::writePresentation(
   const occ::handle<XSControl_WorkSession>&    theWS,
+  const TDF_Label&                             theLabel,
   const TopoDS_Shape&                          thePresentation,
   const occ::handle<TCollection_HAsciiString>& thePrsName,
   const bool                                   theHasSemantic,
@@ -3172,7 +3197,9 @@ void STEPCAFControl_Writer::writePresentation(
   const occ::handle<Standard_Transient>&       theDimension,
   const StepData_Factors&                      theLocalFactors)
 {
-  if (thePresentation.IsNull())
+  // A graphic of nothing, or of no item: a draughting model item association
+  // without its definition leaves a model the writer cannot write
+  if (thePresentation.IsNull() || theDimension.IsNull())
   {
     return;
   }
@@ -3202,6 +3229,15 @@ void STEPCAFControl_Writer::writePresentation(
     new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
   aDCsForDMIA->SetValue(1, aDCallout);
   myGDTAnnotations.Append(aDCallout);
+  if (!theLabel.IsNull())
+  {
+    if (!myGDTPrsItems.IsBound(theLabel))
+    {
+      myGDTPrsItems.Bind(theLabel,
+                         NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>());
+    }
+    myGDTPrsItems.ChangeFind(theLabel).Append(aDCallout);
+  }
   StepAP242_ItemIdentifiedRepresentationUsageDefinition aDimension;
   aDimension.SetValue(theDimension);
   occ::handle<TCollection_HAsciiString> aDMIAName;
@@ -3266,6 +3302,10 @@ void STEPCAFControl_Writer::writePresentation(
   occ::handle<StepVisual_AnnotationPlane> anAnnPlane = new StepVisual_AnnotationPlane();
   anAnnPlane->Init(new TCollection_HAsciiString(), aPrsStyles, aPlane, aDCsForAnnPln);
   myGDTAnnotations.Append(anAnnPlane);
+  if (!theLabel.IsNull())
+  {
+    myGDTPrsItems.ChangeFind(theLabel).Append(anAnnPlane);
+  }
   aModel->AddWithRefs(anAnnPlane);
 }
 
@@ -3594,6 +3634,7 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
 
   // Annotation plane and Presentation
   writePresentation(theWS,
+                    theDatumL,
                     anObject->GetPresentation(),
                     anObject->GetPresentationName(),
                     true,
@@ -4505,6 +4546,7 @@ void STEPCAFControl_Writer::writeGeomTolerance(
   writeToleranceZone(theWS, anObject, aGeomTol, theRC);
   // Annotation plane and Presentation
   writePresentation(theWS,
+                    theGeomTolL,
                     anObject->GetPresentation(),
                     anObject->GetPresentationName(),
                     true,
@@ -4940,7 +4982,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
   // Common entities for presentation
   STEPConstruct_Styles           aStyles(theWS);
-  occ::handle<StepVisual_Colour> aCurvColor = STEPConstruct_Styles::EncodeColor(Quantity_NOC_WHITE);
+  occ::handle<StepVisual_Colour> aCurvColor = STEPConstruct_Styles::EncodeColor(myGDTPrsColor);
   occ::handle<StepRepr_RepresentationItem> anItem = nullptr;
   myGDTPrsCurveStyle->SetValue(
     1,
@@ -5041,11 +5083,14 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                 myGDTCommonPDS,
                 StepData_LTrue);
       aModel->AddWithRefs(aSA);
+      // No semantics, and its plane if it has one (the two were swapped,
+      // which left every graphic-only item without its annotation plane)
       writePresentation(theWS,
+                        aDimensionL,
                         anObject->GetPresentation(),
                         anObject->GetPresentationName(),
-                        anObject->HasPlane(),
                         false,
+                        anObject->HasPlane(),
                         anObject->GetPlane(),
                         anObject->GetPointTextAttach(),
                         aSA,
@@ -5143,11 +5188,25 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
     if (anObject->GetType() == XCAFDimTolObjects_DimensionType_DimensionPresentation)
     {
+      if (aFirstSA.IsNull())
+      {
+        // Its shapes have no entity to refer to (a tessellated part's faces):
+        // the graphic is the product's, as a common label's is
+        aFirstSA = new StepRepr_ShapeAspect();
+        aFirstSA->Init(new TCollection_HAsciiString(),
+                       new TCollection_HAsciiString(),
+                       myGDTCommonPDS,
+                       StepData_LTrue);
+        aModel->AddWithRefs(aFirstSA);
+      }
+      // No semantics, and its plane if it has one (the two were swapped,
+      // which left every graphic-only item without its annotation plane)
       writePresentation(theWS,
+                        aDimensionL,
                         anObject->GetPresentation(),
                         anObject->GetPresentationName(),
-                        anObject->HasPlane(),
                         false,
+                        anObject->HasPlane(),
                         anObject->GetPlane(),
                         anObject->GetPointTextAttach(),
                         aFirstSA,
@@ -5256,6 +5315,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     WriteDimValues(theWS, anObject, aRC, aDimension, theLocalFactors);
     // Annotation plane and Presentation
     writePresentation(theWS,
+                      aDimensionL,
                       anObject->GetPresentation(),
                       anObject->GetPresentationName(),
                       true,
@@ -5313,22 +5373,253 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     writeGeomTolerance(theWS, aFirstShapeL, aGeomTolL, aDatumSystem, aRC, theLocalFactors);
   }
 
-  // Write Draughting model for Annotation Planes
-  if (myGDTAnnotations.Length() == 0)
+  // The context: a shape aspect's, else -- none written, every item a
+  // graphic of a part whose faces have no entity (a tessellated part) -- the
+  // product's own. A draughting model without one cannot be written.
+  for (Interface_EntityIterator aSharingIter = aGraph.Sharings(myGDTCommonPDS);
+       aRC.IsNull() && !myGDTCommonPDS.IsNull() && aSharingIter.More();
+       aSharingIter.Next())
+  {
+    occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR =
+      occ::down_cast<StepShape_ShapeDefinitionRepresentation>(aSharingIter.Value());
+    if (!aSDR.IsNull() && !aSDR->UsedRepresentation().IsNull())
+    {
+      aRC = aSDR->UsedRepresentation()->ContextOfItems();
+    }
+  }
+  if (aRC.IsNull())
   {
     return true;
   }
 
-  occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> aItems =
-    new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, myGDTAnnotations.Length());
-  for (int i = 1; i <= aItems->Length(); i++)
+  // Write Draughting model for Annotation Planes
+  if (myGDTAnnotations.Length() > 0)
   {
-    aItems->SetValue(i, myGDTAnnotations.Value(i - 1));
+    occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> aItems =
+      new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(
+        1,
+        myGDTAnnotations.Length());
+    for (int i = 1; i <= aItems->Length(); i++)
+    {
+      aItems->SetValue(i, myGDTAnnotations.Value(i - 1));
+    }
+    myGDTPresentationDM->Init(new TCollection_HAsciiString(), aItems, aRC);
+    aModel->AddWithRefs(myGDTPresentationDM);
   }
-  myGDTPresentationDM->Init(new TCollection_HAsciiString(), aItems, aRC);
-  aModel->AddWithRefs(myGDTPresentationDM);
 
+  writeViews(theWS, aRC, theLocalFactors);
   return true;
+}
+
+//=================================================================================================
+
+void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&          theWS,
+                                       const occ::handle<StepRepr_RepresentationContext>& theRC,
+                                       const StepData_Factors& theLocalFactors)
+{
+  const occ::handle<Interface_InterfaceModel>& aModel  = theWS->Model();
+  const occ::handle<Transfer_FinderProcess>&   aFP     = theWS->TransferWriter()->FinderProcess();
+  const double                                 aFactor = theLocalFactors.LengthFactor();
+  NCollection_Map<TDF_Label>                   aTools;
+  for (NCollection_Map<TDF_Label>::Iterator aRootIter(myRootLabels); aRootIter.More();
+       aRootIter.Next())
+  {
+    occ::handle<XCAFDoc_ViewTool> aViewTool = XCAFDoc_DocumentTool::ViewTool(aRootIter.Value());
+    if (aViewTool.IsNull() || !aTools.Add(aViewTool->Label()))
+    {
+      continue;
+    }
+    NCollection_Sequence<TDF_Label> aViewLabels;
+    aViewTool->GetViewLabels(aViewLabels);
+    for (NCollection_Sequence<TDF_Label>::Iterator aViewIter(aViewLabels); aViewIter.More();
+         aViewIter.Next())
+    {
+      const TDF_Label&          aViewL = aViewIter.Value();
+      occ::handle<XCAFDoc_View> aViewAttr;
+      if (!aViewL.FindAttribute(XCAFDoc_View::GetID(), aViewAttr))
+      {
+        continue;
+      }
+      occ::handle<XCAFView_Object> anObj = aViewAttr->GetObject();
+      if (anObj.IsNull() || anObj->Type() == XCAFView_ProjectionType_NoCamera)
+      {
+        continue;
+      }
+      const gp_Dir aSight = anObj->ViewDirection();
+      const gp_Dir anUp   = anObj->UpDirection();
+      if (anUp.IsParallel(aSight, Precision::Angular()))
+      {
+        continue;
+      }
+      occ::handle<TCollection_HAsciiString> aName =
+        anObj->Name().IsNull() ? new TCollection_HAsciiString()
+                               : new TCollection_HAsciiString(anObj->Name()->String());
+
+      // The camera: its view reference system at the eye, z along the line
+      // of sight, x such that z ^ x is up -- as the reader takes it back,
+      // and as the NIST test files have it; the projection point the
+      // system's origin
+      const gp_Ax2 aFrame(anObj->ProjectionPoint(), aSight, anUp.Crossed(aSight));
+      occ::handle<StepGeom_Axis2Placement3d> aSystem =
+        GeomToStep_MakeAxis2Placement3d(aFrame, theLocalFactors).Value();
+      // The window: in the view plane, centred on the line of sight
+      const double aDistance = anObj->ZoomFactor();
+      const double aSizeX    = anObj->WindowHorizontalSize();
+      const double aSizeY    = anObj->WindowVerticalSize();
+      const gp_Ax2 aWindowFrame(gp_Pnt(-aSizeX / 2, -aSizeY / 2, aDistance), gp::DZ(), gp::DX());
+      StepGeom_Axis2Placement aWindowPlacement;
+      aWindowPlacement.SetValue(
+        GeomToStep_MakeAxis2Placement3d(aWindowFrame, theLocalFactors).Value());
+      occ::handle<StepVisual_PlanarBox> aWindow = new StepVisual_PlanarBox();
+      aWindow->Init(aName, aSizeX / aFactor, aSizeY / aFactor, aWindowPlacement);
+      occ::handle<StepVisual_ViewVolume> aVolume = new StepVisual_ViewVolume();
+      aVolume->Init(anObj->Type() == XCAFView_ProjectionType_Central ? StepVisual_copCentral
+                                                                     : StepVisual_copParallel,
+                    GeomToStep_MakeCartesianPoint(gp::Origin(), aFactor).Value(),
+                    aDistance / aFactor,
+                    anObj->HasFrontPlaneClipping() ? anObj->FrontPlaneDistance() / aFactor : 0.,
+                    anObj->HasFrontPlaneClipping(),
+                    anObj->HasBackPlaneClipping() ? anObj->BackPlaneDistance() / aFactor : 0.,
+                    anObj->HasBackPlaneClipping(),
+                    anObj->HasViewVolumeSidesClipping(),
+                    aWindow);
+      // Its clipping planes, cutting all together (the intersection of
+      // what each keeps): a plain camera without, one clipping with
+      NCollection_Sequence<TDF_Label> aPlaneLabels;
+      aViewTool->GetRefClippingPlaneLabel(aViewL, aPlaneLabels);
+      occ::handle<XCAFDoc_ClippingPlaneTool> aPlaneTool =
+        XCAFDoc_DocumentTool::ClippingPlaneTool(aRootIter.Value());
+      NCollection_Sequence<occ::handle<StepGeom_Plane>> aPlanes;
+      for (NCollection_Sequence<TDF_Label>::Iterator aPlaneIter(aPlaneLabels); aPlaneIter.More();
+           aPlaneIter.Next())
+      {
+        gp_Pln                                aPln;
+        occ::handle<TCollection_HAsciiString> aPlaneName;
+        bool                                  aCapping = false;
+        if (aPlaneTool.IsNull()
+            || !aPlaneTool->GetClippingPlane(aPlaneIter.Value(), aPln, aPlaneName, aCapping))
+        {
+          continue;
+        }
+        GeomToStep_MakePlane aMaker(aPln, theLocalFactors);
+        if (!aMaker.IsDone())
+        {
+          continue;
+        }
+        occ::handle<StepGeom_Plane> aPlane = aMaker.Value();
+        aPlane->SetName(aPlaneName.IsNull() ? new TCollection_HAsciiString()
+                                            : new TCollection_HAsciiString(aPlaneName));
+        aPlanes.Append(aPlane);
+      }
+      occ::handle<StepVisual_CameraModelD3> aCamera;
+      if (aPlanes.IsEmpty())
+      {
+        aCamera = new StepVisual_CameraModelD3();
+        aCamera->Init(aName, aSystem, aVolume);
+      }
+      else
+      {
+        occ::handle<NCollection_HArray1<StepVisual_CameraModelD3MultiClippingInterectionSelect>>
+          aClipping =
+            new NCollection_HArray1<StepVisual_CameraModelD3MultiClippingInterectionSelect>(
+              1,
+              aPlanes.Length());
+        for (int i = 1; i <= aPlanes.Length(); i++)
+        {
+          StepVisual_CameraModelD3MultiClippingInterectionSelect aSelect;
+          aSelect.SetValue(aPlanes.Value(i));
+          aClipping->SetValue(i, aSelect);
+        }
+        occ::handle<StepVisual_CameraModelD3MultiClipping> aClippingCamera =
+          new StepVisual_CameraModelD3MultiClipping();
+        aClippingCamera->Init(aName, aSystem, aVolume, aClipping);
+        aCamera = aClippingCamera;
+      }
+
+      // Its items: the camera, the shapes it shows -- each one's
+      // representation mapped through the camera -- and the presentations
+      // of the GD&T it shows
+      NCollection_DynamicArray<occ::handle<StepRepr_RepresentationItem>> anItems;
+      NCollection_Map<occ::handle<Standard_Transient>>                    aListed;
+      anItems.Append(aCamera);
+      NCollection_Sequence<TDF_Label> aShapes;
+      aViewTool->GetRefShapeLabel(aViewL, aShapes);
+      for (NCollection_Sequence<TDF_Label>::Iterator aShapeIter(aShapes); aShapeIter.More();
+           aShapeIter.Next())
+      {
+        TDF_Label aShapeL = aShapeIter.Value();
+        if (XCAFDoc_ShapeTool::IsReference(aShapeL))
+        {
+          XCAFDoc_ShapeTool::GetReferredShape(aShapeIter.Value(), aShapeL);
+        }
+        if (!myLabels.IsBound(aShapeL))
+        {
+          continue;
+        }
+        occ::handle<TransferBRep_ShapeMapper> aMapper =
+          TransferBRep::ShapeMapper(aFP, myLabels.Find(aShapeL));
+        occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
+        if (!aFP->FindTypedTransient(aMapper,
+                                     STANDARD_TYPE(StepShape_ShapeDefinitionRepresentation),
+                                     aSDR)
+            || aSDR->UsedRepresentation().IsNull()
+            || !aListed.Add(aSDR->UsedRepresentation()))
+        {
+          continue;
+        }
+        occ::handle<StepRepr_RepresentationMap> aMap = new StepRepr_RepresentationMap();
+        aMap->Init(aCamera, aSDR->UsedRepresentation());
+        occ::handle<StepRepr_MappedItem> aMapped = new StepRepr_MappedItem();
+        aMapped->Init(new TCollection_HAsciiString(),
+                      aMap,
+                      GeomToStep_MakeAxis2Placement3d(theLocalFactors).Value());
+        anItems.Append(aMapped);
+      }
+      NCollection_Sequence<TDF_Label> aGDTs;
+      aViewTool->GetRefGDTLabel(aViewL, aGDTs);
+      for (NCollection_Sequence<TDF_Label>::Iterator aGDTIter(aGDTs); aGDTIter.More();
+           aGDTIter.Next())
+      {
+        const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>* aPrs =
+          myGDTPrsItems.Seek(aGDTIter.Value());
+        if (aPrs == nullptr)
+        {
+          continue;
+        }
+        for (NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>::Iterator anIter(
+               *aPrs);
+             anIter.More();
+             anIter.Next())
+        {
+          if (aListed.Add(anIter.Value()))
+          {
+            anItems.Append(anIter.Value());
+          }
+        }
+      }
+
+      occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anArray =
+        new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, anItems.Length());
+      for (int i = 1; i <= anArray->Length(); i++)
+      {
+        anArray->SetValue(i, anItems.Value(i - 1));
+      }
+      occ::handle<StepVisual_DraughtingModel> aModelOfView = new StepVisual_DraughtingModel();
+      aModelOfView->Init(aName, anArray, theRC);
+      aModel->AddWithRefs(aModelOfView);
+      // Related to the draughting model of all the GD&T's presentations
+      if (myGDTAnnotations.Length() > 0)
+      {
+        occ::handle<StepRepr_MechanicalDesignAndDraughtingRelationship> aRelation =
+          new StepRepr_MechanicalDesignAndDraughtingRelationship();
+        aRelation->Init(new TCollection_HAsciiString(),
+                        new TCollection_HAsciiString(),
+                        aModelOfView,
+                        myGDTPresentationDM);
+        aModel->AddWithRefs(aRelation);
+      }
+    }
+  }
 }
 
 //=================================================================================================
