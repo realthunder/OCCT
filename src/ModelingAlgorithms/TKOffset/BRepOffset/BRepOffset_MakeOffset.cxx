@@ -7820,6 +7820,45 @@ void BRepOffset_MakeOffset::SelfInter(
 // (twice the radius) it ran past the tube's own surface, and the tube lost
 // its edge. Its pcurve is fitted through the points' parameters on the cap:
 // the projection of the curve onto a B-spline dome came back with none.
+// A pcurve projected onto a periodic surface comes in the surface's own
+// period, from 0 on, and the cap may lie in another: half a cylinder from
+// -pi/2 to pi/2, the two halves a seam had cut put together again. The
+// tube's edge beyond the cap's end at -pi/2 then lay a period off, at
+// 3pi/2, the wires of the rim were taken wrong (the removed face's own
+// area for a face of the rim), every offset face hung from there and the
+// thickness was refused: a plate with a slot, the slot's rounded end
+// removed -- the one across the seam, where the other end was made.
+// From fix level 5 the pcurve is moved by whole periods to where its
+// middle is nearest the middle of the cap.
+static void IntoCapPeriod(occ::handle<Geom2d_Curve>&       thePC,
+                          const double                     theF,
+                          const double                     theL,
+                          const occ::handle<Geom_Surface>& theSurf,
+                          const TopoDS_Face&               theCap)
+{
+  if (thePC.IsNull() || BRepOffset_FixLevel() < 5
+      || (!theSurf->IsUPeriodic() && !theSurf->IsVPeriodic()))
+  {
+    return;
+  }
+  double aU1, aU2, aV1, aV2;
+  BRepTools::UVBounds(theCap, aU1, aU2, aV1, aV2);
+  const gp_Pnt2d aMid = thePC->Value(0.5 * (theF + theL));
+  gp_Vec2d       aShift(0., 0.);
+  if (theSurf->IsUPeriodic())
+  {
+    aShift.SetX(theSurf->UPeriod() * std::round((0.5 * (aU1 + aU2) - aMid.X()) / theSurf->UPeriod()));
+  }
+  if (theSurf->IsVPeriodic())
+  {
+    aShift.SetY(theSurf->VPeriod() * std::round((0.5 * (aV1 + aV2) - aMid.Y()) / theSurf->VPeriod()));
+  }
+  if (aShift.SquareMagnitude() > 0.)
+  {
+    thePC = occ::down_cast<Geom2d_Curve>(thePC->Translated(aShift));
+  }
+}
+
 static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
                                         const TopoDS_Face&               theCap,
                                         const occ::handle<Geom_Surface>& theSurf,
@@ -8157,6 +8196,7 @@ static TopoDS_Edge TangentTubeEdgeOnCap(const TopoDS_Edge&               theE,
   if (aPC.IsNull())
   {
     aPC = GeomProjLib::Curve2d(aNC, f, l, theSurf);
+    IntoCapPeriod(aPC, f, l, theSurf, theCap);
   }
   else
   {
@@ -8310,6 +8350,7 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
   if (aPC.IsNull())
   {
     aPC = GeomProjLib::Curve2d(aL, 0., 1., theSurf);
+    IntoCapPeriod(aPC, 0., 1., theSurf, theCap);
   }
   if (!aPC.IsNull())
   {
