@@ -96,6 +96,8 @@
 #include <GeomAPI.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomAPI_IntCS.hxx>
+#include <GeomAPI_IntSS.hxx>
+#include <BRepLib_MakeWire.hxx>
 #include <gp_Circ.hxx>
 #include <GeomConvert.hxx>
 #include <GeomAdaptor_Surface.hxx>
@@ -4513,6 +4515,34 @@ static bool HasVertexInAWall(
   // the surfaces of the faces removed: a wall ends on them, and a vertex
   // there is on the solid's boundary by that
   std::vector<std::unique_ptr<GeomAPI_ProjectPointOnSurf>> aRims;
+  std::vector<TopoDS_Face>                                 aRimFaces;
+  // whether a point is at a distance from one of a removed face's edges
+  auto isAtDistanceOfAnEdge =
+    [](const gp_Pnt& theP, const TopoDS_Face& theF, const double theD, const double theTol) {
+      for (TopExp_Explorer anExpE(theF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(anExpE.Current());
+        double             aF = 0., aL = 0.;
+        TopLoc_Location    aLoc;
+        occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anE, aLoc, aF, aL);
+        if (aC.IsNull())
+        {
+          continue;
+        }
+        const gp_Pnt aQ = theP.Transformed(aLoc.Transformation().Inverted());
+        double       aD = std::min(aQ.Distance(aC->Value(aF)), aQ.Distance(aC->Value(aL)));
+        GeomAPI_ProjectPointOnCurve aProjC(aQ, aC, aF, aL);
+        if (aProjC.NbPoints() > 0)
+        {
+          aD = std::min(aD, aProjC.LowerDistance());
+        }
+        if (std::abs(aD - theD) < theTol)
+        {
+          return true;
+        }
+      }
+      return false;
+    };
   for (int i = 1; i <= theRemoved.Extent(); ++i)
   {
     TopLoc_Location           aLoc;
@@ -4528,6 +4558,7 @@ static bool HasVertexInAWall(
         aRS->Bounds(aU1, aU2, aV1, aV2);
         aPr->Init(aRS, aU1, aU2, aV1, aV2);
         aRims.push_back(std::move(aPr));
+        aRimFaces.push_back(TopoDS::Face(theRemoved(i)));
       }
       catch (Standard_Failure const&)
       {
@@ -4578,8 +4609,20 @@ static bool HasVertexInAWall(
           {
             continue;
           }
-          aProj.Perform(aC->Value(0.5 * (aF + aL)));
+          const gp_Pnt aMid = aC->Value(0.5 * (aF + aL));
+          aProj.Perform(aMid);
           isOnRim = aProj.NbPoints() > 0 && aProj.LowerDistance() < aRimTol;
+          // Or an edge of the tube round a tangent edge of the removed
+          // face, or of the piece of sphere at its end: at the thickness
+          // from the face's edge. The lip such a tube leaves on the
+          // removed face ends where the face's next edge is a sharp one,
+          // on the face's surface carried on beyond it -- within the wall
+          // of the face across that edge by its distance, and on the
+          // solid's boundary, that wall cut by the surface there.
+          if (!isOnRim && BRepOffset_FixLevel() >= 5)
+          {
+            isOnRim = isAtDistanceOfAnEdge(aMid, aRimFaces[aR], std::abs(theOffset), aRimTol);
+          }
         }
       }
       catch (Standard_Failure const&)
@@ -8397,6 +8440,595 @@ static TopoDS_Edge TangentCornerArcOnCap(const TopoDS_Vertex&             theV,
   return aResult;
 }
 
+// The curve a plane cuts a removed face's surface in, between two vertices,
+// as an edge with its pcurve on the removed face.
+static TopoDS_Edge CapEdgeInPlane(const gp_Pln&                    thePln,
+                                  const TopoDS_Vertex&             theV1,
+                                  const TopoDS_Vertex&             theV2,
+                                  const TopoDS_Face&               theCap,
+                                  const occ::handle<Geom_Surface>& theSurf,
+                                  const double                     theTol)
+{
+  TopoDS_Edge  aResult;
+  const gp_Pnt aP1 = BRep_Tool::Pnt(theV1), aP2 = BRep_Tool::Pnt(theV2);
+  if (aP1.Distance(aP2) < theTol)
+  {
+    return aResult;
+  }
+  // The straight line between the two, where it lies on the surface (a
+  // cylinder's generatrix): the plane holds it by three points, a hair off
+  // the axis, and the section of the two is then no line.
+  NCollection_List<occ::handle<Geom_Curve>> aCurves;
+  {
+    bool                       isStraight = true;
+    GeomAPI_ProjectPointOnSurf aProj;
+    for (int k = 1; k <= 7 && isStraight; ++k)
+    {
+      const gp_Pnt aP = aP1.Translated(gp_Vec(aP1, aP2) * (k / 8.));
+      aProj.Init(aP, theSurf);
+      isStraight = aProj.NbPoints() > 0 && aProj.LowerDistance() < theTol;
+    }
+    if (isStraight)
+    {
+      aCurves.Append(new Geom_Line(aP1, gp_Dir(gp_Vec(aP1, aP2))));
+    }
+  }
+  if (aCurves.IsEmpty())
+  {
+    GeomAPI_IntSS anInt(new Geom_Plane(thePln), theSurf, Precision::Confusion());
+    if (!anInt.IsDone())
+    {
+      return aResult;
+    }
+    for (int i = 1; i <= anInt.NbLines(); ++i)
+    {
+      aCurves.Append(anInt.Line(i));
+    }
+  }
+  for (NCollection_List<occ::handle<Geom_Curve>>::Iterator itC(aCurves); itC.More(); itC.Next())
+  {
+    occ::handle<Geom_Curve> aC = itC.Value();
+    while (aC->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
+    {
+      aC = occ::down_cast<Geom_TrimmedCurve>(aC)->BasisCurve();
+    }
+    GeomAPI_ProjectPointOnCurve aPr1(aP1, aC), aPr2(aP2, aC);
+    if (aPr1.NbPoints() == 0 || aPr2.NbPoints() == 0 || aPr1.LowerDistance() > theTol
+        || aPr2.LowerDistance() > theTol)
+    {
+      continue;
+    }
+    double aF = aPr1.LowerDistanceParameter(), aL = aPr2.LowerDistanceParameter();
+    if (aC->IsPeriodic())
+    {
+      // the shorter way round
+      const double aPer = aC->Period();
+      aL                = aF + (aL - aF) - aPer * std::round((aL - aF) / aPer);
+    }
+    if (std::abs(aL - aF) < Precision::PConfusion())
+    {
+      continue;
+    }
+    BRepLib_MakeEdge aME = aF < aL ? BRepLib_MakeEdge(aC, theV1, theV2, aF, aL)
+                                   : BRepLib_MakeEdge(aC, theV2, theV1, aL, aF);
+    if (!aME.IsDone())
+    {
+      continue;
+    }
+    const double              aLo = std::min(aF, aL), aHi = std::max(aF, aL);
+    occ::handle<Geom2d_Curve> aPC = GeomProjLib::Curve2d(aC, aLo, aHi, theSurf);
+    IntoCapPeriod(aPC, aLo, aHi, theSurf, theCap);
+    if (aPC.IsNull())
+    {
+      continue;
+    }
+    aResult = aME.Edge();
+    BRep_Builder().UpdateEdge(aResult, aPC, theCap, Precision::Confusion());
+    return aResult;
+  }
+  return aResult;
+}
+
+// A flat face in a plane, bounded by three edges that share their vertices,
+// its normal theN.
+static TopoDS_Face FlatPatch(const gp_Pnt&      theP,
+                             const gp_Dir&      theN,
+                             const TopoDS_Edge& theE1,
+                             const TopoDS_Edge& theE2,
+                             const TopoDS_Edge& theE3)
+{
+  TopoDS_Face      aResult;
+  BRepLib_MakeWire aMW;
+  aMW.Add(theE1);
+  aMW.Add(theE2);
+  aMW.Add(theE3);
+  if (!aMW.IsDone() || !BRep_Tool::IsClosed(aMW.Wire()))
+  {
+    return aResult;
+  }
+  // every edge as given: one copied to fit would not be the edge its other
+  // face has
+  for (TopoDS_Iterator anIt(aMW.Wire()); anIt.More(); anIt.Next())
+  {
+    if (!anIt.Value().IsSame(theE1) && !anIt.Value().IsSame(theE2) && !anIt.Value().IsSame(theE3))
+    {
+      return aResult;
+    }
+  }
+  BRepLib_MakeFace aMF(gp_Pln(theP, theN), aMW.Wire(), true);
+  if (aMF.IsDone())
+  {
+    aResult = aMF.Face();
+  }
+  return aResult;
+}
+
+// Whether an edge lies in a plane.
+static bool IsEdgeInPlane(const TopoDS_Edge& theE, const gp_Pln& thePln, const double theTol)
+{
+  BRepAdaptor_Curve aC(theE);
+  for (int i = 0; i <= 8; ++i)
+  {
+    const double u = aC.FirstParameter() + (aC.LastParameter() - aC.FirstParameter()) * i / 8.;
+    if (thePln.Distance(aC.Value(u)) > theTol)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+// A step (BRepOffset_Tool::ExtentFace: straight in its face's parameters,
+// from the offset vertex theVOff to the section's end theQ) put into a plane
+// through its two ends: the curve the plane cuts the face's surface in,
+// with its pcurve. In place, the edge the face and the maps have.
+static bool StepIntoPlane(const TopoDS_Edge&   theStep,
+                          const TopoDS_Vertex& theVOff,
+                          const TopoDS_Vertex& theQ,
+                          const gp_Pln&        thePln,
+                          const TopoDS_Face&   theFace,
+                          const double         theTol)
+{
+  TopLoc_Location           aLoc;
+  occ::handle<Geom_Surface> aS = BRep_Tool::Surface(theFace, aLoc);
+  double                    aOldF, aOldL;
+  const occ::handle<Geom2d_Curve> anOldPC = BRep_Tool::CurveOnSurface(theStep, theFace, aOldF, aOldL);
+  if (aS.IsNull() || anOldPC.IsNull())
+  {
+    return false;
+  }
+  aS = occ::down_cast<Geom_Surface>(aS->Transformed(aLoc.Transformation()));
+  // from the step's first vertex to its last
+  const TopoDS_Vertex aV1    = TopExp::FirstVertex(TopoDS::Edge(theStep.Oriented(TopAbs_FORWARD)));
+  const bool          isFrom = aV1.IsSame(theVOff);
+  const gp_Pnt        aP1 = BRep_Tool::Pnt(isFrom ? theVOff : theQ);
+  const gp_Pnt        aP2 = BRep_Tool::Pnt(isFrom ? theQ : theVOff);
+  GeomAPI_IntSS       anInt(new Geom_Plane(thePln), aS, Precision::Confusion());
+  if (!anInt.IsDone())
+  {
+    return false;
+  }
+  for (int i = 1; i <= anInt.NbLines(); ++i)
+  {
+    occ::handle<Geom_Curve> aC = anInt.Line(i);
+    while (aC->IsKind(STANDARD_TYPE(Geom_TrimmedCurve)))
+    {
+      aC = occ::down_cast<Geom_TrimmedCurve>(aC)->BasisCurve();
+    }
+    double aF = 0., aL = 0.;
+    bool   isFound = false;
+    for (int aPass = 0; aPass < 2 && !isFound; ++aPass)
+    {
+      GeomAPI_ProjectPointOnCurve aPr1(aP1, aC), aPr2(aP2, aC);
+      if (aPr1.NbPoints() == 0 || aPr2.NbPoints() == 0 || aPr1.LowerDistance() > theTol
+          || aPr2.LowerDistance() > theTol)
+      {
+        break;
+      }
+      aF = aPr1.LowerDistanceParameter();
+      aL = aPr2.LowerDistanceParameter();
+      if (aC->IsPeriodic())
+      {
+        const double aPer = aC->Period();
+        aL                = aF + (aL - aF) - aPer * std::round((aL - aF) / aPer);
+      }
+      if (aL - aF > Precision::PConfusion())
+      {
+        isFound = true;
+      }
+      else if (aF - aL > Precision::PConfusion() && aPass == 0)
+      {
+        aC = aC->Reversed();
+      }
+      else
+      {
+        break;
+      }
+    }
+    if (!isFound)
+    {
+      continue;
+    }
+    occ::handle<Geom2d_Curve> aPC = GeomProjLib::Curve2d(aC, aF, aL, aS);
+    if (aPC.IsNull())
+    {
+      continue;
+    }
+    // in the periods of the step it stands for
+    const gp_Pnt2d anOld = anOldPC->Value(isFrom == (theStep.Orientation() != TopAbs_REVERSED)
+                                            ? aOldF
+                                            : aOldL);
+    const gp_Pnt2d aNew = aPC->Value(aF);
+    gp_Vec2d       aShift(0., 0.);
+    if (aS->IsUPeriodic())
+    {
+      aShift.SetX(aS->UPeriod() * std::round((anOld.X() - aNew.X()) / aS->UPeriod()));
+    }
+    if (aS->IsVPeriodic())
+    {
+      aShift.SetY(aS->VPeriod() * std::round((anOld.Y() - aNew.Y()) / aS->VPeriod()));
+    }
+    if (aShift.SquareMagnitude() > 0.)
+    {
+      aPC = occ::down_cast<Geom2d_Curve>(aPC->Translated(aShift));
+    }
+    double aTol = Precision::Confusion();
+    for (int k = 0; k <= 50; ++k)
+    {
+      const double   u   = aF + (aL - aF) * k / 50.;
+      const gp_Pnt2d aUV = aPC->Value(u);
+      aTol = std::max(aTol, 1.1 * aC->Value(u).Distance(aS->Value(aUV.X(), aUV.Y())));
+    }
+    if (aTol > theTol)
+    {
+      continue;
+    }
+    BRep_Builder aBB;
+    aBB.UpdateEdge(theStep, aC, aTol);
+    aBB.UpdateEdge(theStep, aPC, theFace, aTol);
+    aBB.Range(theStep, aF, aL);
+    aBB.SameRange(theStep, true);
+    aBB.SameParameter(theStep, true);
+    return true;
+  }
+  return false;
+}
+
+// The end of a section on its face (theFace, a step joining it there to the
+// offset vertex: BRepOffset_Tool::ExtentFace, which ends the section at its
+// point nearest that vertex) moved along the section into a plane: the
+// vertex theQ, the section's range and the vertex's parameter on it. False
+// where the section does not reach the plane.
+static bool SectionEndIntoPlane(const TopoDS_Vertex& theQ,
+                                const TopoDS_Edge&   theStep,
+                                const TopoDS_Face&   theFace,
+                                const gp_Pln&        thePln,
+                                const double         theReach)
+{
+  TopoDS_Edge aSec;
+  for (TopExp_Explorer anExp(theFace, TopAbs_EDGE); anExp.More() && aSec.IsNull(); anExp.Next())
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(anExp.Current());
+    if (anE.IsSame(theStep) || BRep_Tool::Degenerated(anE))
+    {
+      continue;
+    }
+    TopoDS_Vertex aV1, aV2;
+    TopExp::Vertices(anE, aV1, aV2);
+    if ((!aV1.IsNull() && aV1.IsSame(theQ)) || (!aV2.IsNull() && aV2.IsSame(theQ)))
+    {
+      aSec = TopoDS::Edge(anE.Oriented(TopAbs_FORWARD));
+    }
+  }
+  if (aSec.IsNull())
+  {
+    return false;
+  }
+  double                  aF, aL;
+  TopLoc_Location         aLoc;
+  occ::handle<Geom_Curve> aC = BRep_Tool::Curve(aSec, aLoc, aF, aL);
+  if (aC.IsNull() || !aLoc.IsIdentity())
+  {
+    return false;
+  }
+  const bool isAtFirst = TopExp::FirstVertex(aSec).IsSame(theQ);
+  GeomAPI_IntCS anInt(aC, new Geom_Plane(thePln));
+  if (!anInt.IsDone())
+  {
+    return false;
+  }
+  const gp_Pnt aPQ   = BRep_Tool::Pnt(theQ);
+  int          iBest = 0;
+  double       aBest = theReach, aUBest = 0.;
+  for (int k = 1; k <= anInt.NbPoints(); ++k)
+  {
+    double aU, aV, aW;
+    anInt.Parameters(k, aU, aV, aW);
+    // an end it still has a range to
+    if ((isAtFirst ? aW >= aL - Precision::PConfusion() : aW <= aF + Precision::PConfusion())
+        || anInt.Point(k).Distance(aPQ) >= aBest)
+    {
+      continue;
+    }
+    aBest  = anInt.Point(k).Distance(aPQ);
+    aUBest = aW;
+    iBest  = k;
+  }
+  if (iBest == 0)
+  {
+    return false;
+  }
+  // every pcurve of it goes that far
+  for (TopExp_Explorer anExp(theFace, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    double                          aPF, aPL;
+    const occ::handle<Geom2d_Curve> aPC =
+      BRep_Tool::CurveOnSurface(aSec, TopoDS::Face(anExp.Current()), aPF, aPL);
+    if (aPC.IsNull() || aUBest < aPC->FirstParameter() - Precision::PConfusion()
+        || aUBest > aPC->LastParameter() + Precision::PConfusion())
+    {
+      return false;
+    }
+  }
+  BRep_Builder aBB;
+  aBB.UpdateVertex(theQ, anInt.Point(iBest), BRep_Tool::Tolerance(theQ));
+  if (isAtFirst)
+  {
+    aBB.Range(aSec, aUBest, aL);
+  }
+  else
+  {
+    aBB.Range(aSec, aF, aUBest);
+  }
+  aBB.UpdateVertex(theQ, aUBest, aSec, BRep_Tool::Tolerance(theQ));
+  return true;
+}
+
+// A removed face's tangent edge ends at theV, where the face's next edge is a
+// sharp one that fades into tangency there: a fillet removed beside a fillet
+// it mitres with, the mitre running out on the face both round. Along the
+// tangent edge the rim is the tube round it; along the sharp edge it is the
+// next fillet's offset carried on to the removed face's surface; and the two
+// only touch, in the offset vertex theVOff -- the rim was open there, the
+// removed face stayed unjoined and the thick solid was refused.
+// What is between them is flat, where the next fillet's offset passes over
+// the removed face (a convex fillet outward, a concave one inward):
+// - the tube ends in the plane square to the tangent edge at theV, a face
+//   between its end arc theTubeArc, the removed face and the line from theV
+//   to theVOff;
+// - the next fillet's wall, cut by the removed face's surface as far as that
+//   surface goes -- to its tangent line through theV --, ends from there in
+//   the plane through that line and theVOff: a face between the line from
+//   theV to theVOff, the removed face and the next fillet's offset.
+// ExtentFace has joined the offset vertex to the section of the next
+// fillet's offset (on theStepFace) with the removed face by a step,
+// theStep, which is that last face's edge on the offset where the two
+// fillets are square to each other. Where they are not (a hexagon's top
+// edges filleted), the step ends short of the tangent line and is a slanted
+// curve: the section is taken on to the line and the step put into the
+// plane.
+// The faces are appended to theFaces, their edges on the removed face to
+// theCapEdges; false and nothing where this is not what is found.
+static bool MitreFadePatches(const TopoDS_Vertex&             theV,
+                             const TopoDS_Edge&               theE,
+                             const TopoDS_Vertex&             theVOff,
+                             const TopoDS_Edge&               theTubeArc,
+                             const TopoDS_Edge&               theStep,
+                             const TopoDS_Face&               theStepFace,
+                             const TopoDS_Face&               theCap,
+                             const occ::handle<Geom_Surface>& theSurf,
+                             const double                     theOffset,
+                             const double                     theTol,
+                             NCollection_List<TopoDS_Shape>&  theFaces,
+                             NCollection_List<TopoDS_Shape>&  theCapEdges)
+{
+  TopoDS_Vertex aT1, aT2, aS1, aS2;
+  TopExp::Vertices(theTubeArc, aT1, aT2);
+  TopExp::Vertices(theStep, aS1, aS2);
+  if (theStepFace.IsNull() || aT1.IsNull() || aT2.IsNull() || aS1.IsNull() || aS2.IsNull()
+      || (!aT1.IsSame(theVOff) && !aT2.IsSame(theVOff))
+      || (!aS1.IsSame(theVOff) && !aS2.IsSame(theVOff)))
+  {
+    return false;
+  }
+  // the tube arc's end on the removed face, and the step's on the section
+  const TopoDS_Vertex aW  = aT1.IsSame(theVOff) ? aT2 : aT1;
+  const TopoDS_Vertex aQ  = aS1.IsSame(theVOff) ? aS2 : aS1;
+  const gp_Pnt        aPV = BRep_Tool::Pnt(theV), aPO = BRep_Tool::Pnt(theVOff);
+  const gp_Pnt        aPW = BRep_Tool::Pnt(aW);
+  const double        aT  = std::abs(theOffset);
+  if (aPW.Distance(aPV) < theTol || aPO.Distance(aPV) < theTol)
+  {
+    return false;
+  }
+  // along the tangent edge, away from theV
+  BRepAdaptor_Curve aEC(theE);
+  const double      aUV = BRep_Tool::Parameter(theV, theE);
+  gp_Pnt            aPE;
+  gp_Vec            aTau;
+  aEC.D1(aUV, aPE, aTau);
+  if (aTau.Magnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  aTau.Normalize();
+  if (std::abs(aUV - aEC.LastParameter()) < std::abs(aUV - aEC.FirstParameter()))
+  {
+    aTau.Reverse();
+  }
+  const double aSign = theOffset > 0. ? 1. : -1.;
+  const gp_Pln aSquare(aPV, gp_Dir(aTau));
+  const double aPlaneTol = std::max(theTol, 1.e-5 * aT);
+  if (!IsEdgeInPlane(theTubeArc, aSquare, aPlaneTol))
+  {
+    return false;
+  }
+  // the plane along the edge: its normal to the side of the removed face
+  // outward, away from the wall
+  gp_Vec aNA = aTau ^ gp_Vec(aPV, aPO);
+  if (aNA.Magnitude() < 1.e-6 * aT)
+  {
+    return false;
+  }
+  aNA.Normalize();
+  if (aNA.Dot(gp_Vec(aPV, aPW)) * aSign < 0.)
+  {
+    aNA.Reverse();
+  }
+  const gp_Pln aAlong(aPV, gp_Dir(aNA));
+  const bool   isSquare = aAlong.Distance(BRep_Tool::Pnt(aQ)) < aPlaneTol
+                        && IsEdgeInPlane(theStep, aAlong, aPlaneTol);
+  if (!isSquare && aSquare.Distance(BRep_Tool::Pnt(aQ)) < aPlaneTol)
+  {
+    // the offset passes under the removed face: not this
+    return false;
+  }
+  BRepLib_MakeEdge aMakeUp(theV, theVOff);
+  if (!aMakeUp.IsDone())
+  {
+    return false;
+  }
+  const TopoDS_Edge aUp     = aMakeUp.Edge();
+  const TopoDS_Edge aOnCapW = CapEdgeInPlane(aSquare, aW, theV, theCap, theSurf, aPlaneTol);
+  if (aOnCapW.IsNull())
+  {
+    return false;
+  }
+  if (!isSquare
+      && (!SectionEndIntoPlane(aQ, theStep, theStepFace, aAlong, 10. * aT + aPV.Distance(aPO))
+          || !StepIntoPlane(theStep, theVOff, aQ, aAlong, theStepFace, aPlaneTol)))
+  {
+    return false;
+  }
+  if (BRep_Tool::Pnt(aQ).Distance(aPV) < theTol || BRep_Tool::Pnt(aQ).Distance(aPO) < theTol)
+  {
+    return false;
+  }
+  const TopoDS_Edge aOnCapQ = CapEdgeInPlane(aAlong, aQ, theV, theCap, theSurf, aPlaneTol);
+  if (aOnCapQ.IsNull())
+  {
+    return false;
+  }
+  // the face's plane is the one through its three corners: the section's end
+  // is a computed point, a few 1e-7 off the plane along the edge, and a line
+  // from theV to it that is off its face's plane has its tolerance raised to
+  // that, and theV's with it -- a vertex of the input
+  gp_Vec aNFace = gp_Vec(aPV, BRep_Tool::Pnt(aQ)) ^ gp_Vec(aPV, aPO);
+  if (aNFace.Magnitude() < gp::Resolution())
+  {
+    return false;
+  }
+  aNFace.Normalize();
+  if (aNFace.Dot(aNA) < 0.)
+  {
+    aNFace.Reverse();
+  }
+  const TopoDS_Face aFA = FlatPatch(aPV, gp_Dir(aNFace), aUp, theStep, aOnCapQ);
+  const TopoDS_Face aFB = FlatPatch(aPV, gp_Dir(aTau * -aSign), aUp, theTubeArc, aOnCapW);
+  if (aFA.IsNull() || aFB.IsNull())
+  {
+    return false;
+  }
+  theFaces.Append(aFA);
+  theFaces.Append(aFB);
+  theCapEdges.Append(aOnCapQ);
+  theCapEdges.Append(aOnCapW);
+  return true;
+}
+
+// The corner of a tangent edge's tube at a sharp vertex theV of the removed
+// face (ToContext: a piece of sphere between the tube's end arc, the end arc
+// of the tube round the convex edge that ends there too, and the removed
+// face), where the section of the next face's offset with the removed face
+// ends at a distance from the convex arc's end theB, a step theStep from
+// there to the section's end theS (ExtentFace).
+// Where the removed face's surface is straight from theV to theS -- its
+// tangent line there, a cylinder's generatrix -- and theS lies beyond the
+// sphere, the step is no edge of the sphere: the fillets of a hexagon's top
+// edges, one removed outward, the section 1.155 from the vertex of a sphere
+// of 1, and the sphere built on the step had edges of tolerance 0.16. The
+// next face's wall is cut by the removed face's surface as far as that
+// surface goes, to the tangent line, and from there by the plane through the
+// line and the step: the sphere ends on the line in theG, with theRing from
+// there to theB, and theFlat is the face in that plane between the ring, the
+// step and the line (theFlatOnCap).
+static bool CornerPastTangentLine(const TopoDS_Vertex&             theV,
+                                  const TopoDS_Vertex&             theA,
+                                  const TopoDS_Vertex&             theB,
+                                  const TopoDS_Vertex&             theS,
+                                  const TopoDS_Edge&               theStep,
+                                  const TopoDS_Face&               theCap,
+                                  const occ::handle<Geom_Surface>& theSurf,
+                                  const double                     theOffset,
+                                  const double                     theTol,
+                                  TopoDS_Vertex&                   theG,
+                                  TopoDS_Edge&                     theRing,
+                                  TopoDS_Face&                     theFlat,
+                                  TopoDS_Edge&                     theFlatOnCap)
+{
+  const gp_Pnt aPV = BRep_Tool::Pnt(theV), aPA = BRep_Tool::Pnt(theA);
+  const gp_Pnt aPB = BRep_Tool::Pnt(theB), aPS = BRep_Tool::Pnt(theS);
+  const double aT  = std::abs(theOffset);
+  const double aPlaneTol = std::max(theTol, 1.e-5 * aT);
+  if (aPV.Distance(aPS) < aT + 1.e-3 * aT || std::abs(aPV.Distance(aPB) - aT) > aPlaneTol)
+  {
+    return false;
+  }
+  gp_Vec aD(aPV, aPS);
+  aD.Normalize();
+  // straight on the removed face's surface from theV to theS
+  {
+    GeomAPI_ProjectPointOnSurf aProj;
+    for (int k = 1; k <= 7; ++k)
+    {
+      aProj.Init(aPV.Translated(gp_Vec(aPV, aPS) * (k / 8.)), theSurf);
+      if (aProj.NbPoints() == 0 || aProj.LowerDistance() > aPlaneTol)
+      {
+        return false;
+      }
+    }
+  }
+  gp_Vec aN = gp_Vec(aPV, aPB) ^ aD;
+  gp_Vec anAxis = aD ^ gp_Vec(aPV, aPB);
+  if (aN.Magnitude() < 1.e-6 * aT || anAxis.Magnitude() < 1.e-6 * aT)
+  {
+    return false;
+  }
+  aN.Normalize();
+  if (aN.Dot(gp_Vec(aPV, aPA)) * (theOffset > 0. ? 1. : -1.) < 0.)
+  {
+    aN.Reverse();
+  }
+  const gp_Pln aPln(aPV, gp_Dir(aN));
+  if (!IsEdgeInPlane(theStep, aPln, aPlaneTol))
+  {
+    return false;
+  }
+  const TopoDS_Vertex aG = BRepLib_MakeVertex(aPV.Translated(aD * aT));
+  occ::handle<Geom_Circle> aCirc = new Geom_Circle(gp_Ax2(aPV, gp_Dir(anAxis), gp_Dir(aD)), aT);
+  BRepLib_MakeEdge         aMakeRing(aCirc, aG, theB, 0., aD.Angle(gp_Vec(aPV, aPB)));
+  if (!aMakeRing.IsDone())
+  {
+    return false;
+  }
+  const TopoDS_Edge aRing  = aMakeRing.Edge();
+  const TopoDS_Edge aOnCap = CapEdgeInPlane(aPln, theS, aG, theCap, theSurf, aPlaneTol);
+  if (aOnCap.IsNull())
+  {
+    return false;
+  }
+  const TopoDS_Face aFlat = FlatPatch(aPV, gp_Dir(aN), aRing, theStep, aOnCap);
+  if (aFlat.IsNull())
+  {
+    return false;
+  }
+  theG         = aG;
+  theRing      = aRing;
+  theFlat      = aFlat;
+  theFlatOnCap = aOnCap;
+  return true;
+}
+
 // The tube round a tangent edge of a removed face (the cap) ends, at each
 // end of the edge, in a quarter circle from the neighbour's offset edge
 // theOE down to its edge on the cap, theOn. Where the cap's next edge goes
@@ -8947,6 +9579,99 @@ void BRepOffset_MakeOffset::ToContext(
         }
       }
       const TopoDS_Edge aTubeArc = TopoDS::Edge(aTube.Generated(V));
+      if (aConvexArc.IsNull() && !aTubeArc.IsNull() && BRepOffset_FixLevel() >= 5)
+      {
+        // No other tube ends here: the flat faces between this one's end
+        // and the offset carried on along the cap's next edge
+        // (MitreFadePatches).
+        TopoDS_Vertex aO1, aO2, aT1, aT2;
+        TopExp::Vertices(OE0, aO1, aO2);
+        TopExp::Vertices(aTubeArc, aT1, aT2);
+        TopoDS_Vertex aVOff;
+        if (aT1.IsSame(aO1) || aT1.IsSame(aO2))
+        {
+          aVOff = aT1;
+        }
+        else if (aT2.IsSame(aO1) || aT2.IsSame(aO2))
+        {
+          aVOff = aT2;
+        }
+        NCollection_List<TopoDS_Shape> aPatches, aPatchCapEdges;
+        // the face the step is on: the offset of the cap's next neighbour
+        TopoDS_Face aStepFace;
+        if (!aVOff.IsNull() && aStepOfV.IsBound(aVOff) && myAsDes->HasAscendant(aStepOfV(aVOff)))
+        {
+          for (itl.Initialize(myAsDes->Ascendant(aStepOfV(aVOff))); itl.More(); itl.Next())
+          {
+            if (itl.Value().ShapeType() == TopAbs_FACE)
+            {
+              aStepFace = TopoDS::Face(itl.Value());
+              break;
+            }
+          }
+        }
+        try
+        {
+          if (!aVOff.IsNull() && aStepOfV.IsBound(aVOff)
+              && MitreFadePatches(V,
+                                  E,
+                                  aVOff,
+                                  aTubeArc,
+                                  TopoDS::Edge(aStepOfV(aVOff)),
+                                  aStepFace,
+                                  CF,
+                                  aCS,
+                                  myOffset,
+                                  std::max(myTol, 10. * Precision::Confusion()),
+                                  aPatches,
+                                  aPatchCapEdges))
+          {
+            for (NCollection_List<TopoDS_Shape>::Iterator itP(aPatches); itP.More(); itP.Next())
+            {
+              const TopoDS_Shape& aPF = itP.Value();
+              if (myInitOffsetFace.HasImage(V))
+              {
+                myInitOffsetFace.Add(V, aPF);
+              }
+              else
+              {
+                myInitOffsetFace.Bind(V, aPF);
+                myInitOffsetFace.SetRoot(V);
+              }
+              myImageOffset.SetRoot(aPF);
+              for (TopExp_Explorer anExpP(aPF.Oriented(TopAbs_FORWARD), TopAbs_EDGE);
+                   anExpP.More();
+                   anExpP.Next())
+              {
+                myAsDes->Add(aPF, anExpP.Current());
+              }
+              SHOW_TOPO_SHAPE(aPF, "MitreFadePatch");
+            }
+            if (myInitOffsetEdge.HasImage(V))
+            {
+              const TopoDS_Shape anOldImage = myInitOffsetEdge.Image(V).First();
+              myInitOffsetEdge.Remove(anOldImage);
+            }
+            for (NCollection_List<TopoDS_Shape>::Iterator itP(aPatchCapEdges); itP.More();
+                 itP.Next())
+            {
+              if (myInitOffsetEdge.HasImage(V))
+              {
+                myInitOffsetEdge.Add(V, itP.Value());
+              }
+              else
+              {
+                myInitOffsetEdge.Bind(V, itP.Value());
+              }
+            }
+          }
+        }
+        catch (Standard_Failure const&)
+        {
+          SHOW_TOPO_SHAPE(V, "MitreFadePatchFailed");
+        }
+        continue;
+      }
       if (aConvexArc.IsNull() || aTubeArc.IsNull())
       {
         continue;
@@ -9051,8 +9776,29 @@ void BRepOffset_MakeOffset::ToContext(
       }
       try
       {
+        // The step no edge of the sphere, from fix level 5: the sphere to
+        // the removed face's tangent line, and a flat face from there
+        // (CornerPastTangentLine).
+        TopoDS_Vertex aG;
+        TopoDS_Edge   aRing, aFlatOnCap;
+        TopoDS_Face   aFlat;
+        const bool    isPastLine =
+          BRepOffset_FixLevel() >= 5 && !aStep.IsNull()
+          && CornerPastTangentLine(V,
+                                   aA,
+                                   aB,
+                                   aBOnCap,
+                                   aStep,
+                                   CF,
+                                   aCS,
+                                   myOffset,
+                                   std::max(myTol, 10. * Precision::Confusion()),
+                                   aG,
+                                   aRing,
+                                   aFlat,
+                                   aFlatOnCap);
         const TopoDS_Edge aCapArc =
-          TangentCornerArcOnCap(V, aA, aBOnCap, CF, aCS, std::abs(myOffset));
+          TangentCornerArcOnCap(V, aA, isPastLine ? aG : aBOnCap, CF, aCS, std::abs(myOffset));
         if (aCapArc.IsNull())
         {
           SHOW_TOPO_SHAPE(V, "TangentCornerNoArc");
@@ -9061,7 +9807,11 @@ void BRepOffset_MakeOffset::ToContext(
         NCollection_List<TopoDS_Shape> aLOE;
         aLOE.Append(aTubeArc);
         aLOE.Append(aConvexArc);
-        if (!aStep.IsNull())
+        if (isPastLine)
+        {
+          aLOE.Append(aRing.Reversed());
+        }
+        else if (!aStep.IsNull())
         {
           aLOE.Append(aStep.Reversed());
         }
@@ -9085,6 +9835,18 @@ void BRepOffset_MakeOffset::ToContext(
         }
         myInitOffsetEdge.Bind(V, aCapArc);
         SHOW_TOPO_SHAPE(aSF, "TangentCorner", aCapArc);
+        if (isPastLine)
+        {
+          myInitOffsetFace.Add(V, aFlat);
+          myImageOffset.SetRoot(aFlat);
+          for (TopExp_Explorer anExpS(aFlat.Oriented(TopAbs_FORWARD), TopAbs_EDGE); anExpS.More();
+               anExpS.Next())
+          {
+            myAsDes->Add(aFlat, anExpS.Current());
+          }
+          myInitOffsetEdge.Add(V, aFlatOnCap);
+          SHOW_TOPO_SHAPE(aFlat, "TangentCornerFlat", aFlatOnCap);
+        }
       }
       catch (Standard_Failure const&)
       {
@@ -11631,6 +12393,17 @@ void UpdateTolerance(TopoDS_Shape&                                              
     for (Exp.Init(F, TopAbs_EDGE); Exp.More(); Exp.Next())
     {
       View.Add(Exp.Current());
+    }
+    // Nor are their vertices measured anew, from fix level 5: a new edge
+    // may end on one (the flat faces where a mitre fades out,
+    // MitreFadePatches), and the vertex is the shape's -- measured again it
+    // came back at 2.02e-7 for the 2.78e-7 it was given with.
+    if (BRepOffset_FixLevel() >= 5)
+    {
+      for (Exp.Init(F, TopAbs_VERTEX); Exp.More(); Exp.Next())
+      {
+        View.Add(Exp.Current());
+      }
     }
   }
 

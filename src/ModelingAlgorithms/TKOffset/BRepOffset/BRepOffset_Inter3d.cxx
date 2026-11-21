@@ -3048,6 +3048,42 @@ void BRepOffset_Inter3d::ContextIntByArc(
         {
           // The piece of sphere at a corner of a tangent edge's tube
           // (BRepOffset_MakeOffset::ToContext): its arc on the cap.
+          if (InitOffsetFace.Image(V[i]).Extent() > 1 || InitOffsetEdge.Image(V[i]).Extent() > 1)
+          {
+            // Or the flat faces where a tangent edge's tube ends beside a
+            // sharp edge fading out (MitreFadePatches): each one's edge on
+            // the cap.
+            for (NCollection_List<TopoDS_Shape>::Iterator itPF(InitOffsetFace.Image(V[i]));
+                 itPF.More();
+                 itPF.Next())
+            {
+              const TopoDS_Face& aPF = TopoDS::Face(itPF.Value());
+              NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aPFEdges;
+              TopExp::MapShapes(aPF, TopAbs_EDGE, aPFEdges);
+              for (NCollection_List<TopoDS_Shape>::Iterator itPE(InitOffsetEdge.Image(V[i]));
+                   itPE.More();
+                   itPE.Next())
+              {
+                const TopoDS_Edge& aPE = TopoDS::Edge(itPE.Value());
+                double             aPEF, aPEL;
+                if (!aPFEdges.Contains(aPE)
+                    || BRep_Tool::CurveOnSurface(aPE, CF, aPEF, aPEL).IsNull())
+                {
+                  continue;
+                }
+                LInt1.Clear();
+                LInt1.Append(aPE);
+                LInt2.Clear();
+                TopAbs_Orientation O1, O2;
+                BRepOffset_Tool::OrientSection(aPE, CF, aPF, O1, O2);
+                O1 = TopAbs::Reverse(O1);
+                LInt1.First().Orientation(O1);
+                Store(CF, aPF, LInt1, LInt2);
+                SHOW_TOPO_SHAPE(aPE, "FadePatchEdgeOnCap");
+              }
+            }
+            continue;
+          }
           OF1 = TopoDS::Face(InitOffsetFace.Image(V[i]).First());
           OE  = TopoDS::Edge(InitOffsetEdge.Image(V[i]).First());
           LInt1.Clear();
