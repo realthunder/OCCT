@@ -4285,6 +4285,17 @@ static thread_local bool theHasTubesThroughEachOther = false;
 //! Whether Intersection3D() cut such a pair.
 static thread_local bool theHasCutTubePair = false;
 
+//! Whether ToContext() met an edge of a removed face that is tangent to its
+//! neighbour, closed by a tube: the attempt without tubes has something to
+//! do otherwise.
+static thread_local bool theHasTangentCapEdge = false;
+
+//! Set for a thick solid's attempt without those tubes (MakeThickSolid):
+//! ToContext() takes no edge of a removed face for tangent, and the
+//! neighbour's offset is carried on to the removed face's surface as it is
+//! at any other edge.
+static thread_local bool theIsCapTangentFlush = false;
+
 //! A solid that is valid and passes through itself nowhere. BRepCheck looks
 //! at each face and at the shell's edges, two faces a side each: a skin whose
 //! pockets were closed over, each a box of its own inside it, lid on lid with
@@ -5305,6 +5316,7 @@ void BRepOffset_MakeOffset::MakeThickSolidAsGiven(const Message_ProgressRange& t
   {
     theHasNearTangentCapEdge    = false;
     theHasTubesThroughEachOther = false;
+    theHasTangentCapEdge        = false;
     BRepOffset_Tool::HasNearSectionEnd(true);
   }
   // An exception out of the computation is a refusal, as an error it sets
@@ -5633,6 +5645,32 @@ void BRepOffset_MakeOffset::MakeThickSolidAsGiven(const Message_ProgressRange& t
           || (BRepOffset_FixLevel() >= 5 && aJoinAsked == GeomAbs_Arc
               && IsOfElementarySurfaces(aShape))))
   {
+    aMakeAllPairs(*this);
+  }
+  // Refused still, with the Arc join, and a removed face is tangent to a
+  // neighbour along an edge: once more without the tube round that edge, the
+  // neighbour's offset carried on to the removed face's surface as at any
+  // other edge (theIsCapTangentFlush). A fillet removed that mitres with the
+  // fillets beside it: at the vertex where the mitre fades out the tube ends,
+  // the next fillet's offset carried on to the removed one begins, and the
+  // two only touch -- while the offset of the flat the fillet rounds, carried
+  // on, comes to the fillet's surface inward (not outward: it runs away from
+  // it) and closes the rim with the next fillet's. The wall is then as thick
+  // as the offset or thicker beside that edge, cut off flush by the removed
+  // face's surface. With every pair of faces intersected, on the shapes that
+  // is tried on above: the box with its four top edges filleted, a fillet
+  // removed inward, is made so and not otherwise -- the two ways of the
+  // loops without it made nothing of what this makes, and cost #613's part
+  // 8 s on a refusal of 14. From fix level 5.
+  if (!myDone && !isInter && BRepOffset_FixLevel() >= 5 && aJoinAsked == GeomAbs_Arc
+      && theHasTangentCapEdge && IsOfElementarySurfaces(aShape))
+  {
+    struct FlushScope
+    {
+      FlushScope() { theIsCapTangentFlush = true; }
+
+      ~FlushScope() { theIsCapTangentFlush = false; }
+    } aFlush;
     aMakeAllPairs(*this);
   }
   if (!myDone)
@@ -8513,7 +8551,7 @@ void BRepOffset_MakeOffset::ToContext(
   // neighbour nor the tubes at the edge's ends are stretched to the cap.
   NCollection_IndexedDataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aTangentE;
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>                           aTangentV;
-  if (myJoin == GeomAbs_Arc)
+  if (myJoin == GeomAbs_Arc && !theIsCapTangentFlush)
   {
     // Tangent as the analysis takes it, as TreatTangentCaps does for the
     // Intersection join: a B-spline fillet meets the face it rounds a few
@@ -8541,6 +8579,7 @@ void BRepOffset_MakeOffset::ToContext(
             == ChFiDS_Tangential)
         {
           aTangentE.Add(E, CF);
+          theHasTangentCapEdge = true;
           for (TopoDS_Iterator anItV(E); anItV.More(); anItV.Next())
           {
             aTangentV.Add(anItV.Value());
