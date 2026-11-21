@@ -1535,26 +1535,37 @@ occ::handle<TCollection_HAsciiString> STEPCAFControl_GDTProperty::GetTolValueTyp
 occ::handle<StepVisual_TessellatedGeometricSet> STEPCAFControl_GDTProperty::GetTessellation(
   const TopoDS_Shape& theShape)
 {
-  // Build complex_triangulated_surface_set.
-  NCollection_LinearVector<occ::handle<StepVisual_ComplexTriangulatedSurfaceSet>> aCTSSs;
+  // The items made: a curve set when the shape has curves, a surface set per
+  // face that has a triangulation. A null item in the set leaves a model the
+  // writer cannot write -- a graphic of fills alone has no curves.
+  NCollection_LinearVector<occ::handle<StepVisual_TessellatedItem>> anItems;
+  occ::handle<StepVisual_TessellatedCurveSet> aTCS = GenerateTessellatedCurveSet(theShape);
+  if (!aTCS.IsNull())
+  {
+    anItems.Append(aTCS);
+  }
   for (TopExp_Explorer aFaceIt(theShape, TopAbs_FACE); aFaceIt.More(); aFaceIt.Next())
   {
     const TopoDS_Face aFace = TopoDS::Face(aFaceIt.Current());
-    aCTSSs.Append(GenerateComplexTriangulatedSurfaceSet(aFace));
+    occ::handle<StepVisual_ComplexTriangulatedSurfaceSet> aCTSS =
+      GenerateComplexTriangulatedSurfaceSet(aFace);
+    if (!aCTSS.IsNull())
+    {
+      anItems.Append(aCTSS);
+    }
+  }
+  if (anItems.Size() == 0)
+  {
+    return occ::handle<StepVisual_TessellatedGeometricSet>();
   }
 
-  // Build tesselated_curve_set.
-  occ::handle<StepVisual_TessellatedCurveSet> aTCS = GenerateTessellatedCurveSet(theShape);
-
   // Fill the container of tessellated items.
+  const int aNbItems = static_cast<int>(anItems.Size());
   NCollection_Handle<NCollection_Array1<occ::handle<StepVisual_TessellatedItem>>> aTesselatedItems =
-    new NCollection_Array1<occ::handle<StepVisual_TessellatedItem>>(1,
-                                                                    static_cast<int>(aCTSSs.Size())
-                                                                      + 1);
-  aTesselatedItems->SetValue(1, aTCS);
-  for (size_t aCTSSIndex = 0; aCTSSIndex < aCTSSs.Size(); ++aCTSSIndex)
+    new NCollection_Array1<occ::handle<StepVisual_TessellatedItem>>(1, aNbItems);
+  for (size_t anIndex = 0; anIndex < anItems.Size(); ++anIndex)
   {
-    aTesselatedItems->SetValue(static_cast<int>(aCTSSIndex) + 2, aCTSSs[aCTSSIndex]);
+    aTesselatedItems->SetValue(static_cast<int>(anIndex) + 1, anItems[anIndex]);
   }
 
   // Build tessellated_geometric_set.

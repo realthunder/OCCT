@@ -17,6 +17,7 @@
 #define _STEPCAFControl_Writer_HeaderFile
 
 #include <TopoDS_Shape.hxx>
+#include <Quantity_Color.hxx>
 #include <Standard_Transient.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <NCollection_DataMap.hxx>
@@ -223,6 +224,12 @@ public:
 
   bool GetDimTolMode() const { return myGDTMode; }
 
+  //! Set the colour GD&T presentations are drawn in (AP242): white unless
+  //! set, as it always was.
+  void SetGDTPresentationColor(const Quantity_Color& theColor) { myGDTPrsColor = theColor; }
+
+  const Quantity_Color& GetGDTPresentationColor() const { return myGDTPrsColor; }
+
   //! Set flag for indicate write material or not.
   void SetMaterialMode(const bool theMaterialMode) { myMatMode = theMaterialMode; }
 
@@ -428,6 +435,7 @@ private:
   NCollection_DataMap<TopoDS_Shape, occ::handle<Standard_Transient>, TopTools_ShapeMapHasher>
                                                                      myMapCompMDGPR;
   bool                                                               myGDTMode;
+  Quantity_Color myGDTPrsColor = Quantity_Color(Quantity_NOC_WHITE);
   bool                                                               myMatMode;
   bool                                                               myVisMatMode;
   bool                                                               myIsCleanDuplicates;

@@ -3135,6 +3135,13 @@ occ::handle<StepRepr_ShapeAspect> STEPCAFControl_Writer::writeShapeAspect(
     new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
   occ::handle<StepRepr_RepresentationItem> anIdentifiedItem =
     occ::down_cast<StepRepr_RepresentationItem>(anEnt);
+  if (anIdentifiedItem.IsNull())
+  {
+    // What the shape was written as is no item to identify (a tessellated
+    // shape's face): a usage of a null item leaves a model that cannot be
+    // written
+    return nullptr;
+  }
   anReprItems->SetValue(1, anIdentifiedItem);
   occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
   for (Interface_EntityIterator aSharingIter = aGraph.Sharings(aPDS);
@@ -3172,7 +3179,9 @@ void STEPCAFControl_Writer::writePresentation(
   const occ::handle<Standard_Transient>&       theDimension,
   const StepData_Factors&                      theLocalFactors)
 {
-  if (thePresentation.IsNull())
+  // A graphic of nothing, or of no item: a draughting model item association
+  // without its definition leaves a model the writer cannot write
+  if (thePresentation.IsNull() || theDimension.IsNull())
   {
     return;
   }
@@ -4940,7 +4949,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
   // Common entities for presentation
   STEPConstruct_Styles           aStyles(theWS);
-  occ::handle<StepVisual_Colour> aCurvColor = STEPConstruct_Styles::EncodeColor(Quantity_NOC_WHITE);
+  occ::handle<StepVisual_Colour> aCurvColor = STEPConstruct_Styles::EncodeColor(myGDTPrsColor);
   occ::handle<StepRepr_RepresentationItem> anItem = nullptr;
   myGDTPrsCurveStyle->SetValue(
     1,
@@ -5041,11 +5050,13 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                 myGDTCommonPDS,
                 StepData_LTrue);
       aModel->AddWithRefs(aSA);
+      // No semantics, and its plane if it has one (the two were swapped,
+      // which left every graphic-only item without its annotation plane)
       writePresentation(theWS,
                         anObject->GetPresentation(),
                         anObject->GetPresentationName(),
-                        anObject->HasPlane(),
                         false,
+                        anObject->HasPlane(),
                         anObject->GetPlane(),
                         anObject->GetPointTextAttach(),
                         aSA,
@@ -5143,11 +5154,24 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
     if (anObject->GetType() == XCAFDimTolObjects_DimensionType_DimensionPresentation)
     {
+      if (aFirstSA.IsNull())
+      {
+        // Its shapes have no entity to refer to (a tessellated part's faces):
+        // the graphic is the product's, as a common label's is
+        aFirstSA = new StepRepr_ShapeAspect();
+        aFirstSA->Init(new TCollection_HAsciiString(),
+                       new TCollection_HAsciiString(),
+                       myGDTCommonPDS,
+                       StepData_LTrue);
+        aModel->AddWithRefs(aFirstSA);
+      }
+      // No semantics, and its plane if it has one (the two were swapped,
+      // which left every graphic-only item without its annotation plane)
       writePresentation(theWS,
                         anObject->GetPresentation(),
                         anObject->GetPresentationName(),
-                        anObject->HasPlane(),
                         false,
+                        anObject->HasPlane(),
                         anObject->GetPlane(),
                         anObject->GetPointTextAttach(),
                         aFirstSA,
@@ -5315,6 +5339,25 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
   // Write Draughting model for Annotation Planes
   if (myGDTAnnotations.Length() == 0)
+  {
+    return true;
+  }
+
+  // The context: a shape aspect's, else -- none written, every item a
+  // graphic of a part whose faces have no entity (a tessellated part) -- the
+  // product's own. A draughting model without one cannot be written.
+  for (Interface_EntityIterator aSharingIter = aGraph.Sharings(myGDTCommonPDS);
+       aRC.IsNull() && !myGDTCommonPDS.IsNull() && aSharingIter.More();
+       aSharingIter.Next())
+  {
+    occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR =
+      occ::down_cast<StepShape_ShapeDefinitionRepresentation>(aSharingIter.Value());
+    if (!aSDR.IsNull() && !aSDR->UsedRepresentation().IsNull())
+    {
+      aRC = aSDR->UsedRepresentation()->ContextOfItems();
+    }
+  }
+  if (aRC.IsNull())
   {
     return true;
   }
