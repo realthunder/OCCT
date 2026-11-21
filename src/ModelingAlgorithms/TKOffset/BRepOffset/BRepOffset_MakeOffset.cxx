@@ -8733,9 +8733,9 @@ void BRepOffset_MakeOffset::ToContext(
   // round the edge -- the rounded end the Arc join gives a convex edge --
   // turning into the removed face, the side the neighbour's own offset does
   // not cover; its edge on the removed face at the offset's distance is where
-  // the rim is cut. Outward, where a tube round a convex edge ends at the
-  // same vertex, the corner between the two tubes and the removed face is a
-  // piece of sphere.
+  // the rim is cut. Where another tube ends at the same vertex -- round a
+  // convex edge outward, round a concave one inward -- the corner between
+  // the two tubes and the removed face is a piece of sphere.
   //------------------------------------------------------------------
   NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher> aTubes;
   for (int iT = 1; iT <= aTangentE.Extent(); ++iT)
@@ -8815,8 +8815,13 @@ void BRepOffset_MakeOffset::ToContext(
     myInitOffsetEdge.Remove(OE0);
     myInitOffsetEdge.Bind(E, EOn2);
 
-    // The corners, outward.
-    if (myOffset <= 0.)
+    // The corners. Outward at every level. Inward from fix level 5: there the
+    // tube that ends at the vertex runs round a concave edge -- a pocket's
+    // wall removed, tangent to the pocket's rounded corner; the corner meets
+    // the floor in a concave arc, and between that arc's tube and the tangent
+    // edge's the rim was open, the removed face left unjoined and the thick
+    // solid refused.
+    if (myOffset <= 0. && BRepOffset_FixLevel() < 5)
     {
       continue;
     }
@@ -8850,7 +8855,7 @@ void BRepOffset_MakeOffset::ToContext(
       {
         continue;
       }
-      // The tube round a convex edge ending here.
+      // The other tube ending here: round a convex edge outward, a concave one inward.
       TopoDS_Edge aConvexArc;
       for (itl.Initialize(myAnalyse.Ancestors(V)); itl.More(); itl.Next())
       {
