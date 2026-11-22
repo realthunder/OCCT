@@ -106,6 +106,7 @@
 #include <StepRepr_NextAssemblyUsageOccurrence.hxx>
 #include <StepRepr_ProductDefinitionShape.hxx>
 #include <StepRepr_PropertyDefinition.hxx>
+#include <StepRepr_PropertyDefinitionRepresentation.hxx>
 #include <StepRepr_RepresentationItem.hxx>
 #include <StepRepr_RepresentationMap.hxx>
 #include <StepRepr_ReprItemAndLengthMeasureWithUnit.hxx>
@@ -3218,7 +3219,8 @@ bool readPMIPresentation(const occ::handle<Standard_Transient>&       thePresent
                          TopoDS_Shape&                                thePresentation,
                          occ::handle<TCollection_HAsciiString>&       thePresentName,
                          Bnd_Box&                                     theBox,
-                         const StepData_Factors&                      theLocalFactors)
+                         const StepData_Factors&                      theLocalFactors,
+                         occ::handle<TCollection_HAsciiString>*       thePresentType = nullptr)
 {
   if (thePresentEntity.IsNull())
   {
@@ -3262,6 +3264,19 @@ bool readPMIPresentation(const occ::handle<Standard_Transient>&       thePresent
   if (!anAnnotations.Length())
   {
     return false;
+  }
+  // The kind of graphic it is: the name of what it draws, its set (AP242's recommended practice,
+  // 8.4: 'label', 'linear dimension', ...)
+  if (thePresentType)
+  {
+    for (int i = 0; i < anAnnotations.Length() && thePresentType->IsNull(); i++)
+    {
+      occ::handle<StepRepr_RepresentationItem> anItem = anAnnotations(i)->Item();
+      if (!anItem.IsNull() && !anItem->Name().IsNull() && anItem->Name()->Length() > 0)
+      {
+        *thePresentType = anItem->Name();
+      }
+    }
   }
 
   BRep_Builder    aB;
@@ -3537,7 +3552,15 @@ void readAnnotation(const occ::handle<XSControl_TransferReader>& theTR,
 
   // Retrieve presentation
   Bnd_Box aBox;
-  if (!readPMIPresentation(aDMIAE, theTR, aFact, aResAnnotation, aPresentName, aBox, aLocalFactors))
+  occ::handle<TCollection_HAsciiString> aPresentType;
+  if (!readPMIPresentation(aDMIAE,
+                           theTR,
+                           aFact,
+                           aResAnnotation,
+                           aPresentName,
+                           aBox,
+                           aLocalFactors,
+                           &aPresentType))
   {
     return;
   }
@@ -3569,6 +3592,7 @@ void readAnnotation(const occ::handle<XSControl_TransferReader>& theTR,
       occ::down_cast<XCAFDimTolObjects_DimensionObject>(theDimObject);
     anObj->SetPointTextAttach(aPtext);
     anObj->SetPresentation(aResAnnotation, aPresentName);
+    anObj->SetPresentationType(aPresentType);
   }
   else if (theDimObject->IsKind(STANDARD_TYPE(XCAFDimTolObjects_DatumObject)))
   {
@@ -3576,6 +3600,7 @@ void readAnnotation(const occ::handle<XSControl_TransferReader>& theTR,
       occ::down_cast<XCAFDimTolObjects_DatumObject>(theDimObject);
     anObj->SetPointTextAttach(aPtext);
     anObj->SetPresentation(aResAnnotation, aPresentName);
+    anObj->SetPresentationType(aPresentType);
   }
   else if (theDimObject->IsKind(STANDARD_TYPE(XCAFDimTolObjects_GeomToleranceObject)))
   {
@@ -3583,6 +3608,7 @@ void readAnnotation(const occ::handle<XSControl_TransferReader>& theTR,
       occ::down_cast<XCAFDimTolObjects_GeomToleranceObject>(theDimObject);
     anObj->SetPointTextAttach(aPtext);
     anObj->SetPresentation(aResAnnotation, aPresentName);
+    anObj->SetPresentationType(aPresentType);
   }
 }
 
@@ -6085,6 +6111,9 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       // Read presentations for PMIs without semantic data.
       occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA;
       NCollection_Sequence<TDF_Label>                       aShapesL;
+      // Its words, when it presents a 'semantic text' (AP242's recommended practice): a note's
+      // or label's, kept as its descriptions
+      NCollection_Sequence<occ::handle<StepRepr_DescriptiveRepresentationItem>> aWords;
       for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt);
            anIter.More() && aDMIA.IsNull();
            anIter.Next())
@@ -6156,6 +6185,34 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         {
           continue;
         }
+        else
+        {
+          // A semantic text: its words, and the shapes of what it is a property of (a datum
+          // feature, a shape aspect; the product's own has none)
+          occ::handle<StepRepr_PropertyDefinition> aText = aDMIA->Definition().PropertyDefinition();
+          aDefinition = aText->Definition().ShapeAspect();
+          for (Interface_EntityIterator anIter = aGraph.Sharings(aText); anIter.More();
+               anIter.Next())
+          {
+            occ::handle<StepRepr_PropertyDefinitionRepresentation> aPDR =
+              occ::down_cast<StepRepr_PropertyDefinitionRepresentation>(anIter.Value());
+            if (aPDR.IsNull() || aPDR->UsedRepresentation().IsNull())
+            {
+              continue;
+            }
+            occ::handle<StepRepr_Representation> aRepr = aPDR->UsedRepresentation();
+            for (int anItemIt = 1; anItemIt <= aRepr->NbItems(); anItemIt++)
+            {
+              occ::handle<StepRepr_DescriptiveRepresentationItem> aWord =
+                occ::down_cast<StepRepr_DescriptiveRepresentationItem>(
+                  aRepr->ItemsValue(anItemIt));
+              if (!aWord.IsNull() && !aWord->Description().IsNull())
+              {
+                aWords.Append(aWord);
+              }
+            }
+          }
+        }
 
         // Get shapes
         NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
@@ -6203,7 +6260,15 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       TopoDS_Shape                          aPresentation;
       occ::handle<TCollection_HAsciiString> aPresentName;
       Bnd_Box                               aBox;
-      if (!readPMIPresentation(anEnt, aTR, aFact, aPresentation, aPresentName, aBox, aLocalFactors))
+      occ::handle<TCollection_HAsciiString> aPresentType;
+      if (!readPMIPresentation(anEnt,
+                               aTR,
+                               aFact,
+                               aPresentation,
+                               aPresentName,
+                               aBox,
+                               aLocalFactors,
+                               &aPresentType))
       {
         continue;
       }
@@ -6246,6 +6311,16 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         }
       }
       aDimObj->SetPresentation(aPresentation, aPresentName);
+      aDimObj->SetPresentationType(aPresentType);
+      for (NCollection_Sequence<occ::handle<StepRepr_DescriptiveRepresentationItem>>::Iterator
+             aWordIt(aWords);
+           aWordIt.More();
+           aWordIt.Next())
+      {
+        occ::handle<TCollection_HAsciiString> aName = aWordIt.Value()->Name();
+        aDimObj->AddDescription(aWordIt.Value()->Description(),
+                                aName.IsNull() ? new TCollection_HAsciiString() : aName);
+      }
       aDim->SetObject(aDimObj);
     }
   }

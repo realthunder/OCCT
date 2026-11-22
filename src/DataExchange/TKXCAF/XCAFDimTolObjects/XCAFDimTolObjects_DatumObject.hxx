@@ -175,6 +175,16 @@ public:
   //! Returns graphical presentation of the object.
   occ::handle<TCollection_HAsciiString> GetPresentationName() const { return myPresentationName; }
 
+  //! Sets the kind of graphic it is, as a file names it: its set's name, a word of AP242's
+  //! recommended practice (8.4) -- 'label', 'linear dimension' -- kept to be written again
+  void SetPresentationType(const occ::handle<TCollection_HAsciiString>& theType)
+  {
+    myPresentationType = theType;
+  }
+
+  //! Returns the kind of graphic it is, as a file named it; null if none was
+  occ::handle<TCollection_HAsciiString> GetPresentationType() const { return myPresentationType; }
+
   //! Returns True if the datum has valid parameters for datum target (width, length, circle radius
   //! etc)
   bool HasDatumTargetParams() { return myIsValidDT; }
@@ -207,6 +217,7 @@ private:
   TopoDS_Shape                                             myPresentation;
   occ::handle<TCollection_HAsciiString>                    mySemanticName;
   occ::handle<TCollection_HAsciiString>                    myPresentationName;
+  occ::handle<TCollection_HAsciiString>                    myPresentationType;
 };
 
 #endif // _XCAFDimTolObjects_DatumObject_HeaderFile

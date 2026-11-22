@@ -318,6 +318,12 @@ void XCAFDoc_Dimension::SetObject(const occ::handle<XCAFDimTolObjects_DimensionO
     TNaming_Builder tnBuild(aLPres);
     tnBuild.Generated(aPresentation);
     setString(aLPres, theObject->GetPresentationName());
+    // The kind of graphic it is, as a file named it
+    occ::handle<TCollection_HAsciiString> aType = theObject->GetPresentationType();
+    if (!aType.IsNull() && aType->Length() > 0)
+    {
+      TDataStd_Name::Set(aLPres.FindChild(1), TCollection_ExtendedString(aType->String()));
+    }
   }
 
   if (theObject->HasDescriptions())
@@ -496,6 +502,13 @@ occ::handle<XCAFDimTolObjects_DimensionObject> XCAFDoc_Dimension::GetObject() co
     if (!aPresentation.IsNull())
     {
       anObj->SetPresentation(aPresentation, getString(aLPres));
+      TDF_Label                  aLType = aLPres.FindChild(1, false);
+      occ::handle<TDataStd_Name> aType;
+      if (!aLType.IsNull() && aLType.FindAttribute(TDataStd_Name::GetID(), aType)
+          && !aType->Get().IsEmpty())
+      {
+        anObj->SetPresentationType(new TCollection_HAsciiString(aType->Get()));
+      }
     }
   }
 

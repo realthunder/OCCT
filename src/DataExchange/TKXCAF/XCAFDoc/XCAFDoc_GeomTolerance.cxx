@@ -285,6 +285,12 @@ void XCAFDoc_GeomTolerance::SetObject(
       TCollection_ExtendedString str(aName->String());
       TDataStd_Name::Set(aLPres, str);
     }
+    // The kind of graphic it is, as a file named it
+    occ::handle<TCollection_HAsciiString> aType = theObject->GetPresentationType();
+    if (!aType.IsNull() && aType->Length() > 0)
+    {
+      TDataStd_Name::Set(aLPres.FindChild(1), TCollection_ExtendedString(aType->String()));
+    }
   }
 
   if (theObject->HasAffectedPlane())
@@ -453,6 +459,13 @@ occ::handle<XCAFDimTolObjects_GeomToleranceObject> XCAFDoc_GeomTolerance::GetObj
       }
 
       anObj->SetPresentation(aPresentation, aPresentName);
+      TDF_Label                  aLType = aLPres.FindChild(1, false);
+      occ::handle<TDataStd_Name> aType;
+      if (!aLType.IsNull() && aLType.FindAttribute(TDataStd_Name::GetID(), aType)
+          && !aType->Get().IsEmpty())
+      {
+        anObj->SetPresentationType(new TCollection_HAsciiString(aType->Get()));
+      }
     }
   }
 

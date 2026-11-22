@@ -61,6 +61,7 @@ XCAFDimTolObjects_DimensionObject::XCAFDimTolObjects_DimensionObject(
   mySemanticName       = theObj->mySemanticName;
   myPresentation       = theObj->myPresentation;
   myPresentationName   = theObj->myPresentationName;
+  myPresentationType   = theObj->myPresentationType;
   for (int i = 0; i < theObj->myDescriptions.Length(); i++)
   {
     myDescriptions.Append(theObj->myDescriptions(i));

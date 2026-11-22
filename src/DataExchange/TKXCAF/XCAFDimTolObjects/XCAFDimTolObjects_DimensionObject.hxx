@@ -309,6 +309,16 @@ public:
     return myPresentationName;
   }
 
+  //! Sets the kind of graphic it is, as a file names it: its set's name, a word of AP242's
+  //! recommended practice (8.4) -- 'label', 'linear dimension' -- kept to be written again
+  void SetPresentationType(const occ::handle<TCollection_HAsciiString>& theType)
+  {
+    myPresentationType = theType;
+  }
+
+  //! Returns the kind of graphic it is, as a file named it; null if none was
+  occ::handle<TCollection_HAsciiString> GetPresentationType() const { return myPresentationType; }
+
   //! Returns true, if the object has descriptions.
   bool HasDescriptions() const { return (myDescriptions.Length() > 0); }
 
@@ -377,6 +387,7 @@ private:
   TopoDS_Shape                                           myPresentation;
   occ::handle<TCollection_HAsciiString>                  mySemanticName;
   occ::handle<TCollection_HAsciiString>                  myPresentationName;
+  occ::handle<TCollection_HAsciiString>                  myPresentationType;
   NCollection_DynamicArray<occ::handle<TCollection_HAsciiString>> myDescriptions;
   NCollection_DynamicArray<occ::handle<TCollection_HAsciiString>> myDescriptionNames;
 };

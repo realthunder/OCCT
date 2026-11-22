@@ -52,6 +52,7 @@ XCAFDimTolObjects_GeomToleranceObject::XCAFDimTolObjects_GeomToleranceObject(
   myAffectedPlane     = theObj->myAffectedPlane;
   myPresentation      = theObj->myPresentation;
   myPresentationName  = theObj->myPresentationName;
+  myPresentationType  = theObj->myPresentationType;
 }
 
 //=================================================================================================

@@ -22,6 +22,8 @@
 
 #include <STEPCAFControl_Writer.hxx>
 
+#include <cstdio>
+
 #include <BRep_Builder.hxx>
 #include <GeomToStep_MakeAxis2Placement3d.hxx>
 #include <GeomToStep_MakeCartesianPoint.hxx>
@@ -119,7 +121,10 @@
 #include <StepRepr_MeasureRepresentationItem.hxx>
 #include <StepRepr_NextAssemblyUsageOccurrence.hxx>
 #include <StepRepr_ProductDefinitionShape.hxx>
+#include <StepRepr_CharacterizedDefinition.hxx>
 #include <StepRepr_PropertyDefinition.hxx>
+#include <StepRepr_PropertyDefinitionRepresentation.hxx>
+#include <StepRepr_RepresentedDefinition.hxx>
 #include <StepRepr_RealRepresentationItem.hxx>
 #include <StepRepr_Representation.hxx>
 #include <StepRepr_ReprItemAndLengthMeasureWithUnit.hxx>
@@ -3224,6 +3229,14 @@ static NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> shapeAspects(
   return aSeq;
 }
 
+//! The kind of graphic a file named it (its set's name), kept to be written again; else the one
+//! its semantics give
+static const char* keptOr(const occ::handle<TCollection_HAsciiString>& theKept,
+                          const char*                                  theType)
+{
+  return !theKept.IsNull() && theKept->Length() > 0 ? theKept->ToCString() : theType;
+}
+
 //=======================================================================
 // function : writePresentation
 // purpose  : auxiliary (write annotation plane and presentation)
@@ -3726,7 +3739,8 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
                     anObject->GetPlane(),
                     anObject->GetPointTextAttach(),
                     aSA,
-                    anObject->IsDatumTarget() ? "datum target" : "datum",
+                    keptOr(anObject->GetPresentationType(),
+                           anObject->IsDatumTarget() ? "datum target" : "datum"),
                     // The geometry a target is on: its feature's shape aspects, which the
                     // faces are of, not the target, which has none
                     anObject->IsDatumTarget() && aSASeq.Length() > 0 ? aSASeq
@@ -4804,7 +4818,7 @@ void STEPCAFControl_Writer::writeGeomTolerance(
                     anObject->GetPlane(),
                     anObject->GetPointTextAttach(),
                     aGeomTol,
-                    presentedType(anObject->GetType()),
+                    keptOr(anObject->GetPresentationType(), presentedType(anObject->GetType())),
                     shapeAspects(aMainSA),
                     theLocalFactors);
 }
@@ -5214,6 +5228,107 @@ bool STEPCAFControl_Writer::writeDGTs(const occ::handle<XSControl_WorkSession>& 
   return true;
 }
 
+//! Text as a STEP file has it: ASCII, the rest in \X2\ directives (ISO 10303-21), as the
+//! reader decodes them. The XCAF strings are UTF-8
+static occ::handle<TCollection_HAsciiString> stepText(
+  const occ::handle<TCollection_HAsciiString>& theText)
+{
+  if (theText.IsNull())
+  {
+    return new TCollection_HAsciiString();
+  }
+  const TCollection_ExtendedString aWide(theText->ToCString(), true);
+  TCollection_AsciiString          anOut;
+  bool                             isWide = false;
+  for (int i = 1; i <= aWide.Length(); i++)
+  {
+    const char16_t aChar = aWide.Value(i);
+    if (aChar < 0x80)
+    {
+      if (isWide)
+      {
+        anOut += "\\X0\\";
+        isWide = false;
+      }
+      anOut += static_cast<char>(aChar);
+      continue;
+    }
+    if (!isWide)
+    {
+      anOut += "\\X2\\";
+      isWide = true;
+    }
+    char aHex[5];
+    std::snprintf(aHex, sizeof(aHex), "%04X", static_cast<unsigned>(aChar));
+    anOut += aHex;
+  }
+  if (isWide)
+  {
+    anOut += "\\X0\\";
+  }
+  return new TCollection_HAsciiString(anOut);
+}
+
+//! A note's words, its descriptions, as AP242's recommended practice writes them: a 'semantic
+//! text', a property of what the note is on, its words a representation's descriptive items.
+//! The representation is given its context when the draughting model has one (theTexts).
+//! Returns the property; null if the note has no words
+static occ::handle<StepRepr_PropertyDefinition> writeSemanticText(
+  const occ::handle<Interface_InterfaceModel>&                theModel,
+  const occ::handle<XCAFDimTolObjects_DimensionObject>&       theObject,
+  const occ::handle<StepRepr_ShapeAspect>&                    theOn,
+  NCollection_Sequence<occ::handle<StepRepr_Representation>>& theTexts)
+{
+  occ::handle<StepRepr_PropertyDefinition> aText;
+  if (!theObject->HasDescriptions() || theOn.IsNull())
+  {
+    return aText;
+  }
+  occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anItems =
+    new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(
+      1,
+      theObject->NbDescriptions());
+  for (int i = 0; i < theObject->NbDescriptions(); i++)
+  {
+    occ::handle<StepRepr_DescriptiveRepresentationItem> aWord =
+      new StepRepr_DescriptiveRepresentationItem();
+    occ::handle<TCollection_HAsciiString> aName = theObject->GetDescriptionName(i);
+    occ::handle<TCollection_HAsciiString> aWords = theObject->GetDescription(i);
+    aWord->Init(stepText(aName), stepText(aWords));
+    anItems->SetValue(i + 1, aWord);
+  }
+  occ::handle<StepRepr_Representation> aRepr = new StepRepr_Representation();
+  aRepr->Init(new TCollection_HAsciiString(), anItems, nullptr);
+  StepRepr_CharacterizedDefinition anOn;
+  anOn.SetValue(theOn);
+  aText = new StepRepr_PropertyDefinition();
+  aText->Init(new TCollection_HAsciiString("semantic text"),
+              true,
+              new TCollection_HAsciiString(),
+              anOn);
+  StepRepr_RepresentedDefinition aDefinition;
+  aDefinition.SetValue(aText);
+  occ::handle<StepRepr_PropertyDefinitionRepresentation> aPDR =
+    new StepRepr_PropertyDefinitionRepresentation();
+  aPDR->Init(aDefinition, aRepr);
+  theModel->AddWithRefs(aPDR);
+  // Which property it is, as NIST's files say it
+  occ::handle<StepBasic_GeneralProperty> aKind = new StepBasic_GeneralProperty();
+  aKind->Init(new TCollection_HAsciiString(),
+              new TCollection_HAsciiString("semantic text"),
+              false,
+              nullptr);
+  occ::handle<StepBasic_GeneralPropertyAssociation> anAssociation =
+    new StepBasic_GeneralPropertyAssociation();
+  anAssociation->Init(new TCollection_HAsciiString(),
+                      new TCollection_HAsciiString(),
+                      aKind,
+                      aText);
+  theModel->AddWithRefs(anAssociation);
+  theTexts.Append(aRepr);
+  return aText;
+}
+
 //=================================================================================================
 
 bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSession>& theWS,
@@ -5312,6 +5427,8 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
   NCollection_DynamicArray<occ::handle<StepGeom_CartesianPoint>> aConnectionPnts;
   occ::handle<StepRepr_RepresentationContext>                    dummyRC;
   occ::handle<StepAP242_GeometricItemSpecificUsage>              dummyGISU;
+  // The notes' words, given the draughting model's context once it has one
+  NCollection_Sequence<occ::handle<StepRepr_Representation>> aTexts;
   for (NCollection_Sequence<TDF_Label>::Iterator aDGTIter(aDGTLabels); aDGTIter.More();
        aDGTIter.Next())
   {
@@ -5335,18 +5452,20 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                 myGDTCommonPDS,
                 StepData_LTrue);
       aModel->AddWithRefs(aSA);
-      // No semantics, and its plane if it has one (the two were swapped,
-      // which left every graphic-only item without its annotation plane)
+      // No semantics but its words, if it has any, and its plane if it has one (the two were
+      // swapped, which left every graphic-only item without its annotation plane)
+      occ::handle<StepRepr_PropertyDefinition> aText =
+        writeSemanticText(aModel, anObject, aSA, aTexts);
       writePresentation(theWS,
                         aDimensionL,
                         anObject->GetPresentation(),
                         anObject->GetPresentationName(),
-                        false,
+                        !aText.IsNull(),
                         anObject->HasPlane(),
                         anObject->GetPlane(),
                         anObject->GetPointTextAttach(),
-                        aSA,
-                        "note",
+                        aText.IsNull() ? occ::handle<Standard_Transient>(aSA) : aText,
+                        keptOr(anObject->GetPresentationType(), "note"),
                         NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>(),
                         theLocalFactors);
     }
@@ -5453,19 +5572,23 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                        StepData_LTrue);
         aModel->AddWithRefs(aFirstSA);
       }
-      // No semantics, and its plane if it has one (the two were swapped,
-      // which left every graphic-only item without its annotation plane)
+      // No semantics but its words, if it has any -- the graphic their presentation, associated
+      // with the faces they are on -- and its plane if it has one (the two were swapped, which
+      // left every graphic-only item without its annotation plane)
+      occ::handle<StepRepr_PropertyDefinition> aText =
+        writeSemanticText(aModel, anObject, aFirstSA, aTexts);
       writePresentation(theWS,
                         aDimensionL,
                         anObject->GetPresentation(),
                         anObject->GetPresentationName(),
-                        false,
+                        !aText.IsNull(),
                         anObject->HasPlane(),
                         anObject->GetPlane(),
                         anObject->GetPointTextAttach(),
-                        aFirstSA,
-                        "note",
-                        NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>(),
+                        aText.IsNull() ? occ::handle<Standard_Transient>(aFirstSA) : aText,
+                        keptOr(anObject->GetPresentationType(), "note"),
+                        aText.IsNull() ? NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>()
+                                       : shapeAspects(aFirstSA),
                         theLocalFactors);
       continue;
     }
@@ -5587,7 +5710,8 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                       anObject->GetPlane(),
                       anObject->GetPointTextAttach(),
                       aDimension.Value(),
-                      presentedType(anObject->GetType()),
+                      keptOr(anObject->GetPresentationType(),
+                             presentedType(anObject->GetType())),
                       aDimGeometry,
                       theLocalFactors);
   }
@@ -5656,6 +5780,12 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
   if (aRC.IsNull())
   {
     return true;
+  }
+  for (NCollection_Sequence<occ::handle<StepRepr_Representation>>::Iterator aTextIt(aTexts);
+       aTextIt.More();
+       aTextIt.Next())
+  {
+    aTextIt.Value()->SetContextOfItems(aRC);
   }
 
   // Write Draughting model for Annotation Planes
