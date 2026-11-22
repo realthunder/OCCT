@@ -219,7 +219,8 @@ void RWStepDimTol_RWGeneralDatumReference::WriteStep(
           SW.Send(aModifier.DatumReferenceModifierWithValue());
           break;
         case 2:
-          SW.SendEnum(aModifier.SimpleDatumReferenceModifierMember()->EnumText());
+          // Typed, SIMPLE_DATUM_REFERENCE_MODIFIER(.X.): a member of a SELECT
+          SW.Send(aModifier.SimpleDatumReferenceModifierMember());
           break;
       }
     }
