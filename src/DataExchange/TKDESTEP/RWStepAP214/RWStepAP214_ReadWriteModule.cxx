@@ -1359,6 +1359,7 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_ReadWriteModule, StepData_ReadWriteModule
 #include "../RWStepRepr/RWStepRepr_RWValueRepresentationItem.pxx"
 #include "../RWStepRepr/RWStepRepr_RWValueRepresentationItem.pxx"
 #include "../RWStepAP242/RWStepAP242_RWDraughtingModelItemAssociation.pxx"
+#include "../RWStepAP242/RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthMaxTol.pxx"
 #include "../RWStepVisual/RWStepVisual_RWAnnotationCurveOccurrence.pxx"
@@ -1411,6 +1412,7 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_ReadWriteModule, StepData_ReadWriteModule
 #include <StepRepr_RealRepresentationItem.hxx>
 #include <StepRepr_ValueRepresentationItem.hxx>
 #include <StepAP242_DraughtingModelItemAssociation.hxx>
+#include <StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMaxTol.hxx>
 #include <StepVisual_AnnotationCurveOccurrence.hxx>
@@ -2377,6 +2379,8 @@ static constexpr std::string_view Reco_FeatureForDatumTargetRelationship(
   "FEATURE_FOR_DATUM_TARGET_RELATIONSHIP");
 static constexpr std::string_view Reco_DraughtingModelItemAssociation(
   "DRAUGHTING_MODEL_ITEM_ASSOCIATION");
+static constexpr std::string_view Reco_DraughtingModelItemAssociationWithPlaceholder(
+  "DRAUGHTING_MODEL_ITEM_ASSOCIATION_WITH_PLACEHOLDER");
 static constexpr std::string_view Reco_AnnotationPlane("ANNOTATION_PLANE");
 
 static constexpr std::string_view Reco_TessellatedAnnotationOccurrence(
@@ -3763,6 +3767,7 @@ static void initializeTypenums(StringViewDataMap& theTypenums)
   theTypenums.Bind(Reco_MechanicalDesignAndDraughtingRelationship, 824);
   theTypenums.Bind(Reco_SurfaceStyleReflectanceAmbientDiffuse, 825);
   theTypenums.Bind(Reco_SurfaceStyleReflectanceAmbientDiffuseSpecular, 826);
+  theTypenums.Bind(Reco_DraughtingModelItemAssociationWithPlaceholder, 827);
 }
 
 // Initialize theTypeshor map
@@ -6420,6 +6425,8 @@ const std::string_view& RWStepAP214_ReadWriteModule::StepType(const int CN) cons
       return Reco_SurfaceStyleReflectanceAmbientDiffuse;
     case 826:
       return Reco_SurfaceStyleReflectanceAmbientDiffuseSpecular;
+    case 827:
+      return Reco_DraughtingModelItemAssociationWithPlaceholder;
     default:
       return PasReco;
   }
@@ -11381,6 +11388,12 @@ void RWStepAP214_ReadWriteModule::ReadStep(const int                            
       aTool.ReadStep(data, num, ach, anent);
     }
     break;
+    case 827: {
+      DeclareAndCast(StepAP242_DraughtingModelItemAssociationWithPlaceholder, anent, ent);
+      RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder aTool;
+      aTool.ReadStep(data, num, ach, anent);
+    }
+    break;
     default:
       ach->AddFail("Type Mismatch when reading - Entity");
   }
@@ -16282,6 +16295,12 @@ void RWStepAP214_ReadWriteModule::WriteStep(const int                           
     case 826: {
       DeclareAndCast(StepVisual_SurfaceStyleReflectanceAmbientDiffuseSpecular, anent, ent);
       RWStepVisual_RWSurfaceStyleReflectanceAmbientDiffuseSpecular aTool;
+      aTool.WriteStep(SW, anent);
+    }
+    break;
+    case 827: {
+      DeclareAndCast(StepAP242_DraughtingModelItemAssociationWithPlaceholder, anent, ent);
+      RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder aTool;
       aTool.WriteStep(SW, anent);
     }
     break;

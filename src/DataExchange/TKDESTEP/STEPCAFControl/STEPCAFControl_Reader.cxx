@@ -223,6 +223,7 @@
 #include <XSControl_TransferReader.hxx>
 #include <XSControl_WorkSession.hxx>
 #include <StepAP242_DraughtingModelItemAssociation.hxx>
+#include <StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx>
 #include <StepAP242_GeometricItemSpecificUsage.hxx>
 #include <StepAP242_IdAttribute.hxx>
 #include <StepGeom_CartesianPoint.hxx>
@@ -3482,20 +3483,37 @@ void readAnnotation(const occ::handle<XSControl_TransferReader>& theTR,
   const Interface_Graph&                 aGraph = aTP->Graph();
   // find the proper DraughtingModelItemAssociation
   Interface_EntityIterator                              subs = aGraph.Sharings(theGDT);
-  occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA;
+  // One named the link from the PMI to its presentation; else one with a
+  // placeholder, which links them whatever its name (NIST FTC-06's only link;
+  // STC-07's 'PPH - ...' to a callout of the placeholder alone, beside a
+  // named one to the graphic)
+  occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA, aPlaceholderDMIA;
   for (subs.Start(); subs.More() && aDMIA.IsNull(); subs.Next())
   {
-    if (!subs.Value()->IsKind(STANDARD_TYPE(StepAP242_DraughtingModelItemAssociation)))
+    occ::handle<StepAP242_DraughtingModelItemAssociation> anAssoc =
+      occ::down_cast<StepAP242_DraughtingModelItemAssociation>(subs.Value());
+    if (anAssoc.IsNull())
     {
       continue;
     }
-    aDMIA = occ::down_cast<StepAP242_DraughtingModelItemAssociation>(subs.Value());
-    occ::handle<TCollection_HAsciiString> aName = aDMIA->Name();
-    aName->LowerCase();
-    if (!aName->Search(new TCollection_HAsciiString("pmi representation to presentation link")))
+    if (anAssoc->IsKind(STANDARD_TYPE(StepAP242_DraughtingModelItemAssociationWithPlaceholder)))
     {
-      aDMIA = nullptr;
+      if (aPlaceholderDMIA.IsNull())
+      {
+        aPlaceholderDMIA = anAssoc;
+      }
+      continue;
     }
+    occ::handle<TCollection_HAsciiString> aName = new TCollection_HAsciiString(anAssoc->Name());
+    aName->LowerCase();
+    if (aName->Search(new TCollection_HAsciiString("pmi representation to presentation link")))
+    {
+      aDMIA = anAssoc;
+    }
+  }
+  if (aDMIA.IsNull())
+  {
+    aDMIA = aPlaceholderDMIA;
   }
   if (aDMIA.IsNull() || aDMIA->NbIdentifiedItem() == 0)
   {
@@ -6114,11 +6132,27 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       // Its words, when it presents a 'semantic text' (AP242's recommended practice): a note's
       // or label's, kept as its descriptions
       NCollection_Sequence<occ::handle<StepRepr_DescriptiveRepresentationItem>> aWords;
-      for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt);
-           anIter.More() && aDMIA.IsNull();
-           anIter.Next())
+      // The one with a placeholder first: it links the graphic to the PMI it
+      // presents, where the others may link it to its geometry only (NIST
+      // FTC-06, STC-06, -08)
+      for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt); anIter.More(); anIter.Next())
       {
-        aDMIA = occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+        occ::handle<StepAP242_DraughtingModelItemAssociation> anAssoc =
+          occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+        if (anAssoc.IsNull())
+        {
+          continue;
+        }
+        if (anAssoc->IsKind(
+              STANDARD_TYPE(StepAP242_DraughtingModelItemAssociationWithPlaceholder)))
+        {
+          aDMIA = anAssoc;
+          break;
+        }
+        if (aDMIA.IsNull())
+        {
+          aDMIA = anAssoc;
+        }
       }
       if (!aDMIA.IsNull())
       {
