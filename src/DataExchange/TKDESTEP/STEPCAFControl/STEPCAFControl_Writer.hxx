@@ -399,7 +399,8 @@ protected:
                          const occ::handle<Standard_Transient>&       theDimension,
                          const char*                                  thePrsType,
                          const NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>& theGeometry,
-                         const StepData_Factors& theLocalFactors = StepData_Factors());
+                         const StepData_Factors& theLocalFactors = StepData_Factors(),
+                         const bool              theAlone        = false);
 
   //! The saved views of the documents written (XCAFDoc_ViewTool): a
   //! draughting model each, with its camera, the presentations of the GD&T

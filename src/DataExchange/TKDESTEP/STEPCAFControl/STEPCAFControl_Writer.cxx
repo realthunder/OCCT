@@ -3253,11 +3253,15 @@ void STEPCAFControl_Writer::writePresentation(
   const occ::handle<Standard_Transient>&       theDimension,
   const char*                                  thePrsType,
   const NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>& theGeometry,
-  const StepData_Factors&                      theLocalFactors)
+  const StepData_Factors&                      theLocalFactors,
+  const bool                                   theAlone)
 {
   // A graphic of nothing, or of no item: a draughting model item association
-  // without its definition leaves a model the writer cannot write
-  if (thePresentation.IsNull() || theDimension.IsNull())
+  // without its definition leaves a model the writer cannot write. Alone -- a
+  // graphic-only note on nothing, NIST CTC-05's rectangular regions -- the
+  // callout is in the draughting model with no association: one to an empty
+  // shape aspect a reader (SFA) takes for geometry it cannot find
+  if (thePresentation.IsNull() || (theDimension.IsNull() && !theAlone))
   {
     return;
   }
@@ -3300,6 +3304,10 @@ void STEPCAFControl_Writer::writePresentation(
                          NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>());
     }
     myGDTPrsItems.ChangeFind(theLabel).Append(aDCallout);
+  }
+  if (theDimension.IsNull())
+  {
+    return;
   }
   StepAP242_ItemIdentifiedRepresentationUsageDefinition aDimension;
   aDimension.SetValue(theDimension);
@@ -5243,7 +5251,9 @@ static occ::handle<TCollection_HAsciiString> stepText(
   for (int i = 1; i <= aWide.Length(); i++)
   {
     const char16_t aChar = aWide.Value(i);
-    if (aChar < 0x80)
+    // Printable ASCII as it is; the rest -- a note's line breaks too, as
+    // NIST's files give them -- in UTF-16
+    if (aChar >= 0x20 && aChar < 0x7F)
     {
       if (isWide)
       {
@@ -5446,16 +5456,25 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     }
     if (anObject->GetType() == XCAFDimTolObjects_DimensionType_CommonLabel)
     {
-      occ::handle<StepRepr_ShapeAspect> aSA = new StepRepr_ShapeAspect();
-      aSA->Init(new TCollection_HAsciiString(),
-                new TCollection_HAsciiString(),
-                myGDTCommonPDS,
-                StepData_LTrue);
-      aModel->AddWithRefs(aSA);
+      // The product's: its words a property of the product's aspect. With
+      // none, on nothing: its graphic associated with nothing, as a graphic
+      // alone is (NIST CTC-05's regions)
+      const bool                        onNothing = anObject->NbDescriptions() == 0;
+      occ::handle<StepRepr_ShapeAspect> aSA;
+      if (!onNothing)
+      {
+        aSA = new StepRepr_ShapeAspect();
+        aSA->Init(new TCollection_HAsciiString(),
+                  new TCollection_HAsciiString(),
+                  myGDTCommonPDS,
+                  StepData_LTrue);
+        aModel->AddWithRefs(aSA);
+      }
       // No semantics but its words, if it has any, and its plane if it has one (the two were
       // swapped, which left every graphic-only item without its annotation plane)
       occ::handle<StepRepr_PropertyDefinition> aText =
-        writeSemanticText(aModel, anObject, aSA, aTexts);
+        aSA.IsNull() ? occ::handle<StepRepr_PropertyDefinition>()
+                     : writeSemanticText(aModel, anObject, aSA, aTexts);
       writePresentation(theWS,
                         aDimensionL,
                         anObject->GetPresentation(),
@@ -5467,7 +5486,8 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                         aText.IsNull() ? occ::handle<Standard_Transient>(aSA) : aText,
                         keptOr(anObject->GetPresentationType(), "note"),
                         NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>(),
-                        theLocalFactors);
+                        theLocalFactors,
+                        onNothing);
     }
 
     if (!XCAFDoc_DimTolTool::GetRefShapeLabel(aDimensionL, aFirstShapeL, aSecondShapeL))
@@ -5561,7 +5581,9 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
     if (anObject->GetType() == XCAFDimTolObjects_DimensionType_DimensionPresentation)
     {
-      if (aFirstSA.IsNull())
+      // On nothing, with no words: its graphic associated with nothing
+      const bool onNothing = aFirstShapeL.IsEmpty() && anObject->NbDescriptions() == 0;
+      if (aFirstSA.IsNull() && !onNothing)
       {
         // Its shapes have no entity to refer to (a tessellated part's faces):
         // the graphic is the product's, as a common label's is
@@ -5576,7 +5598,8 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
       // with the faces they are on -- and its plane if it has one (the two were swapped, which
       // left every graphic-only item without its annotation plane)
       occ::handle<StepRepr_PropertyDefinition> aText =
-        writeSemanticText(aModel, anObject, aFirstSA, aTexts);
+        aFirstSA.IsNull() ? occ::handle<StepRepr_PropertyDefinition>()
+                          : writeSemanticText(aModel, anObject, aFirstSA, aTexts);
       writePresentation(theWS,
                         aDimensionL,
                         anObject->GetPresentation(),
@@ -5589,7 +5612,8 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                         keptOr(anObject->GetPresentationType(), "note"),
                         aText.IsNull() ? NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>()
                                        : shapeAspects(aFirstSA),
-                        theLocalFactors);
+                        theLocalFactors,
+                        onNothing);
       continue;
     }
 

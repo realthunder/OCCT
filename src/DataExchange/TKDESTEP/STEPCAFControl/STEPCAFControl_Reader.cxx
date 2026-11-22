@@ -6823,12 +6823,14 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
                || anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
       {
         Interface_EntityIterator aDMIAIter = aGraph.Sharings(anIter.Value());
+        bool                     isAssociated = false;
         for (; aDMIAIter.More(); aDMIAIter.Next())
         {
           if (!aDMIAIter.Value()->IsKind(STANDARD_TYPE(StepAP242_DraughtingModelItemAssociation)))
           {
             continue;
           }
+          isAssociated = true;
           occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
             occ::down_cast<StepAP242_DraughtingModelItemAssociation>(aDMIAIter.Value());
           TDF_Label aGDTL;
@@ -6841,6 +6843,13 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
           {
             aGDTs.Append(aGDTL);
           }
+        }
+        // A graphic associated with nothing (a note on nothing, NIST CTC-05's
+        // regions): the item read of it, by the callout itself
+        TDF_Label aGDTL;
+        if (!isAssociated && myGDTMap.Find(anIter.Value(), aGDTL))
+        {
+          aGDTs.Append(aGDTL);
         }
       }
       else if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_AnnotationPlane)))

@@ -457,7 +457,23 @@ void STEPCAFControl_GDTProperty::GetDimClassOfTolerance(
 {
   occ::handle<TCollection_HAsciiString> aFormV = theLAF->FormVariance();
   occ::handle<TCollection_HAsciiString> aGrade = theLAF->Grade();
-  theFV                                        = XCAFDimTolObjects_DimensionFormVariance_None;
+  // The grade given with its variance, none of its own ('G6', 'hole', '' --
+  // NIST FTC-10's): the two told apart
+  if (!aFormV.IsNull() && (aGrade.IsNull() || aGrade->IsEmpty()))
+  {
+    const TCollection_AsciiString aWhole = aFormV->String();
+    int                           aCut   = aWhole.Length();
+    while (aCut > 0 && IsDigit(aWhole.Value(aCut)))
+    {
+      --aCut;
+    }
+    if (aCut > 0 && aCut < aWhole.Length())
+    {
+      aGrade = new TCollection_HAsciiString(aWhole.SubString(aCut + 1, aWhole.Length()));
+      aFormV = new TCollection_HAsciiString(aWhole.SubString(1, aCut));
+    }
+  }
+  theFV = XCAFDimTolObjects_DimensionFormVariance_None;
   bool aFound;
   theHolle = false;
   // it is not verified information
@@ -676,6 +692,22 @@ void STEPCAFControl_GDTProperty::GetDimClassOfTolerance(
   if (!aGrade.IsNull() && !aGrade->String().IsEqual("01") && aGrade->IsIntegerValue())
   {
     theG = (XCAFDimTolObjects_DimensionGrade)(aGrade->IntegerValue() + 1);
+  }
+  // A hole or a shaft as the file says, where it says (its zone variance);
+  // else by the variance's case, as above
+  occ::handle<TCollection_HAsciiString> aZone = theLAF->ZoneVariance();
+  if (!aZone.IsNull())
+  {
+    TCollection_AsciiString aKind = aZone->String();
+    aKind.LowerCase();
+    if (aKind.IsEqual("hole"))
+    {
+      theHolle = true;
+    }
+    else if (aKind.IsEqual("shaft"))
+    {
+      theHolle = false;
+    }
   }
 }
 
@@ -1091,7 +1123,9 @@ occ::handle<StepShape_LimitsAndFits> STEPCAFControl_GDTProperty::GetLimitsAndFit
   }
   else
   {
-    aGradeStr = new TCollection_HAsciiString((int)theGrade + 1);
+    // IT0 is 1, IT1 2 ...: the grade's number one less (it was written one
+    // more, IT6 as 8)
+    aGradeStr = new TCollection_HAsciiString((int)theGrade - 1);
   }
 
   switch (theFormVariance)
