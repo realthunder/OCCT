@@ -3302,8 +3302,33 @@ void BRepOffset_Tool::Inter2d(const TopoDS_Face&              F,
 
 //=================================================================================================
 
-static void SelectEdge(const TopoDS_Face& /*F*/,
-                       const TopoDS_Face& /*EF*/,
+// The span of an edge's pcurve on a face along U or along V, by points.
+static bool PCurveSpan(const TopoDS_Edge& theE,
+                       const TopoDS_Face& theF,
+                       const bool         theAlongU,
+                       double&            theMin,
+                       double&            theMax)
+{
+  double                          aF, aL;
+  const occ::handle<Geom2d_Curve> aPC = BRep_Tool::CurveOnSurface(theE, theF, aF, aL);
+  if (aPC.IsNull())
+  {
+    return false;
+  }
+  theMin = RealLast();
+  theMax = -RealLast();
+  for (int i = 0; i <= 8; i++)
+  {
+    const gp_Pnt2d aP = aPC->Value(aF + i * (aL - aF) / 8.);
+    const double   aX = theAlongU ? aP.X() : aP.Y();
+    theMin            = std::min(theMin, aX);
+    theMax            = std::max(theMax, aX);
+  }
+  return true;
+}
+
+static void SelectEdge(const TopoDS_Face&              F,
+                       const TopoDS_Face&              EF,
                        const TopoDS_Edge&              E,
                        NCollection_List<TopoDS_Shape>& LInt)
 {
@@ -3338,6 +3363,63 @@ static void SelectEdge(const TopoDS_Face& /*F*/,
     {
       dU = tmp;
       GE = EI;
+    }
+  }
+  // The ends alone may choose a piece that lies wholly beside the edge, round
+  // the face: the offset of a fillet of a hexagon's top edges, 0.5 in radius,
+  // cut by the surface of the next fillet, removed -- the section comes in
+  // two pieces, parted at the cylinder's seam, where the edge begins; the one
+  // before the seam, 0.23 long and no part of the edge's span round the
+  // cylinder, has its ends nearer by 2.24 to 2.38, the stretched face then
+  // had a vertex that is not on its edge and the thickness was refused.
+  // Where the piece chosen shares nothing of the edge's span round the
+  // periodic face and another does, the one that shares the most is taken.
+  // From fix level 5.
+  if (BRepOffset_FixLevel() >= 5 && LInt.Extent() > 1 && !GE.IsNull())
+  {
+    const BRepAdaptor_Surface aS(EF, false);
+    const bool                isU = aS.IsUPeriodic();
+    if (isU || aS.IsVPeriodic())
+    {
+      const double aPeriod = isU ? aS.UPeriod() : aS.VPeriod();
+      double       aE1 = 0., aE2 = 0.;
+      if (PCurveSpan(E, EF, isU, aE1, aE2) || PCurveSpan(E, F, isU, aE1, aE2))
+      {
+        auto aShared = [&](const TopoDS_Edge& thePiece) {
+          double a1 = 0., a2 = 0.;
+          if (!PCurveSpan(thePiece, EF, isU, a1, a2))
+          {
+            return -1.;
+          }
+          double aBest = 0.;
+          for (int k = -2; k <= 2; k++)
+          {
+            aBest = std::max(aBest,
+                             std::min(a2 + k * aPeriod, aE2) - std::max(a1 + k * aPeriod, aE1));
+          }
+          return aBest;
+        };
+        const double aTolSpan = 1.e-6 * aPeriod;
+        const double aChosen  = aShared(GE);
+        if (aChosen >= 0. && aChosen < aTolSpan)
+        {
+          double      aMost = aTolSpan;
+          TopoDS_Edge aOther;
+          for (it.Initialize(LInt); it.More(); it.Next())
+          {
+            const double aSh = aShared(TopoDS::Edge(it.Value()));
+            if (aSh > aMost)
+            {
+              aMost  = aSh;
+              aOther = TopoDS::Edge(it.Value());
+            }
+          }
+          if (!aOther.IsNull())
+          {
+            GE = aOther;
+          }
+        }
+      }
     }
   }
   LInt.Clear();
