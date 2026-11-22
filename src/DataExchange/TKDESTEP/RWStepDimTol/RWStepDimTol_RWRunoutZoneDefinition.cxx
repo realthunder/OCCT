@@ -96,6 +96,9 @@ void RWStepDimTol_RWRunoutZoneDefinition::WriteStep(
     SW.Send(ent->BoundariesValue(i));
   }
   SW.CloseSub();
+
+  // Own field of RunoutZoneDefinition
+  SW.Send(ent->Orientation());
 }
 
 //=================================================================================================
@@ -114,4 +117,7 @@ void RWStepDimTol_RWRunoutZoneDefinition::Share(
   {
     iter.AddItem(ent->BoundariesValue(i));
   }
+
+  // Own field of RunoutZoneDefinition
+  iter.AddItem(ent->Orientation());
 }

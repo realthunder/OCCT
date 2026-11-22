@@ -194,11 +194,14 @@ void RWStepDimTol_RWGeneralDatumReference::WriteStep(
     occ::handle<NCollection_HArray1<occ::handle<StepDimTol_DatumReferenceElement>>> anArray =
       ent->Base().CommonDatumList();
     int i, nb = (anArray.IsNull() ? 0 : anArray->Length());
+    // COMMON_DATUM_LIST((#a,#b)): the typed value holds the list, a list of its own
     SW.OpenTypedSub("COMMON_DATUM_LIST");
+    SW.OpenSub();
     for (i = 1; i <= nb; i++)
     {
       SW.Send(anArray->Value(i));
     }
+    SW.CloseSub();
     SW.CloseSub();
   }
 

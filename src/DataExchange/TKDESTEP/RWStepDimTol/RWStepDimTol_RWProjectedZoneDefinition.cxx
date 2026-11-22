@@ -128,6 +128,8 @@ void RWStepDimTol_RWProjectedZoneDefinition::Share(
     iter.AddItem(ent->BoundariesValue(i));
   }
 
-  // Own field of ProjectionZoneDefinition
+  // Own fields of ProjectionZoneDefinition
   iter.AddItem(ent->ProjectionEnd());
+
+  iter.AddItem(ent->ProjectionLength());
 }

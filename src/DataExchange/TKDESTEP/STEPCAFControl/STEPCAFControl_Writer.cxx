@@ -66,6 +66,7 @@
 #include <StepData_Factors.hxx>
 #include <StepData_Logical.hxx>
 #include <StepData_StepModel.hxx>
+#include <StepDimTol_ProjectedZoneDefinition.hxx>
 #include <StepDimTol_AngularityTolerance.hxx>
 #include <StepDimTol_CircularRunoutTolerance.hxx>
 #include <StepDimTol_CoaxialityTolerance.hxx>
@@ -3213,17 +3214,20 @@ void STEPCAFControl_Writer::writePresentation(
   {
     return;
   }
+  occ::handle<TCollection_HAsciiString> aPrsName =
+    thePrsName.IsNull() ? new TCollection_HAsciiString() : thePrsName;
+  // Named as the callout: a reader (SFA among them) takes an occurrence or a
+  // set without a name for one missing (AP242 PMI recommended practice 8.1.1, 8.4)
+  aGeomSet->SetName(aPrsName);
   occ::handle<StepVisual_TessellatedAnnotationOccurrence> aTAO =
     new StepVisual_TessellatedAnnotationOccurrence();
-  aTAO->Init(new TCollection_HAsciiString(), myGDTPrsCurveStyle, aGeomSet);
+  aTAO->Init(aPrsName, myGDTPrsCurveStyle, aGeomSet);
   StepVisual_DraughtingCalloutElement aDCElement;
   aDCElement.SetValue(aTAO);
   occ::handle<NCollection_HArray1<StepVisual_DraughtingCalloutElement>> aTAOs =
     new NCollection_HArray1<StepVisual_DraughtingCalloutElement>(1, 1);
   aTAOs->SetValue(1, aDCElement);
   occ::handle<StepVisual_DraughtingCallout> aDCallout = new StepVisual_DraughtingCallout();
-  occ::handle<TCollection_HAsciiString>     aPrsName =
-    thePrsName.IsNull() ? new TCollection_HAsciiString() : thePrsName;
   aDCallout->Init(aPrsName, aTAOs);
   occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> aDCsForDMIA =
     new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
@@ -3862,7 +3866,7 @@ static void WriteDimValues(const occ::handle<XSControl_WorkSession>&            
   if (theObject->IsDimWithPlusMinusTolerance())
   {
     occ::handle<TCollection_HAsciiString> aDummyName = new TCollection_HAsciiString(aMeasureName);
-    aDummyName             = aDummyName->SubString(9, aDummyName->Length()); // delete "POSITIVE_"
+    aDummyName             = aDummyName->SubString(10, aDummyName->Length()); // delete "POSITIVE_", 9 chars
     aMeasureName           = aDummyName->ToCString();
     double aLowerTolValue  = -theObject->GetLowerTolValue(),
            anUpperTolValue = theObject->GetUpperTolValue();
@@ -4286,8 +4290,10 @@ void STEPCAFControl_Writer::writeToleranceZone(
   }
 
   // Return if there is no tolerance zones
+  const XCAFDimTolObjects_GeomToleranceZoneModif aZoneModif = theObject->GetZoneModifier();
   if (theObject->GetTypeOfValue() == XCAFDimTolObjects_GeomToleranceTypeValue_None
-      && theObject->GetZoneModifier() != XCAFDimTolObjects_GeomToleranceZoneModif_Runout)
+      && aZoneModif != XCAFDimTolObjects_GeomToleranceZoneModif_Runout
+      && aZoneModif != XCAFDimTolObjects_GeomToleranceZoneModif_Projected)
   {
     return;
   }
@@ -4310,6 +4316,33 @@ void STEPCAFControl_Writer::writeToleranceZone(
               aForm);
   aModel->AddWithRefs(aZone);
 
+  if (aZoneModif == XCAFDimTolObjects_GeomToleranceZoneModif_Projected)
+  {
+    // Projected_Zone_Definition: projected from the part, by the length the
+    // modifier has (as the NIST files write it: no boundaries, the end a
+    // shape aspect of the part)
+    occ::handle<StepBasic_LengthMeasureWithUnit> aLMWU = new StepBasic_LengthMeasureWithUnit();
+    occ::handle<StepBasic_MeasureValueMember>    aLength = new StepBasic_MeasureValueMember();
+    aLength->SetName("LENGTH_MEASURE");
+    aLength->SetReal(theObject->GetValueOfZoneModifier());
+    aLMWU->Init(aLength, GetUnit(theRC));
+    occ::handle<StepRepr_ShapeAspect> anEnd = new StepRepr_ShapeAspect();
+    anEnd->Init(new TCollection_HAsciiString(),
+                new TCollection_HAsciiString(),
+                aZone->OfShape(),
+                StepData_LFalse);
+    occ::handle<StepDimTol_ProjectedZoneDefinition> aDefinition =
+      new StepDimTol_ProjectedZoneDefinition();
+    aDefinition->Init(aZone, nullptr, anEnd, aLMWU);
+    aModel->AddWithRefs(aDefinition);
+    return;
+  }
+  if (aZoneModif != XCAFDimTolObjects_GeomToleranceZoneModif_Runout)
+  {
+    // The zone alone: no definition of it but a runout's or a projected one's
+    return;
+  }
+
   // Runout_Tolerance_Zone
   occ::handle<StepBasic_PlaneAngleMeasureWithUnit> aPAMWU =
     new StepBasic_PlaneAngleMeasureWithUnit();
@@ -4325,6 +4358,37 @@ void STEPCAFControl_Writer::writeToleranceZone(
   aModel->AddWithRefs(aDefinition);
   aModel->AddWithRefs(anOrientation);
   aModel->AddWithRefs(aPAMWU);
+}
+
+//=======================================================================
+// function : toleranceWithDatumReference
+// purpose  : the entity of a tolerance type that is a
+//           geometric_tolerance_with_datum_reference, or null
+//=======================================================================
+static occ::handle<StepDimTol_GeometricToleranceWithDatumReference> toleranceWithDatumReference(
+  const XCAFDimTolObjects_GeomToleranceType theType)
+{
+  switch (theType)
+  {
+    case XCAFDimTolObjects_GeomToleranceType_Angularity:
+      return new StepDimTol_AngularityTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_CircularRunout:
+      return new StepDimTol_CircularRunoutTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Coaxiality:
+      return new StepDimTol_CoaxialityTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Concentricity:
+      return new StepDimTol_ConcentricityTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Parallelism:
+      return new StepDimTol_ParallelismTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Perpendicularity:
+      return new StepDimTol_PerpendicularityTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Symmetry:
+      return new StepDimTol_SymmetryTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_TotalRunout:
+      return new StepDimTol_TotalRunoutTolerance();
+    default:
+      return nullptr;
+  }
 }
 
 //=======================================================================
@@ -4522,7 +4586,17 @@ void STEPCAFControl_Writer::writeGeomTolerance(
   }
   else
   {
-    if (isWithDatRef)
+    occ::handle<StepDimTol_GeometricToleranceWithDatumReference> aWithDatRef =
+      isWithDatRef ? toleranceWithDatumReference(anObject->GetType()) : nullptr;
+    if (!aWithDatRef.IsNull())
+    {
+      // A type that is a Geometric_Tolerance_With_Datum_Reference itself
+      // (Perpendicularity_Tolerance ...): the entity alone, as the schema
+      // has it, not a complex with its own supertype
+      aWithDatRef->Init(aName, aDescription, aLMWU, aGTTarget, theDatumSystem);
+      aGeomTol = aWithDatRef;
+    }
+    else if (isWithDatRef)
     {
       // Geometric_Tolerance & Geometric_Tolerance_With_Datum_Reference
       occ::handle<StepDimTol_GeoTolAndGeoTolWthDatRef> aResult =
