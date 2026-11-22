@@ -3305,50 +3305,52 @@ void STEPCAFControl_Writer::writePresentation(
     }
     myGDTPrsItems.ChangeFind(theLabel).Append(aDCallout);
   }
-  if (theDimension.IsNull())
+  // Its associations, to what it presents and to its geometry: none for a
+  // graphic alone, which still has its plane (an annotation in no
+  // annotation plane is an error to SFA)
+  if (!theDimension.IsNull())
   {
-    return;
-  }
-  StepAP242_ItemIdentifiedRepresentationUsageDefinition aDimension;
-  aDimension.SetValue(theDimension);
-  occ::handle<TCollection_HAsciiString> aDMIAName;
-  if (theHasSemantic)
-  {
-    aDMIAName = new TCollection_HAsciiString("PMI representation to presentation link");
-  }
-  else
-  {
-    aDMIAName = new TCollection_HAsciiString();
-  }
-  occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
-    new StepAP242_DraughtingModelItemAssociation();
-  aDMIA->Init(aDMIAName,
-              new TCollection_HAsciiString(),
-              aDimension,
-              myGDTPresentationDM,
-              aDCsForDMIA);
-  aModel->AddWithRefs(aDMIA);
-  // And to what it is about: the shape aspects of the faces, each by an
-  // association of its own (as the NIST files write it), for a reader to
-  // find the geometry a graphic presents without going through the semantics
-  for (NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>::Iterator anIt(theGeometry);
-       anIt.More();
-       anIt.Next())
-  {
-    if (anIt.Value().IsNull())
+    StepAP242_ItemIdentifiedRepresentationUsageDefinition aDimension;
+    aDimension.SetValue(theDimension);
+    occ::handle<TCollection_HAsciiString> aDMIAName;
+    if (theHasSemantic)
     {
-      continue;
+      aDMIAName = new TCollection_HAsciiString("PMI representation to presentation link");
     }
-    StepAP242_ItemIdentifiedRepresentationUsageDefinition aGeometry;
-    aGeometry.SetValue(anIt.Value());
-    occ::handle<StepAP242_DraughtingModelItemAssociation> aGeomDMIA =
+    else
+    {
+      aDMIAName = new TCollection_HAsciiString();
+    }
+    occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
       new StepAP242_DraughtingModelItemAssociation();
-    aGeomDMIA->Init(new TCollection_HAsciiString(),
-                    new TCollection_HAsciiString(),
-                    aGeometry,
-                    myGDTPresentationDM,
-                    aDCsForDMIA);
-    aModel->AddWithRefs(aGeomDMIA);
+    aDMIA->Init(aDMIAName,
+                new TCollection_HAsciiString(),
+                aDimension,
+                myGDTPresentationDM,
+                aDCsForDMIA);
+    aModel->AddWithRefs(aDMIA);
+    // And to what it is about: the shape aspects of the faces, each by an
+    // association of its own (as the NIST files write it), for a reader to
+    // find the geometry a graphic presents without going through the semantics
+    for (NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>::Iterator anIt(theGeometry);
+         anIt.More();
+         anIt.Next())
+    {
+      if (anIt.Value().IsNull())
+      {
+        continue;
+      }
+      StepAP242_ItemIdentifiedRepresentationUsageDefinition aGeometry;
+      aGeometry.SetValue(anIt.Value());
+      occ::handle<StepAP242_DraughtingModelItemAssociation> aGeomDMIA =
+        new StepAP242_DraughtingModelItemAssociation();
+      aGeomDMIA->Init(new TCollection_HAsciiString(),
+                      new TCollection_HAsciiString(),
+                      aGeometry,
+                      myGDTPresentationDM,
+                      aDCsForDMIA);
+      aModel->AddWithRefs(aGeomDMIA);
+    }
   }
 
   if (!theHasPlane)
