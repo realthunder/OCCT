@@ -397,6 +397,8 @@ protected:
                          const gp_Ax2&                                theAnnotationPlane,
                          const gp_Pnt&                                theTextPosition,
                          const occ::handle<Standard_Transient>&       theDimension,
+                         const char*                                  thePrsType,
+                         const NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>& theGeometry,
                          const StepData_Factors& theLocalFactors = StepData_Factors());
 
   //! The saved views of the documents written (XCAFDoc_ViewTool): a

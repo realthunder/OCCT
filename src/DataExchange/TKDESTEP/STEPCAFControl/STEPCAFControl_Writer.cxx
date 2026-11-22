@@ -66,6 +66,7 @@
 #include <StepData_Factors.hxx>
 #include <StepData_Logical.hxx>
 #include <StepData_StepModel.hxx>
+#include <StepDimTol_ProjectedZoneDefinition.hxx>
 #include <StepDimTol_AngularityTolerance.hxx>
 #include <StepDimTol_CircularRunoutTolerance.hxx>
 #include <StepDimTol_CoaxialityTolerance.hxx>
@@ -3182,6 +3183,18 @@ occ::handle<StepRepr_ShapeAspect> STEPCAFControl_Writer::writeShapeAspect(
 }
 
 //=======================================================================
+// function : shapeAspects
+// purpose  : a sequence of the one shape aspect
+//=======================================================================
+static NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> shapeAspects(
+  const occ::handle<StepRepr_ShapeAspect>& theSA)
+{
+  NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSeq;
+  aSeq.Append(theSA);
+  return aSeq;
+}
+
+//=======================================================================
 // function : writePresentation
 // purpose  : auxiliary (write annotation plane and presentation)
 //======================================================================
@@ -3195,6 +3208,8 @@ void STEPCAFControl_Writer::writePresentation(
   const gp_Ax2&                                theAnnotationPlane,
   const gp_Pnt&                                theTextPosition,
   const occ::handle<Standard_Transient>&       theDimension,
+  const char*                                  thePrsType,
+  const NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>& theGeometry,
   const StepData_Factors&                      theLocalFactors)
 {
   // A graphic of nothing, or of no item: a draughting model item association
@@ -3213,17 +3228,22 @@ void STEPCAFControl_Writer::writePresentation(
   {
     return;
   }
+  occ::handle<TCollection_HAsciiString> aPrsName =
+    thePrsName.IsNull() ? new TCollection_HAsciiString() : thePrsName;
+  // The occurrence named as the callout, the set by what it presents: one of
+  // the names of AP242 PMI recommended practice 8.4 ("datum", "position",
+  // "diameter dimension" ...), by which a reader (SFA) tells what it is; a
+  // name missing is an error to it (8.1.1)
+  aGeomSet->SetName(new TCollection_HAsciiString(thePrsType ? thePrsType : "general note"));
   occ::handle<StepVisual_TessellatedAnnotationOccurrence> aTAO =
     new StepVisual_TessellatedAnnotationOccurrence();
-  aTAO->Init(new TCollection_HAsciiString(), myGDTPrsCurveStyle, aGeomSet);
+  aTAO->Init(aPrsName, myGDTPrsCurveStyle, aGeomSet);
   StepVisual_DraughtingCalloutElement aDCElement;
   aDCElement.SetValue(aTAO);
   occ::handle<NCollection_HArray1<StepVisual_DraughtingCalloutElement>> aTAOs =
     new NCollection_HArray1<StepVisual_DraughtingCalloutElement>(1, 1);
   aTAOs->SetValue(1, aDCElement);
   occ::handle<StepVisual_DraughtingCallout> aDCallout = new StepVisual_DraughtingCallout();
-  occ::handle<TCollection_HAsciiString>     aPrsName =
-    thePrsName.IsNull() ? new TCollection_HAsciiString() : thePrsName;
   aDCallout->Init(aPrsName, aTAOs);
   occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> aDCsForDMIA =
     new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
@@ -3257,6 +3277,28 @@ void STEPCAFControl_Writer::writePresentation(
               myGDTPresentationDM,
               aDCsForDMIA);
   aModel->AddWithRefs(aDMIA);
+  // And to what it is about: the shape aspects of the faces, each by an
+  // association of its own (as the NIST files write it), for a reader to
+  // find the geometry a graphic presents without going through the semantics
+  for (NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>::Iterator anIt(theGeometry);
+       anIt.More();
+       anIt.Next())
+  {
+    if (anIt.Value().IsNull())
+    {
+      continue;
+    }
+    StepAP242_ItemIdentifiedRepresentationUsageDefinition aGeometry;
+    aGeometry.SetValue(anIt.Value());
+    occ::handle<StepAP242_DraughtingModelItemAssociation> aGeomDMIA =
+      new StepAP242_DraughtingModelItemAssociation();
+    aGeomDMIA->Init(new TCollection_HAsciiString(),
+                    new TCollection_HAsciiString(),
+                    aGeometry,
+                    myGDTPresentationDM,
+                    aDCsForDMIA);
+    aModel->AddWithRefs(aGeomDMIA);
+  }
 
   if (!theHasPlane)
   {
@@ -3642,6 +3684,8 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
                     anObject->GetPlane(),
                     anObject->GetPointTextAttach(),
                     aSA,
+                    anObject->IsDatumTarget() ? "datum target" : "datum",
+                    shapeAspects(aSA),
                     theLocalFactors);
 
   return aDatum;
@@ -3862,7 +3906,7 @@ static void WriteDimValues(const occ::handle<XSControl_WorkSession>&            
   if (theObject->IsDimWithPlusMinusTolerance())
   {
     occ::handle<TCollection_HAsciiString> aDummyName = new TCollection_HAsciiString(aMeasureName);
-    aDummyName             = aDummyName->SubString(9, aDummyName->Length()); // delete "POSITIVE_"
+    aDummyName             = aDummyName->SubString(10, aDummyName->Length()); // delete "POSITIVE_", 9 chars
     aMeasureName           = aDummyName->ToCString();
     double aLowerTolValue  = -theObject->GetLowerTolValue(),
            anUpperTolValue = theObject->GetUpperTolValue();
@@ -4286,8 +4330,10 @@ void STEPCAFControl_Writer::writeToleranceZone(
   }
 
   // Return if there is no tolerance zones
+  const XCAFDimTolObjects_GeomToleranceZoneModif aZoneModif = theObject->GetZoneModifier();
   if (theObject->GetTypeOfValue() == XCAFDimTolObjects_GeomToleranceTypeValue_None
-      && theObject->GetZoneModifier() != XCAFDimTolObjects_GeomToleranceZoneModif_Runout)
+      && aZoneModif != XCAFDimTolObjects_GeomToleranceZoneModif_Runout
+      && aZoneModif != XCAFDimTolObjects_GeomToleranceZoneModif_Projected)
   {
     return;
   }
@@ -4310,6 +4356,33 @@ void STEPCAFControl_Writer::writeToleranceZone(
               aForm);
   aModel->AddWithRefs(aZone);
 
+  if (aZoneModif == XCAFDimTolObjects_GeomToleranceZoneModif_Projected)
+  {
+    // Projected_Zone_Definition: projected from the part, by the length the
+    // modifier has (as the NIST files write it: no boundaries, the end a
+    // shape aspect of the part)
+    occ::handle<StepBasic_LengthMeasureWithUnit> aLMWU = new StepBasic_LengthMeasureWithUnit();
+    occ::handle<StepBasic_MeasureValueMember>    aLength = new StepBasic_MeasureValueMember();
+    aLength->SetName("LENGTH_MEASURE");
+    aLength->SetReal(theObject->GetValueOfZoneModifier());
+    aLMWU->Init(aLength, GetUnit(theRC));
+    occ::handle<StepRepr_ShapeAspect> anEnd = new StepRepr_ShapeAspect();
+    anEnd->Init(new TCollection_HAsciiString(),
+                new TCollection_HAsciiString(),
+                aZone->OfShape(),
+                StepData_LFalse);
+    occ::handle<StepDimTol_ProjectedZoneDefinition> aDefinition =
+      new StepDimTol_ProjectedZoneDefinition();
+    aDefinition->Init(aZone, nullptr, anEnd, aLMWU);
+    aModel->AddWithRefs(aDefinition);
+    return;
+  }
+  if (aZoneModif != XCAFDimTolObjects_GeomToleranceZoneModif_Runout)
+  {
+    // The zone alone: no definition of it but a runout's or a projected one's
+    return;
+  }
+
   // Runout_Tolerance_Zone
   occ::handle<StepBasic_PlaneAngleMeasureWithUnit> aPAMWU =
     new StepBasic_PlaneAngleMeasureWithUnit();
@@ -4325,6 +4398,116 @@ void STEPCAFControl_Writer::writeToleranceZone(
   aModel->AddWithRefs(aDefinition);
   aModel->AddWithRefs(anOrientation);
   aModel->AddWithRefs(aPAMWU);
+}
+
+//=======================================================================
+// function : presentedType
+// purpose  : the name AP242 PMI recommended practice 8.4 gives the graphic
+//           of a tolerance or a dimension of the type
+//=======================================================================
+static const char* presentedType(const XCAFDimTolObjects_GeomToleranceType theType)
+{
+  switch (theType)
+  {
+    case XCAFDimTolObjects_GeomToleranceType_Angularity:
+      return "angularity";
+    case XCAFDimTolObjects_GeomToleranceType_CircularRunout:
+      return "circular runout";
+    case XCAFDimTolObjects_GeomToleranceType_CircularityOrRoundness:
+      return "circularity";
+    case XCAFDimTolObjects_GeomToleranceType_Coaxiality:
+      return "coaxiality";
+    case XCAFDimTolObjects_GeomToleranceType_Concentricity:
+      return "concentricity";
+    case XCAFDimTolObjects_GeomToleranceType_Cylindricity:
+      return "cylindricity";
+    case XCAFDimTolObjects_GeomToleranceType_Flatness:
+      return "flatness";
+    case XCAFDimTolObjects_GeomToleranceType_Parallelism:
+      return "parallelism";
+    case XCAFDimTolObjects_GeomToleranceType_Perpendicularity:
+      return "perpendicularity";
+    case XCAFDimTolObjects_GeomToleranceType_Position:
+      return "position";
+    case XCAFDimTolObjects_GeomToleranceType_ProfileOfLine:
+      return "profile of line";
+    case XCAFDimTolObjects_GeomToleranceType_ProfileOfSurface:
+      return "profile of surface";
+    case XCAFDimTolObjects_GeomToleranceType_Straightness:
+      return "straightness";
+    case XCAFDimTolObjects_GeomToleranceType_Symmetry:
+      return "symmetry";
+    case XCAFDimTolObjects_GeomToleranceType_TotalRunout:
+      return "total runout";
+    default:
+      return "general tolerance";
+  }
+}
+
+static const char* presentedType(const XCAFDimTolObjects_DimensionType theType)
+{
+  switch (theType)
+  {
+    case XCAFDimTolObjects_DimensionType_Location_Angular:
+    case XCAFDimTolObjects_DimensionType_Size_Angular:
+      return "angular dimension";
+    case XCAFDimTolObjects_DimensionType_Size_Diameter:
+    case XCAFDimTolObjects_DimensionType_Size_SphericalDiameter:
+    case XCAFDimTolObjects_DimensionType_Size_ToroidalHighMajorDiameter:
+    case XCAFDimTolObjects_DimensionType_Size_ToroidalLowMajorDiameter:
+    case XCAFDimTolObjects_DimensionType_Size_ToroidalMajorDiameter:
+    case XCAFDimTolObjects_DimensionType_Size_ToroidalMinorDiameter:
+      return "diameter dimension";
+    case XCAFDimTolObjects_DimensionType_Size_Radius:
+    case XCAFDimTolObjects_DimensionType_Size_SphericalRadius:
+    case XCAFDimTolObjects_DimensionType_Size_ToroidalHighMajorRadius:
+    case XCAFDimTolObjects_DimensionType_Size_ToroidalLowMajorRadius:
+    case XCAFDimTolObjects_DimensionType_Size_ToroidalMajorRadius:
+    case XCAFDimTolObjects_DimensionType_Size_ToroidalMinorRadius:
+      return "radial dimension";
+    case XCAFDimTolObjects_DimensionType_Location_CurvedDistance:
+    case XCAFDimTolObjects_DimensionType_Location_WithPath:
+    case XCAFDimTolObjects_DimensionType_Size_CurveLength:
+    case XCAFDimTolObjects_DimensionType_Size_WithPath:
+      return "curve dimension";
+    case XCAFDimTolObjects_DimensionType_CommonLabel:
+      return "note";
+    case XCAFDimTolObjects_DimensionType_DimensionPresentation:
+      return "general dimension";
+    default:
+      return "linear dimension";
+  }
+}
+
+//=======================================================================
+// function : toleranceWithDatumReference
+// purpose  : the entity of a tolerance type that is a
+//           geometric_tolerance_with_datum_reference, or null
+//=======================================================================
+static occ::handle<StepDimTol_GeometricToleranceWithDatumReference> toleranceWithDatumReference(
+  const XCAFDimTolObjects_GeomToleranceType theType)
+{
+  switch (theType)
+  {
+    case XCAFDimTolObjects_GeomToleranceType_Angularity:
+      return new StepDimTol_AngularityTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_CircularRunout:
+      return new StepDimTol_CircularRunoutTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Coaxiality:
+      return new StepDimTol_CoaxialityTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Concentricity:
+      return new StepDimTol_ConcentricityTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Parallelism:
+      return new StepDimTol_ParallelismTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Perpendicularity:
+      return new StepDimTol_PerpendicularityTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_Symmetry:
+      return new StepDimTol_SymmetryTolerance();
+    case XCAFDimTolObjects_GeomToleranceType_TotalRunout:
+      return new StepDimTol_TotalRunoutTolerance();
+    default:
+      return nullptr;
+  }
 }
 
 //=======================================================================
@@ -4522,7 +4705,17 @@ void STEPCAFControl_Writer::writeGeomTolerance(
   }
   else
   {
-    if (isWithDatRef)
+    occ::handle<StepDimTol_GeometricToleranceWithDatumReference> aWithDatRef =
+      isWithDatRef ? toleranceWithDatumReference(anObject->GetType()) : nullptr;
+    if (!aWithDatRef.IsNull())
+    {
+      // A type that is a Geometric_Tolerance_With_Datum_Reference itself
+      // (Perpendicularity_Tolerance ...): the entity alone, as the schema
+      // has it, not a complex with its own supertype
+      aWithDatRef->Init(aName, aDescription, aLMWU, aGTTarget, theDatumSystem);
+      aGeomTol = aWithDatRef;
+    }
+    else if (isWithDatRef)
     {
       // Geometric_Tolerance & Geometric_Tolerance_With_Datum_Reference
       occ::handle<StepDimTol_GeoTolAndGeoTolWthDatRef> aResult =
@@ -4554,6 +4747,8 @@ void STEPCAFControl_Writer::writeGeomTolerance(
                     anObject->GetPlane(),
                     anObject->GetPointTextAttach(),
                     aGeomTol,
+                    presentedType(anObject->GetType()),
+                    shapeAspects(aMainSA),
                     theLocalFactors);
 }
 
@@ -5094,6 +5289,8 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                         anObject->GetPlane(),
                         anObject->GetPointTextAttach(),
                         aSA,
+                        "note",
+                        NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>(),
                         theLocalFactors);
     }
 
@@ -5210,6 +5407,8 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                         anObject->GetPlane(),
                         anObject->GetPointTextAttach(),
                         aFirstSA,
+                        "note",
+                        NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>(),
                         theLocalFactors);
       continue;
     }
@@ -5313,7 +5512,13 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
     // Write values
     WriteDimValues(theWS, anObject, aRC, aDimension, theLocalFactors);
-    // Annotation plane and Presentation
+    // Annotation plane and Presentation, and what it measures
+    NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aDimGeometry;
+    aDimGeometry.Append(aFirstSA);
+    if (!aSecondSA.IsNull())
+    {
+      aDimGeometry.Append(aSecondSA);
+    }
     writePresentation(theWS,
                       aDimensionL,
                       anObject->GetPresentation(),
@@ -5323,6 +5528,8 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                       anObject->GetPlane(),
                       anObject->GetPointTextAttach(),
                       aDimension.Value(),
+                      presentedType(anObject->GetType()),
+                      aDimGeometry,
                       theLocalFactors);
   }
   // Write Derived geometry
