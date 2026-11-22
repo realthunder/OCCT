@@ -3696,11 +3696,23 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
     aModel->AddWithRefs(aDatum);
   }
 
-  // Shape_Aspect_Relationship
+  // Shape_Aspect_Relationship; a target's described as one, 'datum target', as NIST's files
+  // have it
   if (!aSA.IsNull())
   {
     occ::handle<StepRepr_ShapeAspectRelationship> aSAR = new StepRepr_ShapeAspectRelationship();
-    aSAR->Init(new TCollection_HAsciiString(), false, nullptr, aSA, aDatum);
+    if (anObject->IsDatumTarget())
+    {
+      aSAR->Init(new TCollection_HAsciiString(),
+                 true,
+                 new TCollection_HAsciiString("datum target"),
+                 aSA,
+                 aDatum);
+    }
+    else
+    {
+      aSAR->Init(new TCollection_HAsciiString(), false, nullptr, aSA, aDatum);
+    }
     aModel->AddWithRefs(aSAR);
   }
 
@@ -3715,7 +3727,10 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
                     anObject->GetPointTextAttach(),
                     aSA,
                     anObject->IsDatumTarget() ? "datum target" : "datum",
-                    shapeAspects(aSA),
+                    // The geometry a target is on: its feature's shape aspects, which the
+                    // faces are of, not the target, which has none
+                    anObject->IsDatumTarget() && aSASeq.Length() > 0 ? aSASeq
+                                                                     : shapeAspects(aSA),
                     theLocalFactors);
 
   return aDatum;
@@ -5499,7 +5514,9 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
             aRelator = StepShape_Equal;
         }
       }
-      aDim->Init(new TCollection_HAsciiString(), false, nullptr, aFirstSA, aSecondSA, aRelator);
+      // Named 'angle', as AP242's recommended practice names it (SFA's dimension name)
+      aDim->Init(new TCollection_HAsciiString("angle"), false, nullptr, aFirstSA, aSecondSA,
+                 aRelator);
       aDimension.SetValue(aDim);
     }
     else if (aDimType == XCAFDimTolObjects_DimensionType_Location_WithPath)
@@ -5539,7 +5556,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
             aRelator = StepShape_Equal;
         }
       }
-      aDim->Init(aFirstSA, new TCollection_HAsciiString(), aRelator);
+      aDim->Init(aFirstSA, new TCollection_HAsciiString("angle"), aRelator);
       aDimension.SetValue(aDim);
     }
     else if (aDimType == XCAFDimTolObjects_DimensionType_Size_WithPath)
