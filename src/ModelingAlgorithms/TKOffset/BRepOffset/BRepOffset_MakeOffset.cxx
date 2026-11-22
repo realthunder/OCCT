@@ -1907,6 +1907,14 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
 //            Then the solid is the original skin, the removed faces in it,
 //            and a void of each such shell; the gluing below would leave the
 //            skin open at the removed faces.
+//
+//            Outward, from fix level 5: a fillet removed, the tubes round its
+//            two tangent edges wider than the fillet is across (a quarter
+//            fillet of radius 1 from 0.77 on), so that they cut each other
+//            before they come to it (theTubePairs) and nothing of the rim
+//            ends on the removed face. The offset is one closed shell round
+//            the part; the solid is that shell with the part's skin, the
+//            removed face in it, for a void.
 //=======================================================================
 static bool MakeSealedThickSolid(
   const TopoDS_Shape&                                                  theShape,
@@ -1916,7 +1924,12 @@ static bool MakeSealedThickSolid(
   const double                                                         theOffset,
   TopoDS_Shape&                                                        theResult)
 {
-  if (theOffset >= 0. || theCorks.IsEmpty() || theOffsetShape.IsNull())
+  // (Outward from fix level 5: the tubes round a removed fillet's two tangent
+  // edges, wider than the fillet, cut each other before they come to it, and
+  // the offset is closed outside the part.)
+  const bool isOutward = theOffset > 0.;
+  if (theOffset == 0. || (isOutward && BRepOffset_FixLevel() < 5) || theCorks.IsEmpty()
+      || theOffsetShape.IsNull())
   {
     return false;
   }
@@ -1980,6 +1993,36 @@ static bool MakeSealedThickSolid(
     return aProps.Mass();
   };
   const double aSkinVol = volume(aSkin);
+  if (isOutward)
+  {
+    // The skin is the void, and the one shell of the offset the outside.
+    if (aVoids.Extent() != 1)
+    {
+      return false;
+    }
+    TopoDS_Shape aOuter    = aVoids.First();
+    const double aOuterVol = volume(aOuter);
+    if (std::abs(aOuterVol) <= std::abs(aSkinVol))
+    {
+      return false;
+    }
+    if (aOuterVol < 0.)
+    {
+      aOuter.Reverse();
+    }
+    if (aSkinVol > 0.)
+    {
+      aSkin.Reverse();
+    }
+    BRep_Builder aBO;
+    TopoDS_Solid aResO;
+    aBO.MakeSolid(aResO);
+    aBO.Add(aResO, aOuter);
+    aBO.Add(aResO, aSkin);
+    aResO.Closed(true);
+    theResult = aResO;
+    return true;
+  }
   if (aSkinVol < 0.)
   {
     aSkin.Reverse();
