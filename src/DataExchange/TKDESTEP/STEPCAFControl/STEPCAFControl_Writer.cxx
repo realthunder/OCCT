@@ -43,11 +43,14 @@
 #include <StepBasic_ConversionBasedUnitAndPlaneAngleUnit.hxx>
 #include <StepBasic_DerivedUnit.hxx>
 #include <StepBasic_DerivedUnitElement.hxx>
+#include <StepBasic_DimensionalExponents.hxx>
 #include <StepBasic_GeneralProperty.hxx>
 #include <StepBasic_GeneralPropertyAssociation.hxx>
+#include <StepBasic_LengthMeasureWithUnit.hxx>
 #include <NCollection_Array1.hxx>
 #include <NCollection_HArray1.hxx>
 #include <StepBasic_MeasureValueMember.hxx>
+#include <StepBasic_PlaneAngleMeasureWithUnit.hxx>
 #include <StepBasic_Product.hxx>
 #include <StepBasic_ProductDefinition.hxx>
 #include <StepBasic_ProductDefinitionFormation.hxx>
@@ -2972,6 +2975,27 @@ static StepBasic_Unit GetUnit(const occ::handle<StepRepr_RepresentationContext>&
     {
       aCurrentUnit = new StepBasic_SiUnitAndPlaneAngleUnit;
     }
+    // XCAF holds angles in degrees, the context's unit is the radian: the values go in a
+    // DEGREE converted from it, CONVERSION_BASED_UNIT('DEGREE', 0.0174532925199433 rad), as
+    // the context of a file in degrees has it
+    if (aCurrentUnit->IsKind(STANDARD_TYPE(StepBasic_SiUnitAndPlaneAngleUnit)))
+    {
+      StepBasic_Unit aRadian;
+      aRadian.SetValue(aCurrentUnit);
+      occ::handle<StepBasic_MeasureValueMember> aFactor = new StepBasic_MeasureValueMember();
+      aFactor->SetName("PLANE_ANGLE_MEASURE");
+      aFactor->SetReal(M_PI / 180.);
+      occ::handle<StepBasic_PlaneAngleMeasureWithUnit> aConversion =
+        new StepBasic_PlaneAngleMeasureWithUnit();
+      aConversion->Init(aFactor, aRadian);
+      occ::handle<StepBasic_DimensionalExponents> anExponents =
+        new StepBasic_DimensionalExponents();
+      anExponents->Init(0., 0., 0., 0., 0., 0., 0.);
+      occ::handle<StepBasic_ConversionBasedUnitAndPlaneAngleUnit> aDegree =
+        new StepBasic_ConversionBasedUnitAndPlaneAngleUnit();
+      aDegree->Init(anExponents, new TCollection_HAsciiString("DEGREE"), aConversion);
+      aCurrentUnit = aDegree;
+    }
   }
   else
   {
@@ -3906,19 +3930,26 @@ static void WriteDimValues(const occ::handle<XSControl_WorkSession>&            
   if (theObject->IsDimWithPlusMinusTolerance())
   {
     occ::handle<TCollection_HAsciiString> aDummyName = new TCollection_HAsciiString(aMeasureName);
-    aDummyName             = aDummyName->SubString(10, aDummyName->Length()); // delete "POSITIVE_", 9 chars
+    // Delete "POSITIVE_", 9 chars
+    aDummyName             = aDummyName->SubString(10, aDummyName->Length());
     aMeasureName           = aDummyName->ToCString();
     double aLowerTolValue  = -theObject->GetLowerTolValue(),
            anUpperTolValue = theObject->GetUpperTolValue();
     // Upper
-    occ::handle<StepBasic_MeasureWithUnit>    anUpperMWU   = new StepBasic_MeasureWithUnit();
+    // Typed, as the measure is: PLANE_ANGLE_ or LENGTH_MEASURE_WITH_UNIT
+    occ::handle<StepBasic_MeasureWithUnit> anUpperMWU =
+      isAngle ? occ::handle<StepBasic_MeasureWithUnit>(new StepBasic_PlaneAngleMeasureWithUnit())
+              : occ::handle<StepBasic_MeasureWithUnit>(new StepBasic_LengthMeasureWithUnit());
     occ::handle<StepBasic_MeasureValueMember> anUpperValue = new StepBasic_MeasureValueMember();
     anUpperValue->SetName(aMeasureName);
     anUpperValue->SetReal(anUpperTolValue);
     anUpperMWU->Init(anUpperValue, aUnit);
     aModel->AddWithRefs(anUpperMWU);
     // Lower
-    occ::handle<StepBasic_MeasureWithUnit>    aLowerMWU   = new StepBasic_MeasureWithUnit();
+    // Typed, as the measure is: PLANE_ANGLE_ or LENGTH_MEASURE_WITH_UNIT
+    occ::handle<StepBasic_MeasureWithUnit> aLowerMWU =
+      isAngle ? occ::handle<StepBasic_MeasureWithUnit>(new StepBasic_PlaneAngleMeasureWithUnit())
+              : occ::handle<StepBasic_MeasureWithUnit>(new StepBasic_LengthMeasureWithUnit());
     occ::handle<StepBasic_MeasureValueMember> aLowerValue = new StepBasic_MeasureValueMember();
     aLowerValue->SetName(aMeasureName);
     aLowerValue->SetReal(aLowerTolValue);
