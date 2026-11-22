@@ -1651,7 +1651,8 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
 occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
   const occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship>& theCGRR,
   const occ::handle<Transfer_TransientProcess>&                               theTP,
-  const StepData_Factors&                                                     theLocalFactors)
+  const StepData_Factors&                                                     theLocalFactors,
+  const bool                                                                  theAxesAsPlanes)
 {
 
   occ::handle<TransferBRep_ShapeBinder> shbinder;
@@ -1685,8 +1686,25 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
     for (; j <= aCRepr->NbItems(); j++)
     {
       occ::handle<StepRepr_RepresentationItem> anItem = aCRepr->ItemsValue(j);
-      occ::handle<StepGeom_Axis2Placement3d>   aStepAxis =
-        occ::down_cast<StepGeom_Axis2Placement3d>(anItem);
+      // Supplemental curves (a thread's cylinder drawn as its circles, a plane as its outline):
+      // bounded, made always, each bound for the GD&T on it to find
+      occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
+      if (!aSet.IsNull())
+      {
+        if (!theTP->IsBound(aSet))
+        {
+          StepToTopoDS_Builder aSetBuilder;
+          aSetBuilder.Init(aSet, theTP, aLocalFactors);
+          if (aSetBuilder.IsDone() && !aSetBuilder.Value().IsNull())
+          {
+            theTP->Bind(aSet, new TransferBRep_ShapeBinder(aSetBuilder.Value()));
+            aB.Add(aComp, aSetBuilder.Value());
+          }
+        }
+        continue;
+      }
+      occ::handle<StepGeom_Axis2Placement3d> aStepAxis =
+        theAxesAsPlanes ? occ::down_cast<StepGeom_Axis2Placement3d>(anItem) : nullptr;
       if (!aStepAxis.IsNull())
       {
         occ::handle<Geom_Axis2Placement> anAxis =
@@ -1704,12 +1722,17 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
       }
     }
   }
-  shbinder    = new TransferBRep_ShapeBinder(aComp);
   mySRContext = oldSRContext;
   if (oldSRContext.IsNull() || resetUnits)
   {
     PrepareUnits(oldSRContext, theTP, aLocalFactors);
   }
+  // Nothing made: no shape beside the part's
+  if (!TopoDS_Iterator(aComp).More())
+  {
+    return shbinder;
+  }
+  shbinder = new TransferBRep_ShapeBinder(aComp);
 
   theTP->Bind(theCGRR, shbinder);
 
@@ -2945,13 +2968,13 @@ TopoDS_Shape STEPControl_ActorRead::TransferRelatedSRR(
         occ::down_cast<StepRepr_MechanicalDesignAndDraughtingRelationship>(anItem);
       aBinder = TransferEntity(aMDADR, theTP, theLocalFactors, thePS.Next());
     }
-    else if (theReadConstructiveGeomRR
-             && anItem->DynamicType()
-                  == STANDARD_TYPE(StepRepr_ConstructiveGeometryRepresentationRelationship))
+    // Supplemental geometry: its curves always, its axes as planes when asked
+    else if (anItem->DynamicType()
+             == STANDARD_TYPE(StepRepr_ConstructiveGeometryRepresentationRelationship))
     {
       occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship> aCGRR =
         occ::down_cast<StepRepr_ConstructiveGeometryRepresentationRelationship>(anItem);
-      aBinder = TransferEntity(aCGRR, theTP, theLocalFactors);
+      aBinder = TransferEntity(aCGRR, theTP, theLocalFactors, theReadConstructiveGeomRR);
     }
     if (!aBinder.IsNull())
     {

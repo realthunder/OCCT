@@ -204,7 +204,8 @@ protected:
   occ::handle<TransferBRep_ShapeBinder> TransferEntity(
     const occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship>& theCGRR,
     const occ::handle<Transfer_TransientProcess>&                               theTP,
-    const StepData_Factors& theLocalFactors = StepData_Factors());
+    const StepData_Factors& theLocalFactors = StepData_Factors(),
+    const bool              theAxesAsPlanes = true);
 
   //! Transfers MechanicalDesignAndDraughtingRelationship entity
   occ::handle<TransferBRep_ShapeBinder> TransferEntity(
