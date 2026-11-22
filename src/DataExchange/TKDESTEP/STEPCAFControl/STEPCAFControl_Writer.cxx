@@ -816,7 +816,13 @@ bool STEPCAFControl_Writer::transfer(STEPControl_Writer&                    theW
     {
       if (aModel->InternalParameters.WriteSchema == 5)
       {
-        writeDGTsAP242(theWriter.WS(), aSubLabels, aLocalFactors);
+        // In the file's length unit, as the shapes are (STEPControl_ActorWrite): the
+        // factors' length factor is otherwise 1, the GD&T written in mm in an inch file
+        StepData_Factors aGDTFactors = aLocalFactors;
+        aGDTFactors.InitializeFactors(aModel->WriteLengthUnit() / aModel->LocalLengthUnit(),
+                                      aLocalFactors.PlaneAngleFactor(),
+                                      aLocalFactors.SolidAngleFactor());
+        writeDGTsAP242(theWriter.WS(), aSubLabels, aGDTFactors);
       }
       else
       {
@@ -3247,7 +3253,7 @@ void STEPCAFControl_Writer::writePresentation(
 
   // Presentation
   occ::handle<StepVisual_TessellatedGeometricSet> aGeomSet =
-    STEPCAFControl_GDTProperty::GetTessellation(thePresentation);
+    STEPCAFControl_GDTProperty::GetTessellation(thePresentation, theLocalFactors.LengthFactor());
   if (aGeomSet.IsNull())
   {
     return;
@@ -3607,7 +3613,7 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
             aTargetValueName = new TCollection_HAsciiString("target length");
             // Additional value
             occ::handle<StepRepr_ReprItemAndMeasureWithUnit> aTargetValue =
-              CreateDimValue(anObject->GetDatumTargetWidth(),
+              CreateDimValue(anObject->GetDatumTargetWidth() / theLocalFactors.LengthFactor(),
                              aUnit,
                              new TCollection_HAsciiString("target width"),
                              "POSITIVE_LENGTH_MEASURE",
@@ -3622,7 +3628,7 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
           }
           // Value
           occ::handle<StepRepr_ReprItemAndMeasureWithUnit> aTargetValue =
-            CreateDimValue(anObject->GetDatumTargetLength(),
+            CreateDimValue(anObject->GetDatumTargetLength() / theLocalFactors.LengthFactor(),
                            aUnit,
                            aTargetValueName,
                            "POSITIVE_LENGTH_MEASURE",
@@ -3733,8 +3739,9 @@ static void WriteDimValues(const occ::handle<XSControl_WorkSession>&            
   bool isAngle = aDim->IsKind(STANDARD_TYPE(StepShape_AngularLocation))
                  || aDim->IsKind(STANDARD_TYPE(StepShape_AngularSize));
 
-  // Unit
+  // Unit; a length in the file's (an inch file's in inches), an angle in degrees as it is
   StepBasic_Unit aUnit = GetUnit(theRC, isAngle);
+  const double   aLF   = isAngle ? 1. : theLocalFactors.LengthFactor();
   const char*    aMeasureName;
   if (isAngle)
   {
@@ -3764,7 +3771,7 @@ static void WriteDimValues(const occ::handle<XSControl_WorkSession>&            
   aValues = new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, aNbItems);
 
   // Nominal value
-  double aNominal = theObject->GetValue();
+  double aNominal = theObject->GetValue() / aLF;
   int    aLeftNbDigits, aRightNbDigits;
   theObject->GetNbOfDecimalPlaces(aLeftNbDigits, aRightNbDigits);
   int aNbQualifiers = 0;
@@ -3839,13 +3846,13 @@ static void WriteDimValues(const occ::handle<XSControl_WorkSession>&            
   if (theObject->IsDimWithRange())
   {
     occ::handle<StepRepr_ReprItemAndMeasureWithUnit> aLowerItem =
-      CreateDimValue(theObject->GetLowerBound(),
+      CreateDimValue(theObject->GetLowerBound() / aLF,
                      aUnit,
                      new TCollection_HAsciiString("lower limit"),
                      aMeasureName,
                      isAngle);
     occ::handle<StepRepr_ReprItemAndMeasureWithUnit> anUpperItem =
-      CreateDimValue(theObject->GetUpperBound(),
+      CreateDimValue(theObject->GetUpperBound() / aLF,
                      aUnit,
                      new TCollection_HAsciiString("upper limit"),
                      aMeasureName,
@@ -3933,8 +3940,8 @@ static void WriteDimValues(const occ::handle<XSControl_WorkSession>&            
     // Delete "POSITIVE_", 9 chars
     aDummyName             = aDummyName->SubString(10, aDummyName->Length());
     aMeasureName           = aDummyName->ToCString();
-    double aLowerTolValue  = -theObject->GetLowerTolValue(),
-           anUpperTolValue = theObject->GetUpperTolValue();
+    double aLowerTolValue  = -theObject->GetLowerTolValue() / aLF,
+           anUpperTolValue = theObject->GetUpperTolValue() / aLF;
     // Upper
     // Typed, as the measure is: PLANE_ANGLE_ or LENGTH_MEASURE_WITH_UNIT
     occ::handle<StepBasic_MeasureWithUnit> anUpperMWU =
@@ -4176,6 +4183,7 @@ static occ::handle<NCollection_HArray1<StepDimTol_DatumSystemOrReference>> Write
       XCAFDimTolObjects_DatumModifWithValue aModifWithVal;
       double                                aValue = 0;
       aDatumSeqPos.Value(1)->GetModifierWithValue(aModifWithVal, aValue);
+      aValue /= theLocalFactors.LengthFactor();
       aModifiers = STEPCAFControl_GDTProperty::GetDatumRefModifiers(aSimpleModifiers,
                                                                     aModifWithVal,
                                                                     aValue,
@@ -4223,6 +4231,7 @@ static occ::handle<NCollection_HArray1<StepDimTol_DatumSystemOrReference>> Write
         XCAFDimTolObjects_DatumModifWithValue aModifWithVal;
         double                                aValue = 0;
         aDatumObj->GetModifierWithValue(aModifWithVal, aValue);
+        aValue /= theLocalFactors.LengthFactor();
         occ::handle<NCollection_HArray1<StepDimTol_DatumReferenceModifier>> anElemModifiers =
           STEPCAFControl_GDTProperty::GetDatumRefModifiers(aSimpleModifiers,
                                                            aModifWithVal,
@@ -4351,7 +4360,8 @@ void STEPCAFControl_Writer::writeToleranceZone(
   const occ::handle<XSControl_WorkSession>&                 theWS,
   const occ::handle<XCAFDimTolObjects_GeomToleranceObject>& theObject,
   const occ::handle<StepDimTol_GeometricTolerance>&         theEntity,
-  const occ::handle<StepRepr_RepresentationContext>&        theRC)
+  const occ::handle<StepRepr_RepresentationContext>&        theRC,
+  const StepData_Factors&                                   theLocalFactors)
 {
   // Get working data
   const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
@@ -4395,7 +4405,7 @@ void STEPCAFControl_Writer::writeToleranceZone(
     occ::handle<StepBasic_LengthMeasureWithUnit> aLMWU = new StepBasic_LengthMeasureWithUnit();
     occ::handle<StepBasic_MeasureValueMember>    aLength = new StepBasic_MeasureValueMember();
     aLength->SetName("LENGTH_MEASURE");
-    aLength->SetReal(theObject->GetValueOfZoneModifier());
+    aLength->SetReal(theObject->GetValueOfZoneModifier() / theLocalFactors.LengthFactor());
     aLMWU->Init(aLength, GetUnit(theRC));
     occ::handle<StepRepr_ShapeAspect> anEnd = new StepRepr_ShapeAspect();
     anEnd->Init(new TCollection_HAsciiString(),
@@ -4572,7 +4582,7 @@ void STEPCAFControl_Writer::writeGeomTolerance(
   StepBasic_Unit                               aUnit        = GetUnit(theRC);
   occ::handle<StepBasic_MeasureValueMember>    aValueMember = new StepBasic_MeasureValueMember();
   aValueMember->SetName("LENGTH_MEASURE");
-  aValueMember->SetReal(anObject->GetValue());
+  aValueMember->SetReal(anObject->GetValue() / theLocalFactors.LengthFactor());
   aLMWU->Init(aValueMember, aUnit);
   aModel->AddWithRefs(aLMWU);
 
@@ -4667,7 +4677,8 @@ void STEPCAFControl_Writer::writeGeomTolerance(
       occ::handle<StepBasic_MeasureValueMember> aModifierValueMember =
         new StepBasic_MeasureValueMember();
       aModifierValueMember->SetName("LENGTH_MEASURE");
-      aModifierValueMember->SetReal(anObject->GetMaxValueModifier());
+      aModifierValueMember->SetReal(anObject->GetMaxValueModifier()
+                                    / theLocalFactors.LengthFactor());
       aMaxLMWU->Init(aModifierValueMember, aUnit);
       aModel->AddWithRefs(aMaxLMWU);
     }
@@ -4767,7 +4778,7 @@ void STEPCAFControl_Writer::writeGeomTolerance(
     }
   }
   aModel->AddWithRefs(aGeomTol);
-  writeToleranceZone(theWS, anObject, aGeomTol, theRC);
+  writeToleranceZone(theWS, anObject, aGeomTol, theRC, theLocalFactors);
   // Annotation plane and Presentation
   writePresentation(theWS,
                     theGeomTolL,

@@ -50,14 +50,15 @@ namespace
 //=======================================================================
 occ::handle<StepVisual_CoordinatesList> GenerateCoordinateList(
   const occ::handle<Poly_Triangulation>& theTriangulation,
-  const gp_Trsf&                         theTransformation)
+  const gp_Trsf&                         theTransformation,
+  const double                           theLengthFactor)
 {
   occ::handle<NCollection_HArray1<gp_XYZ>> thePoints =
     new NCollection_HArray1<gp_XYZ>(1, theTriangulation->NbNodes());
   for (int aNodeIndex = 1; aNodeIndex <= theTriangulation->NbNodes(); ++aNodeIndex)
   {
     const gp_Pnt aCurrentNode = theTriangulation->Node(aNodeIndex).Transformed(theTransformation);
-    thePoints->SetValue(aNodeIndex, aCurrentNode.XYZ());
+    thePoints->SetValue(aNodeIndex, aCurrentNode.XYZ() / theLengthFactor);
   }
   occ::handle<StepVisual_CoordinatesList> aCoordinatesList = new StepVisual_CoordinatesList;
   aCoordinatesList->Init(new TCollection_HAsciiString(), thePoints);
@@ -183,7 +184,8 @@ occ::handle<NCollection_HArray1<occ::handle<Standard_Transient>>> GenerateTriang
 //           Returns nullptr if face has no triangulation.
 //=======================================================================
 occ::handle<StepVisual_ComplexTriangulatedSurfaceSet> GenerateComplexTriangulatedSurfaceSet(
-  const TopoDS_Face& theFace)
+  const TopoDS_Face& theFace,
+  const double       theLengthFactor)
 {
   TopLoc_Location                       aFaceLoc;
   const occ::handle<Poly_Triangulation> aTriangulation =
@@ -196,7 +198,7 @@ occ::handle<StepVisual_ComplexTriangulatedSurfaceSet> GenerateComplexTriangulate
 
   // coordinates
   occ::handle<StepVisual_CoordinatesList> aCoordinatesList =
-    GenerateCoordinateList(aTriangulation, aFaceTransform);
+    GenerateCoordinateList(aTriangulation, aFaceTransform, theLengthFactor);
   // pnmax
   int aPnmax = aTriangulation->NbNodes();
   // normals
@@ -237,7 +239,8 @@ occ::handle<StepVisual_ComplexTriangulatedSurfaceSet> GenerateComplexTriangulate
 //           If no valid curves were found, return nullptr.
 //=======================================================================
 occ::handle<StepVisual_TessellatedCurveSet> GenerateTessellatedCurveSet(
-  const TopoDS_Shape& theShape)
+  const TopoDS_Shape& theShape,
+  const double        theLengthFactor)
 {
   NCollection_Handle<NCollection_DynamicArray<occ::handle<NCollection_HSequence<int>>>>
     aLineStrips = new NCollection_DynamicArray<occ::handle<NCollection_HSequence<int>>>;
@@ -289,7 +292,8 @@ occ::handle<StepVisual_TessellatedCurveSet> GenerateTessellatedCurveSet(
     new NCollection_HArray1<gp_XYZ>(1, aTmpPointsContainer.Length());
   for (int aPointIndex = 1; aPointIndex <= aPoints->Length(); ++aPointIndex)
   {
-    aPoints->SetValue(aPointIndex, aTmpPointsContainer.Value(aPointIndex - 1));
+    aPoints->SetValue(aPointIndex,
+                      aTmpPointsContainer.Value(aPointIndex - 1) / theLengthFactor);
   }
   // STEP entities
   occ::handle<StepVisual_CoordinatesList> aCoordinates = new StepVisual_CoordinatesList();
@@ -1533,13 +1537,15 @@ occ::handle<TCollection_HAsciiString> STEPCAFControl_GDTProperty::GetTolValueTyp
 //=================================================================================================
 
 occ::handle<StepVisual_TessellatedGeometricSet> STEPCAFControl_GDTProperty::GetTessellation(
-  const TopoDS_Shape& theShape)
+  const TopoDS_Shape& theShape,
+  const double        theLengthFactor)
 {
   // The items made: a curve set when the shape has curves, a surface set per
   // face that has a triangulation. A null item in the set leaves a model the
   // writer cannot write -- a graphic of fills alone has no curves.
   NCollection_LinearVector<occ::handle<StepVisual_TessellatedItem>> anItems;
-  occ::handle<StepVisual_TessellatedCurveSet> aTCS = GenerateTessellatedCurveSet(theShape);
+  occ::handle<StepVisual_TessellatedCurveSet> aTCS =
+    GenerateTessellatedCurveSet(theShape, theLengthFactor);
   if (!aTCS.IsNull())
   {
     anItems.Append(aTCS);
@@ -1548,7 +1554,7 @@ occ::handle<StepVisual_TessellatedGeometricSet> STEPCAFControl_GDTProperty::GetT
   {
     const TopoDS_Face aFace = TopoDS::Face(aFaceIt.Current());
     occ::handle<StepVisual_ComplexTriangulatedSurfaceSet> aCTSS =
-      GenerateComplexTriangulatedSurfaceSet(aFace);
+      GenerateComplexTriangulatedSurfaceSet(aFace, theLengthFactor);
     if (!aCTSS.IsNull())
     {
       anItems.Append(aCTSS);
