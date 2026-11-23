@@ -3968,6 +3968,21 @@ static int FindShapeIndexForDGT(const occ::handle<Standard_Transient>&    theEnt
 
 //=================================================================================================
 
+// The usage naming a shape aspect's geometry: a geometric_item_specific_usage, or the
+// item_identified_representation_usage it is a kind of (NIST STC-07 names a surface's faces so,
+// as a set) -- not a draughting_model_item_association, the usage naming its presentation
+static occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> geometryUsage(
+  const occ::handle<Standard_Transient>& theEnt)
+{
+  if (theEnt.IsNull() || theEnt->IsKind(STANDARD_TYPE(StepAP242_DraughtingModelItemAssociation)))
+  {
+    return nullptr;
+  }
+  return occ::down_cast<StepAP242_ItemIdentifiedRepresentationUsage>(theEnt);
+}
+
+//=================================================================================================
+
 static void collectShapeAspect(const occ::handle<StepRepr_ShapeAspect>&                 theSA,
                                const occ::handle<XSControl_WorkSession>&                theWS,
                                NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>& theSAs)
@@ -4746,13 +4761,22 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
            i <= aSAs.Upper();
            i++)
       {
-        Interface_EntityIterator                          anIterSA = aGraph.Sharings(aSAs.Value(i));
-        occ::handle<StepAP242_GeometricItemSpecificUsage> aGISU;
-        occ::handle<StepRepr_PropertyDefinition>          PropD;
-        for (anIterSA.Start(); anIterSA.More() && aGISU.IsNull() && PropD.IsNull(); anIterSA.Next())
+        Interface_EntityIterator anIterSA = aGraph.Sharings(aSAs.Value(i));
+        occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aGISU;
+        occ::handle<StepRepr_PropertyDefinition>                 PropD;
+        // The geometry's usage first: a property definition beside it is the old way only
+        // without one (NIST STC-07 gives its surfaces 'semantic text' properties too)
+        for (anIterSA.Start(); anIterSA.More() && aGISU.IsNull(); anIterSA.Next())
         {
-          aGISU = occ::down_cast<StepAP242_GeometricItemSpecificUsage>(anIterSA.Value());
-          PropD = occ::down_cast<StepRepr_PropertyDefinition>(anIterSA.Value());
+          aGISU = geometryUsage(anIterSA.Value());
+          if (PropD.IsNull())
+          {
+            PropD = occ::down_cast<StepRepr_PropertyDefinition>(anIterSA.Value());
+          }
+        }
+        if (!aGISU.IsNull())
+        {
+          PropD.Nullify();
         }
         if (!PropD.IsNull()) // for old version
         {
@@ -6253,12 +6277,12 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         collectShapeAspect(aDefinition, theWS, aSAs);
         for (int aSAIt = 1; aSAIt <= aSAs.Length(); aSAIt++)
         {
-          occ::handle<StepAP242_GeometricItemSpecificUsage> aGISU;
+          occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aGISU;
           for (Interface_EntityIterator anIter = aGraph.Sharings(aSAs.Value(aSAIt));
                anIter.More() && aGISU.IsNull();
                anIter.Next())
           {
-            aGISU = occ::down_cast<StepAP242_GeometricItemSpecificUsage>(anIter.Value());
+            aGISU = geometryUsage(anIter.Value());
           }
           if (aGISU.IsNull())
           {

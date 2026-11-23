@@ -30,7 +30,9 @@
 #include <Message_Messenger.hxx>
 #include <Message_ProgressScope.hxx>
 #include <OSD_Timer.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <Precision.hxx>
+#include <Geom_Curve.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_Transient.hxx>
@@ -47,6 +49,9 @@
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndModGeoTolAndPosTol.hxx>
 #include <StepGeom_Axis2Placement3d.hxx>
 #include <StepGeom_CartesianTransformationOperator3d.hxx>
+#include <StepGeom_CompositeCurve.hxx>
+#include <StepGeom_CompositeCurveSegment.hxx>
+#include <StepGeom_Curve.hxx>
 #include <StepGeom_Direction.hxx>
 #include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>
 #include <StepGeom_GeometricRepresentationItem.hxx>
@@ -1648,6 +1653,81 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
 
 //=================================================================================================
 
+// A supplemental curve as its edges: a composite curve as one per segment, each segment's parent
+// curve bound to its edge -- what a shape aspect's geometric_item_specific_usage names (an axis
+// drawn as a trimmed line, NIST STC-07). The curve itself bound to them all.
+static TopoDS_Shape transferSupplementalCurve(
+  const occ::handle<StepGeom_Curve>&            theCurve,
+  const occ::handle<Transfer_TransientProcess>& theTP,
+  const StepData_Factors&                       theLocalFactors,
+  const int                                     theDepth = 0)
+{
+  TopoDS_Shape aRes = TransferBRep::ShapeResult(theTP, theTP->Find(theCurve));
+  if (!aRes.IsNull() || theDepth > 8)
+  {
+    return aRes;
+  }
+  occ::handle<StepGeom_CompositeCurve> aCC = occ::down_cast<StepGeom_CompositeCurve>(theCurve);
+  if (!aCC.IsNull())
+  {
+    TopoDS_Compound aComp;
+    BRep_Builder    aB;
+    aB.MakeCompound(aComp);
+    bool isAny = false;
+    for (int i = 1; i <= aCC->NbSegments(); i++)
+    {
+      occ::handle<StepGeom_CompositeCurveSegment> aSeg = aCC->SegmentsValue(i);
+      if (aSeg.IsNull() || aSeg->ParentCurve().IsNull() || aSeg->ParentCurve() == theCurve)
+      {
+        continue;
+      }
+      TopoDS_Shape aSegShape =
+        transferSupplementalCurve(aSeg->ParentCurve(), theTP, theLocalFactors, theDepth + 1);
+      if (!aSegShape.IsNull())
+      {
+        aB.Add(aComp, aSegShape);
+        isAny = true;
+      }
+    }
+    if (isAny)
+    {
+      aRes = aComp;
+    }
+  }
+  else
+  {
+    occ::handle<Geom_Curve> aGeomCrv;
+    try
+    {
+      OCC_CATCH_SIGNALS
+      aGeomCrv = StepToGeom::MakeCurve(theCurve, theLocalFactors);
+    }
+    catch (Standard_Failure const&)
+    {
+      aGeomCrv.Nullify();
+    }
+    // An unbounded curve (a line, a circle's whole) is not drawn: only what has ends
+    if (!aGeomCrv.IsNull() && !Precision::IsInfinite(aGeomCrv->FirstParameter())
+        && !Precision::IsInfinite(aGeomCrv->LastParameter()))
+    {
+      BRepBuilderAPI_MakeEdge anEdge(aGeomCrv,
+                                     aGeomCrv->FirstParameter(),
+                                     aGeomCrv->LastParameter());
+      if (anEdge.IsDone())
+      {
+        aRes = anEdge.Edge();
+      }
+    }
+  }
+  if (!aRes.IsNull())
+  {
+    theTP->Bind(theCurve, new TransferBRep_ShapeBinder(aRes));
+  }
+  return aRes;
+}
+
+//=================================================================================================
+
 occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
   const occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship>& theCGRR,
   const occ::handle<Transfer_TransientProcess>&                               theTP,
@@ -1700,6 +1780,17 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
             theTP->Bind(aSet, new TransferBRep_ShapeBinder(aSetBuilder.Value()));
             aB.Add(aComp, aSetBuilder.Value());
           }
+        }
+        continue;
+      }
+      occ::handle<StepGeom_Curve> aCurve = occ::down_cast<StepGeom_Curve>(anItem);
+      if (!aCurve.IsNull())
+      {
+        const bool   isNew  = !theTP->IsBound(aCurve);
+        TopoDS_Shape aShape = transferSupplementalCurve(aCurve, theTP, aLocalFactors);
+        if (isNew && !aShape.IsNull())
+        {
+          aB.Add(aComp, aShape);
         }
         continue;
       }
