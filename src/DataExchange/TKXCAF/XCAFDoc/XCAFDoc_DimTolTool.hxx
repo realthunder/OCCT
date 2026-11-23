@@ -224,6 +224,27 @@ public:
   Standard_EXPORT bool GetTolerOfDatumLabels(const TDF_Label&                 theDatumL,
                                              NCollection_Sequence<TDF_Label>& theTols) const;
 
+  //! Makes the tolerance theLowerL a lower segment of the composite frame
+  //! whose upper segment is theUpperL (AP242's geometric_tolerance_relationship
+  //! 'composite': one characteristic, the lower segments refining the upper's
+  //! pattern-locating zone). A lower segment is of one frame: an earlier
+  //! upper is replaced.
+  Standard_EXPORT void SetCompositeUpper(const TDF_Label& theLowerL,
+                                         const TDF_Label& theUpperL) const;
+
+  //! The upper segment of the composite frame the tolerance theLowerL is a
+  //! lower segment of; false when it is none.
+  Standard_EXPORT static bool GetCompositeUpper(const TDF_Label& theLowerL, TDF_Label& theUpperL);
+
+  //! Says the GD&T theGDTL, which holds no graphic of its own, is presented by
+  //! the graphic the GD&T theHostL holds (a hole's depth in its callout, a
+  //! pattern's sizes in one "32X R"): written to STEP, it is linked to that
+  //! graphic as what it presents. One host each: an earlier one is replaced.
+  Standard_EXPORT void SetPresentedWith(const TDF_Label& theGDTL, const TDF_Label& theHostL) const;
+
+  //! The GD&T whose graphic presents theGDTL too; false when there is none.
+  Standard_EXPORT static bool GetPresentedWith(const TDF_Label& theGDTL, TDF_Label& theHostL);
+
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,
                                         NCollection_Sequence<TDF_Label>& theDatum) const;

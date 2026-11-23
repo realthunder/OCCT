@@ -81,6 +81,7 @@
 #include <StepDimTol_DatumReference.hxx>
 #include <StepDimTol_DatumSystem.hxx>
 #include <StepDimTol_DatumSystemOrReference.hxx>
+#include <StepDimTol_GeometricToleranceRelationship.hxx>
 #include <StepDimTol_GeometricToleranceType.hxx>
 #include <StepDimTol_GeometricToleranceWithDatumReference.hxx>
 #include <StepDimTol_GeometricToleranceWithModifiers.hxx>
@@ -111,6 +112,7 @@
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
 #include <StepGeom_Plane.hxx>
 #include <StepRepr_CompGroupShAspAndCompShAspAndDatumFeatAndShAsp.hxx>
+#include <StepRepr_AllAroundShapeAspect.hxx>
 #include <StepRepr_CompositeShapeAspect.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentation.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentationRelationship.hxx>
@@ -268,6 +270,58 @@ static bool GetLabelName(const TDF_Label& theL, occ::handle<TCollection_HAsciiSt
 
 //=================================================================================================
 
+//! The draughting model of the GD&T presentations, with the writer's state
+//! that has no member in it: STEPCAFControl_Writer is constructed on its
+//! user's stack, its layout is its ABI. Of no type of its own -- it is
+//! written as the draughting model it is.
+namespace
+{
+class GDTPresentationModel : public StepVisual_DraughtingModel
+{
+public:
+  //! The colour GD&T presentations are drawn in
+  Quantity_Color Color = Quantity_Color(Quantity_NOC_WHITE);
+  //! The presentation of each GD&T label written: its draughting callout,
+  //! and its annotation plane when it has one -- what a view of it lists
+  NCollection_DataMap<TDF_Label, NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>>
+    Items;
+  //! A PMI with no graphic of its own, presented by the one another PMI holds
+  //! (XCAFDoc_DimTolTool::SetPresentedWith; NIST STC-07's 32 radii by one '32X R', a
+  //! hole's depth by its callout): linked to it once all are written, in whatever
+  //! order they were
+  struct Link
+  {
+    TDF_Label                                               Label;
+    TDF_Label                                               Host;
+    occ::handle<Standard_Transient>                         Dimension;
+    NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> Geometry;
+  };
+  NCollection_Sequence<Link> Links;
+};
+
+//! theModel is the writer's myGDTPresentationDM, made in Init() and nowhere else
+GDTPresentationModel& gdtState(const occ::handle<StepVisual_DraughtingModel>& theModel)
+{
+  return *static_cast<GDTPresentationModel*>(theModel.get());
+}
+} // namespace
+
+//=================================================================================================
+
+void STEPCAFControl_Writer::SetGDTPresentationColor(const Quantity_Color& theColor)
+{
+  gdtState(myGDTPresentationDM).Color = theColor;
+}
+
+//=================================================================================================
+
+const Quantity_Color& STEPCAFControl_Writer::GetGDTPresentationColor() const
+{
+  return gdtState(myGDTPresentationDM).Color;
+}
+
+//=================================================================================================
+
 STEPCAFControl_Writer::STEPCAFControl_Writer()
     : myColorMode(true),
       myNameMode(true),
@@ -316,8 +370,15 @@ void STEPCAFControl_Writer::Init(const occ::handle<XSControl_WorkSession>& theWS
   myLabels.Clear();
   myPureRefLabels.Clear();
   myRootLabels.Clear();
-  myGDTPresentationDM = new StepVisual_DraughtingModel();
-  myGDTPrsItems.Clear();
+  // The colour set is kept through an Init, as a member was
+  Quantity_Color aColor(Quantity_NOC_WHITE);
+  if (!myGDTPresentationDM.IsNull())
+  {
+    aColor = gdtState(myGDTPresentationDM).Color;
+  }
+  occ::handle<GDTPresentationModel> aDM = new GDTPresentationModel();
+  aDM->Color                            = aColor;
+  myGDTPresentationDM                   = aDM;
   myGDTPrsCurveStyle =
     new NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>(1, 1);
 }
@@ -3262,6 +3323,19 @@ void STEPCAFControl_Writer::writePresentation(
   // graphic-only note on nothing, NIST CTC-05's rectangular regions -- the
   // callout is in the draughting model with no association: one to an empty
   // shape aspect a reader (SFA) takes for geometry it cannot find
+  TDF_Label aHostL;
+  if (thePresentation.IsNull() && !theDimension.IsNull() && theHasSemantic
+      && XCAFDoc_DimTolTool::GetPresentedWith(theLabel, aHostL))
+  {
+    // Not drawn: another's graphic presents it too
+    GDTPresentationModel::Link aLink;
+    aLink.Label     = theLabel;
+    aLink.Host      = aHostL;
+    aLink.Dimension = theDimension;
+    aLink.Geometry  = theGeometry;
+    gdtState(myGDTPresentationDM).Links.Append(aLink);
+    return;
+  }
   if (thePresentation.IsNull() || (theDimension.IsNull() && !theAlone))
   {
     return;
@@ -3299,12 +3373,12 @@ void STEPCAFControl_Writer::writePresentation(
   myGDTAnnotations.Append(aDCallout);
   if (!theLabel.IsNull())
   {
-    if (!myGDTPrsItems.IsBound(theLabel))
+    if (!gdtState(myGDTPresentationDM).Items.IsBound(theLabel))
     {
-      myGDTPrsItems.Bind(theLabel,
+      gdtState(myGDTPresentationDM).Items.Bind(theLabel,
                          NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>());
     }
-    myGDTPrsItems.ChangeFind(theLabel).Append(aDCallout);
+    gdtState(myGDTPresentationDM).Items.ChangeFind(theLabel).Append(aDCallout);
   }
   // Its associations, to what it presents and to its geometry: none for a
   // graphic alone, which still has its plane (an annotation in no
@@ -3383,7 +3457,8 @@ void STEPCAFControl_Writer::writePresentation(
   occ::handle<NCollection_HArray1<double>> aCoords  = new NCollection_HArray1<double>(1, 3);
   for (int i = 1; i <= 3; i++)
   {
-    aCoords->SetValue(i, theTextPosition.Coord(i));
+    // In the file's length unit, as the plane and the graphic are
+    aCoords->SetValue(i, theTextPosition.Coord(i) / theLocalFactors.LengthFactor());
   }
   aTextPos->Init(new TCollection_HAsciiString(), aCoords);
   anAxis->SetLocation(aTextPos);
@@ -3400,7 +3475,7 @@ void STEPCAFControl_Writer::writePresentation(
   myGDTAnnotations.Append(anAnnPlane);
   if (!theLabel.IsNull())
   {
-    myGDTPrsItems.ChangeFind(theLabel).Append(anAnnPlane);
+    gdtState(myGDTPresentationDM).Items.ChangeFind(theLabel).Append(anAnnPlane);
   }
   aModel->AddWithRefs(anAnnPlane);
 }
@@ -4596,7 +4671,7 @@ static occ::handle<StepDimTol_GeometricToleranceWithDatumReference> toleranceWit
 // purpose  : auxiliary (write Geometric_Tolerance entity for given shapes,
 //           label and datum system)
 //======================================================================
-void STEPCAFControl_Writer::writeGeomTolerance(
+occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomTolerance(
   const occ::handle<XSControl_WorkSession>&                                  theWS,
   const NCollection_Sequence<TDF_Label>&                                     theShapeSeqL,
   const TDF_Label&                                                           theGeomTolL,
@@ -4609,12 +4684,12 @@ void STEPCAFControl_Writer::writeGeomTolerance(
   occ::handle<XCAFDoc_GeomTolerance>           aGTAttr;
   if (!theGeomTolL.FindAttribute(XCAFDoc_GeomTolerance::GetID(), aGTAttr))
   {
-    return;
+    return nullptr;
   }
   occ::handle<XCAFDimTolObjects_GeomToleranceObject> anObject = aGTAttr->GetObject();
   if (anObject.IsNull())
   {
-    return;
+    return nullptr;
   }
 
   // Value
@@ -4627,10 +4702,22 @@ void STEPCAFControl_Writer::writeGeomTolerance(
   aModel->AddWithRefs(aLMWU);
 
   // Geometric_Tolerance target
+  // All around: the target is an all_around_shape_aspect of the faces' aspects, as it is
+  // read. The modifier was read and never written: every profile all around (seven of
+  // NIST's files) came back one of its faces alone
+  bool                                                       isAllAround = false;
+  const NCollection_Sequence<XCAFDimTolObjects_GeomToleranceModif> anAllModifs =
+    anObject->GetModifiers();
+  for (NCollection_Sequence<XCAFDimTolObjects_GeomToleranceModif>::Iterator aModIt(anAllModifs);
+       aModIt.More();
+       aModIt.Next())
+  {
+    isAllAround = isAllAround || aModIt.Value() == XCAFDimTolObjects_GeomToleranceModif_All_Around;
+  }
   occ::handle<StepRepr_ShapeAspect>                 aMainSA;
   occ::handle<StepRepr_RepresentationContext>       dummyRC;
   occ::handle<StepAP242_GeometricItemSpecificUsage> dummyGISU;
-  if (theShapeSeqL.Length() == 1)
+  if (theShapeSeqL.Length() == 1 && !isAllAround)
   {
     TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(theShapeSeqL.Value(1));
     aMainSA             = writeShapeAspect(theWS, theGeomTolL, aShape, dummyRC, dummyGISU);
@@ -4651,7 +4738,14 @@ void STEPCAFControl_Writer::writeGeomTolerance(
       }
       if (aCSA.IsNull())
       {
-        aCSA = new StepRepr_CompositeShapeAspect();
+        if (isAllAround)
+        {
+          aCSA = new StepRepr_AllAroundShapeAspect();
+        }
+        else
+        {
+          aCSA = new StepRepr_CompositeShapeAspect();
+        }
         aCSA->Init(aSA->Name(), aSA->Description(), aSA->OfShape(), aSA->ProductDefinitional());
         aModel->AddWithRefs(aCSA);
       }
@@ -4869,6 +4963,7 @@ void STEPCAFControl_Writer::writeGeomTolerance(
                     keptOr(anObject->GetPresentationType(), presentedType(anObject->GetType())),
                     shapeAspects(aMainSA),
                     theLocalFactors);
+  return aGeomTol;
 }
 
 //=================================================================================================
@@ -5399,7 +5494,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
   // Common entities for presentation
   STEPConstruct_Styles           aStyles(theWS);
-  occ::handle<StepVisual_Colour> aCurvColor = STEPConstruct_Styles::EncodeColor(myGDTPrsColor);
+  occ::handle<StepVisual_Colour> aCurvColor = STEPConstruct_Styles::EncodeColor(gdtState(myGDTPresentationDM).Color);
   occ::handle<StepRepr_RepresentationItem> anItem = nullptr;
   myGDTPrsCurveStyle->SetValue(
     1,
@@ -5808,6 +5903,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     aDGTTool->GetGeomToleranceLabels(aDGTLabels);
     aDGTLabels.Append(aaDGTLS);
   }
+  NCollection_DataMap<TDF_Label, occ::handle<StepDimTol_GeometricTolerance>> aWrittenTols;
   for (NCollection_Sequence<TDF_Label>::Iterator aDGTIter(aDGTLabels); aDGTIter.More();
        aDGTIter.Next())
   {
@@ -5824,7 +5920,34 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     {
       aDatumSystem = WriteDatumSystem(theWS, aGeomTolL, aDatumSeq, aDatumMap, aRC, theLocalFactors);
     }
-    writeGeomTolerance(theWS, aFirstShapeL, aGeomTolL, aDatumSystem, aRC, theLocalFactors);
+    occ::handle<StepDimTol_GeometricTolerance> aTol =
+      writeGeomTolerance(theWS, aFirstShapeL, aGeomTolL, aDatumSystem, aRC, theLocalFactors);
+    if (!aTol.IsNull())
+    {
+      aWrittenTols.Bind(aGeomTolL, aTol);
+    }
+  }
+  // Composite frames: each lower segment related to its upper, the upper
+  // relating (AP242's geometric_tolerance_relationship 'composite')
+  // In the labels' order: the same file each time
+  for (NCollection_Sequence<TDF_Label>::Iterator aTolIter(aDGTLabels); aTolIter.More();
+       aTolIter.Next())
+  {
+    TDF_Label                                  anUpperL;
+    occ::handle<StepDimTol_GeometricTolerance> anUpper, aLower;
+    if (!aWrittenTols.Find(aTolIter.Value(), aLower)
+        || !XCAFDoc_DimTolTool::GetCompositeUpper(aTolIter.Value(), anUpperL)
+        || !aWrittenTols.Find(anUpperL, anUpper))
+    {
+      continue;
+    }
+    occ::handle<StepDimTol_GeometricToleranceRelationship> aRel =
+      new StepDimTol_GeometricToleranceRelationship();
+    aRel->Init(new TCollection_HAsciiString("composite"),
+               new TCollection_HAsciiString(),
+               anUpper,
+               aLower);
+    aModel->AddWithRefs(aRel);
   }
 
   // The context: a shape aspect's, else -- none written, every item a
@@ -5852,6 +5975,71 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     aTextIt.Value()->SetContextOfItems(aRC);
   }
 
+  // The PMI presented by another's graphic: linked to it, and to its geometry, as one drawn
+  // is; a view of it shows that graphic
+  GDTPresentationModel& aState = gdtState(myGDTPresentationDM);
+  for (NCollection_Sequence<GDTPresentationModel::Link>::Iterator aLinkIt(aState.Links);
+       aLinkIt.More();
+       aLinkIt.Next())
+  {
+    const GDTPresentationModel::Link&         aLink = aLinkIt.Value();
+    // The host's callout: the first of what was written for it (its plane follows)
+    occ::handle<StepVisual_DraughtingCallout> aCallout;
+    if (const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>* aShownOfHost =
+          aState.Items.Seek(aLink.Host))
+    {
+      for (NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>::Iterator anItemIt(
+             *aShownOfHost);
+           anItemIt.More() && aCallout.IsNull();
+           anItemIt.Next())
+      {
+        aCallout = occ::down_cast<StepVisual_DraughtingCallout>(anItemIt.Value());
+      }
+    }
+    if (aCallout.IsNull())
+    {
+      continue;
+    }
+    occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> aCallouts =
+      new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
+    aCallouts->SetValue(1, aCallout);
+    StepAP242_ItemIdentifiedRepresentationUsageDefinition aDefinition;
+    aDefinition.SetValue(aLink.Dimension);
+    occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
+      new StepAP242_DraughtingModelItemAssociation();
+    aDMIA->Init(new TCollection_HAsciiString("PMI representation to presentation link"),
+                new TCollection_HAsciiString(),
+                aDefinition,
+                myGDTPresentationDM,
+                aCallouts);
+    aModel->AddWithRefs(aDMIA);
+    for (NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>::Iterator aGeomIt(aLink.Geometry);
+         aGeomIt.More();
+         aGeomIt.Next())
+    {
+      if (aGeomIt.Value().IsNull())
+      {
+        continue;
+      }
+      StepAP242_ItemIdentifiedRepresentationUsageDefinition aGeometry;
+      aGeometry.SetValue(aGeomIt.Value());
+      occ::handle<StepAP242_DraughtingModelItemAssociation> aGeomDMIA =
+        new StepAP242_DraughtingModelItemAssociation();
+      aGeomDMIA->Init(new TCollection_HAsciiString(),
+                      new TCollection_HAsciiString(),
+                      aGeometry,
+                      myGDTPresentationDM,
+                      aCallouts);
+      aModel->AddWithRefs(aGeomDMIA);
+    }
+    if (!aLink.Label.IsNull() && !aState.Items.IsBound(aLink.Label))
+    {
+      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> aShown;
+      aShown.Append(aCallout);
+      aState.Items.Bind(aLink.Label, aShown);
+    }
+  }
+  aState.Links.Clear();
   // Write Draughting model for Annotation Planes
   if (myGDTAnnotations.Length() > 0)
   {
@@ -6041,7 +6229,7 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
            aGDTIter.Next())
       {
         const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>* aPrs =
-          myGDTPrsItems.Seek(aGDTIter.Value());
+          gdtState(myGDTPresentationDM).Items.Seek(aGDTIter.Value());
         if (aPrs == nullptr)
         {
           continue;

@@ -142,6 +142,7 @@
 #include <StepShape_GeometricCurveSet.hxx>
 #include <StepShape_GeometricSet.hxx>
 #include <StepData_UndefinedEntity.hxx>
+#include <StepDimTol_GeometricToleranceRelationship.hxx>
 #include <Interface_UndefinedContent.hxx>
 #include <StepShape_Face.hxx>
 #include <StepShape_FaceBound.hxx>
@@ -3476,11 +3477,14 @@ bool readAnnotationPlane(const occ::handle<StepVisual_AnnotationPlane>& theAnnot
 //            the placeholder's set (the box and placement of it) -- by which a
 //            reader (SFA) counts it a graphic. STC-07: 31 of its 32 radii,
 //            presented by one '32X R', each by a placeholder 'Linear Size.13'
-//            of a 'linear dimension'
+//            of a 'linear dimension'. Where the text goes is the set's
+//            placement: the PMI's plane and text point, each its own (the
+//            annotation plane alone leaves the 31 one upon another)
 //=======================================================================
 static void readPlaceholder(const occ::handle<StepAP242_DraughtingModelItemAssociation>& theDMIA,
                             const occ::handle<TCollection_HAsciiString>& thePresentName,
-                            const occ::handle<Standard_Transient>&       theDimObject)
+                            const occ::handle<Standard_Transient>&       theDimObject,
+                            const StepData_Factors&                      theLocalFactors)
 {
   occ::handle<StepAP242_DraughtingModelItemAssociationWithPlaceholder> aLink =
     occ::down_cast<StepAP242_DraughtingModelItemAssociationWithPlaceholder>(theDMIA);
@@ -3488,9 +3492,23 @@ static void readPlaceholder(const occ::handle<StepAP242_DraughtingModelItemAssoc
   {
     return;
   }
+  // Not in place of a graphic it holds already (a datum's, read from another of its features)
+  occ::handle<XCAFDimTolObjects_DimensionObject>     aHasDim =
+    occ::down_cast<XCAFDimTolObjects_DimensionObject>(theDimObject);
+  occ::handle<XCAFDimTolObjects_DatumObject> aHasDatum =
+    occ::down_cast<XCAFDimTolObjects_DatumObject>(theDimObject);
+  occ::handle<XCAFDimTolObjects_GeomToleranceObject> aHasTol =
+    occ::down_cast<XCAFDimTolObjects_GeomToleranceObject>(theDimObject);
+  if ((!aHasDim.IsNull() && !aHasDim->GetPresentation().IsNull())
+      || (!aHasDatum.IsNull() && !aHasDatum->GetPresentation().IsNull())
+      || (!aHasTol.IsNull() && !aHasTol->GetPresentation().IsNull()))
+  {
+    return;
+  }
   // Its set: the one representation item among its parameters (the others its
   // name, styles, role, line spacing and leader lines), in any part of a complex
-  occ::handle<TCollection_HAsciiString> aType;
+  occ::handle<TCollection_HAsciiString>  aType;
+  occ::handle<StepGeom_Axis2Placement3d> aPlace;
   for (occ::handle<StepData_UndefinedEntity> anEnt =
          occ::down_cast<StepData_UndefinedEntity>(aLink->AnnotationPlaceholder());
        !anEnt.IsNull() && aType.IsNull();
@@ -3508,7 +3526,24 @@ static void readPlaceholder(const occ::handle<StepAP242_DraughtingModelItemAssoc
       if (!anItem.IsNull() && !anItem->Name().IsNull() && anItem->Name()->Length() > 0)
       {
         aType = anItem->Name();
+        occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
+        for (int j = 1; !aSet.IsNull() && j <= aSet->NbElements() && aPlace.IsNull(); j++)
+        {
+          aPlace = occ::down_cast<StepGeom_Axis2Placement3d>(aSet->ElementsValue(j).Value());
+        }
       }
+    }
+  }
+  bool   hasPlace = false;
+  gp_Ax2 aPlane;
+  if (!aPlace.IsNull())
+  {
+    occ::handle<Geom_Axis2Placement> anAxis =
+      StepToGeom::MakeAxis2Placement(aPlace, theLocalFactors);
+    if (!anAxis.IsNull())
+    {
+      aPlane   = anAxis->Ax2();
+      hasPlace = true;
     }
   }
   if (occ::handle<XCAFDimTolObjects_DimensionObject> anObj =
@@ -3516,18 +3551,33 @@ static void readPlaceholder(const occ::handle<StepAP242_DraughtingModelItemAssoc
   {
     anObj->SetPresentation(TopoDS_Shape(), thePresentName);
     anObj->SetPresentationType(aType);
+    if (hasPlace)
+    {
+      anObj->SetPlane(aPlane);
+      anObj->SetPointTextAttach(aPlane.Location());
+    }
   }
   else if (occ::handle<XCAFDimTolObjects_DatumObject> aDatum =
              occ::down_cast<XCAFDimTolObjects_DatumObject>(theDimObject))
   {
     aDatum->SetPresentation(TopoDS_Shape(), thePresentName);
     aDatum->SetPresentationType(aType);
+    if (hasPlace)
+    {
+      aDatum->SetPlane(aPlane);
+      aDatum->SetPointTextAttach(aPlane.Location());
+    }
   }
   else if (occ::handle<XCAFDimTolObjects_GeomToleranceObject> aTol =
              occ::down_cast<XCAFDimTolObjects_GeomToleranceObject>(theDimObject))
   {
     aTol->SetPresentation(TopoDS_Shape(), thePresentName);
     aTol->SetPresentationType(aType);
+    if (hasPlace)
+    {
+      aTol->SetPlane(aPlane);
+      aTol->SetPointTextAttach(aPlane.Location());
+    }
   }
 }
 
@@ -3570,6 +3620,13 @@ void readAnnotation(const occ::handle<XSControl_TransferReader>& theTR,
       {
         aPlaceholderDMIA = anAssoc;
       }
+      continue;
+    }
+    // Any association of the PMI that has no placeholder, as it always was (Search() is -1
+    // for a name that is not the link's, taken for true): the first; one of no name too
+    if (anAssoc->Name().IsNull())
+    {
+      aDMIA = anAssoc;
       continue;
     }
     occ::handle<TCollection_HAsciiString> aName = new TCollection_HAsciiString(anAssoc->Name());
@@ -3648,7 +3705,7 @@ void readAnnotation(const occ::handle<XSControl_TransferReader>& theTR,
                            aLocalFactors,
                            &aPresentType))
   {
-    readPlaceholder(aDMIA, aPresentName, theDimObject);
+    readPlaceholder(aDMIA, aPresentName, theDimObject, aLocalFactors);
     return;
   }
   gp_Pnt aPtext(0., 0., 0.);
@@ -4025,24 +4082,54 @@ static bool isPresentationLink(const occ::handle<StepAP242_DraughtingModelItemAs
 
 //! Whether the GD&T read as this label holds a graphic: a PMI read with none, its graphic not
 //! taken (a dimension given no value, NIST CTC-01's), leaves its graphic to be one alone
-static bool hasPresentation(const TDF_Label& theLabel)
+//! theName, when given, receives the name of the graphic it holds.
+static bool hasPresentation(const TDF_Label&                       theLabel,
+                            occ::handle<TCollection_HAsciiString>* theName = nullptr)
 {
-  occ::handle<XCAFDoc_GeomTolerance> aGT;
+  TopoDS_Shape                          aShape;
+  occ::handle<TCollection_HAsciiString> aName;
+  occ::handle<XCAFDoc_GeomTolerance>    aGT;
+  occ::handle<XCAFDoc_Dimension>        aDim;
+  occ::handle<XCAFDoc_Datum>            aDatum;
   if (theLabel.FindAttribute(XCAFDoc_GeomTolerance::GetID(), aGT))
   {
-    return !aGT->GetObject()->GetPresentation().IsNull();
+    aShape = aGT->GetObject()->GetPresentation();
+    aName  = aGT->GetObject()->GetPresentationName();
   }
-  occ::handle<XCAFDoc_Dimension> aDim;
-  if (theLabel.FindAttribute(XCAFDoc_Dimension::GetID(), aDim))
+  else if (theLabel.FindAttribute(XCAFDoc_Dimension::GetID(), aDim))
   {
-    return !aDim->GetObject()->GetPresentation().IsNull();
+    aShape = aDim->GetObject()->GetPresentation();
+    aName  = aDim->GetObject()->GetPresentationName();
   }
-  occ::handle<XCAFDoc_Datum> aDatum;
-  if (theLabel.FindAttribute(XCAFDoc_Datum::GetID(), aDatum))
+  else if (theLabel.FindAttribute(XCAFDoc_Datum::GetID(), aDatum))
   {
-    return !aDatum->GetObject()->GetPresentation().IsNull();
+    aShape = aDatum->GetObject()->GetPresentation();
+    aName  = aDatum->GetObject()->GetPresentationName();
   }
-  return false;
+  if (theName)
+  {
+    *theName = aName;
+  }
+  return !aShape.IsNull();
+}
+
+//! The name of a graphic: a callout's, or an occurrence's in none
+static TCollection_AsciiString presentationName(const occ::handle<Standard_Transient>& theEnt)
+{
+  occ::handle<TCollection_HAsciiString>     aName;
+  occ::handle<StepVisual_DraughtingCallout> aCallout =
+    occ::down_cast<StepVisual_DraughtingCallout>(theEnt);
+  occ::handle<StepRepr_RepresentationItem> anItem =
+    occ::down_cast<StepRepr_RepresentationItem>(theEnt);
+  if (!aCallout.IsNull())
+  {
+    aName = aCallout->Name();
+  }
+  else if (!anItem.IsNull())
+  {
+    aName = anItem->Name();
+  }
+  return aName.IsNull() ? TCollection_AsciiString() : aName->String();
 }
 
 //! A dimensional size, or a datum feature that is one too (NIST STC-07)
@@ -4242,7 +4329,12 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
     aRelatingSAs.Append(aSAR->RelatingShapeAspect());
     occ::handle<StepDimTol_DatumFeature> aDF =
       occ::down_cast<StepDimTol_DatumFeature>(aSAR->RelatingShapeAspect());
-    if (!aSAR->RelatingShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
+    // A datum feature that is its own size (NIST STC-07's holes, datums B and
+    // C): the graphic linked to it is the size's ('Linear Size.1'), the
+    // datum's own linked to the datum ('Datum Feature.2'), read below
+    if (!aSAR->RelatingShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget))
+        && !aSAR->RelatingShapeAspect()->IsKind(
+          STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature)))
     {
       readAnnotation(aTR, aSAR->RelatingShapeAspect(), aDatObj, theLocalFactors);
     }
@@ -4512,7 +4604,10 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
     for (int i = 1; i <= aSAs.Length(); i++)
     {
       occ::handle<StepRepr_ShapeAspect> aSA = aSAs.Value(i);
-      if (aSA.IsNull() || aSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
+      // A datum feature that is its own size is its size's: bound to both, the first
+      // read had it, by the order of the file
+      if (aSA.IsNull() || aSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget))
+          || aSA->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature)))
       {
         continue;
       }
@@ -4521,7 +4616,8 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
     for (int i = 1; i <= aRelatingSAs.Length(); i++)
     {
       const occ::handle<StepRepr_ShapeAspect>& aSA = aRelatingSAs.Value(i);
-      if (!aSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
+      if (!aSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget))
+          && !aSA->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature)))
       {
         myGDTMap.Bind(aSA, aDatL);
       }
@@ -5436,6 +5532,9 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
   aDimObj                                                = new XCAFDimTolObjects_DimensionObject();
   double                                           aDim1 = -1., aDim2 = -1., aDim3 = -1.;
   bool                                             isPlusMinusTolerance = false;
+  // A deviation is signed (10 -0.1/-0.3, 10 +0.3/+0.1): whether one was read is its own flag,
+  // not its sign
+  bool hasLowerDev = false, hasUpperDev = false;
   occ::handle<StepShape_TypeQualifier>             aTQ;
   occ::handle<StepShape_ValueFormatTypeQualifier>  aVFTQ;
   occ::handle<StepShape_ToleranceValue>            aTV;
@@ -5498,6 +5597,25 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
               {
                 convertAngleValue(anUnitCtx, aVal);
               }
+              // How it is written ('NR2 1.2': NIST's values, '.31' where it
+              // is .3125), from its qualifiers: this case takes the qualified
+              // values too, the one below never sees them
+              occ::handle<StepRepr_ReprItemAndMeasureWithUnitAndQRI> aQualified =
+                occ::down_cast<StepRepr_ReprItemAndMeasureWithUnitAndQRI>(aDRI);
+              occ::handle<StepShape_QualifiedRepresentationItem> aQRI;
+              if (!aQualified.IsNull())
+              {
+                aQRI = aQualified->GetQualifiedRepresentationItem();
+              }
+              for (int l = 1; !aQRI.IsNull() && l <= aQRI->NbQualifiers(); l++)
+              {
+                occ::handle<StepShape_ValueFormatTypeQualifier> aFormat =
+                  aQRI->Qualifiers()->Value(l).ValueFormatTypeQualifier();
+                if (!aFormat.IsNull())
+                {
+                  aVFTQ = aFormat;
+                }
+              }
               occ::handle<TCollection_HAsciiString> aName = aMWU->Name();
               if (aName->Search("upper") > 0)
               { // upper limit
@@ -5537,13 +5655,28 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
               }
               occ::handle<StepShape_QualifiedRepresentationItem> aQRI =
                 aMWU->GetQualifiedRepresentationItem();
-              if (aQRI->Qualifiers()->Length() == 0)
+              // Its qualifiers, any of them: which value it is ('minimum',
+              // 'maximum'), and how it is written ('NR2 1.2': NIST's, a value
+              // given to two places, '.31' where it is .3125)
+              occ::handle<StepShape_TypeQualifier> aValueType;
+              for (int l = 1; !aQRI.IsNull() && l <= aQRI->NbQualifiers(); l++)
+              {
+                if (aValueType.IsNull())
+                {
+                  aValueType = aQRI->Qualifiers()->Value(l).TypeQualifier();
+                }
+                occ::handle<StepShape_ValueFormatTypeQualifier> aFormat =
+                  aQRI->Qualifiers()->Value(l).ValueFormatTypeQualifier();
+                if (!aFormat.IsNull())
+                {
+                  aVFTQ = aFormat;
+                }
+              }
+              if (aValueType.IsNull() || aValueType->Name().IsNull())
               {
                 aDim1 = aVal;
                 continue;
               }
-              occ::handle<StepShape_TypeQualifier> aValueType =
-                aQRI->Qualifiers()->Value(1).TypeQualifier();
               if (aValueType->Name()->String().IsEqual("minimum"))
               {
                 aDim2 = aVal;
@@ -5639,7 +5772,8 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
         {
           aVal = aVal * anUnitCtxUpperBound.LengthFactor();
         }
-        aDim3 = aVal;
+        aDim3       = aVal;
+        hasUpperDev = true;
 
         occ::handle<Standard_Transient> aLowerBound = aTV->LowerBound();
         if (aLowerBound.IsNull())
@@ -5677,7 +5811,9 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
         {
           aVal = aVal * anUnitCtxLowerBound.LengthFactor();
         }
-        aDim2 = std::abs(aVal);
+        // Kept as XCAF keeps a lower deviation, to be negated: -0.3 as 0.3, +0.1 as -0.1
+        aDim2       = -aVal;
+        hasLowerDev = true;
       }
       else
       {
@@ -5692,11 +5828,18 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
     return;
   }
 
-  if (aDim2 < 0)
+  const bool hasDim2 = isPlusMinusTolerance ? hasLowerDev : aDim2 >= 0;
+  const bool hasDim3 = isPlusMinusTolerance ? hasUpperDev : aDim3 >= 0;
+  if (isPlusMinusTolerance && hasDim2 != hasDim3)
+  {
+    // One deviation alone: the other is none
+    (hasDim2 ? aDim3 : aDim2) = 0.;
+  }
+  if (!hasDim2 && !hasDim3)
   {
     aDimObj->SetValue(aDim1);
   }
-  else if (aDim3 < 0)
+  else if (!isPlusMinusTolerance && !hasDim3)
   {
     occ::handle<NCollection_HArray1<double>> anArr = new NCollection_HArray1<double>(1, 2);
     anArr->SetValue(1, aDim1);
@@ -5728,11 +5871,26 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
   if (!aVFTQ.IsNull())
   {
     // A typical value would be 'NR2 2.2'
-    TCollection_HAsciiString aFormat = aVFTQ->FormatType();
-    int                      i       = aFormat.Location(1, ' ', 1, aFormat.Length());
-    aFormat.SubString(i + 1, i + 1)->IntegerValue();
-    aDimObj->SetNbOfDecimalPlaces(aFormat.SubString(i + 1, i + 1)->IntegerValue(),
-                                  aFormat.SubString(i + 3, i + 3)->IntegerValue());
+    // 'NR2 <digits>.<digits>'; a text that is not so is no format, not an error
+    // (this is reached for every qualified value now)
+    TCollection_AsciiString aFormat;
+    if (!aVFTQ->FormatType().IsNull())
+    {
+      aFormat = aVFTQ->FormatType()->String();
+    }
+    const int aSpace = aFormat.Search(" ");
+    const int aDot   = aFormat.Search(".");
+    if (aSpace > 0 && aDot > aSpace + 1 && aDot < aFormat.Length())
+    {
+      TCollection_AsciiString aLeft  = aFormat.SubString(aSpace + 1, aDot - 1);
+      TCollection_AsciiString aRight = aFormat.SubString(aDot + 1, aFormat.Length());
+      aLeft.LeftAdjust();
+      aRight.RightAdjust();
+      if (aLeft.IsIntegerValue() && aRight.IsIntegerValue())
+      {
+        aDimObj->SetNbOfDecimalPlaces(aLeft.IntegerValue(), aRight.IntegerValue());
+      }
+    }
   }
 
   if (!aLAF.IsNull())
@@ -6325,6 +6483,29 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       }
     }
   }
+  // Composite frames: a lower segment's tolerance related to its upper's (AP242's
+  // geometric_tolerance_relationship 'composite', the upper relating), both read. NIST
+  // presents both segments by the upper's graphic, the lower's linked to none
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<StepDimTol_GeometricToleranceRelationship> aRel =
+      occ::down_cast<StepDimTol_GeometricToleranceRelationship>(aModel->Value(i));
+    if (aRel.IsNull() || aRel->Name().IsNull())
+    {
+      continue;
+    }
+    TCollection_AsciiString aKind = aRel->Name()->String();
+    aKind.LowerCase();
+    TDF_Label anUpperL, aLowerL;
+    if (aKind == "composite"
+        && myGDTMap.Find(occ::handle<Standard_Transient>(aRel->RelatingGeometricTolerance()),
+                         anUpperL)
+        && myGDTMap.Find(occ::handle<Standard_Transient>(aRel->RelatedGeometricTolerance()),
+                         aLowerL))
+    {
+      aDGTTool->SetCompositeUpper(aLowerL, anUpperL);
+    }
+  }
   // The graphics of no PMI read, after all that is read: a graphic is asked whether its PMI was
   for (int i = 1; i <= nb; i++)
   {
@@ -6354,7 +6535,11 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       // with it: the one with a placeholder often (NIST FTC-06, STC-06, -08), the others linking
       // it to its geometry only. Of no PMI read -- a datum no tolerance read cites, a tolerance not
       // read (CTC-03) -- it is a graphic alone, by the association to its geometry if any.
-      bool isPresented = false;
+      // A PMI read may be linked to more graphics than the one it holds (NIST STC-07's radius, to
+      // five: four oriented dimensions and the '32X R'): each of the others is a graphic alone,
+      // on that PMI's shapes, not lost
+      bool      isPresented = false;
+      TDF_Label aSecondOf;
       for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt); anIter.More() && !isPresented;
            anIter.Next())
       {
@@ -6364,9 +6549,21 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         {
           continue;
         }
-        const occ::handle<Standard_Transient>& aDef = anAssoc->Definition().Value();
-        isPresented = !aDef.IsNull() && isPresentationLink(anAssoc) && myGDTMap.IsBound(aDef)
-                      && hasPresentation(myGDTMap.Find(aDef));
+        // A copy: Definition() is a temporary, Value() a reference into it
+        const occ::handle<Standard_Transient> aDef = anAssoc->Definition().Value();
+        occ::handle<TCollection_HAsciiString> aHeld;
+        if (!aDef.IsNull() && isPresentationLink(anAssoc) && myGDTMap.IsBound(aDef)
+            && hasPresentation(myGDTMap.Find(aDef), &aHeld))
+        {
+          if (aHeld.IsNull() || aHeld->String() == presentationName(anEnt))
+          {
+            isPresented = true;
+          }
+          else if (aSecondOf.IsNull())
+          {
+            aSecondOf = myGDTMap.Find(aDef);
+          }
+        }
         if (aDMIA.IsNull()
             || (aDMIA->IsKind(
                   STANDARD_TYPE(StepAP242_DraughtingModelItemAssociationWithPlaceholder))
@@ -6436,14 +6633,20 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
               }
             }
           }
-          if (isConnectedToGDT)
+          if (isConnectedToGDT && aSecondOf.IsNull())
           {
             continue;
           }
         }
         else if (aDMIA->Definition().PropertyDefinition().IsNull())
         {
-          continue;
+          if (aSecondOf.IsNull())
+          {
+            continue;
+          }
+          NCollection_Sequence<TDF_Label> aSecond;
+          XCAFDoc_DimTolTool::GetRefShapeLabel(aSecondOf, aShapesL, aSecond);
+          aShapesL.Append(aSecond);
         }
         else
         {
