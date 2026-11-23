@@ -4,6 +4,8 @@ set(OCCT_StepAP242_FILES_LOCATION "${CMAKE_CURRENT_LIST_DIR}")
 set(OCCT_StepAP242_FILES
   StepAP242_DraughtingModelItemAssociation.cxx
   StepAP242_DraughtingModelItemAssociation.hxx
+  StepAP242_DraughtingModelItemAssociationWithPlaceholder.cxx
+  StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx
   StepAP242_GeometricItemSpecificUsage.cxx
   StepAP242_GeometricItemSpecificUsage.hxx
   StepAP242_IdAttribute.cxx

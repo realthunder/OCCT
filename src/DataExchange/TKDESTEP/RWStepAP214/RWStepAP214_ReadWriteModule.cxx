@@ -1359,6 +1359,9 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_ReadWriteModule, StepData_ReadWriteModule
 #include "../RWStepRepr/RWStepRepr_RWValueRepresentationItem.pxx"
 #include "../RWStepRepr/RWStepRepr_RWValueRepresentationItem.pxx"
 #include "../RWStepAP242/RWStepAP242_RWDraughtingModelItemAssociation.pxx"
+#include "../RWStepAP242/RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder.pxx"
+#include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit.pxx"
+#include "../RWStepShape/RWStepShape_RWDimensionalSizeWithDatumFeature.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthMaxTol.pxx"
 #include "../RWStepVisual/RWStepVisual_RWAnnotationCurveOccurrence.pxx"
@@ -1411,6 +1414,9 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_ReadWriteModule, StepData_ReadWriteModule
 #include <StepRepr_RealRepresentationItem.hxx>
 #include <StepRepr_ValueRepresentationItem.hxx>
 #include <StepAP242_DraughtingModelItemAssociation.hxx>
+#include <StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx>
+#include <StepDimTol_GeoTolAndGeoTolWthDefUnit.hxx>
+#include <StepShape_DimensionalSizeWithDatumFeature.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMaxTol.hxx>
 #include <StepVisual_AnnotationCurveOccurrence.hxx>
@@ -2377,6 +2383,10 @@ static constexpr std::string_view Reco_FeatureForDatumTargetRelationship(
   "FEATURE_FOR_DATUM_TARGET_RELATIONSHIP");
 static constexpr std::string_view Reco_DraughtingModelItemAssociation(
   "DRAUGHTING_MODEL_ITEM_ASSOCIATION");
+static constexpr std::string_view Reco_DraughtingModelItemAssociationWithPlaceholder(
+  "DRAUGHTING_MODEL_ITEM_ASSOCIATION_WITH_PLACEHOLDER");
+static constexpr std::string_view Reco_DimensionalSizeWithDatumFeature(
+  "DIMENSIONAL_SIZE_WITH_DATUM_FEATURE");
 static constexpr std::string_view Reco_AnnotationPlane("ANNOTATION_PLANE");
 
 static constexpr std::string_view Reco_TessellatedAnnotationOccurrence(
@@ -3763,6 +3773,8 @@ static void initializeTypenums(StringViewDataMap& theTypenums)
   theTypenums.Bind(Reco_MechanicalDesignAndDraughtingRelationship, 824);
   theTypenums.Bind(Reco_SurfaceStyleReflectanceAmbientDiffuse, 825);
   theTypenums.Bind(Reco_SurfaceStyleReflectanceAmbientDiffuseSpecular, 826);
+  theTypenums.Bind(Reco_DraughtingModelItemAssociationWithPlaceholder, 827);
+  theTypenums.Bind(Reco_DimensionalSizeWithDatumFeature, 829);
 }
 
 // Initialize theTypeshor map
@@ -4361,6 +4373,19 @@ int RWStepAP214_ReadWriteModule::CaseStep(
   //                    si la valeur testee est la meme.
 
   int NbComp = theTypes.Length();
+  // A tolerance's own type (Angularity_Tolerance ...), as sorted before Geometric_Tolerance in a
+  // complex (Angularity to Flatness) or after it (Line_Profile to Total_Runout)
+  const auto isToleranceType = [this](const TCollection_AsciiString& theType,
+                                      const bool                     theBefore) {
+    for (int aNum = theBefore ? 609 : 616; aNum <= (theBefore ? 615 : 624); aNum++)
+    {
+      if (aNum != 610 && theType.IsEqual(StepType(aNum)))
+      {
+        return true;
+      }
+    }
+    return false;
+  };
   if (NbComp < 2)
   {
 #ifdef OCCT_DEBUG
@@ -4671,6 +4696,15 @@ int RWStepAP214_ReadWriteModule::CaseStep(
       {
         return 715;
       }
+      // A tolerance per unit area (NIST CTC-03, FTC-07, STC-07): its type sorted before or
+      // after the rest
+      else if ((isToleranceType(types(1), true) && types(2).IsEqual(StepType(625))
+                && types(3).IsEqual(StepType(673)) && types(4).IsEqual(StepType(674)))
+               || (types(1).IsEqual(StepType(625)) && types(2).IsEqual(StepType(673))
+                   && types(3).IsEqual(StepType(674)) && isToleranceType(types(4), false)))
+      {
+        return 828;
+      }
     }
     else if (NbComp == 3)
     {
@@ -4841,6 +4875,14 @@ int RWStepAP214_ReadWriteModule::CaseStep(
       {
         return 699;
       }
+      // A tolerance per unit length (NIST FTC-10, STC-10)
+      else if ((isToleranceType(types(1), true) && types(2).IsEqual(StepType(625))
+                && types(3).IsEqual(StepType(674)))
+               || (types(1).IsEqual(StepType(625)) && types(2).IsEqual(StepType(674))
+                   && isToleranceType(types(3), false)))
+      {
+        return 828;
+      }
     }
     return 0;
   }
@@ -4943,6 +4985,8 @@ bool RWStepAP214_ReadWriteModule::IsComplex(const int CN) const
     case 698:
       return true;
     case 699:
+      return true;
+    case 828:
       return true;
     case 705:
       return true;
@@ -6420,6 +6464,10 @@ const std::string_view& RWStepAP214_ReadWriteModule::StepType(const int CN) cons
       return Reco_SurfaceStyleReflectanceAmbientDiffuse;
     case 826:
       return Reco_SurfaceStyleReflectanceAmbientDiffuseSpecular;
+    case 827:
+      return Reco_DraughtingModelItemAssociationWithPlaceholder;
+    case 829:
+      return Reco_DimensionalSizeWithDatumFeature;
     default:
       return PasReco;
   }
@@ -6697,6 +6745,11 @@ bool RWStepAP214_ReadWriteModule::ComplexType(
       types.Append(TCollection_AsciiString(StepType(625)));
       types.Append(TCollection_AsciiString(StepType(676)));
       types.Append(TCollection_AsciiString(StepType(625)));
+      break;
+    case 828:
+      types.Append(TCollection_AsciiString(StepType(615)));
+      types.Append(TCollection_AsciiString(StepType(625)));
+      types.Append(TCollection_AsciiString(StepType(674)));
       break;
     case 697:
       types.Append(TCollection_AsciiString(StepType(625)));
@@ -11378,6 +11431,24 @@ void RWStepAP214_ReadWriteModule::ReadStep(const int                            
     case 826: {
       DeclareAndCast(StepVisual_SurfaceStyleReflectanceAmbientDiffuseSpecular, anent, ent);
       RWStepVisual_RWSurfaceStyleReflectanceAmbientDiffuseSpecular aTool;
+      aTool.ReadStep(data, num, ach, anent);
+    }
+    break;
+    case 827: {
+      DeclareAndCast(StepAP242_DraughtingModelItemAssociationWithPlaceholder, anent, ent);
+      RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder aTool;
+      aTool.ReadStep(data, num, ach, anent);
+    }
+    break;
+    case 828: {
+      DeclareAndCast(StepDimTol_GeoTolAndGeoTolWthDefUnit, anent, ent);
+      RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit aTool;
+      aTool.ReadStep(data, num, ach, anent);
+    }
+    break;
+    case 829: {
+      DeclareAndCast(StepShape_DimensionalSizeWithDatumFeature, anent, ent);
+      RWStepShape_RWDimensionalSizeWithDatumFeature aTool;
       aTool.ReadStep(data, num, ach, anent);
     }
     break;
@@ -16282,6 +16353,24 @@ void RWStepAP214_ReadWriteModule::WriteStep(const int                           
     case 826: {
       DeclareAndCast(StepVisual_SurfaceStyleReflectanceAmbientDiffuseSpecular, anent, ent);
       RWStepVisual_RWSurfaceStyleReflectanceAmbientDiffuseSpecular aTool;
+      aTool.WriteStep(SW, anent);
+    }
+    break;
+    case 827: {
+      DeclareAndCast(StepAP242_DraughtingModelItemAssociationWithPlaceholder, anent, ent);
+      RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder aTool;
+      aTool.WriteStep(SW, anent);
+    }
+    break;
+    case 828: {
+      DeclareAndCast(StepDimTol_GeoTolAndGeoTolWthDefUnit, anent, ent);
+      RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit aTool;
+      aTool.WriteStep(SW, anent);
+    }
+    break;
+    case 829: {
+      DeclareAndCast(StepShape_DimensionalSizeWithDatumFeature, anent, ent);
+      RWStepShape_RWDimensionalSizeWithDatumFeature aTool;
       aTool.WriteStep(SW, anent);
     }
     break;

@@ -116,8 +116,11 @@ public:
       const double                                                    theValue,
       const StepBasic_Unit&                                           theUnit);
 
+  //! The shape's graphic, its coordinates divided by theLengthFactor: in the file's
+  //! length unit
   Standard_EXPORT static occ::handle<StepVisual_TessellatedGeometricSet> GetTessellation(
-    const TopoDS_Shape& theShape);
+    const TopoDS_Shape& theShape,
+    const double        theLengthFactor = 1.);
 };
 
 #endif // _STEPCAFControl_GDTProperty_HeaderFile

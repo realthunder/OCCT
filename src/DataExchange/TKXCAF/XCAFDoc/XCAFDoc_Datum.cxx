@@ -343,16 +343,28 @@ void XCAFDoc_Datum::SetObject(const occ::handle<XCAFDimTolObjects_DatumObject>& 
   }
 
   TopoDS_Shape aPresentation = theObject->GetPresentation();
-  if (!aPresentation.IsNull())
+  // Named though nothing is drawn: a placeholder (AP242's
+  // annotation_placeholder_occurrence), where a reader writes the text
+  occ::handle<TCollection_HAsciiString> aPrsName = theObject->GetPresentationName();
+  if (!aPresentation.IsNull() || (!aPrsName.IsNull() && aPrsName->Length() > 0))
   {
-    TDF_Label       aLPres = Label().FindChild(ChildLab_Presentation);
-    TNaming_Builder tnBuild(aLPres);
-    tnBuild.Generated(aPresentation);
+    TDF_Label aLPres = Label().FindChild(ChildLab_Presentation);
+    if (!aPresentation.IsNull())
+    {
+      TNaming_Builder tnBuild(aLPres);
+      tnBuild.Generated(aPresentation);
+    }
     occ::handle<TCollection_HAsciiString> aName = theObject->GetPresentationName();
     if (!aName.IsNull())
     {
       TCollection_ExtendedString str(aName->String());
       TDataStd_Name::Set(aLPres, str);
+    }
+    // The kind of graphic it is, as a file named it
+    occ::handle<TCollection_HAsciiString> aType = theObject->GetPresentationType();
+    if (!aType.IsNull() && aType->Length() > 0)
+    {
+      TDataStd_Name::Set(aLPres.FindChild(1), TCollection_ExtendedString(aType->String()));
     }
   }
 }
@@ -533,25 +545,33 @@ occ::handle<XCAFDimTolObjects_DatumObject> XCAFDoc_Datum::GetObject() const
 
   occ::handle<TNaming_NamedShape> aNS;
   TDF_Label                       aLPres = Label().FindChild(ChildLab_Presentation);
+  TopoDS_Shape                    aPresentation;
   if (aLPres.FindAttribute(TNaming_NamedShape::GetID(), aNS))
   {
-
-    TopoDS_Shape aPresentation = TNaming_Tool::GetShape(aNS);
-    if (!aPresentation.IsNull())
+    aPresentation = TNaming_Tool::GetShape(aNS);
+  }
+  // A placeholder: named though nothing is drawn
+  if (!aPresentation.IsNull() || aLPres.IsAttribute(TDataStd_Name::GetID()))
+  {
+    occ::handle<TDataStd_Name>            aNameAtrr;
+    occ::handle<TCollection_HAsciiString> aPresentName;
+    if (aLPres.FindAttribute(TDataStd_Name::GetID(), aNameAtrr))
     {
-      occ::handle<TDataStd_Name>            aNameAtrr;
-      occ::handle<TCollection_HAsciiString> aPresentName;
-      if (aLPres.FindAttribute(TDataStd_Name::GetID(), aNameAtrr))
+      const TCollection_ExtendedString& aName = aNameAtrr->Get();
+
+      if (!aName.IsEmpty())
       {
-        const TCollection_ExtendedString& aName = aNameAtrr->Get();
-
-        if (!aName.IsEmpty())
-        {
-          aPresentName = new TCollection_HAsciiString(aName);
-        }
+        aPresentName = new TCollection_HAsciiString(aName);
       }
+    }
 
-      anObj->SetPresentation(aPresentation, aPresentName);
+    anObj->SetPresentation(aPresentation, aPresentName);
+    TDF_Label                  aLType = aLPres.FindChild(1, false);
+    occ::handle<TDataStd_Name> aType;
+    if (!aLType.IsNull() && aLType.FindAttribute(TDataStd_Name::GetID(), aType)
+        && !aType->Get().IsEmpty())
+    {
+      anObj->SetPresentationType(new TCollection_HAsciiString(aType->Get()));
     }
   }
   return anObj;

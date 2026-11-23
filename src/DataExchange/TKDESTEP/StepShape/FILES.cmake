@@ -59,6 +59,8 @@ set(OCCT_StepShape_FILES
   StepShape_DimensionalLocationWithPath.hxx
   StepShape_DimensionalSize.cxx
   StepShape_DimensionalSize.hxx
+  StepShape_DimensionalSizeWithDatumFeature.cxx
+  StepShape_DimensionalSizeWithDatumFeature.hxx
   StepShape_DimensionalSizeWithPath.cxx
   StepShape_DimensionalSizeWithPath.hxx
   StepShape_DirectedDimensionalLocation.cxx

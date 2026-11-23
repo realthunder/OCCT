@@ -52,6 +52,10 @@ XCAFDimTolObjects_GeomToleranceObject::XCAFDimTolObjects_GeomToleranceObject(
   myAffectedPlane     = theObj->myAffectedPlane;
   myPresentation      = theObj->myPresentation;
   myPresentationName  = theObj->myPresentationName;
+  myPresentationType  = theObj->myPresentationType;
+  myUnitBasis         = theObj->myUnitBasis;
+  myUnitSize          = theObj->myUnitSize;
+  mySecondUnitSize    = theObj->mySecondUnitSize;
 }
 
 //=================================================================================================
@@ -236,6 +240,9 @@ void XCAFDimTolObjects_GeomToleranceObject::DumpJson(Standard_OStream& theOStrea
   OCCT_DUMP_FIELD_VALUE_NUMERICAL(theOStream, myValueOfZoneModif)
 
   OCCT_DUMP_FIELD_VALUE_NUMERICAL(theOStream, myMaxValueModif)
+  OCCT_DUMP_FIELD_VALUE_NUMERICAL(theOStream, myUnitBasis)
+  OCCT_DUMP_FIELD_VALUE_NUMERICAL(theOStream, myUnitSize)
+  OCCT_DUMP_FIELD_VALUE_NUMERICAL(theOStream, mySecondUnitSize)
   if (myHasAxis)
   {
     OCCT_DUMP_FIELD_VALUES_DUMPED(theOStream, theDepth, &myAxis)

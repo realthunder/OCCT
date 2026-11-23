@@ -62,6 +62,8 @@ set(OCCT_RWStepDimTol_FILES
   RWStepDimTol_RWGeoTolAndGeoTolWthMaxTol.pxx
   RWStepDimTol_RWGeoTolAndGeoTolWthMod.cxx
   RWStepDimTol_RWGeoTolAndGeoTolWthMod.pxx
+  RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit.cxx
+  RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit.pxx
   RWStepDimTol_RWLineProfileTolerance.cxx
   RWStepDimTol_RWLineProfileTolerance.pxx
   RWStepDimTol_RWModifiedGeometricTolerance.cxx

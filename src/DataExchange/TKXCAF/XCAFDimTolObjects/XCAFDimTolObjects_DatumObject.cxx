@@ -53,6 +53,7 @@ XCAFDimTolObjects_DatumObject::XCAFDimTolObjects_DatumObject(
   myPresentation      = theObj->myPresentation;
   mySemanticName      = theObj->mySemanticName;
   myPresentationName  = theObj->myPresentationName;
+  myPresentationType  = theObj->myPresentationType;
 }
 
 //=================================================================================================

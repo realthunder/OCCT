@@ -312,12 +312,24 @@ void XCAFDoc_Dimension::SetObject(const occ::handle<XCAFDimTolObjects_DimensionO
   }
 
   TopoDS_Shape aPresentation = theObject->GetPresentation();
-  if (!aPresentation.IsNull())
+  // Named though nothing is drawn: a placeholder (AP242's
+  // annotation_placeholder_occurrence), where a reader writes the text
+  occ::handle<TCollection_HAsciiString> aPrsName = theObject->GetPresentationName();
+  if (!aPresentation.IsNull() || (!aPrsName.IsNull() && aPrsName->Length() > 0))
   {
-    TDF_Label       aLPres = Label().FindChild(ChildLab_Presentation);
-    TNaming_Builder tnBuild(aLPres);
-    tnBuild.Generated(aPresentation);
+    TDF_Label aLPres = Label().FindChild(ChildLab_Presentation);
+    if (!aPresentation.IsNull())
+    {
+      TNaming_Builder tnBuild(aLPres);
+      tnBuild.Generated(aPresentation);
+    }
     setString(aLPres, theObject->GetPresentationName());
+    // The kind of graphic it is, as a file named it
+    occ::handle<TCollection_HAsciiString> aType = theObject->GetPresentationType();
+    if (!aType.IsNull() && aType->Length() > 0)
+    {
+      TDataStd_Name::Set(aLPres.FindChild(1), TCollection_ExtendedString(aType->String()));
+    }
   }
 
   if (theObject->HasDescriptions())
@@ -490,12 +502,21 @@ occ::handle<XCAFDimTolObjects_DimensionObject> XCAFDoc_Dimension::GetObject() co
 
   occ::handle<TNaming_NamedShape> aNS;
   TDF_Label                       aLPres = Label().FindChild(ChildLab_Presentation);
+  TopoDS_Shape                    aPresentation;
   if (aLPres.FindAttribute(TNaming_NamedShape::GetID(), aNS))
   {
-    TopoDS_Shape aPresentation = TNaming_Tool::GetShape(aNS);
-    if (!aPresentation.IsNull())
+    aPresentation = TNaming_Tool::GetShape(aNS);
+  }
+  // A placeholder: named though nothing is drawn
+  if (!aPresentation.IsNull() || aLPres.IsAttribute(TDataStd_Name::GetID()))
+  {
+    anObj->SetPresentation(aPresentation, getString(aLPres));
+    TDF_Label                  aLType = aLPres.FindChild(1, false);
+    occ::handle<TDataStd_Name> aType;
+    if (!aLType.IsNull() && aLType.FindAttribute(TDataStd_Name::GetID(), aType)
+        && !aType->Get().IsEmpty())
     {
-      anObj->SetPresentation(aPresentation, getString(aLPres));
+      anObj->SetPresentationType(new TCollection_HAsciiString(aType->Get()));
     }
   }
 

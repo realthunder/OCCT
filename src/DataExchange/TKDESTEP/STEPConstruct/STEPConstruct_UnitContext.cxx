@@ -127,7 +127,7 @@ void STEPConstruct_UnitContext::Init(const double                           Tol3
   if (uName)
   { // for non-metric units, create conversion_based_unit
     occ::handle<StepBasic_MeasureValueMember> val = new StepBasic_MeasureValueMember;
-    val->SetName("LENGTH_UNIT");
+    val->SetName("LENGTH_MEASURE");
     val->SetReal(aScale);
 
     occ::handle<StepBasic_LengthMeasureWithUnit> measure = new StepBasic_LengthMeasureWithUnit;

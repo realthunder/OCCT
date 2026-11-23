@@ -51,6 +51,8 @@ enum ChildLab
   ChildLab_PntText,
   ChildLab_Presentation,
   ChildLab_AffectedPlane,
+  ChildLab_UnitBasis,
+  ChildLab_UnitSize,
   ChildLab_End
 };
 
@@ -148,6 +150,15 @@ void XCAFDoc_GeomTolerance::SetObject(
     {
       aModifiers->ChangeArray(anArr);
     }
+  }
+
+  if (theObject->GetUnitBasis() != XCAFDimTolObjects_GeomToleranceUnitBasis_None)
+  {
+    TDataStd_Integer::Set(Label().FindChild(ChildLab_UnitBasis), theObject->GetUnitBasis());
+    occ::handle<TDataStd_RealArray> aSizes =
+      TDataStd_RealArray::Set(Label().FindChild(ChildLab_UnitSize), 1, 2);
+    aSizes->SetValue(1, theObject->GetUnitSize());
+    aSizes->SetValue(2, theObject->GetSecondUnitSize());
   }
 
   if (theObject->GetMaxValueModifier() > 0)
@@ -274,16 +285,28 @@ void XCAFDoc_GeomTolerance::SetObject(
   }
 
   TopoDS_Shape aPresentation = theObject->GetPresentation();
-  if (!aPresentation.IsNull())
+  // Named though nothing is drawn: a placeholder (AP242's
+  // annotation_placeholder_occurrence), where a reader writes the text
+  occ::handle<TCollection_HAsciiString> aPrsName = theObject->GetPresentationName();
+  if (!aPresentation.IsNull() || (!aPrsName.IsNull() && aPrsName->Length() > 0))
   {
-    TDF_Label       aLPres = Label().FindChild(ChildLab_Presentation);
-    TNaming_Builder tnBuild(aLPres);
-    tnBuild.Generated(aPresentation);
+    TDF_Label aLPres = Label().FindChild(ChildLab_Presentation);
+    if (!aPresentation.IsNull())
+    {
+      TNaming_Builder tnBuild(aLPres);
+      tnBuild.Generated(aPresentation);
+    }
     occ::handle<TCollection_HAsciiString> aName = theObject->GetPresentationName();
     if (!aName.IsNull())
     {
       TCollection_ExtendedString str(aName->String());
       TDataStd_Name::Set(aLPres, str);
+    }
+    // The kind of graphic it is, as a file named it
+    occ::handle<TCollection_HAsciiString> aType = theObject->GetPresentationType();
+    if (!aType.IsNull() && aType->Length() > 0)
+    {
+      TDataStd_Name::Set(aLPres.FindChild(1), TCollection_ExtendedString(aType->String()));
     }
   }
 
@@ -355,6 +378,17 @@ occ::handle<XCAFDimTolObjects_GeomToleranceObject> XCAFDoc_GeomTolerance::GetObj
         .FindAttribute(TDataStd_Real::GetID(), aValueOfZoneModif))
   {
     anObj->SetValueOfZoneModifier(aValueOfZoneModif->Get());
+  }
+
+  occ::handle<TDataStd_Integer>   aUnitBasis;
+  occ::handle<TDataStd_RealArray> aUnitSizes;
+  if (Label().FindChild(ChildLab_UnitBasis).FindAttribute(TDataStd_Integer::GetID(), aUnitBasis)
+      && Label().FindChild(ChildLab_UnitSize).FindAttribute(TDataStd_RealArray::GetID(), aUnitSizes)
+      && aUnitSizes->Length() >= 2)
+  {
+    anObj->SetUnitBasis((XCAFDimTolObjects_GeomToleranceUnitBasis)aUnitBasis->Get(),
+                        aUnitSizes->Value(aUnitSizes->Lower()),
+                        aUnitSizes->Value(aUnitSizes->Lower() + 1));
   }
 
   occ::handle<TDataStd_IntegerArray> anArr;
@@ -434,25 +468,33 @@ occ::handle<XCAFDimTolObjects_GeomToleranceObject> XCAFDoc_GeomTolerance::GetObj
 
   occ::handle<TNaming_NamedShape> aNS;
   TDF_Label                       aLPres = Label().FindChild(ChildLab_Presentation);
+  TopoDS_Shape                    aPresentation;
   if (aLPres.FindAttribute(TNaming_NamedShape::GetID(), aNS))
   {
-
-    TopoDS_Shape aPresentation = TNaming_Tool::GetShape(aNS);
-    if (!aPresentation.IsNull())
+    aPresentation = TNaming_Tool::GetShape(aNS);
+  }
+  // A placeholder: named though nothing is drawn
+  if (!aPresentation.IsNull() || aLPres.IsAttribute(TDataStd_Name::GetID()))
+  {
+    occ::handle<TDataStd_Name>            aNameAtrr;
+    occ::handle<TCollection_HAsciiString> aPresentName;
+    if (aLPres.FindAttribute(TDataStd_Name::GetID(), aNameAtrr))
     {
-      occ::handle<TDataStd_Name>            aNameAtrr;
-      occ::handle<TCollection_HAsciiString> aPresentName;
-      if (aLPres.FindAttribute(TDataStd_Name::GetID(), aNameAtrr))
+      const TCollection_ExtendedString& aName = aNameAtrr->Get();
+
+      if (!aName.IsEmpty())
       {
-        const TCollection_ExtendedString& aName = aNameAtrr->Get();
-
-        if (!aName.IsEmpty())
-        {
-          aPresentName = new TCollection_HAsciiString(aName);
-        }
+        aPresentName = new TCollection_HAsciiString(aName);
       }
+    }
 
-      anObj->SetPresentation(aPresentation, aPresentName);
+    anObj->SetPresentation(aPresentation, aPresentName);
+    TDF_Label                  aLType = aLPres.FindChild(1, false);
+    occ::handle<TDataStd_Name> aType;
+    if (!aLType.IsNull() && aLType.FindAttribute(TDataStd_Name::GetID(), aType)
+        && !aType->Get().IsEmpty())
+    {
+      anObj->SetPresentationType(new TCollection_HAsciiString(aType->Get()));
     }
   }
 
