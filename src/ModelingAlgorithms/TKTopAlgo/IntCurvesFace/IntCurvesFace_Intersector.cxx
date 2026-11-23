@@ -36,6 +36,9 @@
 #include <Intf_Tool.hxx>
 #include <TopoDS_Face.hxx>
 #include <BRep_Tool.hxx>
+#include <Geom_Surface.hxx>
+#include <NCollection_Sequence.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Precision.hxx>
@@ -243,16 +246,155 @@ IntCurvesFace_Intersector::IntCurvesFace_Intersector(const TopoDS_Face& Face,
     int NbUOnS = Hsurface->NbUIntervals(GeomAbs_C2);
     int NbVOnS = Hsurface->NbVIntervals(GeomAbs_C2);
 
+    // The polyhedron reaches past the face's bounds, where the surface goes
+    // on there, by as much as its facets lie off the surface. Ending at the
+    // bounds it does not cover the face: a line that crosses the face nearer
+    // to its border than the facets' sag crosses their planes beyond the last
+    // of them, and nothing is found. (A tube of radius 8 as a B-spline, a
+    // strip of it 0.58 wide the face, 20 samples either way: a sag of 0.1
+    // round, rows of 0.03 across; a line crossing the face 0.03 from its edge
+    // found nothing, and the point it came from, inside a solid with that
+    // face on a void, was OUT.) The crossing itself is computed on the
+    // surface and classified on the face as before.
+    double aSU0 = U0, aSU1 = U1, aSV0 = V0, aSV1 = V1;
+    {
+      TopLoc_Location                 aLoc;
+      const occ::handle<Geom_Surface> aGS = BRep_Tool::Surface(Face, aLoc);
+      if (!aGS.IsNull())
+      {
+        aGS->Bounds(aSU0, aSU1, aSV0, aSV1);
+        if (aGS->IsUPeriodic())
+        {
+          // no further than the period: no facet twice
+          const double aFree = 0.5 * (aGS->UPeriod() - (U1 - U0));
+          aSU0               = U0 - std::max(aFree, 0.0);
+          aSU1               = U1 + std::max(aFree, 0.0);
+        }
+        if (aGS->IsVPeriodic())
+        {
+          const double aFree = 0.5 * (aGS->VPeriod() - (V1 - V0));
+          aSV0               = V0 - std::max(aFree, 0.0);
+          aSV1               = V1 + std::max(aFree, 0.0);
+        }
+      }
+    }
+    // The sag of the facets and the length of a row, measured on nine cells
+    // each way; the rows to add are the sag in rows, eight at most.
+    const int THE_MAX_ROWS = 8;
+    int       aRowsU = 0, aRowsV = 0;
+    {
+      const double aDU = (U1 - U0) / nbsu, aDV = (V1 - V0) / nbsv;
+      double       aSag = 0.0, aLenU = 0.0, aLenV = 0.0;
+      for (int a = 1; a <= 3; a++)
+      {
+        for (int b = 1; b <= 3; b++)
+        {
+          const double aU = U0 + aDU * std::min(nbsu - 1, (nbsu * a) / 4);
+          const double aV = V0 + aDV * std::min(nbsv - 1, (nbsv * b) / 4);
+          const gp_Pnt aP00 = Hsurface->Value(aU, aV);
+          const gp_Pnt aP10 = Hsurface->Value(aU + aDU, aV);
+          const gp_Pnt aP01 = Hsurface->Value(aU, aV + aDV);
+          const gp_Pnt aPU  = Hsurface->Value(aU + 0.5 * aDU, aV);
+          const gp_Pnt aPV  = Hsurface->Value(aU, aV + 0.5 * aDV);
+          aLenU += aP00.Distance(aP10) / 9.0;
+          aLenV += aP00.Distance(aP01) / 9.0;
+          aSag = std::max(aSag,
+                          aPU.Distance(gp_Pnt(0.5 * (aP00.XYZ() + aP10.XYZ())))
+                            + aPV.Distance(gp_Pnt(0.5 * (aP00.XYZ() + aP01.XYZ()))));
+        }
+      }
+      if (aSag > Precision::Confusion())
+      {
+        aRowsU = aLenU > Precision::Confusion()
+                   ? std::min(THE_MAX_ROWS, (int)std::ceil(aSag / aLenU))
+                   : THE_MAX_ROWS;
+        aRowsV = aLenV > Precision::Confusion()
+                   ? std::min(THE_MAX_ROWS, (int)std::ceil(aSag / aLenV))
+                   : THE_MAX_ROWS;
+      }
+    }
+    // the bound <theB> moved <theStep> outward, as far as <theLimit> lets it;
+    // true if it moved
+    auto aReach = [](double& theB, const double theStep, const double theLimit) -> bool {
+      const double aNew = theStep < 0.0 ? std::max(theB + theStep, theLimit)
+                                        : std::min(theB + theStep, theLimit);
+      if (std::abs(aNew - theB) <= 0.01 * std::abs(theStep) || Precision::IsInfinite(aNew))
+      {
+        return false;
+      }
+      theB = aNew;
+      return true;
+    };
+
     if (NbUOnS > 1 || NbVOnS > 1)
     {
       occ::handle<NCollection_HArray1<double>> UPars, VPars;
       ComputeSamplePars(Hsurface, nbsu, nbsv, UPars, VPars);
+      for (int k = 0; k < 2; k++)
+      {
+        occ::handle<NCollection_HArray1<double>>& aPars = k == 0 ? UPars : VPars;
+        const int                                 aN    = aPars->Upper();
+        if (aN < 2)
+        {
+          continue;
+        }
+        const double                 aStep0 = aPars->Value(1) - aPars->Value(2);
+        const double                 aStep1 = aPars->Value(aN) - aPars->Value(aN - 1);
+        NCollection_Sequence<double> aSeq;
+        for (int i = 1; i <= aN; i++)
+        {
+          aSeq.Append(aPars->Value(i));
+        }
+        for (int r = 0; r < (k == 0 ? aRowsU : aRowsV); r++)
+        {
+          double aB0 = aSeq.First(), aB1 = aSeq.Last();
+          if (aReach(aB0, aStep0, k == 0 ? aSU0 : aSV0))
+          {
+            aSeq.Prepend(aB0);
+          }
+          if (aReach(aB1, aStep1, k == 0 ? aSU1 : aSV1))
+          {
+            aSeq.Append(aB1);
+          }
+        }
+        if (aSeq.Length() > aN)
+        {
+          aPars = new NCollection_HArray1<double>(1, aSeq.Length());
+          for (int i = 1; i <= aSeq.Length(); i++)
+          {
+            aPars->SetValue(i, aSeq(i));
+          }
+        }
+      }
       myPolyhedron.reset(new IntCurveSurface_ThePolyhedronOfHInter(Hsurface,
                                                                    UPars->ChangeArray1(),
                                                                    VPars->ChangeArray1()));
     }
     else
     {
+      const double aDU = (U1 - U0) / nbsu, aDV = (V1 - V0) / nbsv;
+      for (int r = 0; r < aRowsU; r++)
+      {
+        if (aReach(U0, -aDU, aSU0))
+        {
+          nbsu++;
+        }
+        if (aReach(U1, aDU, aSU1))
+        {
+          nbsu++;
+        }
+      }
+      for (int r = 0; r < aRowsV; r++)
+      {
+        if (aReach(V0, -aDV, aSV0))
+        {
+          nbsv++;
+        }
+        if (aReach(V1, aDV, aSV1))
+        {
+          nbsv++;
+        }
+      }
       myPolyhedron.reset(
         new IntCurveSurface_ThePolyhedronOfHInter(Hsurface, nbsu, nbsv, U0, V0, U1, V1));
     }
