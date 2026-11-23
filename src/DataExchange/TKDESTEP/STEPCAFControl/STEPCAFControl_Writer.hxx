@@ -226,9 +226,12 @@ public:
 
   //! Set the colour GD&T presentations are drawn in (AP242): white unless
   //! set, as it always was.
-  void SetGDTPresentationColor(const Quantity_Color& theColor) { myGDTPrsColor = theColor; }
+  //! Not inline, and kept with no data member of its own: this class is
+  //! constructed on its user's stack, so its size and layout are its ABI --
+  //! a binary built against an earlier header must run with this library.
+  Standard_EXPORT void SetGDTPresentationColor(const Quantity_Color& theColor);
 
-  const Quantity_Color& GetGDTPresentationColor() const { return myGDTPrsColor; }
+  Standard_EXPORT const Quantity_Color& GetGDTPresentationColor() const;
 
   //! Set flag for indicate write material or not.
   void SetMaterialMode(const bool theMaterialMode) { myMatMode = theMaterialMode; }
@@ -449,17 +452,15 @@ private:
   NCollection_DataMap<TopoDS_Shape, occ::handle<Standard_Transient>, TopTools_ShapeMapHasher>
                                                                      myMapCompMDGPR;
   bool                                                               myGDTMode;
-  Quantity_Color myGDTPrsColor = Quantity_Color(Quantity_NOC_WHITE);
   bool                                                               myMatMode;
   bool                                                               myVisMatMode;
   bool                                                               myIsCleanDuplicates;
   NCollection_DynamicArray<occ::handle<StepRepr_RepresentationItem>> myGDTAnnotations;
+  //! The draughting model of the GD&T presentations. It carries, out of
+  //! this class's layout, what was added to the writer since (see
+  //! SetGDTPresentationColor): the colour, and the presentation of each
+  //! GD&T label written. Add no data member here: hold new state there.
   occ::handle<StepVisual_DraughtingModel>                            myGDTPresentationDM;
-  //! The presentation of each GD&T label written: its draughting callout,
-  //! and its annotation plane when it has one -- what a view of it lists
-  NCollection_DataMap<TDF_Label,
-                      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>>
-    myGDTPrsItems;
   occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>>
                                                myGDTPrsCurveStyle;
   occ::handle<StepRepr_ProductDefinitionShape> myGDTCommonPDS;

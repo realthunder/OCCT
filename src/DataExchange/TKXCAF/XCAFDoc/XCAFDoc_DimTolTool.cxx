@@ -817,6 +817,12 @@ void XCAFDoc_DimTolTool::SetCompositeUpper(const TDF_Label& theLowerL,
   {
     return;
   }
+  // No loop: an upper is no lower segment of its own lower
+  TDF_Label anAbove;
+  if (GetCompositeUpper(theUpperL, anAbove) && anAbove == theLowerL)
+  {
+    return;
+  }
   const Standard_GUID&           anID = XCAFDoc::GeomTolCompositeRefGUID();
   occ::handle<XCAFDoc_GraphNode> anUpper = XCAFDoc_GraphNode::Set(theUpperL, anID);
   occ::handle<XCAFDoc_GraphNode> aLower  = XCAFDoc_GraphNode::Set(theLowerL, anID);

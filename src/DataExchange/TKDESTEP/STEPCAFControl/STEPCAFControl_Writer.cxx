@@ -269,6 +269,46 @@ static bool GetLabelName(const TDF_Label& theL, occ::handle<TCollection_HAsciiSt
 
 //=================================================================================================
 
+//! The draughting model of the GD&T presentations, with the writer's state
+//! that has no member in it: STEPCAFControl_Writer is constructed on its
+//! user's stack, its layout is its ABI. Of no type of its own -- it is
+//! written as the draughting model it is.
+namespace
+{
+class GDTPresentationModel : public StepVisual_DraughtingModel
+{
+public:
+  //! The colour GD&T presentations are drawn in
+  Quantity_Color Color = Quantity_Color(Quantity_NOC_WHITE);
+  //! The presentation of each GD&T label written: its draughting callout,
+  //! and its annotation plane when it has one -- what a view of it lists
+  NCollection_DataMap<TDF_Label, NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>>
+    Items;
+};
+
+//! theModel is the writer's myGDTPresentationDM, made in Init() and nowhere else
+GDTPresentationModel& gdtState(const occ::handle<StepVisual_DraughtingModel>& theModel)
+{
+  return *static_cast<GDTPresentationModel*>(theModel.get());
+}
+} // namespace
+
+//=================================================================================================
+
+void STEPCAFControl_Writer::SetGDTPresentationColor(const Quantity_Color& theColor)
+{
+  gdtState(myGDTPresentationDM).Color = theColor;
+}
+
+//=================================================================================================
+
+const Quantity_Color& STEPCAFControl_Writer::GetGDTPresentationColor() const
+{
+  return gdtState(myGDTPresentationDM).Color;
+}
+
+//=================================================================================================
+
 STEPCAFControl_Writer::STEPCAFControl_Writer()
     : myColorMode(true),
       myNameMode(true),
@@ -317,8 +357,15 @@ void STEPCAFControl_Writer::Init(const occ::handle<XSControl_WorkSession>& theWS
   myLabels.Clear();
   myPureRefLabels.Clear();
   myRootLabels.Clear();
-  myGDTPresentationDM = new StepVisual_DraughtingModel();
-  myGDTPrsItems.Clear();
+  // The colour set is kept through an Init, as a member was
+  Quantity_Color aColor(Quantity_NOC_WHITE);
+  if (!myGDTPresentationDM.IsNull())
+  {
+    aColor = gdtState(myGDTPresentationDM).Color;
+  }
+  occ::handle<GDTPresentationModel> aDM = new GDTPresentationModel();
+  aDM->Color                            = aColor;
+  myGDTPresentationDM                   = aDM;
   myGDTPrsCurveStyle =
     new NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>(1, 1);
 }
@@ -3300,12 +3347,12 @@ void STEPCAFControl_Writer::writePresentation(
   myGDTAnnotations.Append(aDCallout);
   if (!theLabel.IsNull())
   {
-    if (!myGDTPrsItems.IsBound(theLabel))
+    if (!gdtState(myGDTPresentationDM).Items.IsBound(theLabel))
     {
-      myGDTPrsItems.Bind(theLabel,
+      gdtState(myGDTPresentationDM).Items.Bind(theLabel,
                          NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>());
     }
-    myGDTPrsItems.ChangeFind(theLabel).Append(aDCallout);
+    gdtState(myGDTPresentationDM).Items.ChangeFind(theLabel).Append(aDCallout);
   }
   // Its associations, to what it presents and to its geometry: none for a
   // graphic alone, which still has its plane (an annotation in no
@@ -3384,7 +3431,8 @@ void STEPCAFControl_Writer::writePresentation(
   occ::handle<NCollection_HArray1<double>> aCoords  = new NCollection_HArray1<double>(1, 3);
   for (int i = 1; i <= 3; i++)
   {
-    aCoords->SetValue(i, theTextPosition.Coord(i));
+    // In the file's length unit, as the plane and the graphic are
+    aCoords->SetValue(i, theTextPosition.Coord(i) / theLocalFactors.LengthFactor());
   }
   aTextPos->Init(new TCollection_HAsciiString(), aCoords);
   anAxis->SetLocation(aTextPos);
@@ -3401,7 +3449,7 @@ void STEPCAFControl_Writer::writePresentation(
   myGDTAnnotations.Append(anAnnPlane);
   if (!theLabel.IsNull())
   {
-    myGDTPrsItems.ChangeFind(theLabel).Append(anAnnPlane);
+    gdtState(myGDTPresentationDM).Items.ChangeFind(theLabel).Append(anAnnPlane);
   }
   aModel->AddWithRefs(anAnnPlane);
 }
@@ -5401,7 +5449,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
   // Common entities for presentation
   STEPConstruct_Styles           aStyles(theWS);
-  occ::handle<StepVisual_Colour> aCurvColor = STEPConstruct_Styles::EncodeColor(myGDTPrsColor);
+  occ::handle<StepVisual_Colour> aCurvColor = STEPConstruct_Styles::EncodeColor(gdtState(myGDTPresentationDM).Color);
   occ::handle<StepRepr_RepresentationItem> anItem = nullptr;
   myGDTPrsCurveStyle->SetValue(
     1,
@@ -5836,14 +5884,14 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
   }
   // Composite frames: each lower segment related to its upper, the upper
   // relating (AP242's geometric_tolerance_relationship 'composite')
-  for (NCollection_DataMap<TDF_Label, occ::handle<StepDimTol_GeometricTolerance>>::Iterator
-         aTolIter(aWrittenTols);
-       aTolIter.More();
+  // In the labels' order: the same file each time
+  for (NCollection_Sequence<TDF_Label>::Iterator aTolIter(aDGTLabels); aTolIter.More();
        aTolIter.Next())
   {
     TDF_Label                                  anUpperL;
-    occ::handle<StepDimTol_GeometricTolerance> anUpper;
-    if (!XCAFDoc_DimTolTool::GetCompositeUpper(aTolIter.Key(), anUpperL)
+    occ::handle<StepDimTol_GeometricTolerance> anUpper, aLower;
+    if (!aWrittenTols.Find(aTolIter.Value(), aLower)
+        || !XCAFDoc_DimTolTool::GetCompositeUpper(aTolIter.Value(), anUpperL)
         || !aWrittenTols.Find(anUpperL, anUpper))
     {
       continue;
@@ -5853,7 +5901,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     aRel->Init(new TCollection_HAsciiString("composite"),
                new TCollection_HAsciiString(),
                anUpper,
-               aTolIter.Value());
+               aLower);
     aModel->AddWithRefs(aRel);
   }
 
@@ -6071,7 +6119,7 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
            aGDTIter.Next())
       {
         const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>* aPrs =
-          myGDTPrsItems.Seek(aGDTIter.Value());
+          gdtState(myGDTPresentationDM).Items.Seek(aGDTIter.Value());
         if (aPrs == nullptr)
         {
           continue;
