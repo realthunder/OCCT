@@ -142,6 +142,7 @@
 #include <StepShape_GeometricCurveSet.hxx>
 #include <StepShape_GeometricSet.hxx>
 #include <StepData_UndefinedEntity.hxx>
+#include <StepDimTol_GeometricToleranceRelationship.hxx>
 #include <Interface_UndefinedContent.hxx>
 #include <StepShape_Face.hxx>
 #include <StepShape_FaceBound.hxx>
@@ -4242,7 +4243,12 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
     aRelatingSAs.Append(aSAR->RelatingShapeAspect());
     occ::handle<StepDimTol_DatumFeature> aDF =
       occ::down_cast<StepDimTol_DatumFeature>(aSAR->RelatingShapeAspect());
-    if (!aSAR->RelatingShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
+    // A datum feature that is its own size (NIST STC-07's holes, datums B and
+    // C): the graphic linked to it is the size's ('Linear Size.1'), the
+    // datum's own linked to the datum ('Datum Feature.2'), read below
+    if (!aSAR->RelatingShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget))
+        && !aSAR->RelatingShapeAspect()->IsKind(
+          STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature)))
     {
       readAnnotation(aTR, aSAR->RelatingShapeAspect(), aDatObj, theLocalFactors);
     }
@@ -5498,6 +5504,25 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
               {
                 convertAngleValue(anUnitCtx, aVal);
               }
+              // How it is written ('NR2 1.2': NIST's values, '.31' where it
+              // is .3125), from its qualifiers: this case takes the qualified
+              // values too, the one below never sees them
+              occ::handle<StepRepr_ReprItemAndMeasureWithUnitAndQRI> aQualified =
+                occ::down_cast<StepRepr_ReprItemAndMeasureWithUnitAndQRI>(aDRI);
+              occ::handle<StepShape_QualifiedRepresentationItem> aQRI;
+              if (!aQualified.IsNull())
+              {
+                aQRI = aQualified->GetQualifiedRepresentationItem();
+              }
+              for (int l = 1; !aQRI.IsNull() && l <= aQRI->NbQualifiers(); l++)
+              {
+                occ::handle<StepShape_ValueFormatTypeQualifier> aFormat =
+                  aQRI->Qualifiers()->Value(l).ValueFormatTypeQualifier();
+                if (!aFormat.IsNull())
+                {
+                  aVFTQ = aFormat;
+                }
+              }
               occ::handle<TCollection_HAsciiString> aName = aMWU->Name();
               if (aName->Search("upper") > 0)
               { // upper limit
@@ -5537,13 +5562,28 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
               }
               occ::handle<StepShape_QualifiedRepresentationItem> aQRI =
                 aMWU->GetQualifiedRepresentationItem();
-              if (aQRI->Qualifiers()->Length() == 0)
+              // Its qualifiers, any of them: which value it is ('minimum',
+              // 'maximum'), and how it is written ('NR2 1.2': NIST's, a value
+              // given to two places, '.31' where it is .3125)
+              occ::handle<StepShape_TypeQualifier> aValueType;
+              for (int l = 1; !aQRI.IsNull() && l <= aQRI->NbQualifiers(); l++)
+              {
+                if (aValueType.IsNull())
+                {
+                  aValueType = aQRI->Qualifiers()->Value(l).TypeQualifier();
+                }
+                occ::handle<StepShape_ValueFormatTypeQualifier> aFormat =
+                  aQRI->Qualifiers()->Value(l).ValueFormatTypeQualifier();
+                if (!aFormat.IsNull())
+                {
+                  aVFTQ = aFormat;
+                }
+              }
+              if (aValueType.IsNull() || aValueType->Name().IsNull())
               {
                 aDim1 = aVal;
                 continue;
               }
-              occ::handle<StepShape_TypeQualifier> aValueType =
-                aQRI->Qualifiers()->Value(1).TypeQualifier();
               if (aValueType->Name()->String().IsEqual("minimum"))
               {
                 aDim2 = aVal;
@@ -6323,6 +6363,29 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
           setDimObjectToXCAF(anEnt, aGDTL, theDoc, theWS, theLocalFactors);
         }
       }
+    }
+  }
+  // Composite frames: a lower segment's tolerance related to its upper's (AP242's
+  // geometric_tolerance_relationship 'composite', the upper relating), both read. NIST
+  // presents both segments by the upper's graphic, the lower's linked to none
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<StepDimTol_GeometricToleranceRelationship> aRel =
+      occ::down_cast<StepDimTol_GeometricToleranceRelationship>(aModel->Value(i));
+    if (aRel.IsNull() || aRel->Name().IsNull())
+    {
+      continue;
+    }
+    TCollection_AsciiString aKind = aRel->Name()->String();
+    aKind.LowerCase();
+    TDF_Label anUpperL, aLowerL;
+    if (aKind == "composite"
+        && myGDTMap.Find(occ::handle<Standard_Transient>(aRel->RelatingGeometricTolerance()),
+                         anUpperL)
+        && myGDTMap.Find(occ::handle<Standard_Transient>(aRel->RelatedGeometricTolerance()),
+                         aLowerL))
+    {
+      aDGTTool->SetCompositeUpper(aLowerL, anUpperL);
     }
   }
   // The graphics of no PMI read, after all that is read: a graphic is asked whether its PMI was

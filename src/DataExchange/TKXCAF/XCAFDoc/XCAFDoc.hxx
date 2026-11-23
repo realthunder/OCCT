@@ -72,6 +72,10 @@ public:
   //! Return GUIDs for TreeNode representing connections Datum-Toler
   Standard_EXPORT static const Standard_GUID& DatumTolRefGUID();
 
+  //! Return GUID for GraphNode representing a composite frame: the upper
+  //! segment's tolerance the father, each lower one's a child
+  Standard_EXPORT static const Standard_GUID& GeomTolCompositeRefGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();

@@ -424,7 +424,8 @@ protected:
                           const occ::handle<StepRepr_RepresentationContext>&        theRC,
                           const StepData_Factors& theLocalFactors = StepData_Factors());
 
-  void writeGeomTolerance(
+  //! The tolerance written, null if none
+  occ::handle<StepDimTol_GeometricTolerance> writeGeomTolerance(
     const occ::handle<XSControl_WorkSession>&                                  theWS,
     const NCollection_Sequence<TDF_Label>&                                     theShapeSeqL,
     const TDF_Label&                                                           theGeomTolL,

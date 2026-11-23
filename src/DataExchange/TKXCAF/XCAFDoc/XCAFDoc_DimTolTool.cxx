@@ -810,6 +810,41 @@ void XCAFDoc_DimTolTool::SetDatumToGeomTol(const TDF_Label& theDatumL,
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetCompositeUpper(const TDF_Label& theLowerL,
+                                           const TDF_Label& theUpperL) const
+{
+  if (theLowerL.IsNull() || theUpperL.IsNull() || theLowerL == theUpperL)
+  {
+    return;
+  }
+  const Standard_GUID&           anID = XCAFDoc::GeomTolCompositeRefGUID();
+  occ::handle<XCAFDoc_GraphNode> anUpper = XCAFDoc_GraphNode::Set(theUpperL, anID);
+  occ::handle<XCAFDoc_GraphNode> aLower  = XCAFDoc_GraphNode::Set(theLowerL, anID);
+  while (aLower->NbFathers() > 0)
+  {
+    aLower->UnSetFather(1);
+  }
+  anUpper->SetChild(aLower);
+  aLower->SetFather(anUpper);
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetCompositeUpper(const TDF_Label& theLowerL, TDF_Label& theUpperL)
+{
+  occ::handle<XCAFDoc_GraphNode> aNode;
+  if (theLowerL.IsNull()
+      || !theLowerL.FindAttribute(XCAFDoc::GeomTolCompositeRefGUID(), aNode)
+      || aNode->NbFathers() == 0)
+  {
+    return false;
+  }
+  theUpperL = aNode->GetFather(1)->Label();
+  return true;
+}
+
+//=================================================================================================
+
 bool XCAFDoc_DimTolTool::GetDatum(const TDF_Label&                       theDatumL,
                                   occ::handle<TCollection_HAsciiString>& theName,
                                   occ::handle<TCollection_HAsciiString>& theDescription,

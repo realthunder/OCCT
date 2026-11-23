@@ -136,6 +136,14 @@ const Standard_GUID& XCAFDoc::DatumTolRefGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::GeomTolCompositeRefGUID()
+{
+  static const Standard_GUID ID("3e9a2c40-6a6b-4a66-a5fb-235d5b6738de");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");
@@ -580,6 +588,10 @@ TCollection_AsciiString XCAFDoc::AttributeInfo(const occ::handle<TDF_Attribute>&
     else if (theAtt->ID() == XCAFDoc::DatumTolRefGUID())
     {
       type = "DatumToler Link";
+    }
+    else if (theAtt->ID() == XCAFDoc::GeomTolCompositeRefGUID())
+    {
+      type = "Composite Frame Link";
     }
     else if (theAtt->ID() == XCAFDoc::DimensionRefFirstGUID())
     {

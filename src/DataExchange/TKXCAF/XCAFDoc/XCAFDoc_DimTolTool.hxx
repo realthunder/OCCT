@@ -224,6 +224,18 @@ public:
   Standard_EXPORT bool GetTolerOfDatumLabels(const TDF_Label&                 theDatumL,
                                              NCollection_Sequence<TDF_Label>& theTols) const;
 
+  //! Makes the tolerance theLowerL a lower segment of the composite frame
+  //! whose upper segment is theUpperL (AP242's geometric_tolerance_relationship
+  //! 'composite': one characteristic, the lower segments refining the upper's
+  //! pattern-locating zone). A lower segment is of one frame: an earlier
+  //! upper is replaced.
+  Standard_EXPORT void SetCompositeUpper(const TDF_Label& theLowerL,
+                                         const TDF_Label& theUpperL) const;
+
+  //! The upper segment of the composite frame the tolerance theLowerL is a
+  //! lower segment of; false when it is none.
+  Standard_EXPORT static bool GetCompositeUpper(const TDF_Label& theLowerL, TDF_Label& theUpperL);
+
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,
                                         NCollection_Sequence<TDF_Label>& theDatum) const;

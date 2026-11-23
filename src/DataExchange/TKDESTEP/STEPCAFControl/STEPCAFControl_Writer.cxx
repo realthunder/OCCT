@@ -81,6 +81,7 @@
 #include <StepDimTol_DatumReference.hxx>
 #include <StepDimTol_DatumSystem.hxx>
 #include <StepDimTol_DatumSystemOrReference.hxx>
+#include <StepDimTol_GeometricToleranceRelationship.hxx>
 #include <StepDimTol_GeometricToleranceType.hxx>
 #include <StepDimTol_GeometricToleranceWithDatumReference.hxx>
 #include <StepDimTol_GeometricToleranceWithModifiers.hxx>
@@ -4596,7 +4597,7 @@ static occ::handle<StepDimTol_GeometricToleranceWithDatumReference> toleranceWit
 // purpose  : auxiliary (write Geometric_Tolerance entity for given shapes,
 //           label and datum system)
 //======================================================================
-void STEPCAFControl_Writer::writeGeomTolerance(
+occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomTolerance(
   const occ::handle<XSControl_WorkSession>&                                  theWS,
   const NCollection_Sequence<TDF_Label>&                                     theShapeSeqL,
   const TDF_Label&                                                           theGeomTolL,
@@ -4609,12 +4610,12 @@ void STEPCAFControl_Writer::writeGeomTolerance(
   occ::handle<XCAFDoc_GeomTolerance>           aGTAttr;
   if (!theGeomTolL.FindAttribute(XCAFDoc_GeomTolerance::GetID(), aGTAttr))
   {
-    return;
+    return nullptr;
   }
   occ::handle<XCAFDimTolObjects_GeomToleranceObject> anObject = aGTAttr->GetObject();
   if (anObject.IsNull())
   {
-    return;
+    return nullptr;
   }
 
   // Value
@@ -4869,6 +4870,7 @@ void STEPCAFControl_Writer::writeGeomTolerance(
                     keptOr(anObject->GetPresentationType(), presentedType(anObject->GetType())),
                     shapeAspects(aMainSA),
                     theLocalFactors);
+  return aGeomTol;
 }
 
 //=================================================================================================
@@ -5808,6 +5810,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     aDGTTool->GetGeomToleranceLabels(aDGTLabels);
     aDGTLabels.Append(aaDGTLS);
   }
+  NCollection_DataMap<TDF_Label, occ::handle<StepDimTol_GeometricTolerance>> aWrittenTols;
   for (NCollection_Sequence<TDF_Label>::Iterator aDGTIter(aDGTLabels); aDGTIter.More();
        aDGTIter.Next())
   {
@@ -5824,7 +5827,34 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     {
       aDatumSystem = WriteDatumSystem(theWS, aGeomTolL, aDatumSeq, aDatumMap, aRC, theLocalFactors);
     }
-    writeGeomTolerance(theWS, aFirstShapeL, aGeomTolL, aDatumSystem, aRC, theLocalFactors);
+    occ::handle<StepDimTol_GeometricTolerance> aTol =
+      writeGeomTolerance(theWS, aFirstShapeL, aGeomTolL, aDatumSystem, aRC, theLocalFactors);
+    if (!aTol.IsNull())
+    {
+      aWrittenTols.Bind(aGeomTolL, aTol);
+    }
+  }
+  // Composite frames: each lower segment related to its upper, the upper
+  // relating (AP242's geometric_tolerance_relationship 'composite')
+  for (NCollection_DataMap<TDF_Label, occ::handle<StepDimTol_GeometricTolerance>>::Iterator
+         aTolIter(aWrittenTols);
+       aTolIter.More();
+       aTolIter.Next())
+  {
+    TDF_Label                                  anUpperL;
+    occ::handle<StepDimTol_GeometricTolerance> anUpper;
+    if (!XCAFDoc_DimTolTool::GetCompositeUpper(aTolIter.Key(), anUpperL)
+        || !aWrittenTols.Find(anUpperL, anUpper))
+    {
+      continue;
+    }
+    occ::handle<StepDimTol_GeometricToleranceRelationship> aRel =
+      new StepDimTol_GeometricToleranceRelationship();
+    aRel->Init(new TCollection_HAsciiString("composite"),
+               new TCollection_HAsciiString(),
+               anUpper,
+               aTolIter.Value());
+    aModel->AddWithRefs(aRel);
   }
 
   // The context: a shape aspect's, else -- none written, every item a
