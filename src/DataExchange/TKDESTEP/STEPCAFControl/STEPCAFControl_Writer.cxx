@@ -3408,6 +3408,28 @@ static void writePlaceholder(
               anItems);
   aLink->SetAnnotationPlaceholder(aPlaceholder);
   aModel->AddWithRefs(aLink);
+  // A placeholder and its association are of AP242's second edition: the file says so (one
+  // identified as the first edition and holding them is told off by SFA). NIST's own are
+  // { 1 0 10303 442 3 1 4 } (CTC-02) and the third edition's
+  occ::handle<StepData_StepModel> aStepModel = occ::down_cast<StepData_StepModel>(aModel);
+  occ::handle<HeaderSection_FileSchema> aSchema;
+  if (!aStepModel.IsNull())
+  {
+    aSchema = occ::down_cast<HeaderSection_FileSchema>(
+      aStepModel->HeaderEntity(STANDARD_TYPE(HeaderSection_FileSchema)));
+  }
+  for (int i = 1; !aSchema.IsNull() && i <= aSchema->NbSchemaIdentifiers(); i++)
+  {
+    occ::handle<TCollection_HAsciiString> anId = aSchema->SchemaIdentifiersValue(i);
+    if (!anId.IsNull() && anId->Search("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF") == 1
+        && anId->Search(" 442 1 1 4") > 0)
+    {
+      aSchema->SchemaIdentifiers()->SetValue(
+        i,
+        new TCollection_HAsciiString(
+          "AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF { 1 0 10303 442 3 1 4 }"));
+    }
+  }
   // In an annotation plane, as every callout is (one in none is an error to SFA), and in the
   // draughting model with it
   occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>> aPrsStyles =
