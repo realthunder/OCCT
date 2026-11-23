@@ -112,6 +112,7 @@
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
 #include <StepGeom_Plane.hxx>
 #include <StepRepr_CompGroupShAspAndCompShAspAndDatumFeatAndShAsp.hxx>
+#include <StepRepr_AllAroundShapeAspect.hxx>
 #include <StepRepr_CompositeShapeAspect.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentation.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentationRelationship.hxx>
@@ -284,6 +285,18 @@ public:
   //! and its annotation plane when it has one -- what a view of it lists
   NCollection_DataMap<TDF_Label, NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>>
     Items;
+  //! A PMI with no graphic of its own, presented by the one another PMI holds
+  //! (XCAFDoc_DimTolTool::SetPresentedWith; NIST STC-07's 32 radii by one '32X R', a
+  //! hole's depth by its callout): linked to it once all are written, in whatever
+  //! order they were
+  struct Link
+  {
+    TDF_Label                                               Label;
+    TDF_Label                                               Host;
+    occ::handle<Standard_Transient>                         Dimension;
+    NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> Geometry;
+  };
+  NCollection_Sequence<Link> Links;
 };
 
 //! theModel is the writer's myGDTPresentationDM, made in Init() and nowhere else
@@ -3310,6 +3323,19 @@ void STEPCAFControl_Writer::writePresentation(
   // graphic-only note on nothing, NIST CTC-05's rectangular regions -- the
   // callout is in the draughting model with no association: one to an empty
   // shape aspect a reader (SFA) takes for geometry it cannot find
+  TDF_Label aHostL;
+  if (thePresentation.IsNull() && !theDimension.IsNull() && theHasSemantic
+      && XCAFDoc_DimTolTool::GetPresentedWith(theLabel, aHostL))
+  {
+    // Not drawn: another's graphic presents it too
+    GDTPresentationModel::Link aLink;
+    aLink.Label     = theLabel;
+    aLink.Host      = aHostL;
+    aLink.Dimension = theDimension;
+    aLink.Geometry  = theGeometry;
+    gdtState(myGDTPresentationDM).Links.Append(aLink);
+    return;
+  }
   if (thePresentation.IsNull() || (theDimension.IsNull() && !theAlone))
   {
     return;
@@ -4676,10 +4702,22 @@ occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomToler
   aModel->AddWithRefs(aLMWU);
 
   // Geometric_Tolerance target
+  // All around: the target is an all_around_shape_aspect of the faces' aspects, as it is
+  // read. The modifier was read and never written: every profile all around (seven of
+  // NIST's files) came back one of its faces alone
+  bool                                                       isAllAround = false;
+  const NCollection_Sequence<XCAFDimTolObjects_GeomToleranceModif> anAllModifs =
+    anObject->GetModifiers();
+  for (NCollection_Sequence<XCAFDimTolObjects_GeomToleranceModif>::Iterator aModIt(anAllModifs);
+       aModIt.More();
+       aModIt.Next())
+  {
+    isAllAround = isAllAround || aModIt.Value() == XCAFDimTolObjects_GeomToleranceModif_All_Around;
+  }
   occ::handle<StepRepr_ShapeAspect>                 aMainSA;
   occ::handle<StepRepr_RepresentationContext>       dummyRC;
   occ::handle<StepAP242_GeometricItemSpecificUsage> dummyGISU;
-  if (theShapeSeqL.Length() == 1)
+  if (theShapeSeqL.Length() == 1 && !isAllAround)
   {
     TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(theShapeSeqL.Value(1));
     aMainSA             = writeShapeAspect(theWS, theGeomTolL, aShape, dummyRC, dummyGISU);
@@ -4700,7 +4738,14 @@ occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomToler
       }
       if (aCSA.IsNull())
       {
-        aCSA = new StepRepr_CompositeShapeAspect();
+        if (isAllAround)
+        {
+          aCSA = new StepRepr_AllAroundShapeAspect();
+        }
+        else
+        {
+          aCSA = new StepRepr_CompositeShapeAspect();
+        }
         aCSA->Init(aSA->Name(), aSA->Description(), aSA->OfShape(), aSA->ProductDefinitional());
         aModel->AddWithRefs(aCSA);
       }
@@ -5930,6 +5975,71 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     aTextIt.Value()->SetContextOfItems(aRC);
   }
 
+  // The PMI presented by another's graphic: linked to it, and to its geometry, as one drawn
+  // is; a view of it shows that graphic
+  GDTPresentationModel& aState = gdtState(myGDTPresentationDM);
+  for (NCollection_Sequence<GDTPresentationModel::Link>::Iterator aLinkIt(aState.Links);
+       aLinkIt.More();
+       aLinkIt.Next())
+  {
+    const GDTPresentationModel::Link&         aLink = aLinkIt.Value();
+    // The host's callout: the first of what was written for it (its plane follows)
+    occ::handle<StepVisual_DraughtingCallout> aCallout;
+    if (const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>* aShownOfHost =
+          aState.Items.Seek(aLink.Host))
+    {
+      for (NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>::Iterator anItemIt(
+             *aShownOfHost);
+           anItemIt.More() && aCallout.IsNull();
+           anItemIt.Next())
+      {
+        aCallout = occ::down_cast<StepVisual_DraughtingCallout>(anItemIt.Value());
+      }
+    }
+    if (aCallout.IsNull())
+    {
+      continue;
+    }
+    occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> aCallouts =
+      new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
+    aCallouts->SetValue(1, aCallout);
+    StepAP242_ItemIdentifiedRepresentationUsageDefinition aDefinition;
+    aDefinition.SetValue(aLink.Dimension);
+    occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
+      new StepAP242_DraughtingModelItemAssociation();
+    aDMIA->Init(new TCollection_HAsciiString("PMI representation to presentation link"),
+                new TCollection_HAsciiString(),
+                aDefinition,
+                myGDTPresentationDM,
+                aCallouts);
+    aModel->AddWithRefs(aDMIA);
+    for (NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>::Iterator aGeomIt(aLink.Geometry);
+         aGeomIt.More();
+         aGeomIt.Next())
+    {
+      if (aGeomIt.Value().IsNull())
+      {
+        continue;
+      }
+      StepAP242_ItemIdentifiedRepresentationUsageDefinition aGeometry;
+      aGeometry.SetValue(aGeomIt.Value());
+      occ::handle<StepAP242_DraughtingModelItemAssociation> aGeomDMIA =
+        new StepAP242_DraughtingModelItemAssociation();
+      aGeomDMIA->Init(new TCollection_HAsciiString(),
+                      new TCollection_HAsciiString(),
+                      aGeometry,
+                      myGDTPresentationDM,
+                      aCallouts);
+      aModel->AddWithRefs(aGeomDMIA);
+    }
+    if (!aLink.Label.IsNull() && !aState.Items.IsBound(aLink.Label))
+    {
+      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> aShown;
+      aShown.Append(aCallout);
+      aState.Items.Bind(aLink.Label, aShown);
+    }
+  }
+  aState.Links.Clear();
   // Write Draughting model for Annotation Planes
   if (myGDTAnnotations.Length() > 0)
   {

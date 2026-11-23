@@ -6549,7 +6549,8 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         {
           continue;
         }
-        const occ::handle<Standard_Transient>& aDef = anAssoc->Definition().Value();
+        // A copy: Definition() is a temporary, Value() a reference into it
+        const occ::handle<Standard_Transient> aDef = anAssoc->Definition().Value();
         occ::handle<TCollection_HAsciiString> aHeld;
         if (!aDef.IsNull() && isPresentationLink(anAssoc) && myGDTMap.IsBound(aDef)
             && hasPresentation(myGDTMap.Find(aDef), &aHeld))

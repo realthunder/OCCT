@@ -144,6 +144,14 @@ const Standard_GUID& XCAFDoc::GeomTolCompositeRefGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::GDTPresentedWithRefGUID()
+{
+  static const Standard_GUID ID("7b1d6c52-90c4-4b7e-8a3f-5d2f0e6a91c4");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");
@@ -592,6 +600,10 @@ TCollection_AsciiString XCAFDoc::AttributeInfo(const occ::handle<TDF_Attribute>&
     else if (theAtt->ID() == XCAFDoc::GeomTolCompositeRefGUID())
     {
       type = "Composite Frame Link";
+    }
+    else if (theAtt->ID() == XCAFDoc::GDTPresentedWithRefGUID())
+    {
+      type = "Presented With Link";
     }
     else if (theAtt->ID() == XCAFDoc::DimensionRefFirstGUID())
     {

@@ -836,6 +836,43 @@ void XCAFDoc_DimTolTool::SetCompositeUpper(const TDF_Label& theLowerL,
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetPresentedWith(const TDF_Label& theGDTL,
+                                          const TDF_Label& theHostL) const
+{
+  // No chain and no loop: the host holds the graphic itself
+  TDF_Label aHostOfHost;
+  if (theGDTL.IsNull() || theHostL.IsNull() || theGDTL == theHostL
+      || GetPresentedWith(theHostL, aHostOfHost))
+  {
+    return;
+  }
+  const Standard_GUID&           anID  = XCAFDoc::GDTPresentedWithRefGUID();
+  occ::handle<XCAFDoc_GraphNode> aHost = XCAFDoc_GraphNode::Set(theHostL, anID);
+  occ::handle<XCAFDoc_GraphNode> aGDT  = XCAFDoc_GraphNode::Set(theGDTL, anID);
+  while (aGDT->NbFathers() > 0)
+  {
+    aGDT->UnSetFather(1);
+  }
+  aHost->SetChild(aGDT);
+  aGDT->SetFather(aHost);
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetPresentedWith(const TDF_Label& theGDTL, TDF_Label& theHostL)
+{
+  occ::handle<XCAFDoc_GraphNode> aNode;
+  if (theGDTL.IsNull() || !theGDTL.FindAttribute(XCAFDoc::GDTPresentedWithRefGUID(), aNode)
+      || aNode->NbFathers() == 0)
+  {
+    return false;
+  }
+  theHostL = aNode->GetFather(1)->Label();
+  return true;
+}
+
+//=================================================================================================
+
 bool XCAFDoc_DimTolTool::GetCompositeUpper(const TDF_Label& theLowerL, TDF_Label& theUpperL)
 {
   occ::handle<XCAFDoc_GraphNode> aNode;

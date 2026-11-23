@@ -76,6 +76,10 @@ public:
   //! segment's tolerance the father, each lower one's a child
   Standard_EXPORT static const Standard_GUID& GeomTolCompositeRefGUID();
 
+  //! Return GUID for GraphNode representing a GD&T presented by the
+  //! graphic another holds: that one the father, each it presents a child
+  Standard_EXPORT static const Standard_GUID& GDTPresentedWithRefGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();
