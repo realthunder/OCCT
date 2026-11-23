@@ -16,6 +16,7 @@
 #include <Standard_Type.hxx>
 #include <TCollection_AsciiString.hxx>
 #include <NCollection_Map.hxx>
+#include <TDataStd_AsciiString.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDataStd_TreeNode.hxx>
 #include <TDataStd_UAttribute.hxx>
@@ -869,6 +870,49 @@ bool XCAFDoc_DimTolTool::GetPresentedWith(const TDF_Label& theGDTL, TDF_Label& t
   }
   theHostL = aNode->GetFather(1)->Label();
   return true;
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::SetPlaceholder(const TDF_Label&               theGDTL,
+                                        const TCollection_AsciiString& theKind,
+                                        const TCollection_AsciiString& theName)
+{
+  if (theGDTL.IsNull())
+  {
+    return;
+  }
+  if (theKind.IsEmpty())
+  {
+    theGDTL.ForgetAttribute(XCAFDoc::GDTPlaceholderGUID());
+    return;
+  }
+  // One string: the kind, a line feed, the name
+  TDataStd_AsciiString::Set(theGDTL,
+                            XCAFDoc::GDTPlaceholderGUID(),
+                            theKind + "\n" + theName);
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetPlaceholder(const TDF_Label&         theGDTL,
+                                        TCollection_AsciiString& theKind,
+                                        TCollection_AsciiString& theName)
+{
+  occ::handle<TDataStd_AsciiString> aKind;
+  if (theGDTL.IsNull() || !theGDTL.FindAttribute(XCAFDoc::GDTPlaceholderGUID(), aKind))
+  {
+    return false;
+  }
+  theKind = aKind->Get();
+  theName.Clear();
+  const int aBreak = theKind.Search("\n");
+  if (aBreak > 0)
+  {
+    theName = theKind.SubString(aBreak + 1, theKind.Length());
+    theKind = aBreak > 1 ? theKind.SubString(1, aBreak - 1) : TCollection_AsciiString();
+  }
+  return !theKind.IsEmpty();
 }
 
 //=================================================================================================

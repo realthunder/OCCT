@@ -80,6 +80,10 @@ public:
   //! graphic another holds: that one the father, each it presents a child
   Standard_EXPORT static const Standard_GUID& GDTPresentedWithRefGUID();
 
+  //! Return GUID of the string a GD&T's placeholder is kept as: the kind it
+  //! is of, the name of its geometric set ('linear dimension', 'note')
+  Standard_EXPORT static const Standard_GUID& GDTPlaceholderGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();

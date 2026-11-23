@@ -182,6 +182,7 @@ public:
   bool ReadProps = true; //<! PropsMode is used to indicate read Validation properties or not
   bool ReadMetadata = true; //! Parameter for metadata reading
   bool ReadProductMetadata = false; //! Parameter for product metadata reading
+  bool ReadSupplementalCurves = false; //!< Supplemental geometry's curves (a CONSTRUCTIVE_GEOMETRY_REPRESENTATION's geometric sets) read beside the part: what GD&T may be on. Set by STEPCAFControl_Reader from its GDT mode; in padding, the layout is as it was
   
   // Write
   WriteMode_PrecisionMode WritePrecisionMode = WriteMode_PrecisionMode_Average; //<! Specifies the mode of writing the resolution value into the STEP file

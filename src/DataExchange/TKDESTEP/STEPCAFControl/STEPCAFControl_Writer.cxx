@@ -188,7 +188,13 @@
 #include <TDataStd_TreeNode.hxx>
 #include <TDataStd_UAttribute.hxx>
 #include <TDF_ChildIterator.hxx>
+#include <Interface_UndefinedContent.hxx>
+#include <StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx>
+#include <StepData_UndefinedEntity.hxx>
+#include <StepShape_GeometricSet.hxx>
+#include <StepShape_GeometricSetSelect.hxx>
 #include <TDF_Label.hxx>
+#include <TDF_Tool.hxx>
 #include <NCollection_Sequence.hxx>
 #include <TDocStd_Document.hxx>
 #include <TopoDS_Compound.hxx>
@@ -3300,6 +3306,129 @@ static const char* keptOr(const occ::handle<TCollection_HAsciiString>& theKept,
 }
 
 //=======================================================================
+// function : writePlaceholder
+// purpose  : a PMI's annotation placeholder (AP242 ed2), for the one that has
+//            one (XCAFDoc_DimTolTool::GetPlaceholder): where a reader that
+//            draws PMI itself puts its text, nothing drawn. As NIST's STC-07
+//            has it: a callout of the placeholder alone, named as the PMI's
+//            graphic, linked to the PMI by an association with a
+//            placeholder; the placeholder's geometric set named by its kind
+//            ('linear dimension', 'note': what SFA counts it by), holding its
+//            placement. No class is for the placeholder: it is written as an
+//            entity of parameters
+//=======================================================================
+static void writePlaceholder(
+  const occ::handle<XSControl_WorkSession>&                    theWS,
+  NCollection_DynamicArray<occ::handle<StepRepr_RepresentationItem>>& theAnnotations,
+                             const occ::handle<StepVisual_DraughtingModel>& theDM,
+                             const TDF_Label&                               theLabel,
+                             const occ::handle<TCollection_HAsciiString>&   thePrsName,
+                             const occ::handle<Standard_Transient>&         theDefinition,
+                             const bool                                     theHasPlane,
+                             const gp_Ax2&                                  thePlane,
+                             const gp_Pnt&                                  theTextPosition,
+                             const StepData_Factors&                        theLocalFactors)
+{
+  TCollection_AsciiString aKind, aName;
+  if (theLabel.IsNull() || theDefinition.IsNull() || theDM.IsNull()
+      || !XCAFDoc_DimTolTool::GetPlaceholder(theLabel, aKind, aName))
+  {
+    return;
+  }
+  const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
+  // Named as it was, else as the PMI's graphic
+  if (aName.IsEmpty() && !thePrsName.IsNull())
+  {
+    aName = thePrsName->String();
+  }
+  // Where its text is: the PMI's plane, at its text
+  gp_Ax2 aPlace = theHasPlane ? thePlane : gp_Ax2();
+  aPlace.SetLocation(theTextPosition);
+  GeomToStep_MakeAxis2Placement3d               anAxisMaker(aPlace, theLocalFactors);
+  const occ::handle<StepGeom_Axis2Placement3d>& anAxis = anAxisMaker.Value();
+  anAxis->SetName(new TCollection_HAsciiString(TCollection_AsciiString("PPH - ") + aName));
+  occ::handle<NCollection_HArray1<StepShape_GeometricSetSelect>> anElements =
+    new NCollection_HArray1<StepShape_GeometricSetSelect>(1, 1);
+  StepShape_GeometricSetSelect anElement;
+  anElement.SetValue(anAxis);
+  anElements->SetValue(1, anElement);
+  occ::handle<StepShape_GeometricSet> aSet = new StepShape_GeometricSet();
+  aSet->Init(new TCollection_HAsciiString(aKind), anElements);
+  // Its style: none
+  occ::handle<StepVisual_NullStyleMember> aNullStyle = new StepVisual_NullStyleMember();
+  aNullStyle->SetEnumText(0, ".NULL.");
+  StepVisual_PresentationStyleSelect aStyleItem;
+  aStyleItem.SetValue(aNullStyle);
+  occ::handle<NCollection_HArray1<StepVisual_PresentationStyleSelect>> aStyles =
+    new NCollection_HArray1<StepVisual_PresentationStyleSelect>(1, 1);
+  aStyles->SetValue(1, aStyleItem);
+  occ::handle<StepVisual_PresentationStyleAssignment> aPrsStyle =
+    new StepVisual_PresentationStyleAssignment();
+  aPrsStyle->Init(aStyles);
+  // The placeholder: its name, styles, item, role and line spacing
+  TCollection_AsciiString aQuoted("'");
+  for (int i = 1; i <= aName.Length(); i++)
+  {
+    aQuoted += aName.Value(i);
+    if (aName.Value(i) == '\'')
+    {
+      aQuoted += '\'';
+    }
+  }
+  aQuoted += "'";
+  occ::handle<StepData_UndefinedEntity> aStyleList = new StepData_UndefinedEntity(true);
+  aStyleList->UndefinedContent()->AddEntity(Interface_ParamIdent, aPrsStyle);
+  occ::handle<StepData_UndefinedEntity> aPlaceholder = new StepData_UndefinedEntity();
+  aPlaceholder->SetStepType("ANNOTATION_PLACEHOLDER_OCCURRENCE");
+  occ::handle<Interface_UndefinedContent> aParams = aPlaceholder->UndefinedContent();
+  aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString(aQuoted));
+  aParams->AddEntity(Interface_ParamSub, aStyleList);
+  aParams->AddEntity(Interface_ParamIdent, aSet);
+  aParams->AddLiteral(Interface_ParamEnum, new TCollection_HAsciiString(".GPS_DATA."));
+  aParams->AddLiteral(Interface_ParamReal, new TCollection_HAsciiString("1."));
+  // Its callout, and the link to what it is the placeholder of
+  StepVisual_DraughtingCalloutElement aContent;
+  aContent.SetValue(aPlaceholder);
+  occ::handle<NCollection_HArray1<StepVisual_DraughtingCalloutElement>> aContents =
+    new NCollection_HArray1<StepVisual_DraughtingCalloutElement>(1, 1);
+  aContents->SetValue(1, aContent);
+  occ::handle<StepVisual_DraughtingCallout> aCallout = new StepVisual_DraughtingCallout();
+  aCallout->Init(new TCollection_HAsciiString(aName), aContents);
+  occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anItems =
+    new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
+  anItems->SetValue(1, aCallout);
+  StepAP242_ItemIdentifiedRepresentationUsageDefinition aDefinition;
+  aDefinition.SetValue(theDefinition);
+  occ::handle<StepAP242_DraughtingModelItemAssociationWithPlaceholder> aLink =
+    new StepAP242_DraughtingModelItemAssociationWithPlaceholder();
+  aLink->Init(new TCollection_HAsciiString(TCollection_AsciiString("PPH - ") + aName),
+              new TCollection_HAsciiString(),
+              aDefinition,
+              theDM,
+              anItems);
+  aLink->SetAnnotationPlaceholder(aPlaceholder);
+  aModel->AddWithRefs(aLink);
+  // In an annotation plane, as every callout is (one in none is an error to SFA), and in the
+  // draughting model with it
+  occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>> aPrsStyles =
+    new NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>(1, 1);
+  aPrsStyles->SetValue(1, aPrsStyle);
+  GeomToStep_MakeAxis2Placement3d aPlaneAxis(aPlace, theLocalFactors);
+  occ::handle<StepGeom_Plane>     aPlane = new StepGeom_Plane();
+  aPlane->Init(new TCollection_HAsciiString(), aPlaneAxis.Value());
+  StepVisual_AnnotationPlaneElement aPlaneElement;
+  aPlaneElement.SetValue(aCallout);
+  occ::handle<NCollection_HArray1<StepVisual_AnnotationPlaneElement>> aPlaneElements =
+    new NCollection_HArray1<StepVisual_AnnotationPlaneElement>(1, 1);
+  aPlaneElements->SetValue(1, aPlaneElement);
+  occ::handle<StepVisual_AnnotationPlane> anAnnPlane = new StepVisual_AnnotationPlane();
+  anAnnPlane->Init(new TCollection_HAsciiString(), aPrsStyles, aPlane, aPlaneElements);
+  aModel->AddWithRefs(anAnnPlane);
+  theAnnotations.Append(aCallout);
+  theAnnotations.Append(anAnnPlane);
+}
+
+//=======================================================================
 // function : writePresentation
 // purpose  : auxiliary (write annotation plane and presentation)
 //======================================================================
@@ -3323,6 +3452,16 @@ void STEPCAFControl_Writer::writePresentation(
   // graphic-only note on nothing, NIST CTC-05's rectangular regions -- the
   // callout is in the draughting model with no association: one to an empty
   // shape aspect a reader (SFA) takes for geometry it cannot find
+  writePlaceholder(theWS,
+                   myGDTAnnotations,
+                   myGDTPresentationDM,
+                   theLabel,
+                   thePrsName,
+                   theDimension,
+                   theHasPlane,
+                   theAnnotationPlane,
+                   theTextPosition,
+                   theLocalFactors);
   TDF_Label aHostL;
   if (thePresentation.IsNull() && !theDimension.IsNull() && theHasSemantic
       && XCAFDoc_DimTolTool::GetPresentedWith(theLabel, aHostL))
@@ -4206,6 +4345,28 @@ static void WriteDerivedGeometry(
 }
 
 //=======================================================================
+// function : datumPartKey
+// purpose  : the part a datum or a tolerance is on, as a key: the entry of the shape its first
+//           shape is of, empty when it is on none
+//=======================================================================
+static TCollection_AsciiString datumPartKey(const TDF_Label& theGDTL)
+{
+  TCollection_AsciiString         aKey;
+  NCollection_Sequence<TDF_Label> aFirst, aSecond;
+  if (!XCAFDoc_DimTolTool::GetRefShapeLabel(theGDTL, aFirst, aSecond) || aFirst.IsEmpty())
+  {
+    return aKey;
+  }
+  TDF_Label aPartL = aFirst.First();
+  if (XCAFDoc_ShapeTool::IsSubShape(aPartL))
+  {
+    aPartL = aPartL.Father();
+  }
+  TDF_Tool::Entry(aPartL, aKey);
+  return aKey;
+}
+
+//=======================================================================
 // function : WriteDatumSystem
 // purpose  : auxiliary (write Write datum system for given
 //           geometric_tolerance)
@@ -4264,6 +4425,9 @@ static occ::handle<NCollection_HArray1<StepDimTol_DatumSystemOrReference>> Write
     return nullptr;
   }
 
+  // The datums of the tolerance's own part: a letter is one part's
+  const TCollection_AsciiString aPartKey = datumPartKey(theGeomTolL);
+
   occ::handle<NCollection_HArray1<occ::handle<StepDimTol_DatumReferenceCompartment>>>
     aConstituents =
       new NCollection_HArray1<occ::handle<StepDimTol_DatumReferenceCompartment>>(1, aMaxDatumNum);
@@ -4296,7 +4460,9 @@ static occ::handle<NCollection_HArray1<StepDimTol_DatumSystemOrReference>> Write
     {
       // Datum entity
       occ::handle<Standard_Transient> aFDValue;
-      if (theDatumMap.Find(aDatumSeqPos.Value(1)->GetName()->String(), aFDValue)
+      if ((theDatumMap.Find(aDatumSeqPos.Value(1)->GetName()->String().Cat("@").Cat(aPartKey),
+                            aFDValue)
+           || theDatumMap.Find(aDatumSeqPos.Value(1)->GetName()->String(), aFDValue))
           && !aFDValue.IsNull())
       {
         aFirstDatum = occ::down_cast<StepDimTol_Datum>(aFDValue);
@@ -4340,7 +4506,8 @@ static occ::handle<NCollection_HArray1<StepDimTol_DatumSystemOrReference>> Write
         const occ::handle<XCAFDimTolObjects_DatumObject>& aDatumObj = aDatumIter.Value();
         occ::handle<StepDimTol_Datum>                     aDatum;
         occ::handle<Standard_Transient>                   aDValue;
-        if (theDatumMap.Find(aDatumObj->GetName()->String(), aDValue))
+        if (theDatumMap.Find(aDatumObj->GetName()->String().Cat("@").Cat(aPartKey), aDValue)
+            || theDatumMap.Find(aDatumObj->GetName()->String(), aDValue))
         {
           aDatum = occ::down_cast<StepDimTol_Datum>(aDValue);
         }
@@ -4516,7 +4683,9 @@ void STEPCAFControl_Writer::writeToleranceZone(
   occ::handle<StepDimTol_ToleranceZone> aZone = new StepDimTol_ToleranceZone();
   aZone->Init(new TCollection_HAsciiString(),
               new TCollection_HAsciiString(),
-              theEntity->TolerancedShapeAspect().ShapeAspect()->OfShape(),
+              theEntity->TolerancedShapeAspect().ShapeAspect().IsNull()
+                ? theEntity->TolerancedShapeAspect().ProductDefinitionShape()
+                : theEntity->TolerancedShapeAspect().ShapeAspect()->OfShape(),
               StepData_LFalse,
               aZoneTargetArray,
               aForm);
@@ -4716,6 +4885,7 @@ occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomToler
   // read. The modifier was read and never written: every profile all around (seven of
   // NIST's files) came back one of its faces alone
   bool                                                       isAllAround = false;
+  bool                                                       isAllOver   = false;
   const NCollection_Sequence<XCAFDimTolObjects_GeomToleranceModif> anAllModifs =
     anObject->GetModifiers();
   for (NCollection_Sequence<XCAFDimTolObjects_GeomToleranceModif>::Iterator aModIt(anAllModifs);
@@ -4723,11 +4893,34 @@ occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomToler
        aModIt.Next())
   {
     isAllAround = isAllAround || aModIt.Value() == XCAFDimTolObjects_GeomToleranceModif_All_Around;
+    isAllOver   = isAllOver || aModIt.Value() == XCAFDimTolObjects_GeomToleranceModif_All_Over;
   }
   occ::handle<StepRepr_ShapeAspect>                 aMainSA;
   occ::handle<StepRepr_RepresentationContext>       dummyRC;
   occ::handle<StepAP242_GeometricItemSpecificUsage> dummyGISU;
-  if (theShapeSeqL.Length() == 1 && !isAllAround)
+  // All over, on the part's own shape: the target is the product's shape itself, no aspect of
+  // it and no geometry (as NIST's general profile is, FTC-07's and FTC-10's)
+  occ::handle<StepRepr_ProductDefinitionShape> aWholePDS;
+  if (isAllOver && theShapeSeqL.Length() == 1
+      && !XCAFDoc_ShapeTool::IsSubShape(theShapeSeqL.Value(1)))
+  {
+    const occ::handle<Interface_HGraph> aHGraph = theWS->HGraph();
+    TopLoc_Location                                       aLoc;
+    NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+    FindEntities(theWS->TransferWriter()->FinderProcess(),
+                 XCAFDoc_ShapeTool::GetShape(theShapeSeqL.Value(1)),
+                 aLoc,
+                 aSeqRI);
+    if (!aHGraph.IsNull() && !aSeqRI.IsEmpty())
+    {
+      occ::handle<StepRepr_RepresentationContext> aRC;
+      aWholePDS = FindPDS(aHGraph->Graph(), aSeqRI.Value(1), aRC);
+    }
+  }
+  if (!aWholePDS.IsNull())
+  {
+  }
+  else if (theShapeSeqL.Length() == 1 && !isAllAround)
   {
     TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(theShapeSeqL.Value(1));
     aMainSA             = writeShapeAspect(theWS, theGeomTolL, aShape, dummyRC, dummyGISU);
@@ -4766,7 +4959,14 @@ occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomToler
     aMainSA = aCSA;
   }
   StepDimTol_GeometricToleranceTarget aGTTarget;
-  aGTTarget.SetValue(aMainSA);
+  if (!aWholePDS.IsNull())
+  {
+    aGTTarget.SetValue(aWholePDS);
+  }
+  else
+  {
+    aGTTarget.SetValue(aMainSA);
+  }
 
   bool isWithModif = false, isWithDatRef = false, isWithMaxTol = false;
   // Modifiers
@@ -5532,7 +5732,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
   }
 
   // Find all shapes with datums
-  NCollection_Map<TCollection_AsciiString> aNameIdMap;
+  NCollection_Map<TCollection_AsciiString> aNameIdMap, aWrittenNameIds, aOfNoPart;
   for (NCollection_Sequence<TDF_Label>::Iterator aDGTIter(aDGTLabels); aDGTIter.More();
        aDGTIter.Next())
   {
@@ -5545,12 +5745,33 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     TCollection_AsciiString                    aDatumName = anObject->GetName()->String();
     TCollection_AsciiString                    aDatumTargetId =
       TCollection_AsciiString(anObject->GetDatumTargetNumber());
-    if (!aNameIdMap.Add(aDatumName.Cat(aDatumTargetId)))
+    // A letter is one part's: two parts written to one file may each have a datum A, each
+    // written with its own feature (by name alone the second part's was taken for the first's
+    // given again, and dropped). A label of no shape -- a frame citing the datum -- is of the
+    // letter as first written
+    const TCollection_AsciiString aPart     = datumPartKey(aDatumL);
+    const TCollection_AsciiString aNameId   = aDatumName.Cat(aDatumTargetId);
+    const TCollection_AsciiString aDatumKey = aPart.IsEmpty() ? aDatumName
+                                                              : aDatumName.Cat("@").Cat(aPart);
+    if ((aPart.IsEmpty() && aWrittenNameIds.Contains(aNameId))
+        || !aNameIdMap.Add(aPart.IsEmpty() ? aNameId : aNameId.Cat("@").Cat(aPart)))
     {
       continue;
     }
+    aWrittenNameIds.Add(aNameId);
+    // A datum written of no part -- from a frame citing it, before its own label came: one
+    // established by targets alone, cited from another set (NIST CTC-02's K) -- is the one its
+    // targets are of, whatever part they are on
     occ::handle<Standard_Transient> aWrittenDatum;
-    bool                            isFirstDT = !aDatumMap.Find(aDatumName, aWrittenDatum);
+    bool                            isFirstDT = !aDatumMap.Find(aDatumKey, aWrittenDatum);
+    if (isFirstDT && !aPart.IsEmpty() && aOfNoPart.Contains(aDatumName))
+    {
+      isFirstDT = !aDatumMap.Find(aDatumName, aWrittenDatum);
+    }
+    if (aPart.IsEmpty())
+    {
+      aOfNoPart.Add(aDatumName);
+    }
     occ::handle<StepDimTol_Datum>   aDatum =
       writeDatumAP242(theWS,
                       aShapeL,
@@ -5558,8 +5779,12 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                       isFirstDT,
                       occ::down_cast<StepDimTol_Datum>(aWrittenDatum),
                       theLocalFactors);
-    // Add created Datum into Map
-    aDatumMap.Bind(aDatumName, aDatum);
+    // Add created Datum into Map: as its part's, and as the letter's when it is the first
+    aDatumMap.Bind(aDatumKey, aDatum);
+    if (!aDatumMap.IsBound(aDatumName))
+    {
+      aDatumMap.Bind(aDatumName, aDatum);
+    }
   }
 
   // write Dimensions

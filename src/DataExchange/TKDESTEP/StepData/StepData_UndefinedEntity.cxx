@@ -66,6 +66,11 @@ const char* StepData_UndefinedEntity::StepType() const
   return thetype->ToCString();
 }
 
+void StepData_UndefinedEntity::SetStepType(const char* theType)
+{
+  thetype = new TCollection_HAsciiString(theType);
+}
+
 void StepData_UndefinedEntity::ReadRecord(const occ::handle<StepData_StepReaderData>& SR,
                                           const int                                   num,
                                           occ::handle<Interface_Check>&               ach)

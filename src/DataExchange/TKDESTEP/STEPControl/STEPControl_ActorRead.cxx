@@ -1044,7 +1044,14 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
     if (readSRR && /*theResult.IsNull() &&*/ i <= nbNotAspect)
     {
       TopoDS_Shape aNewResult =
-        TransferRelatedSRR(TP, rep, useTrsf, readConstructiveGeomRR, theLocalFactors, Cund, aPS1);
+        TransferRelatedSRR(TP,
+                           rep,
+                           useTrsf,
+                           readConstructiveGeomRR,
+                           theLocalFactors,
+                           Cund,
+                           aPS1,
+                           aStepModel->InternalParameters.ReadSupplementalCurves);
       if (!aNewResult.IsNull())
       {
         Result1 = aNewResult;
@@ -1732,7 +1739,8 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
   const occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship>& theCGRR,
   const occ::handle<Transfer_TransientProcess>&                               theTP,
   const StepData_Factors&                                                     theLocalFactors,
-  const bool                                                                  theAxesAsPlanes)
+  const bool                                                                  theAxesAsPlanes,
+  const bool                                                                  theCurves)
 {
 
   occ::handle<TransferBRep_ShapeBinder> shbinder;
@@ -1771,7 +1779,7 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
       occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
       if (!aSet.IsNull())
       {
-        if (!theTP->IsBound(aSet))
+        if (theCurves && !theTP->IsBound(aSet))
         {
           StepToTopoDS_Builder aSetBuilder;
           aSetBuilder.Init(aSet, theTP, aLocalFactors);
@@ -2423,7 +2431,9 @@ occ::handle<TransferBRep_ShapeBinder> STEPControl_ActorRead::TransferEntity(
                                                  aStepModel->InternalParameters.ReadConstrRelation,
                                                  theLocalFactors,
                                                  aCund,
-                                                 aPS);
+                                                 aPS,
+                                                 aStepModel->InternalParameters
+                                                   .ReadSupplementalCurves);
     if (!aNewResult.IsNull())
     {
       aResult = aNewResult;
@@ -3031,7 +3041,8 @@ TopoDS_Shape STEPControl_ActorRead::TransferRelatedSRR(
   const bool                                        theReadConstructiveGeomRR,
   const StepData_Factors&                           theLocalFactors,
   TopoDS_Compound&                                  theCund,
-  Message_ProgressScope&                            thePS)
+  Message_ProgressScope&                            thePS,
+  const bool                                        theReadSupplementalCurves)
 {
   BRep_Builder           aBuilder;
   TopoDS_Shape           aResult;
@@ -3059,13 +3070,18 @@ TopoDS_Shape STEPControl_ActorRead::TransferRelatedSRR(
         occ::down_cast<StepRepr_MechanicalDesignAndDraughtingRelationship>(anItem);
       aBinder = TransferEntity(aMDADR, theTP, theLocalFactors, thePS.Next());
     }
-    // Supplemental geometry: its curves always, its axes as planes when asked
-    else if (anItem->DynamicType()
-             == STANDARD_TYPE(StepRepr_ConstructiveGeometryRepresentationRelationship))
+    // Supplemental geometry: its curves when GD&T is read, its axes as planes when asked
+    else if ((theReadConstructiveGeomRR || theReadSupplementalCurves)
+             && anItem->DynamicType()
+                  == STANDARD_TYPE(StepRepr_ConstructiveGeometryRepresentationRelationship))
     {
       occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship> aCGRR =
         occ::down_cast<StepRepr_ConstructiveGeometryRepresentationRelationship>(anItem);
-      aBinder = TransferEntity(aCGRR, theTP, theLocalFactors, theReadConstructiveGeomRR);
+      aBinder = TransferEntity(aCGRR,
+                               theTP,
+                               theLocalFactors,
+                               theReadConstructiveGeomRR,
+                               theReadSupplementalCurves);
     }
     if (!aBinder.IsNull())
     {

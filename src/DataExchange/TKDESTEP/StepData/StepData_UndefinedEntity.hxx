@@ -69,6 +69,10 @@ public:
   //! was C++ : return const
   Standard_EXPORT const char* StepType() const;
 
+  //! Sets the entity type: of an entity made to be written, of a type no
+  //! class is for (its parameters are added to its UndefinedContent)
+  Standard_EXPORT void SetStepType(const char* theType);
+
   //! reads data from StepReaderData (i.e. from file), by filling
   //! StepType and parameters stored in the UndefinedContent
   Standard_EXPORT void ReadRecord(const occ::handle<StepData_StepReaderData>& SR,

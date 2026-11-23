@@ -17,7 +17,9 @@
 #include <MoniTool_Macros.hxx>
 #include <StepVisual_AnnotationCurveOccurrence.hxx>
 #include <StepVisual_AnnotationFillAreaOccurrence.hxx>
+#include <StepData_UndefinedEntity.hxx>
 #include <StepVisual_AnnotationTextOccurrence.hxx>
+#include <TCollection_AsciiString.hxx>
 #include <StepVisual_TessellatedAnnotationOccurrence.hxx>
 
 //=================================================================================================
@@ -47,6 +49,14 @@ int StepVisual_DraughtingCalloutElement::CaseNum(const occ::handle<Standard_Tran
   if (ent->IsKind(STANDARD_TYPE(StepVisual_AnnotationFillAreaOccurrence)))
   {
     return 4;
+  }
+  // An annotation placeholder occurrence (AP242 ed2), which no class is for: kept as it is
+  // read, so that a callout holding one can be written
+  occ::handle<StepData_UndefinedEntity> anUndefined = occ::down_cast<StepData_UndefinedEntity>(ent);
+  if (!anUndefined.IsNull()
+      && TCollection_AsciiString(anUndefined->StepType()).Search("ANNOTATION_PLACEHOLDER") == 1)
+  {
+    return 5;
   }
   return 0;
 }

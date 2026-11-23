@@ -152,6 +152,14 @@ const Standard_GUID& XCAFDoc::GDTPresentedWithRefGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::GDTPlaceholderGUID()
+{
+  static const Standard_GUID ID("c1f4a0d7-3e55-4b0a-9d0c-6f1a7e2b84a3");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");

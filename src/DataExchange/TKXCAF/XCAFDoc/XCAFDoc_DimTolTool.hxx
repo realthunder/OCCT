@@ -33,6 +33,7 @@ class XCAFDoc_ShapeTool;
 class TDF_Label;
 class Standard_GUID;
 class TCollection_HAsciiString;
+class TCollection_AsciiString;
 
 //! Attribute containing GD&T section of XCAF document.
 //! Provide tools for GD&T section management.
@@ -244,6 +245,22 @@ public:
 
   //! The GD&T whose graphic presents theGDTL too; false when there is none.
   Standard_EXPORT static bool GetPresentedWith(const TDF_Label& theGDTL, TDF_Label& theHostL);
+
+  //! Says the GD&T theGDTL has an annotation placeholder (AP242 ed2: where a
+  //! reader that draws PMI itself puts its text) of the kind theKind, the name
+  //! of its geometric set: 'linear dimension', 'general tolerance', 'note'.
+  //! theName is the placeholder's own name, which need not be its graphic's
+  //! (NIST STC-07: a dimension drawn as 'Oriented Linear Dimension.1' has the
+  //! placeholder 'Oriented Linear Dimension.5'); empty, it is named as the graphic.
+  //! Written to STEP it is given one, where its text is. An empty kind removes it.
+  Standard_EXPORT static void SetPlaceholder(const TDF_Label&               theGDTL,
+                                             const TCollection_AsciiString& theKind,
+                                             const TCollection_AsciiString& theName);
+
+  //! The kind and name of the placeholder theGDTL has; false when it has none.
+  Standard_EXPORT static bool GetPlaceholder(const TDF_Label&         theGDTL,
+                                             TCollection_AsciiString& theKind,
+                                             TCollection_AsciiString& theName);
 
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,

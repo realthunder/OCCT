@@ -1093,6 +1093,12 @@ bool STEPCAFControl_Reader::Transfer(
 {
   reader.ClearShapes();
   occ::handle<StepData_StepModel> aModel = occ::down_cast<StepData_StepModel>(reader.Model());
+  if (!aModel.IsNull())
+  {
+    // Supplemental geometry's curves are read for the GD&T that may be on them, and only then:
+    // a file read without its GD&T has its part alone
+    aModel->InternalParameters.ReadSupplementalCurves = GetGDTMode();
+  }
   StepData_Factors                aLocalFactors;
   prepareUnits(aModel, doc, aLocalFactors);
   int i;
@@ -3469,6 +3475,46 @@ bool readAnnotationPlane(const occ::handle<StepVisual_AnnotationPlane>& theAnnot
 }
 
 //=======================================================================
+// function : placeholderKind
+// purpose  : the kind a placeholder is of -- the name of its geometric set:
+//            'linear dimension', 'general tolerance', 'note' -- and where
+//            it is, the set's placement
+//=======================================================================
+static void placeholderKind(
+  const occ::handle<StepAP242_DraughtingModelItemAssociationWithPlaceholder>& aLink,
+  occ::handle<TCollection_HAsciiString>&                                      aType,
+  occ::handle<StepGeom_Axis2Placement3d>&                                     aPlace)
+{
+  // Its set: the one representation item among its parameters (the others its
+  // name, styles, role, line spacing and leader lines), in any part of a complex
+  for (occ::handle<StepData_UndefinedEntity> anEnt =
+         occ::down_cast<StepData_UndefinedEntity>(aLink->AnnotationPlaceholder());
+       !anEnt.IsNull() && aType.IsNull();
+       anEnt = anEnt->Next())
+  {
+    occ::handle<Interface_UndefinedContent> aContent = anEnt->UndefinedContent();
+    for (int i = 1; !aContent.IsNull() && i <= aContent->NbParams() && aType.IsNull(); i++)
+    {
+      if (!aContent->IsParamEntity(i))
+      {
+        continue;
+      }
+      occ::handle<StepRepr_RepresentationItem> anItem =
+        occ::down_cast<StepRepr_RepresentationItem>(aContent->ParamEntity(i));
+      if (!anItem.IsNull() && !anItem->Name().IsNull() && anItem->Name()->Length() > 0)
+      {
+        aType = anItem->Name();
+        occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
+        for (int j = 1; !aSet.IsNull() && j <= aSet->NbElements() && aPlace.IsNull(); j++)
+        {
+          aPlace = occ::down_cast<StepGeom_Axis2Placement3d>(aSet->ElementsValue(j).Value());
+        }
+      }
+    }
+  }
+}
+
+//=======================================================================
 // function : readPlaceholder
 // purpose  : a PMI's placeholder, its link's callout holding it alone (AP242's
 //            annotation_placeholder_occurrence, a type this toolkit does not know):
@@ -3505,35 +3551,9 @@ static void readPlaceholder(const occ::handle<StepAP242_DraughtingModelItemAssoc
   {
     return;
   }
-  // Its set: the one representation item among its parameters (the others its
-  // name, styles, role, line spacing and leader lines), in any part of a complex
   occ::handle<TCollection_HAsciiString>  aType;
   occ::handle<StepGeom_Axis2Placement3d> aPlace;
-  for (occ::handle<StepData_UndefinedEntity> anEnt =
-         occ::down_cast<StepData_UndefinedEntity>(aLink->AnnotationPlaceholder());
-       !anEnt.IsNull() && aType.IsNull();
-       anEnt = anEnt->Next())
-  {
-    occ::handle<Interface_UndefinedContent> aContent = anEnt->UndefinedContent();
-    for (int i = 1; !aContent.IsNull() && i <= aContent->NbParams() && aType.IsNull(); i++)
-    {
-      if (!aContent->IsParamEntity(i))
-      {
-        continue;
-      }
-      occ::handle<StepRepr_RepresentationItem> anItem =
-        occ::down_cast<StepRepr_RepresentationItem>(aContent->ParamEntity(i));
-      if (!anItem.IsNull() && !anItem->Name().IsNull() && anItem->Name()->Length() > 0)
-      {
-        aType = anItem->Name();
-        occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
-        for (int j = 1; !aSet.IsNull() && j <= aSet->NbElements() && aPlace.IsNull(); j++)
-        {
-          aPlace = occ::down_cast<StepGeom_Axis2Placement3d>(aSet->ElementsValue(j).Value());
-        }
-      }
-    }
-  }
+  placeholderKind(aLink, aType, aPlace);
   bool   hasPlace = false;
   gp_Ax2 aPlane;
   if (!aPlace.IsNull())
@@ -5342,7 +5362,22 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
       }
     }
   }
-  if (aSeqRI1.IsEmpty())
+  // A tolerance of no geometry -- on the product's shape itself, or on an aspect of it that
+  // names none -- is of the whole part, all over it (NIST's general profile, 'Geometrical
+  // Tolerance.1': FTC-07's and FTC-10's on the product's shape, STC-08's and FTC-06's on a
+  // shape aspect 'GDT' with no geometry): on the part's own label
+  occ::handle<StepRepr_ProductDefinitionShape> aWholePDS;
+  if (theEnt->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)) && !isAllAround)
+  {
+    const StepDimTol_GeometricToleranceTarget aTarget =
+      occ::down_cast<StepDimTol_GeometricTolerance>(theEnt)->TolerancedShapeAspect();
+    aWholePDS = aTarget.ProductDefinitionShape();
+    if (aWholePDS.IsNull() && aSeqRI1.IsEmpty() && !aTarget.ShapeAspect().IsNull())
+    {
+      aWholePDS = aTarget.ShapeAspect()->OfShape();
+    }
+  }
+  if (aSeqRI1.IsEmpty() && aWholePDS.IsNull())
   {
     return aGDTL;
   }
@@ -5425,6 +5460,36 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
     }
   }
 
+  if (!aWholePDS.IsNull())
+  {
+    // The part's own label, whatever its representation was found as
+    aShLS1.Clear();
+    isAllOver = false;
+    occ::handle<StepBasic_ProductDefinition> aPD = aWholePDS->Definition().ProductDefinition();
+    occ::handle<Transfer_Binder>             aBinder;
+    if (!aPD.IsNull())
+    {
+      aBinder = aTP->Find(aPD);
+    }
+    if (!aBinder.IsNull() && aBinder->HasResult())
+    {
+      const TopoDS_Shape aPart = TransferBRep::ShapeResult(aTP, aBinder);
+      TDF_Label          aPartL;
+      if (!aPart.IsNull() && myMap.IsBound(aPart))
+      {
+        aPartL = myMap.Find(aPart);
+      }
+      if (aPartL.IsNull() && !aPart.IsNull())
+      {
+        aSTool->Search(aPart, aPartL, true, true, false);
+      }
+      if (!aPartL.IsNull())
+      {
+        aShLS1.Append(aPartL);
+        isAllOver = true;
+      }
+    }
+  }
   if (!aShLS1.IsEmpty())
   {
     // add to XCAF
@@ -6800,6 +6865,76 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
                                 aName.IsNull() ? new TCollection_HAsciiString() : aName);
       }
       aDim->SetObject(aDimObj);
+    }
+  }
+  // The placeholders, each kept as its kind on the PMI it is of -- the one its association
+  // defines, else the first of its name that has none yet (a graphic alone, a datum): written
+  // again, that PMI is given one
+  NCollection_DataMap<TCollection_AsciiString, NCollection_Sequence<TDF_Label>> aByName;
+  {
+    NCollection_Sequence<TDF_Label> aAll, aSome;
+    aDGTTool->GetDimensionLabels(aAll);
+    aDGTTool->GetGeomToleranceLabels(aSome);
+    aAll.Append(aSome);
+    aSome.Clear();
+    aDGTTool->GetDatumLabels(aSome);
+    aAll.Append(aSome);
+    for (NCollection_Sequence<TDF_Label>::Iterator aLIt(aAll); aLIt.More(); aLIt.Next())
+    {
+      occ::handle<TCollection_HAsciiString> aName;
+      hasPresentation(aLIt.Value(), &aName);
+      if (aName.IsNull() || aName->IsEmpty())
+      {
+        continue;
+      }
+      if (!aByName.IsBound(aName->String()))
+      {
+        aByName.Bind(aName->String(), NCollection_Sequence<TDF_Label>());
+      }
+      aByName.ChangeFind(aName->String()).Append(aLIt.Value());
+    }
+  }
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<StepAP242_DraughtingModelItemAssociationWithPlaceholder> aLink =
+      occ::down_cast<StepAP242_DraughtingModelItemAssociationWithPlaceholder>(aModel->Value(i));
+    if (aLink.IsNull())
+    {
+      continue;
+    }
+    occ::handle<TCollection_HAsciiString>  aKind;
+    occ::handle<StepGeom_Axis2Placement3d> aPlace;
+    placeholderKind(aLink, aKind, aPlace);
+    if (aKind.IsNull() || aKind->IsEmpty())
+    {
+      continue;
+    }
+    // Its name: its callout's (the callout of the placeholder alone, named as it)
+    TCollection_AsciiString aName;
+    for (int j = 1; j <= aLink->NbIdentifiedItem() && aName.IsEmpty(); j++)
+    {
+      aName = presentationName(aLink->IdentifiedItemValue(j));
+    }
+    const occ::handle<Standard_Transient> aDef = aLink->Definition().Value();
+    TDF_Label                             aOfL;
+    TCollection_AsciiString               aHas, aHasName;
+    if (!aDef.IsNull() && myGDTMap.Find(aDef, aOfL) && !aOfL.IsNull())
+    {
+      XCAFDoc_DimTolTool::SetPlaceholder(aOfL, aKind->String(), aName);
+      continue;
+    }
+    if (aName.IsEmpty() || !aByName.IsBound(aName))
+    {
+      continue;
+    }
+    for (NCollection_Sequence<TDF_Label>::Iterator aLIt(aByName.Find(aName)); aLIt.More();
+         aLIt.Next())
+    {
+      if (!XCAFDoc_DimTolTool::GetPlaceholder(aLIt.Value(), aHas, aHasName))
+      {
+        XCAFDoc_DimTolTool::SetPlaceholder(aLIt.Value(), aKind->String(), aName);
+        break;
+      }
     }
   }
   return true;

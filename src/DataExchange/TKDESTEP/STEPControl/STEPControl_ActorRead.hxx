@@ -205,7 +205,8 @@ protected:
     const occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship>& theCGRR,
     const occ::handle<Transfer_TransientProcess>&                               theTP,
     const StepData_Factors& theLocalFactors = StepData_Factors(),
-    const bool              theAxesAsPlanes = true);
+    const bool              theAxesAsPlanes = true,
+    const bool              theCurves       = true);
 
   //! Transfers MechanicalDesignAndDraughtingRelationship entity
   occ::handle<TransferBRep_ShapeBinder> TransferEntity(
@@ -238,7 +239,8 @@ private:
                        const bool                                        theReadConstructiveGeomRR,
                        const StepData_Factors&                           theLocalFactors,
                        TopoDS_Compound&                                  theCund,
-                       Message_ProgressScope&                            thePS);
+                       Message_ProgressScope&                            thePS,
+                       const bool theReadSupplementalCurves = false);
 
 private:
   StepToTopoDS_NMTool                   myNMTool;
