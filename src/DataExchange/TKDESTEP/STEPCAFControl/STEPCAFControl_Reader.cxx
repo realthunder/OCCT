@@ -141,6 +141,8 @@
 #include <StepShape_EdgeLoop.hxx>
 #include <StepShape_GeometricCurveSet.hxx>
 #include <StepShape_GeometricSet.hxx>
+#include <StepData_UndefinedEntity.hxx>
+#include <Interface_UndefinedContent.hxx>
 #include <StepShape_Face.hxx>
 #include <StepShape_FaceBound.hxx>
 #include <StepShape_OrientedEdge.hxx>
@@ -3466,6 +3468,70 @@ bool readAnnotationPlane(const occ::handle<StepVisual_AnnotationPlane>& theAnnot
 }
 
 //=======================================================================
+// function : readPlaceholder
+// purpose  : a PMI's placeholder, its link's callout holding it alone (AP242's
+//            annotation_placeholder_occurrence, a type this toolkit does not know):
+//            where a reader writes the PMI's text, nothing drawn. Kept as a
+//            presentation named as the callout, of no shape, its kind the name of
+//            the placeholder's set (the box and placement of it) -- by which a
+//            reader (SFA) counts it a graphic. STC-07: 31 of its 32 radii,
+//            presented by one '32X R', each by a placeholder 'Linear Size.13'
+//            of a 'linear dimension'
+//=======================================================================
+static void readPlaceholder(const occ::handle<StepAP242_DraughtingModelItemAssociation>& theDMIA,
+                            const occ::handle<TCollection_HAsciiString>& thePresentName,
+                            const occ::handle<Standard_Transient>&       theDimObject)
+{
+  occ::handle<StepAP242_DraughtingModelItemAssociationWithPlaceholder> aLink =
+    occ::down_cast<StepAP242_DraughtingModelItemAssociationWithPlaceholder>(theDMIA);
+  if (aLink.IsNull() || thePresentName.IsNull() || thePresentName->Length() == 0)
+  {
+    return;
+  }
+  // Its set: the one representation item among its parameters (the others its
+  // name, styles, role, line spacing and leader lines), in any part of a complex
+  occ::handle<TCollection_HAsciiString> aType;
+  for (occ::handle<StepData_UndefinedEntity> anEnt =
+         occ::down_cast<StepData_UndefinedEntity>(aLink->AnnotationPlaceholder());
+       !anEnt.IsNull() && aType.IsNull();
+       anEnt = anEnt->Next())
+  {
+    occ::handle<Interface_UndefinedContent> aContent = anEnt->UndefinedContent();
+    for (int i = 1; !aContent.IsNull() && i <= aContent->NbParams() && aType.IsNull(); i++)
+    {
+      if (!aContent->IsParamEntity(i))
+      {
+        continue;
+      }
+      occ::handle<StepRepr_RepresentationItem> anItem =
+        occ::down_cast<StepRepr_RepresentationItem>(aContent->ParamEntity(i));
+      if (!anItem.IsNull() && !anItem->Name().IsNull() && anItem->Name()->Length() > 0)
+      {
+        aType = anItem->Name();
+      }
+    }
+  }
+  if (occ::handle<XCAFDimTolObjects_DimensionObject> anObj =
+        occ::down_cast<XCAFDimTolObjects_DimensionObject>(theDimObject))
+  {
+    anObj->SetPresentation(TopoDS_Shape(), thePresentName);
+    anObj->SetPresentationType(aType);
+  }
+  else if (occ::handle<XCAFDimTolObjects_DatumObject> aDatum =
+             occ::down_cast<XCAFDimTolObjects_DatumObject>(theDimObject))
+  {
+    aDatum->SetPresentation(TopoDS_Shape(), thePresentName);
+    aDatum->SetPresentationType(aType);
+  }
+  else if (occ::handle<XCAFDimTolObjects_GeomToleranceObject> aTol =
+             occ::down_cast<XCAFDimTolObjects_GeomToleranceObject>(theDimObject))
+  {
+    aTol->SetPresentation(TopoDS_Shape(), thePresentName);
+    aTol->SetPresentationType(aType);
+  }
+}
+
+//=======================================================================
 // function : readAnnotation
 // purpose  : read annotation plane and position for given GDT
 // (Dimension, Geometric_Tolerance, Datum_Feature or Placed_Datum_Target_Feature)
@@ -3582,6 +3648,7 @@ void readAnnotation(const occ::handle<XSControl_TransferReader>& theTR,
                            aLocalFactors,
                            &aPresentType))
   {
+    readPlaceholder(aDMIA, aPresentName, theDimObject);
     return;
   }
   gp_Pnt aPtext(0., 0., 0.);
