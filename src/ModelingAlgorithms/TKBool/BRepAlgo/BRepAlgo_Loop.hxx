@@ -188,4 +188,16 @@ public:
   Standard_EXPORT ~BRepAlgo_LoopByOrientation();
 };
 
+//! While set on a thread, the loops built on it make every band of a
+//! periodic face: between each two closed edges next to each other along the
+//! seam. As it is otherwise a closed edge bounds one band, the first found,
+//! and of a face cut by two closed edges the band between them is not made
+//! where the bands at the face's ends are found before it. Which of the
+//! bands are faces of the result is then for the caller to tell.
+class BRepAlgo_LoopEverySeamBand
+{
+public:
+  Standard_EXPORT static void Set(const bool theIsOn);
+};
+
 #endif // _BRepAlgo_Loop_HeaderFile

@@ -1025,6 +1025,10 @@ static void EvalMax(const TopoDS_Shape& S, double& Tol)
 //! other, and MakeOffsetShape() to drop what of each lies within the other.
 static thread_local NCollection_List<TopoDS_Shape> theTubePairs;
 
+// Whether the loops of this computation make every band of a periodic face
+// (BRepAlgo_LoopEverySeamBand, asked for in Intersection3D()).
+static thread_local bool theIsEverySeamBand = false;
+
 //=================================================================================================
 
 void BRepOffset_MakeOffset::SetFaces()
@@ -1215,6 +1219,20 @@ static bool WallsCrossAtRemovedFace(
 
 void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRange)
 {
+  // Every band of a periodic face is made by the loops only where
+  // Intersection3D() asks for it, and in this computation only.
+  struct EverySeamBandScope
+  {
+    EverySeamBandScope() { Set(false); }
+
+    ~EverySeamBandScope() { Set(false); }
+
+    static void Set(const bool theIsOn)
+    {
+      theIsEverySeamBand = theIsOn;
+      BRepAlgo_LoopEverySeamBand::Set(theIsOn);
+    }
+  } anEverySeamBandScope;
   BRepAlgo_LoopIntersectingEdgeMap IntersectingEdgeMap;
   myDone = false;
   const TangencyOffset aTangencyOffset(myOffset, myFaceOffset);
@@ -1570,7 +1588,8 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
       TopoDS_Shape aRim;
       BRep_Builder aBB;
       aBB.MakeWire(aWire);
-      int aNbE = 0;
+      int                            aNbE = 0;
+      NCollection_List<TopoDS_Shape> aLensEdges;
       for (NCollection_List<TopoDS_Shape>::Iterator itD(aDropped); itD.More(); itD.Next())
       {
         for (TopExp_Explorer anExp(itD.Value().Oriented(TopAbs_FORWARD), TopAbs_EDGE);
@@ -1589,6 +1608,7 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
             if (anExpR.Current().IsSame(anExp.Current()))
             {
               aBB.Add(aWire, anExpR.Current().Reversed());
+              aLensEdges.Append(anExpR.Current().Reversed());
               ++aNbE;
               break;
             }
@@ -1609,6 +1629,36 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
         aLens.Orientation(aRim.Orientation());
         isMade = aWire.Closed() && BRepCheck_Analyzer(aLens).IsValid();
       }
+      if (!isMade && aNbE >= 2 && !aRim.IsNull() && BRepOffset_FixLevel() >= 5)
+      {
+        // Each of the edges closed on its own: the tubes of two closed
+        // edges of the removed face, and the rim between them a ring -- a
+        // wire of each (the tube's top removed inward by more than its
+        // fillets' radius). One wire of the two bounds nothing. From fix
+        // level 5.
+        bool areClosed = true;
+        for (NCollection_List<TopoDS_Shape>::Iterator itE(aLensEdges); itE.More() && areClosed;
+             itE.Next())
+        {
+          TopoDS_Vertex aV1, aV2;
+          TopExp::Vertices(TopoDS::Edge(itE.Value()), aV1, aV2);
+          areClosed = !aV1.IsNull() && aV1.IsSame(aV2);
+        }
+        if (areClosed)
+        {
+          aLens = TopoDS::Face(aRim.EmptyCopied().Oriented(TopAbs_FORWARD));
+          for (NCollection_List<TopoDS_Shape>::Iterator itE(aLensEdges); itE.More(); itE.Next())
+          {
+            TopoDS_Wire aRing;
+            aBB.MakeWire(aRing);
+            aBB.Add(aRing, itE.Value());
+            aRing.Closed(true);
+            aBB.Add(aLens, aRing);
+          }
+          aLens.Orientation(aRim.Orientation());
+          isMade = BRepCheck_Analyzer(aLens).IsValid();
+        }
+      }
       if (!isMade)
       {
         continue;
@@ -1620,6 +1670,80 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
       }
       SHOW_TOPO_SHAPE(aLens, "RimBetweenTubes");
       myImageOffset.Add(aCapOfRim(aRim), aLens);
+    }
+  }
+
+  // Every band of the periodic faces made (theIsEverySeamBand): a tube cut
+  // by the offset of the face beyond a fillet that has none, and that
+  // offset cut by the tube. Of the tube the band from its first edge to the
+  // section stands where the fillet's offset would be, and of the face
+  // beyond the band past the section does; each has an edge nothing else
+  // comes to. A piece of an offset face with such an edge is dropped, then
+  // any this leaves with one, before the shells are made: of an edge with
+  // three faces they would take any two.
+  if (theIsEverySeamBand)
+  {
+    for (;;)
+    {
+      NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+                                                             aEF;
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anOfCaps;
+      for (NCollection_List<TopoDS_Shape>::Iterator itR(myImageOffset.Roots()); itR.More();
+           itR.Next())
+      {
+        bool isCap = false;
+        for (int i = 1; i <= myFaces.Extent() && !isCap; ++i)
+        {
+          isCap = itR.Value().IsSame(myFaces(i))
+                  || (myInitOffsetFace.HasImage(myFaces(i))
+                      && itR.Value().IsSame(myInitOffsetFace.Image(myFaces(i)).First()));
+        }
+        NCollection_List<TopoDS_Shape> aPieces;
+        myImageOffset.LastImage(itR.Value(), aPieces);
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(aPieces); itF.More(); itF.Next())
+        {
+          if (isCap)
+          {
+            anOfCaps.Add(itF.Value());
+          }
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+          for (TopExp_Explorer anExp(itF.Value(), TopAbs_EDGE); anExp.More(); anExp.Next())
+          {
+            if (!aSeen.Add(anExp.Current()))
+            {
+              continue;
+            }
+            NCollection_List<TopoDS_Shape>* pLF = aEF.ChangeSeek(anExp.Current());
+            if (!pLF)
+            {
+              pLF = &aEF(aEF.Add(anExp.Current(), NCollection_List<TopoDS_Shape>()));
+            }
+            pLF->Append(itF.Value());
+          }
+        }
+      }
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aHanging;
+      for (int i = 1; i <= aEF.Extent(); ++i)
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(aEF.FindKey(i));
+        if (aEF(i).Extent() != 1 || anOfCaps.Contains(aEF(i).First()) || BRep_Tool::Degenerated(anE)
+            || BRep_Tool::IsClosed(anE, TopoDS::Face(aEF(i).First())))
+        {
+          continue;
+        }
+        aHanging.Add(aEF(i).First());
+      }
+      if (aHanging.IsEmpty())
+      {
+        break;
+      }
+      for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator itH(aHanging);
+           itH.More();
+           itH.Next())
+      {
+        SHOW_TOPO_SHAPE(itH.Value(), "BandWithAFreeEdge");
+        myImageOffset.Remove(itH.Value());
+      }
     }
   }
 
@@ -5706,6 +5830,18 @@ void BRepOffset_MakeOffset::MakeThickSolidAsGiven(const Message_ProgressRange& t
       // ridge, 1.8 wide, at 1). Refused, as it was.
       if (myDone && theHasCutTubePair && BRepOffset_FixLevel() < 5
           && OpensNowhere(myOffsetShape, aRemoved))
+      {
+        myDone = false;
+      }
+      // Nor, with two tubes cut by each other, a solid heavier than a skin
+      // can be: the tube's top removed inward by more than its fillets'
+      // radius, each of the two tubes cut by the other and by the wall
+      // beyond its fillet, the first way of the loops took of each the two
+      // pieces at its ends for the one between -- the part whole but for a
+      // groove along the top, a valid solid of 2390.0910 where the part is
+      // 2391.1690. The other way is tried then. From fix level 5.
+      if (myDone && theHasCutTubePair && BRepOffset_FixLevel() >= 5
+          && !IsNoHeavierThanASkin(myOffsetShape, anOffset))
       {
         myDone = false;
       }
@@ -10700,6 +10836,50 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
             Inter.FaceInter(aTF,
                             TopoDS::Face(myInitOffsetFace.Image(anItF.Value()).First()),
                             myInitOffsetFace);
+          }
+        }
+        // And where the face beside the removed one has no offset -- a
+        // fillet, the thickness its radius or more inward, its offset turned
+        // inside out and not kept (BuildOffsetByArc) -- the tube meets the
+        // offsets of the faces beyond it, which nothing else brings to the
+        // rim: the tube's top removed inward by more than the fillets'
+        // radius, the two tubes cut by each other and the walls' offsets
+        // left standing past them. From fix level 5.
+        if (BRepOffset_FixLevel() >= 5 && aN.ShapeType() == TopAbs_FACE && !myFaces.Contains(aN)
+            && !myInitOffsetFace.HasImage(aN))
+        {
+          NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aBeyond;
+          for (TopExp_Explorer anExpN(aN, TopAbs_EDGE); anExpN.More(); anExpN.Next())
+          {
+            if (!myAnalyse.HasAncestor(anExpN.Current()))
+            {
+              continue;
+            }
+            for (NCollection_List<TopoDS_Shape>::Iterator anItF(
+                   myAnalyse.Ancestors(anExpN.Current()));
+                 anItF.More();
+                 anItF.Next())
+            {
+              const TopoDS_Shape& aB = anItF.Value();
+              if (aB.IsSame(aN) || myFaces.Contains(aB) || !myInitOffsetFace.HasImage(aB)
+                  || !aBeyond.Add(aB))
+              {
+                continue;
+              }
+              const int aNbNew = NewEdges.Extent();
+              Inter.FaceInter(aTF,
+                              TopoDS::Face(myInitOffsetFace.Image(aB).First()),
+                              myInitOffsetFace);
+              if (NewEdges.Extent() > aNbNew)
+              {
+                // The tube is cut by a closed edge more, and of its bands
+                // the one that stays may lie between two of them: every
+                // band is made (BRepAlgo_LoopEverySeamBand), and those that
+                // hang or lie within another tube are dropped as they are.
+                theIsEverySeamBand = true;
+                BRepAlgo_LoopEverySeamBand::Set(true);
+              }
+            }
           }
         }
       }
