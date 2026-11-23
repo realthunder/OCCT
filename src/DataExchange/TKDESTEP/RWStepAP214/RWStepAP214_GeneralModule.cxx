@@ -1156,6 +1156,8 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_GeneralModule, StepData_GeneralModule)
 #include "../RWStepRepr/RWStepRepr_RWCompShAspAndDatumFeatAndShAsp.pxx"
 #include "../RWStepAP242/RWStepAP242_RWDraughtingModelItemAssociation.pxx"
 #include "../RWStepAP242/RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder.pxx"
+#include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit.pxx"
+#include "../RWStepShape/RWStepShape_RWDimensionalSizeWithDatumFeature.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthMaxTol.pxx"
 #include "../RWStepVisual/RWStepVisual_RWAnnotationCurveOccurrence.pxx"
@@ -1205,6 +1207,8 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_GeneralModule, StepData_GeneralModule)
 #include <StepRepr_ValueRepresentationItem.hxx>
 #include <StepAP242_DraughtingModelItemAssociation.hxx>
 #include <StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx>
+#include <StepDimTol_GeoTolAndGeoTolWthDefUnit.hxx>
+#include <StepShape_DimensionalSizeWithDatumFeature.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMaxTol.hxx>
 #include <StepVisual_AnnotationPlane.hxx>
@@ -5308,6 +5312,18 @@ void RWStepAP214_GeneralModule::FillSharedCase(const int                        
       aTool.Share(anEnt, iter);
     }
     break;
+    case 828: {
+      DeclareAndCast(StepDimTol_GeoTolAndGeoTolWthDefUnit, anEnt, ent);
+      RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit aTool;
+      aTool.Share(anEnt, iter);
+    }
+    break;
+    case 829: {
+      DeclareAndCast(StepShape_DimensionalSizeWithDatumFeature, anEnt, ent);
+      RWStepShape_RWDimensionalSizeWithDatumFeature aTool;
+      aTool.Share(anEnt, iter);
+    }
+    break;
     default:
       break;
   }
@@ -7622,6 +7638,12 @@ bool RWStepAP214_GeneralModule::NewVoid(const int CN, occ::handle<Standard_Trans
     case 827:
       ent = new StepAP242_DraughtingModelItemAssociationWithPlaceholder;
       break;
+    case 828:
+      ent = new StepDimTol_GeoTolAndGeoTolWthDefUnit;
+      break;
+    case 829:
+      ent = new StepShape_DimensionalSizeWithDatumFeature;
+      break;
     default:
       return false;
   }
@@ -8331,6 +8353,7 @@ int RWStepAP214_GeneralModule::CategoryNumber(const int CN,
     case 695:
     case 696:
     case 697:
+    case 828:
       return cataux;
     case 698:
     case 699:
@@ -8340,6 +8363,7 @@ int RWStepAP214_GeneralModule::CategoryNumber(const int CN,
     case 703:
     case 704:
     case 827:
+    case 829:
       return catdr;
     case 705:
     case 706:

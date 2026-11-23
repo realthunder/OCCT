@@ -19,6 +19,7 @@
 #include <StepShape_DimensionalCharacteristic.hxx>
 #include <StepShape_DimensionalLocation.hxx>
 #include <StepShape_DimensionalSize.hxx>
+#include <StepShape_DimensionalSizeWithDatumFeature.hxx>
 
 //=================================================================================================
 
@@ -39,6 +40,11 @@ int StepShape_DimensionalCharacteristic::CaseNum(const occ::handle<Standard_Tran
   if (ent->IsKind(STANDARD_TYPE(StepShape_DimensionalSize)))
   {
     return 2;
+  }
+  // A dimensional size that is a datum feature too (NIST STC-07)
+  if (ent->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature)))
+  {
+    return 3;
   }
   return 0;
 }

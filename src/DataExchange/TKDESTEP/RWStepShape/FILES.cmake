@@ -49,6 +49,8 @@ set(OCCT_RWStepShape_FILES
   RWStepShape_RWDimensionalLocationWithPath.pxx
   RWStepShape_RWDimensionalSize.cxx
   RWStepShape_RWDimensionalSize.pxx
+  RWStepShape_RWDimensionalSizeWithDatumFeature.cxx
+  RWStepShape_RWDimensionalSizeWithDatumFeature.pxx
   RWStepShape_RWDimensionalSizeWithPath.cxx
   RWStepShape_RWDimensionalSizeWithPath.pxx
   RWStepShape_RWEdge.cxx

@@ -75,6 +75,8 @@ set(OCCT_StepDimTol_FILES
   StepDimTol_GeoTolAndGeoTolWthMaxTol.hxx
   StepDimTol_GeoTolAndGeoTolWthMod.cxx
   StepDimTol_GeoTolAndGeoTolWthMod.hxx
+  StepDimTol_GeoTolAndGeoTolWthDefUnit.cxx
+  StepDimTol_GeoTolAndGeoTolWthDefUnit.hxx
 
   StepDimTol_LimitCondition.hxx
   StepDimTol_LineProfileTolerance.cxx

@@ -648,6 +648,8 @@ static const char* schemaAP242DIS =
 #include <StepRepr_ValueRepresentationItem.hxx>
 #include <StepAP242_DraughtingModelItemAssociation.hxx>
 #include <StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx>
+#include <StepDimTol_GeoTolAndGeoTolWthDefUnit.hxx>
+#include <StepShape_DimensionalSizeWithDatumFeature.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMaxTol.hxx>
 #include <StepVisual_AnnotationPlane.hxx>
@@ -1575,6 +1577,8 @@ StepAP214_Protocol::StepAP214_Protocol()
   types.Bind(STANDARD_TYPE(StepVisual_SurfaceStyleReflectanceAmbientDiffuse), 825);
   types.Bind(STANDARD_TYPE(StepVisual_SurfaceStyleReflectanceAmbientDiffuseSpecular), 826);
   types.Bind(STANDARD_TYPE(StepAP242_DraughtingModelItemAssociationWithPlaceholder), 827);
+  types.Bind(STANDARD_TYPE(StepDimTol_GeoTolAndGeoTolWthDefUnit), 828);
+  types.Bind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature), 829);
 }
 
 //=================================================================================================

@@ -95,6 +95,7 @@
 #include <StepDimTol_ToleranceZoneForm.hxx>
 #include <StepDimTol_TotalRunoutTolerance.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndGeoTolWthMod.hxx>
+#include <StepDimTol_GeoTolAndGeoTolWthDefUnit.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMod.hxx>
 #include <StepDimTol_GeometricToleranceWithMaximumTolerance.hxx>
 #include <StepGeom_Plane.hxx>
@@ -134,6 +135,7 @@
 #include <StepShape_DimensionalLocationWithPath.hxx>
 #include <StepShape_ShapeRepresentationWithParameters.hxx>
 #include <StepShape_DimensionalSize.hxx>
+#include <StepShape_DimensionalSizeWithDatumFeature.hxx>
 #include <StepShape_DimensionalLocation.hxx>
 #include <StepShape_EdgeCurve.hxx>
 #include <StepShape_EdgeLoop.hxx>
@@ -3935,6 +3937,54 @@ static bool ReadDatums(const occ::handle<XCAFDoc_ShapeTool>&                    
   return true;
 }
 
+//! An association linking a graphic to the PMI it presents, as readAnnotation takes one: named
+//! the 'PMI representation to presentation link', or with a placeholder -- not one naming the
+//! geometry the graphic is on (NIST CTC-04's labels name their datum features so)
+static bool isPresentationLink(const occ::handle<StepAP242_DraughtingModelItemAssociation>& theDMIA)
+{
+  if (theDMIA->IsKind(STANDARD_TYPE(StepAP242_DraughtingModelItemAssociationWithPlaceholder)))
+  {
+    return true;
+  }
+  if (theDMIA->Name().IsNull())
+  {
+    return false;
+  }
+  occ::handle<TCollection_HAsciiString> aName = new TCollection_HAsciiString(theDMIA->Name());
+  aName->LowerCase();
+  return aName->Search(new TCollection_HAsciiString("pmi representation to presentation link"))
+         > 0;
+}
+
+//! Whether the GD&T read as this label holds a graphic: a PMI read with none, its graphic not
+//! taken (a dimension given no value, NIST CTC-01's), leaves its graphic to be one alone
+static bool hasPresentation(const TDF_Label& theLabel)
+{
+  occ::handle<XCAFDoc_GeomTolerance> aGT;
+  if (theLabel.FindAttribute(XCAFDoc_GeomTolerance::GetID(), aGT))
+  {
+    return !aGT->GetObject()->GetPresentation().IsNull();
+  }
+  occ::handle<XCAFDoc_Dimension> aDim;
+  if (theLabel.FindAttribute(XCAFDoc_Dimension::GetID(), aDim))
+  {
+    return !aDim->GetObject()->GetPresentation().IsNull();
+  }
+  occ::handle<XCAFDoc_Datum> aDatum;
+  if (theLabel.FindAttribute(XCAFDoc_Datum::GetID(), aDatum))
+  {
+    return !aDatum->GetObject()->GetPresentation().IsNull();
+  }
+  return false;
+}
+
+//! A dimensional size, or a datum feature that is one too (NIST STC-07)
+static bool isDimensionalSize(const occ::handle<Standard_Transient>& theEnt)
+{
+  return theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalSize))
+         || theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature));
+}
+
 //=======================================================================
 // function : FindShapeIndexForDGT
 // purpose  : auxiliary find shape index in map og imported shapes
@@ -4643,12 +4693,13 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
   const StepData_Factors&                   theLocalFactors)
 {
   TDF_Label aGDTL;
-  if (!theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalSize))
-      && !theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation))
+  if (!isDimensionalSize(theEnt) && !theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation))
       && !theEnt->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)))
   {
     return aGDTL;
   }
+  occ::handle<StepShape_DimensionalSizeWithDatumFeature> aSizeDF =
+    occ::down_cast<StepShape_DimensionalSizeWithDatumFeature>(theEnt);
 
   occ::handle<TCollection_HAsciiString> aSemanticName;
 
@@ -4672,6 +4723,10 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
     }
     aSemanticName = aDim->Name();
   }
+  if (!aSizeDF.IsNull())
+  {
+    aSemanticName = aSizeDF->SizeName();
+  }
   if (theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation)))
   {
     occ::handle<StepShape_DimensionalLocation> aDim =
@@ -4694,8 +4749,17 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
   // find RepresentationItem for current Ent
   NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI1, aSeqRI2;
 
-  // Collect all Shape_Aspect entities
-  Interface_EntityIterator anIter = aGraph.Shareds(theEnt);
+  // Collect all Shape_Aspect entities: a size with a datum feature applies to itself (what it
+  // shares beside is its product definition shape, not a tolerance on all of it)
+  Interface_EntityIterator anIter;
+  if (aSizeDF.IsNull())
+  {
+    anIter = aGraph.Shareds(theEnt);
+  }
+  else
+  {
+    anIter.AddItem(theEnt);
+  }
   for (anIter.Start(); anIter.More(); anIter.Next())
   {
     const occ::handle<Standard_Transient>&                  anAtr = anIter.Value();
@@ -5208,7 +5272,7 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
       aDGTTool->Lock(aGDTL);
       occ::handle<XCAFDoc_Dimension> aDim = XCAFDoc_Dimension::Set(aGDTL);
       TCollection_AsciiString        aStr("DGT:Dimensional_");
-      if (theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalSize)))
+      if (isDimensionalSize(theEnt))
       {
         aStr.AssignCat("Size");
       }
@@ -5288,8 +5352,7 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
   const occ::handle<Transfer_TransientProcess>&  aTP    = aTR->TransientProcess();
   const Interface_Graph&                         aGraph = aTP->Graph();
   occ::handle<XCAFDimTolObjects_DimensionObject> aDimObj;
-  if (!theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalSize))
-      && !theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation)))
+  if (!isDimensionalSize(theEnt) && !theEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation)))
   {
     return;
   }
@@ -5298,6 +5361,10 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
     occ::down_cast<StepShape_DimensionalSize>(theEnt);
   occ::handle<StepShape_DimensionalLocation> aDimLocation =
     occ::down_cast<StepShape_DimensionalLocation>(theEnt);
+  occ::handle<StepShape_DimensionalSizeWithDatumFeature> aSizeDF =
+    occ::down_cast<StepShape_DimensionalSizeWithDatumFeature>(theEnt);
+  // A size, whether a datum feature too or not
+  const bool isSize = !aDimSize.IsNull() || !aSizeDF.IsNull();
 
   aDimObj                                                = new XCAFDimTolObjects_DimensionObject();
   double                                           aDim1 = -1., aDim2 = -1., aDim3 = -1.;
@@ -5309,15 +5376,7 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
   occ::handle<StepRepr_CompoundRepresentationItem> aCRI;
   occ::handle<StepGeom_Axis2Placement3d>           anAP;
 
-  Interface_EntityIterator anIterDim;
-  if (!aDimSize.IsNull())
-  {
-    anIterDim = aGraph.Sharings(aDimSize);
-  }
-  else
-  {
-    anIterDim = aGraph.Sharings(aDimLocation);
-  }
+  Interface_EntityIterator anIterDim = aGraph.Sharings(theEnt);
   for (anIterDim.Start(); anIterDim.More(); anIterDim.Next())
   {
     occ::handle<StepShape_DimensionalCharacteristicRepresentation> aDCR =
@@ -5635,6 +5694,10 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
   {
     aName = aDimSize->Name();
   }
+  else if (!aSizeDF.IsNull())
+  {
+    aName = aSizeDF->SizeName();
+  }
   else
   {
     aName = aDimLocation->Name();
@@ -5642,7 +5705,7 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
   XCAFDimTolObjects_DimensionType aType = XCAFDimTolObjects_DimensionType_Location_None;
   if (!STEPCAFControl_GDTProperty::GetDimType(aName, aType))
   {
-    if (!aDimSize.IsNull())
+    if (isSize)
     {
       occ::handle<StepShape_AngularSize> anAngSize =
         occ::down_cast<StepShape_AngularSize>(aDimSize);
@@ -5689,7 +5752,7 @@ static void setDimObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
     if (aType == XCAFDimTolObjects_DimensionType_Location_None)
     {
       occ::handle<StepRepr_ShapeAspect> aPSA;
-      if (!aDimSize.IsNull())
+      if (isSize)
       {
         occ::handle<StepShape_DimensionalSizeWithPath> aDimSizeWithPath =
           occ::down_cast<StepShape_DimensionalSizeWithPath>(aDimSize);
@@ -5831,6 +5894,12 @@ static bool getTolType(const occ::handle<Standard_Transient>& theEnt,
       occ::down_cast<StepDimTol_GeoTolAndGeoTolWthDatRefAndUneqDisGeoTol>(theEnt);
     theType = STEPCAFControl_GDTProperty::GetGeomToleranceType(anE->GetToleranceType());
   }
+  else if (theEnt->IsKind(STANDARD_TYPE(StepDimTol_GeoTolAndGeoTolWthDefUnit)))
+  {
+    occ::handle<StepDimTol_GeoTolAndGeoTolWthDefUnit> anE =
+      occ::down_cast<StepDimTol_GeoTolAndGeoTolWthDefUnit>(theEnt);
+    theType = STEPCAFControl_GDTProperty::GetGeomToleranceType(anE->GetToleranceType());
+  }
   else if (theEnt->IsKind(STANDARD_TYPE(StepDimTol_AngularityTolerance)))
   {
     theType = XCAFDimTolObjects_GeomToleranceType_Angularity;
@@ -5898,6 +5967,30 @@ static bool getTolType(const occ::handle<Standard_Transient>& theEnt,
 
 //=================================================================================================
 
+// A length's value read in the document's unit: a length_measure_with_unit, or a
+// measure_representation_item complex with one
+static bool lengthOf(const occ::handle<Standard_Transient>& theMeasure,
+                     const StepData_Factors&                theLocalFactors,
+                     double&                                theValue)
+{
+  occ::handle<StepBasic_MeasureWithUnit> aMWU = GetMeasureWithUnit(theMeasure);
+  if (aMWU.IsNull())
+  {
+    return false;
+  }
+  StepBasic_Unit anUnit = aMWU->UnitComponent();
+  if (anUnit.IsNull() || anUnit.CaseNum(anUnit.Value()) != 1)
+  {
+    return false;
+  }
+  STEPConstruct_UnitContext anUnitCtx;
+  anUnitCtx.ComputeFactors(anUnit.NamedUnit(), theLocalFactors);
+  theValue = aMWU->ValueComponent() * anUnitCtx.LengthFactor();
+  return true;
+}
+
+//=================================================================================================
+
 static void setGeomTolObjectToXCAF(const occ::handle<Standard_Transient>&    theEnt,
                                    const TDF_Label&                          theTolL,
                                    const occ::handle<TDocStd_Document>&      theDoc,
@@ -5941,6 +6034,36 @@ static void setGeomTolObjectToXCAF(const occ::handle<Standard_Transient>&    the
       anUnitCtx.ComputeFactors(NU, theLocalFactors);
       aVal = aVal * anUnitCtx.LengthFactor();
       aTolObj->SetValue(aVal);
+    }
+  }
+  // per unit length or area
+  if (occ::handle<StepDimTol_GeoTolAndGeoTolWthDefUnit> aPerUnit =
+        occ::down_cast<StepDimTol_GeoTolAndGeoTolWthDefUnit>(aTolEnt))
+  {
+    double aSize = 0., aSecond = 0.;
+    if (lengthOf(aPerUnit->UnitSize(), theLocalFactors, aSize) && aSize > 0.)
+    {
+      XCAFDimTolObjects_GeomToleranceUnitBasis aBasis =
+        XCAFDimTolObjects_GeomToleranceUnitBasis_Length;
+      if (aPerUnit->IsPerArea())
+      {
+        switch (aPerUnit->AreaType())
+        {
+          case StepDimTol_Circular:
+            aBasis = XCAFDimTolObjects_GeomToleranceUnitBasis_Circle;
+            break;
+          case StepDimTol_Square:
+            aBasis = XCAFDimTolObjects_GeomToleranceUnitBasis_Square;
+            break;
+          case StepDimTol_Rectangular:
+            // A rectangle with no second side is the square, as a reader of the frame sees it
+            aBasis = lengthOf(aPerUnit->SecondUnitSize(), theLocalFactors, aSecond) && aSecond > 0.
+                       ? XCAFDimTolObjects_GeomToleranceUnitBasis_Rectangle
+                       : XCAFDimTolObjects_GeomToleranceUnitBasis_Square;
+            break;
+        }
+      }
+      aTolObj->SetUnitBasis(aBasis, aSize, aSecond);
     }
   }
   // get modifiers
@@ -6118,8 +6241,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
   for (int i = 1; i <= nb; i++)
   {
     occ::handle<Standard_Transient> anEnt = aModel->Value(i);
-    if (anEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalSize))
-        || anEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation))
+    if (isDimensionalSize(anEnt) || anEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation))
         || anEnt->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)))
     {
       TDF_Label aGDTL = createGDTObjectInXCAF(anEnt, theDoc, theWS, theLocalFactors);
@@ -6135,9 +6257,14 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         }
       }
     }
-    else if (anEnt->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout))
-             || anEnt->IsKind(STANDARD_TYPE(StepVisual_AnnotationOccurrence))
-             || anEnt->IsKind(STANDARD_TYPE(StepVisual_TessellatedAnnotationOccurrence)))
+  }
+  // The graphics of no PMI read, after all that is read: a graphic is asked whether its PMI was
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<Standard_Transient> anEnt = aModel->Value(i);
+    if (anEnt->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout))
+        || anEnt->IsKind(STANDARD_TYPE(StepVisual_AnnotationOccurrence))
+        || anEnt->IsKind(STANDARD_TYPE(StepVisual_TessellatedAnnotationOccurrence)))
     {
       // Protection against import presentation twice
       occ::handle<StepVisual_DraughtingCallout> aDC;
@@ -6156,10 +6283,13 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       // Its words, when it presents a 'semantic text' (AP242's recommended practice): a note's
       // or label's, kept as its descriptions
       NCollection_Sequence<occ::handle<StepRepr_DescriptiveRepresentationItem>> aWords;
-      // The one with a placeholder first: it links the graphic to the PMI it
-      // presents, where the others may link it to its geometry only (NIST
-      // FTC-06, STC-06, -08)
-      for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt); anIter.More(); anIter.Next())
+      // A graphic one of its presentation links links to a PMI read is that PMI's, presented
+      // with it: the one with a placeholder often (NIST FTC-06, STC-06, -08), the others linking
+      // it to its geometry only. Of no PMI read -- a datum no tolerance read cites, a tolerance not
+      // read (CTC-03) -- it is a graphic alone, by the association to its geometry if any.
+      bool isPresented = false;
+      for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt); anIter.More() && !isPresented;
+           anIter.Next())
       {
         occ::handle<StepAP242_DraughtingModelItemAssociation> anAssoc =
           occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
@@ -6167,16 +6297,21 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         {
           continue;
         }
-        if (anAssoc->IsKind(
-              STANDARD_TYPE(StepAP242_DraughtingModelItemAssociationWithPlaceholder)))
+        const occ::handle<Standard_Transient>& aDef = anAssoc->Definition().Value();
+        isPresented = !aDef.IsNull() && isPresentationLink(anAssoc) && myGDTMap.IsBound(aDef)
+                      && hasPresentation(myGDTMap.Find(aDef));
+        if (aDMIA.IsNull()
+            || (aDMIA->IsKind(
+                  STANDARD_TYPE(StepAP242_DraughtingModelItemAssociationWithPlaceholder))
+                && !anAssoc->IsKind(
+                  STANDARD_TYPE(StepAP242_DraughtingModelItemAssociationWithPlaceholder))))
         {
           aDMIA = anAssoc;
-          break;
         }
-        if (aDMIA.IsNull())
-        {
-          aDMIA = anAssoc;
-        }
+      }
+      if (isPresented)
+      {
+        continue;
       }
       if (!aDMIA.IsNull())
       {
@@ -6198,7 +6333,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
                anIter.More() && !isConnectedToGDT;
                anIter.Next())
           {
-            if (anIter.Value()->IsKind(STANDARD_TYPE(StepShape_DimensionalSize))
+            if (isDimensionalSize(anIter.Value())
                 || anIter.Value()->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation))
                 || anIter.Value()->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)))
             {
@@ -6223,7 +6358,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
                      aDimIter.More() && !isConnectedToGDT;
                      aDimIter.Next())
                 {
-                  if (aDimIter.Value()->IsKind(STANDARD_TYPE(StepShape_DimensionalSize))
+                  if (isDimensionalSize(aDimIter.Value())
                       || aDimIter.Value()->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation))
                       || aDimIter.Value()->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)))
                   {

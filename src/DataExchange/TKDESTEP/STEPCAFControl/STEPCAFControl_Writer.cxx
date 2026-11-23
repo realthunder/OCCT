@@ -89,6 +89,7 @@
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndGeoTolWthMod.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndModGeoTolAndPosTol.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMaxTol.hxx>
+#include <StepDimTol_GeoTolAndGeoTolWthDefUnit.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMod.hxx>
 #include <StepDimTol_DatumReferenceElement.hxx>
 #include <StepDimTol_DatumReferenceModifier.hxx>
@@ -4740,7 +4741,44 @@ void STEPCAFControl_Writer::writeGeomTolerance(
 
   // Init and write necessary subtype of Geometric_Tolerance entity
   occ::handle<StepDimTol_GeometricTolerance> aGeomTol;
-  if (isWithModif)
+  const XCAFDimTolObjects_GeomToleranceUnitBasis aUnitBasis = anObject->GetUnitBasis();
+  if (aUnitBasis != XCAFDimTolObjects_GeomToleranceUnitBasis_None && anObject->GetUnitSize() > 0.
+      && !isWithModif && !isWithDatRef)
+  {
+    // Per unit length or area: Geometric_Tolerance & Geometric_Tolerance_With_Defined_Unit
+    // (& Geometric_Tolerance_With_Defined_Area_Unit) & its type. With modifiers or datums it is
+    // a complex no reader knows: the value is written for the whole feature, as before.
+    const auto aLength = [&](const double theValue) {
+      occ::handle<StepBasic_LengthMeasureWithUnit> aMeasure = new StepBasic_LengthMeasureWithUnit();
+      occ::handle<StepBasic_MeasureValueMember>    aMember  = new StepBasic_MeasureValueMember();
+      aMember->SetName("LENGTH_MEASURE");
+      aMember->SetReal(theValue / theLocalFactors.LengthFactor());
+      aMeasure->Init(aMember, aUnit);
+      aModel->AddWithRefs(aMeasure);
+      return aMeasure;
+    };
+    occ::handle<StepDimTol_GeoTolAndGeoTolWthDefUnit> aResult =
+      new StepDimTol_GeoTolAndGeoTolWthDefUnit();
+    aResult->Init(aName, aDescription, aLMWU, aGTTarget);
+    aResult->SetToleranceType(aType);
+    aResult->SetUnitSize(aLength(anObject->GetUnitSize()));
+    if (aUnitBasis != XCAFDimTolObjects_GeomToleranceUnitBasis_Length)
+    {
+      aResult->SetPerArea(true);
+      aResult->SetAreaType(aUnitBasis == XCAFDimTolObjects_GeomToleranceUnitBasis_Circle
+                             ? StepDimTol_Circular
+                           : aUnitBasis == XCAFDimTolObjects_GeomToleranceUnitBasis_Rectangle
+                             ? StepDimTol_Rectangular
+                             : StepDimTol_Square);
+      if (aUnitBasis == XCAFDimTolObjects_GeomToleranceUnitBasis_Rectangle
+          && anObject->GetSecondUnitSize() > 0.)
+      {
+        aResult->SetSecondUnitSize(aLength(anObject->GetSecondUnitSize()));
+      }
+    }
+    aGeomTol = aResult;
+  }
+  else if (isWithModif)
   {
     if (isWithMaxTol)
     {

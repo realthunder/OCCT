@@ -51,6 +51,8 @@ enum ChildLab
   ChildLab_PntText,
   ChildLab_Presentation,
   ChildLab_AffectedPlane,
+  ChildLab_UnitBasis,
+  ChildLab_UnitSize,
   ChildLab_End
 };
 
@@ -148,6 +150,15 @@ void XCAFDoc_GeomTolerance::SetObject(
     {
       aModifiers->ChangeArray(anArr);
     }
+  }
+
+  if (theObject->GetUnitBasis() != XCAFDimTolObjects_GeomToleranceUnitBasis_None)
+  {
+    TDataStd_Integer::Set(Label().FindChild(ChildLab_UnitBasis), theObject->GetUnitBasis());
+    occ::handle<TDataStd_RealArray> aSizes =
+      TDataStd_RealArray::Set(Label().FindChild(ChildLab_UnitSize), 1, 2);
+    aSizes->SetValue(1, theObject->GetUnitSize());
+    aSizes->SetValue(2, theObject->GetSecondUnitSize());
   }
 
   if (theObject->GetMaxValueModifier() > 0)
@@ -361,6 +372,17 @@ occ::handle<XCAFDimTolObjects_GeomToleranceObject> XCAFDoc_GeomTolerance::GetObj
         .FindAttribute(TDataStd_Real::GetID(), aValueOfZoneModif))
   {
     anObj->SetValueOfZoneModifier(aValueOfZoneModif->Get());
+  }
+
+  occ::handle<TDataStd_Integer>   aUnitBasis;
+  occ::handle<TDataStd_RealArray> aUnitSizes;
+  if (Label().FindChild(ChildLab_UnitBasis).FindAttribute(TDataStd_Integer::GetID(), aUnitBasis)
+      && Label().FindChild(ChildLab_UnitSize).FindAttribute(TDataStd_RealArray::GetID(), aUnitSizes)
+      && aUnitSizes->Length() >= 2)
+  {
+    anObj->SetUnitBasis((XCAFDimTolObjects_GeomToleranceUnitBasis)aUnitBasis->Get(),
+                        aUnitSizes->Value(aUnitSizes->Lower()),
+                        aUnitSizes->Value(aUnitSizes->Lower() + 1));
   }
 
   occ::handle<TDataStd_IntegerArray> anArr;

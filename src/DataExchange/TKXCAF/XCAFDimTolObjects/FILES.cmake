@@ -22,6 +22,7 @@ set(OCCT_XCAFDimTolObjects_FILES
   XCAFDimTolObjects_GeomToleranceType.hxx
   XCAFDimTolObjects_GeomToleranceTypeValue.hxx
   XCAFDimTolObjects_GeomToleranceMatReqModif.hxx
+  XCAFDimTolObjects_GeomToleranceUnitBasis.hxx
   XCAFDimTolObjects_GeomToleranceZoneModif.hxx
 
 

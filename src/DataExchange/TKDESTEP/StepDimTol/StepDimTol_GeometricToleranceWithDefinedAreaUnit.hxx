@@ -66,7 +66,7 @@ public:
   }
 
   //! Indicates if SecondUnitSize field exist
-  inline bool HasSecondUnitSize() const { return mySecondUnitSize.IsNull(); }
+  inline bool HasSecondUnitSize() const { return !mySecondUnitSize.IsNull(); }
 
   DEFINE_STANDARD_RTTIEXT(StepDimTol_GeometricToleranceWithDefinedAreaUnit,
                           StepDimTol_GeometricToleranceWithDefinedUnit)

@@ -20,6 +20,7 @@
 
 #include <XCAFDimTolObjects_GeomToleranceType.hxx>
 #include <XCAFDimTolObjects_GeomToleranceTypeValue.hxx>
+#include <XCAFDimTolObjects_GeomToleranceUnitBasis.hxx>
 #include <Standard_Real.hxx>
 #include <XCAFDimTolObjects_GeomToleranceMatReqModif.hxx>
 #include <XCAFDimTolObjects_GeomToleranceZoneModif.hxx>
@@ -100,6 +101,26 @@ public:
 
   //! Returns the maximal upper tolerance.
   Standard_EXPORT double GetMaxValueModifier() const;
+
+  //! Sets what the value holds on: any part of the feature of the size given, per unit length
+  //! or area (a rectangle's second side theSecondSize); the whole feature for None
+  void SetUnitBasis(const XCAFDimTolObjects_GeomToleranceUnitBasis theBasis,
+                    const double                                   theSize       = 0.,
+                    const double                                   theSecondSize = 0.)
+  {
+    myUnitBasis      = theBasis;
+    myUnitSize       = theSize;
+    mySecondUnitSize = theSecondSize;
+  }
+
+  //! Returns what the value holds on; None for the whole feature
+  XCAFDimTolObjects_GeomToleranceUnitBasis GetUnitBasis() const { return myUnitBasis; }
+
+  //! Returns the unit's length, side or diameter
+  double GetUnitSize() const { return myUnitSize; }
+
+  //! Returns a rectangle's second side
+  double GetSecondUnitSize() const { return mySecondUnitSize; }
 
   Standard_EXPORT void SetAxis(const gp_Ax2& theAxis);
 
@@ -230,6 +251,10 @@ private:
   occ::handle<TCollection_HAsciiString>                      myPresentationType;
   XCAFDimTolObjects_ToleranceZoneAffectedPlane               myAffectedPlaneType;
   gp_Pln                                                     myAffectedPlane;
+  XCAFDimTolObjects_GeomToleranceUnitBasis                   myUnitBasis =
+    XCAFDimTolObjects_GeomToleranceUnitBasis_None;
+  double myUnitSize       = 0.;
+  double mySecondUnitSize = 0.;
 };
 
 #endif // _XCAFDimTolObjects_GeomToleranceObject_HeaderFile
