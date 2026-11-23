@@ -93,6 +93,7 @@ static char* name       = new char[100];
 
 static thread_local int _CollectingEdges;
 static thread_local int _ByOrientation;
+static thread_local bool _EverySeamBand = false;
 static thread_local const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* _InputEdges =
   nullptr;
 static thread_local
@@ -126,6 +127,11 @@ BRepAlgo_LoopByOrientation::BRepAlgo_LoopByOrientation()
 BRepAlgo_LoopByOrientation::~BRepAlgo_LoopByOrientation()
 {
   --_ByOrientation;
+}
+
+void BRepAlgo_LoopEverySeamBand::Set(const bool theIsOn)
+{
+  _EverySeamBand = theIsOn;
 }
 
 BRepAlgo_LoopInputEdges::BRepAlgo_LoopInputEdges(
@@ -4103,11 +4109,26 @@ void BRepAlgo_Loop::FindLoop()
               const WireInfo& info = itW.Value();
               isTaken = info.HasSeam
                         && (info.Contains(NE)
-                            || ((info.Contains(CE) || info.Contains(NNE))
+                            || (!_EverySeamBand && (info.Contains(CE) || info.Contains(NNE))
                                 && (isOutside || !info.Outside)));
             }
             if (isTaken)
             {
+              if (_EverySeamBand)
+              {
+                // Every band is made (BRepAlgo_LoopEverySeamBand): this
+                // one is, and the closed edge is no wire of its own beside
+                // it.
+                for (int iw = NewWires.Extent(); iw >= 1; --iw)
+                {
+                  const WireInfo& info = NewWires(iw);
+                  if (!info.HasSeam && info.Contains(CE))
+                  {
+                    SHOW_TOPO_SHAPE(info.aWire, "SeamRemove");
+                    NewWires.RemoveFromIndex(iw);
+                  }
+                }
+              }
               break;
             }
 
@@ -4159,6 +4180,11 @@ void BRepAlgo_Loop::FindLoop()
             for (int iw = NewWires.Extent(); iw >= 1; --iw)
             {
               const WireInfo& info = NewWires(iw);
+              if (_EverySeamBand && info.HasSeam && !info.Contains(NE))
+              {
+                // the band on the other side of one of the closed edges
+                continue;
+              }
               if (info.Contains(CE) || info.Contains(NE) || info.Contains(NNE))
               {
                 SHOW_TOPO_SHAPE(info.aWire, info.HasSeam ? "SeamOutsideRemove" : "SeamRemove");
@@ -4166,7 +4192,10 @@ void BRepAlgo_Loop::FindLoop()
               }
             }
             DejaVu.Add(NE);
-            DejaVu.Add(NNE);
+            if (!_EverySeamBand)
+            {
+              DejaVu.Add(NNE);
+            }
             NewWires.Add(aSeamInfo);
             SHOW_TOPO_SHAPE(NW, "NewWire2");
           }

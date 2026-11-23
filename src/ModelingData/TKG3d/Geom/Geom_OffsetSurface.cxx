@@ -917,8 +917,12 @@ occ::handle<Geom_Surface> Geom_OffsetSurface::Surface() const
     }
     else if (Radius <= -Tol)
     {
-      // Negative radius: flip X-axis to reverse normal orientation.
-      Axis.XReverse();
+      // Negative radius: the offset has passed the axis, and the point of
+      // (u, v) is the one opposite, at u + PI. The frame turned half round
+      // the axis gives it at the same parameters. (It was the X axis alone
+      // reversed: the cylinder mirrored, a point of the offset surface not on
+      // the normal of the basis surface it is the offset of.)
+      Axis.Rotate(gp_Ax1(Axis.Location(), Axis.Direction()), M_PI);
       Result = new Geom_CylindricalSurface(Axis, -Radius);
     }
     // else: degenerate surface - radius is too small.
@@ -954,8 +958,11 @@ occ::handle<Geom_Surface> Geom_OffsetSurface::Surface() const
     }
     else if (Radius <= -Tol)
     {
-      // Negative radius: flip both X and Z axes to reverse normal orientation.
-      Axis.XReverse();
+      // Negative radius: the offset has passed the centre, and the point of
+      // (u, v) is the one opposite through it. The frame with its three
+      // directions reversed gives it at the same parameters. (X and Z alone
+      // were reversed: the sphere mirrored.)
+      Axis.Rotate(gp_Ax1(Axis.Location(), Axis.Direction()), M_PI);
       Axis.ZReverse();
       Result = new Geom_SphericalSurface(Axis, -Radius);
     }
@@ -973,13 +980,13 @@ occ::handle<Geom_Surface> Geom_OffsetSurface::Surface() const
     {
       Result = new Geom_ToroidalSurface(Axis, MajorRadius, MinorRadius);
     }
-    else if (MinorRadius <= -Tol && -MinorRadius <= MajorRadius)
-    {
-      // Negative minor radius: flip X-axis to reverse normal orientation.
-      Axis.XReverse();
-      Result = new Geom_ToroidalSurface(Axis, MajorRadius, -MinorRadius);
-    }
     // else: degenerate or self-intersecting torus - no equivalent surface.
+    // Nor with a negative minor radius, the offset past the centre of the
+    // tube: the point of (u, v) is then the one at v + PI of the torus of
+    // the opposite minor radius, which no frame gives at the same
+    // parameters. (The torus with its X axis reversed stood for it: a
+    // fillet's offset, a quarter of the tube, came out in the opposite
+    // quarter and on the other side of the axis.)
   }
 
   // Trim the result if the basis surface was trimmed.
