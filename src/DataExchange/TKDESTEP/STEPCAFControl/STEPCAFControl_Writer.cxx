@@ -3889,6 +3889,16 @@ static void WriteDimValues(const occ::handle<XSControl_WorkSession>&            
   double aNominal = theObject->GetValue() / aLF;
   int    aLeftNbDigits, aRightNbDigits;
   theObject->GetNbOfDecimalPlaces(aLeftNbDigits, aRightNbDigits);
+  if (aLeftNbDigits > 0 && aLF != 1.)
+  {
+    // The digits before the point are those of the value as written, in the file's unit: 12 in
+    // has two, the 304.8 mm it is kept as three (an 'NR2 3.2' of 12 is more than it needs)
+    aLeftNbDigits = 1;
+    for (double aWhole = std::abs(aNominal); aWhole >= 10. && aLeftNbDigits < 15; aWhole /= 10.)
+    {
+      aLeftNbDigits++;
+    }
+  }
   int aNbQualifiers = 0;
   if (theObject->HasQualifier() && !isAngle)
   {

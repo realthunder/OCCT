@@ -6538,7 +6538,11 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       // A PMI read may be linked to more graphics than the one it holds (NIST STC-07's radius, to
       // five: four oriented dimensions and the '32X R'): each of the others is a graphic alone,
       // on that PMI's shapes, not lost
+      // A tolerance not read, being of no geometry -- of the whole part (NIST STC-08's and
+      // FTC-06's 'Geometrical Tolerance.1', on a shape aspect of no geometry; FTC-07's, on the
+      // product's shape itself): its graphic is one alone, of no shape, not lost
       bool      isPresented = false;
+      bool      isOfNotRead = false;
       TDF_Label aSecondOf;
       for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt); anIter.More() && !isPresented;
            anIter.Next())
@@ -6552,6 +6556,11 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         // A copy: Definition() is a temporary, Value() a reference into it
         const occ::handle<Standard_Transient> aDef = anAssoc->Definition().Value();
         occ::handle<TCollection_HAsciiString> aHeld;
+        if (!aDef.IsNull() && isPresentationLink(anAssoc) && !myGDTMap.IsBound(aDef)
+            && aDef->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)))
+        {
+          isOfNotRead = true;
+        }
         if (!aDef.IsNull() && isPresentationLink(anAssoc) && myGDTMap.IsBound(aDef)
             && hasPresentation(myGDTMap.Find(aDef), &aHeld))
         {
@@ -6633,7 +6642,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
               }
             }
           }
-          if (isConnectedToGDT && aSecondOf.IsNull())
+          if (isConnectedToGDT && aSecondOf.IsNull() && !isOfNotRead)
           {
             continue;
           }
@@ -6642,11 +6651,17 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         {
           if (aSecondOf.IsNull())
           {
-            continue;
+            if (!isOfNotRead)
+            {
+              continue;
+            }
           }
-          NCollection_Sequence<TDF_Label> aSecond;
-          XCAFDoc_DimTolTool::GetRefShapeLabel(aSecondOf, aShapesL, aSecond);
-          aShapesL.Append(aSecond);
+          else
+          {
+            NCollection_Sequence<TDF_Label> aSecond;
+            XCAFDoc_DimTolTool::GetRefShapeLabel(aSecondOf, aShapesL, aSecond);
+            aShapesL.Append(aSecond);
+          }
         }
         else
         {
