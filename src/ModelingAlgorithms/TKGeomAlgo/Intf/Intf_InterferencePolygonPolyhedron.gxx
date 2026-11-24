@@ -613,7 +613,31 @@ void Intf_InterferencePolygonPolyhedron::Interference(const Polygon3d&  thePolyg
       double dBegTri = (triNor * Beg0.XYZ()) - triDp; // Distance <p1> plane
       double dEndTri = (triNor * End0.XYZ()) - triDp; // Distance <p2> plane
 
+      const int aNbBefore = mySPoins.Length();
       Intersect(Beg0, End0, false, indTri, thePolyh, triNor, triDp, dBegTri, dEndTri);
+
+      // The facets lie off the surface by the deflection, and a segment that
+      // crosses the surface may pass a facet within that distance and cross
+      // none: at the polyhedron's border, where the surface ends, the segment
+      // meets the facet's plane beyond the facet. The interference without a
+      // grid (above) moves the segment's ends by the deflection along the
+      // facet's normal, either way; so here, where the segment as it is found
+      // nothing on the facet. (A tube as a B-spline, 20 samples round it, the
+      // facets 0.09 inside: a line 8 degrees off the surface, crossing it 0.37
+      // from the tube's end, found nothing, and a point inside a solid was
+      // said outside.)
+      if (mySPoins.Length() == aNbBefore && defPh > gp::Resolution())
+      {
+        const gp_XYZ aShift = triNor * defPh;
+        for (int aSide = 0; aSide < 2 && mySPoins.Length() == aNbBefore; ++aSide)
+        {
+          const gp_Pnt aBeg(aSide == 0 ? Beg0.XYZ() - aShift : Beg0.XYZ() + aShift);
+          const gp_Pnt anEnd(aSide == 0 ? End0.XYZ() + aShift : End0.XYZ() - aShift);
+          const double aDBeg = (triNor * aBeg.XYZ()) - triDp;
+          const double aDEnd = (triNor * anEnd.XYZ()) - triDp;
+          Intersect(aBeg, anEnd, false, indTri, thePolyh, triNor, triDp, aDBeg, aDEnd);
+        }
+      }
 
       //  Modified by MKK - Thu Oct  25 12:40:11 2007 End
       clt.Next();
