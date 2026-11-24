@@ -13,6 +13,7 @@
 // Alternatively, this file may be used under the terms of Open CASCADE
 // commercial license or contractual agreement.
 
+#include <GeomTools.hxx>
 #include <BinTools.hxx>
 #include <BinTools_Curve2dSet.hxx>
 #include <Geom2d_BezierCurve.hxx>
@@ -343,7 +344,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, gp_Dir2d& D)
   double X = 0., Y = 0.;
   BinTools::GetReal(IS, X);
   BinTools::GetReal(IS, Y);
-  D.SetCoord(X, Y);
+  D = GeomTools::Dir2dAsWritten(X, Y);
   return IS;
 }
 
@@ -367,7 +368,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, occ::handle<Geom2d_Cir
   double   R = 0.;
   IS >> P >> AX >> AY;
   BinTools::GetReal(IS, R);
-  C = new Geom2d_Circle(gp_Ax22d(P, AX, AY), R);
+  C = new Geom2d_Circle(GeomTools::Ax22dAsWritten(P, AX, AY), R);
   return IS;
 }
 
@@ -381,7 +382,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, occ::handle<Geom2d_Ell
   IS >> P >> AX >> AY;
   BinTools::GetReal(IS, R1);
   BinTools::GetReal(IS, R2);
-  E = new Geom2d_Ellipse(gp_Ax22d(P, AX, AY), R1, R2);
+  E = new Geom2d_Ellipse(GeomTools::Ax22dAsWritten(P, AX, AY), R1, R2);
   return IS;
 }
 
@@ -394,7 +395,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, occ::handle<Geom2d_Par
   double   R1 = 0.;
   IS >> P >> AX >> AY;
   BinTools::GetReal(IS, R1);
-  C = new Geom2d_Parabola(gp_Ax22d(P, AX, AY), R1);
+  C = new Geom2d_Parabola(GeomTools::Ax22dAsWritten(P, AX, AY), R1);
   return IS;
 }
 
@@ -408,7 +409,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, occ::handle<Geom2d_Hyp
   IS >> P >> AX >> AY;
   BinTools::GetReal(IS, R1);
   BinTools::GetReal(IS, R2);
-  H = new Geom2d_Hyperbola(gp_Ax22d(P, AX, AY), R1, R2);
+  H = new Geom2d_Hyperbola(GeomTools::Ax22dAsWritten(P, AX, AY), R1, R2);
   return IS;
 }
 
