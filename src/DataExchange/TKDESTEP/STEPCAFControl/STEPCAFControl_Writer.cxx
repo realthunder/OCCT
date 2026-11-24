@@ -3306,6 +3306,55 @@ static const char* keptOr(const occ::handle<TCollection_HAsciiString>& theKept,
 }
 
 //=======================================================================
+// function : setEdition2, isEdition2
+// purpose  : the file identified as of AP242's second edition, where the
+//            annotation placeholder and the model_geometric_view are from:
+//            NIST's own are { 1 0 10303 442 3 1 4 } (CTC-02) and the third's
+//=======================================================================
+static const char* THE_AP242_ED2 =
+  "AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF { 1 0 10303 442 3 1 4 }";
+
+static occ::handle<HeaderSection_FileSchema> fileSchema(
+  const occ::handle<Interface_InterfaceModel>& theModel)
+{
+  occ::handle<StepData_StepModel> aStepModel = occ::down_cast<StepData_StepModel>(theModel);
+  if (aStepModel.IsNull())
+  {
+    return nullptr;
+  }
+  return occ::down_cast<HeaderSection_FileSchema>(
+    aStepModel->HeaderEntity(STANDARD_TYPE(HeaderSection_FileSchema)));
+}
+
+static void setEdition2(const occ::handle<Interface_InterfaceModel>& theModel)
+{
+  occ::handle<HeaderSection_FileSchema> aSchema = fileSchema(theModel);
+  for (int i = 1; !aSchema.IsNull() && i <= aSchema->NbSchemaIdentifiers(); i++)
+  {
+    occ::handle<TCollection_HAsciiString> anId = aSchema->SchemaIdentifiersValue(i);
+    if (!anId.IsNull() && anId->Search("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF") == 1
+        && anId->Search(" 442 1 1 4") > 0)
+    {
+      aSchema->SchemaIdentifiers()->SetValue(i, new TCollection_HAsciiString(THE_AP242_ED2));
+    }
+  }
+}
+
+static bool isEdition2(const occ::handle<Interface_InterfaceModel>& theModel)
+{
+  occ::handle<HeaderSection_FileSchema> aSchema = fileSchema(theModel);
+  for (int i = 1; !aSchema.IsNull() && i <= aSchema->NbSchemaIdentifiers(); i++)
+  {
+    occ::handle<TCollection_HAsciiString> anId = aSchema->SchemaIdentifiersValue(i);
+    if (!anId.IsNull() && anId->IsSameString(new TCollection_HAsciiString(THE_AP242_ED2)))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+//=======================================================================
 // function : writePlaceholder
 // purpose  : a PMI's annotation placeholder (AP242 ed2), for the one that has
 //            one (XCAFDoc_DimTolTool::GetPlaceholder): where a reader that
@@ -3408,6 +3457,9 @@ static void writePlaceholder(
               anItems);
   aLink->SetAnnotationPlaceholder(aPlaceholder);
   aModel->AddWithRefs(aLink);
+  // A placeholder and its association are of AP242's second edition: the file says so (one
+  // identified as the first edition and holding them is told off by SFA)
+  setEdition2(aModel);
   // In an annotation plane, as every callout is (one in none is an error to SFA), and in the
   // draughting model with it
   occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>> aPrsStyles =
@@ -5581,8 +5633,8 @@ bool STEPCAFControl_Writer::writeDGTs(const occ::handle<XSControl_WorkSession>& 
   return true;
 }
 
-//! Text as a STEP file has it: ASCII, the rest in \X2\ directives (ISO 10303-21), as the
-//! reader decodes them. The XCAF strings are UTF-8
+//! Text as a STEP file has it: ASCII, the rest in \X\ and \X2\ directives (ISO 10303-21), as
+//! the reader decodes them. The XCAF strings are UTF-8
 static occ::handle<TCollection_HAsciiString> stepText(
   const occ::handle<TCollection_HAsciiString>& theText)
 {
@@ -5606,6 +5658,22 @@ static occ::handle<TCollection_HAsciiString> stepText(
         isWide = false;
       }
       anOut += static_cast<char>(aChar);
+      continue;
+    }
+    // A character of ISO 8859-1 -- a line break, a degree sign -- in the 8-bit directive, as
+    // NIST's files give a note's line breaks ('\X\0A'): in UTF-16 a reader (SFA) counts the
+    // text as Unicode
+    if (aChar < 0x100)
+    {
+      if (isWide)
+      {
+        anOut += "\\X0\\";
+        isWide = false;
+      }
+      char aHex[3];
+      std::snprintf(aHex, sizeof(aHex), "%02X", static_cast<unsigned>(aChar));
+      anOut += "\\X\\";
+      anOut += aHex;
       continue;
     }
     if (!isWide)
@@ -6490,6 +6558,21 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
       occ::handle<StepVisual_DraughtingModel> aModelOfView = new StepVisual_DraughtingModel();
       aModelOfView->Init(aName, anArray, theRC);
       aModel->AddWithRefs(aModelOfView);
+      // In a file of AP242's second edition (one written with placeholders), the camera and
+      // its draughting model are connected by a model_geometric_view, as the recommended
+      // practice has it (9.4.2) and NIST's files do: SFA takes its absence for a syntax error
+      // there. No class is for it: an entity of its four parameters
+      if (isEdition2(aModel))
+      {
+        occ::handle<StepData_UndefinedEntity> aView = new StepData_UndefinedEntity();
+        aView->SetStepType("MODEL_GEOMETRIC_VIEW");
+        occ::handle<Interface_UndefinedContent> aParams = aView->UndefinedContent();
+        aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString("''"));
+        aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString("''"));
+        aParams->AddEntity(Interface_ParamIdent, aCamera);
+        aParams->AddEntity(Interface_ParamIdent, aModelOfView);
+        aModel->AddWithRefs(aView);
+      }
       // Related to the draughting model of all the GD&T's presentations
       if (myGDTAnnotations.Length() > 0)
       {

@@ -48,6 +48,11 @@ TEST(StepData_StepWriterTest, CleanTextForSend_ControlDirectivePreservation)
   TCollection_AsciiString aResult1 = StepData_StepWriter::CleanTextForSend(anInput1);
   EXPECT_STREQ(aResult1.ToCString(), "text with \\XA7\\ section sign");
 
+  // The 8-bit directive as ISO 10303-21 has it, \X\HH: kept, its backslashes not doubled
+  TCollection_AsciiString anInput8("line1\\X\\0Aline2 at 45\\X\\B0");
+  TCollection_AsciiString aResult8 = StepData_StepWriter::CleanTextForSend(anInput8);
+  EXPECT_STREQ(aResult8.ToCString(), "line1\\X\\0Aline2 at 45\\X\\B0");
+
   // Test \X2\ control directive preservation
   TCollection_AsciiString anInput2("\\X2\\03C0\\X0\\ is pi");
   TCollection_AsciiString aResult2 = StepData_StepWriter::CleanTextForSend(anInput2);

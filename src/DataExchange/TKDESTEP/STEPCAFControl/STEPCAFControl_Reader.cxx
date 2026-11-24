@@ -6609,6 +6609,34 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       bool      isPresented = false;
       bool      isOfNotRead = false;
       TDF_Label aSecondOf;
+      // The association to its words, a 'semantic text', when it has one beside the one taken
+      // below: a graphic linked to the geometry it is on and to its words is read with both
+      // (NIST CTC-02's notes; taken by its geometry alone, its words were lost)
+      occ::handle<StepRepr_PropertyDefinition> aWordsOf;
+      auto                                     aReadWords =
+        [&aGraph, &aWords](const occ::handle<StepRepr_PropertyDefinition>& theText) {
+          for (Interface_EntityIterator anIter = aGraph.Sharings(theText); anIter.More();
+               anIter.Next())
+          {
+            occ::handle<StepRepr_PropertyDefinitionRepresentation> aPDR =
+              occ::down_cast<StepRepr_PropertyDefinitionRepresentation>(anIter.Value());
+            if (aPDR.IsNull() || aPDR->UsedRepresentation().IsNull())
+            {
+              continue;
+            }
+            occ::handle<StepRepr_Representation> aRepr = aPDR->UsedRepresentation();
+            for (int anItemIt = 1; anItemIt <= aRepr->NbItems(); anItemIt++)
+            {
+              occ::handle<StepRepr_DescriptiveRepresentationItem> aWord =
+                occ::down_cast<StepRepr_DescriptiveRepresentationItem>(
+                  aRepr->ItemsValue(anItemIt));
+              if (!aWord.IsNull() && !aWord->Description().IsNull())
+              {
+                aWords.Append(aWord);
+              }
+            }
+          }
+        };
       for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt); anIter.More() && !isPresented;
            anIter.Next())
       {
@@ -6621,6 +6649,10 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         // A copy: Definition() is a temporary, Value() a reference into it
         const occ::handle<Standard_Transient> aDef = anAssoc->Definition().Value();
         occ::handle<TCollection_HAsciiString> aHeld;
+        if (aWordsOf.IsNull())
+        {
+          aWordsOf = anAssoc->Definition().PropertyDefinition();
+        }
         if (!aDef.IsNull() && isPresentationLink(anAssoc) && !myGDTMap.IsBound(aDef)
             && aDef->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)))
         {
@@ -6734,27 +6766,11 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
           // feature, a shape aspect; the product's own has none)
           occ::handle<StepRepr_PropertyDefinition> aText = aDMIA->Definition().PropertyDefinition();
           aDefinition = aText->Definition().ShapeAspect();
-          for (Interface_EntityIterator anIter = aGraph.Sharings(aText); anIter.More();
-               anIter.Next())
-          {
-            occ::handle<StepRepr_PropertyDefinitionRepresentation> aPDR =
-              occ::down_cast<StepRepr_PropertyDefinitionRepresentation>(anIter.Value());
-            if (aPDR.IsNull() || aPDR->UsedRepresentation().IsNull())
-            {
-              continue;
-            }
-            occ::handle<StepRepr_Representation> aRepr = aPDR->UsedRepresentation();
-            for (int anItemIt = 1; anItemIt <= aRepr->NbItems(); anItemIt++)
-            {
-              occ::handle<StepRepr_DescriptiveRepresentationItem> aWord =
-                occ::down_cast<StepRepr_DescriptiveRepresentationItem>(
-                  aRepr->ItemsValue(anItemIt));
-              if (!aWord.IsNull() && !aWord->Description().IsNull())
-              {
-                aWords.Append(aWord);
-              }
-            }
-          }
+          aReadWords(aText);
+        }
+        if (aWords.IsEmpty() && !aWordsOf.IsNull())
+        {
+          aReadWords(aWordsOf);
         }
 
         // Get shapes

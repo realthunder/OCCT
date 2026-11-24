@@ -1336,8 +1336,19 @@ TCollection_AsciiString StepData_StepWriter::CleanTextForSend(
     if (anUncar == '\\' && anI <= aNb)
     {
 
+      // The 8-bit directive as ISO 10303-21 has it, \X\HH (a character of ISO 8859-1: a note's
+      // line break is \X\0A in NIST's files). It was not known, only a form \XHH\ the
+      // standard has not, and its backslashes were doubled: written, it read back as text
+      if (anI + 4 <= aNb && theText.Value(anI + 1) == 'X' && theText.Value(anI + 2) == '\\'
+          && std::isxdigit(static_cast<unsigned char>(theText.Value(anI + 3)))
+          && std::isxdigit(static_cast<unsigned char>(theText.Value(anI + 4))))
+      {
+        anIsDirective    = true;
+        aDirectiveLength = 5;
+      }
       // Check for \X2\ and \X4\ patterns first (need exactly 4 characters: \X2\)
-      if (anI + 3 <= aNb && theText.Value(anI + 1) == 'X' && theText.Value(anI + 3) == '\\')
+      else if (anI + 3 <= aNb && theText.Value(anI + 1) == 'X'
+               && theText.Value(anI + 3) == '\\')
       {
         const char aThirdChar = theText.Value(anI + 2);
 
