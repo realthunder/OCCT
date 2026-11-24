@@ -6961,9 +6961,15 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         }
         else if (aDMIA->Definition().PropertyDefinition().IsNull())
         {
+          // Of an entity OCCT does not know -- a shape aspect of a later edition, a hole
+          // occurrence (NIST STC-09 -e4's two hidden labels of 'RectPattern.5', a
+          // basic_round_hole_occurrence): a graphic alone, not lost
+          const occ::handle<Standard_Transient> aDef = aDMIA->Definition().Value();
+          const bool isOfUnknown =
+            aDef.IsNull() || aDef->IsKind(STANDARD_TYPE(StepData_UndefinedEntity));
           if (aSecondOf.IsNull())
           {
-            if (!isOfNotRead)
+            if (!isOfNotRead && !isOfUnknown)
             {
               continue;
             }
