@@ -84,6 +84,14 @@ public:
   //! is of, the name of its geometric set ('linear dimension', 'note')
   Standard_EXPORT static const Standard_GUID& GDTPlaceholderGUID();
 
+  //! Return GUID of the string a part's supplemental geometry is kept as (a group: its
+  //! representation's name and its relationship's; an item: its kind and name)
+  Standard_EXPORT static const Standard_GUID& SupplementalGeometryGUID();
+
+  //! Return GUID of the mark of an assembly label that is one product's several shape
+  //! representations (STEP: a SHAPE_REPRESENTATION related to each), not an assembly of products
+  Standard_EXPORT static const Standard_GUID& ProductRepresentationsGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();

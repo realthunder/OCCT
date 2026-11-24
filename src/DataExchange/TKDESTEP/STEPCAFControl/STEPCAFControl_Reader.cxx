@@ -162,6 +162,13 @@
 #include <StepShape_ValueFormatTypeQualifier.hxx>
 #include <StepShape_Vertex.hxx>
 #include <StepToGeom.hxx>
+#include <StepRepr_ConstructiveGeometryRepresentationRelationship.hxx>
+#include <StepRepr_ConstructiveGeometryRepresentation.hxx>
+#include <StepGeom_CylindricalSurface.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <TDataStd_UAttribute.hxx>
+#include <XCAFDoc.hxx>
+#include <Standard_ErrorHandler.hxx>
 #include <StepVisual_AnnotationPlane.hxx>
 #include <StepVisual_CameraModelD3MultiClipping.hxx>
 #include <StepVisual_CameraModelD3MultiClippingIntersection.hxx>
@@ -1556,11 +1563,17 @@ TDF_Label STEPCAFControl_Reader::AddShape(
   // or as assembly, component-by-component
   TDF_Label L  = STool->NewShape();
   nbComponents = 0;
+  // A product whose components are no products: its several shape representations
+  bool isRepresentations = ShapePDMap.IsBound(S);
   for (it.Initialize(S); it.More(); it.Next(), nbComponents++)
   {
     TopoDS_Shape    Sub0 = it.Value();
     TopLoc_Location loc;
     Sub0.Location(loc);
+    if (ShapePDMap.IsBound(Sub0))
+    {
+      isRepresentations = false;
+    }
     TDF_Label subL = AddShape(Sub0, STool, NewShapesMap, ShapePDMap, PDFileMap);
     if (!subL.IsNull())
     {
@@ -1574,6 +1587,10 @@ TDF_Label STEPCAFControl_Reader::AddShape(
   if (SHAS.Length() > 0)
   {
     STool->SetExternRefs(L, SHAS);
+  }
+  if (isRepresentations && nbComponents > 0)
+  {
+    TDataStd_UAttribute::Set(L, XCAFDoc::ProductRepresentationsGUID());
   }
   myMap.Bind(S, L);
   // STool->SetShape ( L, S ); // it is necessary for assemblies OCC1747 // commemted by skl for
@@ -6523,6 +6540,175 @@ static void setGeomTolObjectToXCAF(const occ::handle<Standard_Transient>&    the
 
 //=================================================================================================
 
+//=======================================================================
+// function : readSupplementalGeometry
+// purpose  : each CONSTRUCTIVE_GEOMETRY_REPRESENTATION of a part as a group of its
+//            supplemental geometry: planes, cylinders, axis systems, sets of curves
+//=======================================================================
+static void readSupplementalGeometry(
+  const occ::handle<XSControl_WorkSession>&                                    theWS,
+  const occ::handle<XCAFDoc_ShapeTool>&                                        theSTool,
+  const occ::handle<XCAFDoc_DimTolTool>&                                       theDGTTool,
+  const NCollection_DataMap<TopoDS_Shape, TDF_Label, TopTools_ShapeMapHasher>& theMap,
+  const StepData_Factors&                                                      theLocalFactors)
+{
+  const occ::handle<Interface_InterfaceModel>&  aModel = theWS->Model();
+  const Interface_Graph&                        aGraph = theWS->Graph();
+  const occ::handle<Transfer_TransientProcess>& aTP =
+    theWS->TransferReader()->TransientProcess();
+  const int aNb = aModel->NbEntities();
+  for (int i = 1; i <= aNb; i++)
+  {
+    occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship> aCGRR =
+      occ::down_cast<StepRepr_ConstructiveGeometryRepresentationRelationship>(aModel->Value(i));
+    if (aCGRR.IsNull())
+    {
+      continue;
+    }
+    // The constructive geometry one side, the part's shape representation the other
+    occ::handle<StepRepr_ConstructiveGeometryRepresentation> aCGR =
+      occ::down_cast<StepRepr_ConstructiveGeometryRepresentation>(aCGRR->Rep2());
+    occ::handle<StepRepr_Representation> aPartRep = aCGRR->Rep1();
+    if (aCGR.IsNull())
+    {
+      aCGR     = occ::down_cast<StepRepr_ConstructiveGeometryRepresentation>(aCGRR->Rep1());
+      aPartRep = aCGRR->Rep2();
+    }
+    if (aCGR.IsNull() || aPartRep.IsNull())
+    {
+      continue;
+    }
+    // The part: the product its representation is of
+    TDF_Label aPartL;
+    for (Interface_EntityIterator anIter = aGraph.Sharings(aPartRep);
+         anIter.More() && aPartL.IsNull();
+         anIter.Next())
+    {
+      occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR =
+        occ::down_cast<StepShape_ShapeDefinitionRepresentation>(anIter.Value());
+      if (aSDR.IsNull())
+      {
+        continue;
+      }
+      occ::handle<StepRepr_PropertyDefinition> aPropD = aSDR->Definition().PropertyDefinition();
+      occ::handle<StepBasic_ProductDefinition> aPD =
+        aPropD.IsNull() ? nullptr : aPropD->Definition().ProductDefinition();
+      occ::handle<Transfer_Binder> aBinder = aPD.IsNull() ? nullptr : aTP->Find(aPD);
+      if (aBinder.IsNull() || !aBinder->HasResult())
+      {
+        continue;
+      }
+      const TopoDS_Shape aPart = TransferBRep::ShapeResult(aTP, aBinder);
+      if (aPart.IsNull())
+      {
+        continue;
+      }
+      if (theMap.IsBound(aPart))
+      {
+        aPartL = theMap.Find(aPart);
+      }
+      else
+      {
+        theSTool->Search(aPart, aPartL, true, true, false);
+      }
+    }
+    if (aPartL.IsNull())
+    {
+      continue;
+    }
+    auto aNameOf = [](const occ::handle<TCollection_HAsciiString>& theName) {
+      return theName.IsNull() ? TCollection_AsciiString() : theName->String();
+    };
+    TDF_Label aGroupL = theDGTTool->AddSupplementalGeometry(aPartL,
+                                                            aNameOf(aCGR->Name()),
+                                                            aNameOf(aCGRR->Name()));
+    if (aCGR->Items().IsNull())
+    {
+      continue;
+    }
+    for (int j = aCGR->Items()->Lower(); j <= aCGR->Items()->Upper(); ++j)
+    {
+      occ::handle<StepRepr_RepresentationItem> anItem = aCGR->Items()->Value(j);
+      if (anItem.IsNull())
+      {
+        continue;
+      }
+      const TCollection_AsciiString aName = aNameOf(anItem->Name());
+      try
+      {
+        OCC_CATCH_SIGNALS
+        if (anItem->IsKind(STANDARD_TYPE(StepGeom_Plane)))
+        {
+          occ::handle<Geom_Plane> aPlane =
+            StepToGeom::MakePlane(occ::down_cast<StepGeom_Plane>(anItem), theLocalFactors);
+          if (!aPlane.IsNull())
+          {
+            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+                                                    "plane",
+                                                    aName,
+                                                    aPlane->Position(),
+                                                    0.0,
+                                                    TopoDS_Shape());
+          }
+        }
+        else if (anItem->IsKind(STANDARD_TYPE(StepGeom_CylindricalSurface)))
+        {
+          occ::handle<Geom_CylindricalSurface> aCyl = StepToGeom::MakeCylindricalSurface(
+            occ::down_cast<StepGeom_CylindricalSurface>(anItem),
+            theLocalFactors);
+          if (!aCyl.IsNull())
+          {
+            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+                                                    "cylinder",
+                                                    aName,
+                                                    aCyl->Position(),
+                                                    aCyl->Radius(),
+                                                    TopoDS_Shape());
+          }
+        }
+        else if (anItem->IsKind(STANDARD_TYPE(StepGeom_Axis2Placement3d)))
+        {
+          occ::handle<Geom_Axis2Placement> anAxes = StepToGeom::MakeAxis2Placement(
+            occ::down_cast<StepGeom_Axis2Placement3d>(anItem),
+            theLocalFactors);
+          if (!anAxes.IsNull())
+          {
+            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+                                                    "axes",
+                                                    aName,
+                                                    gp_Ax3(anAxes->Ax2()),
+                                                    0.0,
+                                                    TopoDS_Shape());
+          }
+        }
+        else
+        {
+          // A set of curves, a curve, a point: the shape it was read as, when it was
+          // (supplemental curves are read with the GD&T)
+          occ::handle<Transfer_Binder> aBinder = aTP->Find(anItem);
+          const TopoDS_Shape           aShape =
+            aBinder.IsNull() ? TopoDS_Shape() : TransferBRep::ShapeResult(aTP, aBinder);
+          if (!aShape.IsNull())
+          {
+            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+                                                    "curves",
+                                                    aName,
+                                                    gp_Ax3(),
+                                                    0.0,
+                                                    aShape);
+          }
+        }
+      }
+      catch (const Standard_Failure&)
+      {
+        // Geometry that cannot be made: the item is left out
+      }
+    }
+  }
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& theWS,
                                      const occ::handle<TDocStd_Document>&      theDoc,
                                      const StepData_Factors&                   theLocalFactors)
@@ -6543,6 +6729,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
   {
     return false;
   }
+  readSupplementalGeometry(theWS, aSTool, aDGTTool, myMap, theLocalFactors);
 
   int nb = aModel->NbEntities();
   for (int i = 1; i <= nb; i++)

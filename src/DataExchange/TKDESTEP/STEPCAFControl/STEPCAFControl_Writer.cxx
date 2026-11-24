@@ -116,6 +116,15 @@
 #include <StepRepr_CompositeShapeAspect.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentation.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentationRelationship.hxx>
+#include <GeomToStep_MakeCylindricalSurface.hxx>
+#include <StepGeom_CylindricalSurface.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <TopoDSToStep_MakeGeometricCurveSet.hxx>
+#include <StepShape_GeometricCurveSet.hxx>
+#include <Transfer_SimpleBinderOfTransient.hxx>
+#include <Standard_ErrorHandler.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
 #include <StepRepr_DerivedShapeAspect.hxx>
 #include <StepRepr_DescriptiveRepresentationItem.hxx>
 #include <StepRepr_FeatureForDatumTargetRelationship.hxx>
@@ -308,6 +317,15 @@ public:
   //! one each. Its callout first, then the placeholder
   NCollection_DataMap<TCollection_AsciiString, NCollection_Array1<occ::handle<Standard_Transient>>>
     Placeholders;
+  //! Supplemental geometry written (XCAFDoc_DimTolTool::AddSupplementalGeometry): each set of
+  //! curves, the item GD&T on it identifies, with its constructive geometry representation --
+  //! the representation the usage is of -- and its part's shape
+  struct Supplemental
+  {
+    occ::handle<StepRepr_Representation>         Representation;
+    occ::handle<StepRepr_ProductDefinitionShape> PDS;
+  };
+  NCollection_DataMap<occ::handle<Standard_Transient>, Supplemental> Supplementals;
 };
 
 //! theModel is the writer's myGDTPresentationDM, made in Init() and nowhere else
@@ -3225,7 +3243,19 @@ occ::handle<StepRepr_ShapeAspect> STEPCAFControl_Writer::writeShapeAspect(
   occ::handle<StepRepr_ProductDefinitionShape> aPDS;
   occ::handle<StepRepr_RepresentationContext>  aRC;
   occ::handle<Standard_Transient>              anEnt = aSeqRI.Value(1);
-  aPDS                                               = FindPDS(aGraph, anEnt, aRC);
+  // Supplemental geometry's: of its part, in its constructive geometry representation
+  occ::handle<StepRepr_Representation> aUsedRep;
+  if (const GDTPresentationModel::Supplemental* aSupplemental =
+        gdtState(myGDTPresentationDM).Supplementals.Seek(anEnt))
+  {
+    aPDS     = aSupplemental->PDS;
+    aUsedRep = aSupplemental->Representation;
+    aRC      = aUsedRep->ContextOfItems();
+  }
+  else
+  {
+    aPDS = FindPDS(aGraph, anEnt, aRC);
+  }
   if (aPDS.IsNull())
   {
     return nullptr;
@@ -3269,21 +3299,25 @@ occ::handle<StepRepr_ShapeAspect> STEPCAFControl_Writer::writeShapeAspect(
     return nullptr;
   }
   anReprItems->SetValue(1, anIdentifiedItem);
-  occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
-  for (Interface_EntityIterator aSharingIter = aGraph.Sharings(aPDS);
-       aSharingIter.More() && aSDR.IsNull();
-       aSharingIter.Next())
+  if (aUsedRep.IsNull())
   {
-    const occ::handle<Standard_Transient>& anEntity = aSharingIter.Value();
-    aSDR = occ::down_cast<StepShape_ShapeDefinitionRepresentation>(anEntity);
-  }
-  if (aSDR.IsNull())
-  {
-    return nullptr;
+    occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
+    for (Interface_EntityIterator aSharingIter = aGraph.Sharings(aPDS);
+         aSharingIter.More() && aSDR.IsNull();
+         aSharingIter.Next())
+    {
+      const occ::handle<Standard_Transient>& anEntity = aSharingIter.Value();
+      aSDR = occ::down_cast<StepShape_ShapeDefinitionRepresentation>(anEntity);
+    }
+    if (aSDR.IsNull())
+    {
+      return nullptr;
+    }
+    aUsedRep = aSDR->UsedRepresentation();
   }
 
   // Set entities to model
-  aGISU->Init(aName, aDescription, aDefinition, aSDR->UsedRepresentation(), anReprItems);
+  aGISU->Init(aName, aDescription, aDefinition, aUsedRep, anReprItems);
   aModel->AddWithRefs(aSA);
   aModel->AddWithRefs(aGISU);
   theGISU = aGISU;
@@ -5797,6 +5831,208 @@ static occ::handle<StepRepr_PropertyDefinition> writeSemanticText(
   return aText;
 }
 
+//=======================================================================
+// function : writeSupplementalGeometry
+// purpose  : each group of supplemental geometry as a CONSTRUCTIVE_GEOMETRY_REPRESENTATION
+//            related to its part's shape representation; each set of curves bound to the
+//            shape it is, for GD&T on it to find
+//=======================================================================
+static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& theWS,
+                                      const Interface_Graph&                    theGraph,
+                                      const occ::handle<XCAFDoc_DimTolTool>&    theDGTTool,
+                                      GDTPresentationModel&                     theState,
+                                      const StepData_Factors&                   theLocalFactors)
+{
+  const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
+  const occ::handle<Transfer_FinderProcess>&   aFP    = theWS->TransferWriter()->FinderProcess();
+  NCollection_Sequence<TDF_Label>              aGroups;
+  theDGTTool->GetSupplementalGeometry(aGroups);
+  for (NCollection_Sequence<TDF_Label>::Iterator aGroupIter(aGroups); aGroupIter.More();
+       aGroupIter.Next())
+  {
+    TDF_Label               aPartL;
+    TCollection_AsciiString aName, aRelationName;
+    if (!XCAFDoc_DimTolTool::GetSupplementalGeometry(aGroupIter.Value(),
+                                                     aPartL,
+                                                     aName,
+                                                     aRelationName)
+        || aPartL.IsNull())
+    {
+      continue;
+    }
+    TDF_Label aProtoL = aPartL;
+    if (XCAFDoc_ShapeTool::IsReference(aPartL))
+    {
+      XCAFDoc_ShapeTool::GetReferredShape(aPartL, aProtoL);
+    }
+    // The part's shape representation: the one an element of its shape was written in
+    const TopoDS_Shape                           aPart = XCAFDoc_ShapeTool::GetShape(aProtoL);
+    occ::handle<StepRepr_ProductDefinitionShape> aPDS;
+    occ::handle<StepRepr_RepresentationContext>  aRC;
+    for (TopAbs_ShapeEnum aType : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX})
+    {
+      for (TopExp_Explorer anExp(aPart, aType); anExp.More() && aPDS.IsNull(); anExp.Next())
+      {
+        TopLoc_Location                                       aLoc;
+        NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+        if (FindEntities(aFP, anExp.Current(), aLoc, aSeqRI) > 0)
+        {
+          aPDS = FindPDS(theGraph, aSeqRI.First(), aRC);
+        }
+      }
+      if (!aPDS.IsNull())
+      {
+        break;
+      }
+    }
+    occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
+    for (Interface_EntityIterator anIter = aPDS.IsNull() ? Interface_EntityIterator()
+                                                         : theGraph.Sharings(aPDS);
+         anIter.More() && aSDR.IsNull();
+         anIter.Next())
+    {
+      aSDR = occ::down_cast<StepShape_ShapeDefinitionRepresentation>(anIter.Value());
+    }
+    if (aSDR.IsNull() || aSDR->UsedRepresentation().IsNull())
+    {
+      continue;
+    }
+    occ::handle<StepRepr_Representation> aPartRep = aSDR->UsedRepresentation();
+
+    NCollection_Sequence<TDF_Label> anItemLs;
+    XCAFDoc_DimTolTool::GetSupplementalItems(aGroupIter.Value(), anItemLs);
+    NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> anItems;
+    NCollection_Sequence<std::pair<occ::handle<Standard_Transient>, TopoDS_Shape>> aSets;
+    for (NCollection_Sequence<TDF_Label>::Iterator anItemIter(anItemLs); anItemIter.More();
+         anItemIter.Next())
+    {
+      TCollection_AsciiString aKind, anItemName;
+      gp_Ax3                  aPos;
+      double                  aRadius = 0.0;
+      TopoDS_Shape            aShape;
+      if (!XCAFDoc_DimTolTool::GetSupplementalItem(anItemIter.Value(),
+                                                   aKind,
+                                                   anItemName,
+                                                   aPos,
+                                                   aRadius,
+                                                   aShape))
+      {
+        continue;
+      }
+      occ::handle<StepRepr_RepresentationItem> anItem;
+      try
+      {
+        OCC_CATCH_SIGNALS
+        if (aKind == "plane")
+        {
+          GeomToStep_MakePlane aMaker(gp_Pln(aPos), theLocalFactors);
+          anItem = aMaker.Value();
+        }
+        else if (aKind == "cylinder" && aRadius > 0.0)
+        {
+          GeomToStep_MakeCylindricalSurface aMaker(new Geom_CylindricalSurface(aPos, aRadius),
+                                                   theLocalFactors);
+          anItem = aMaker.Value();
+        }
+        else if (aKind == "axes")
+        {
+          GeomToStep_MakeAxis2Placement3d aMaker(aPos, theLocalFactors);
+          anItem = aMaker.Value();
+        }
+        else if (aKind == "curves" && !aShape.IsNull())
+        {
+          // Its curves, and its points that are on none
+          NCollection_Sequence<StepShape_GeometricSetSelect> anElements;
+          BRep_Builder                                       aBuilder;
+          TopoDS_Compound                                    anEdges;
+          aBuilder.MakeCompound(anEdges);
+          bool hasEdges = false;
+          for (TopExp_Explorer anExp(aShape, TopAbs_EDGE); anExp.More(); anExp.Next())
+          {
+            aBuilder.Add(anEdges, anExp.Current());
+            hasEdges = true;
+          }
+          if (hasEdges)
+          {
+            TopoDSToStep_MakeGeometricCurveSet aMaker(anEdges, aFP, theLocalFactors);
+            if (aMaker.IsDone())
+            {
+              for (int i = 1; i <= aMaker.Value()->NbElements(); ++i)
+              {
+                anElements.Append(aMaker.Value()->ElementsValue(i));
+              }
+            }
+          }
+          for (TopExp_Explorer anExp(aShape, TopAbs_VERTEX, TopAbs_EDGE); anExp.More();
+               anExp.Next())
+          {
+            GeomToStep_MakeCartesianPoint aMaker(BRep_Tool::Pnt(TopoDS::Vertex(anExp.Current())),
+                                                 theLocalFactors.LengthFactor());
+            StepShape_GeometricSetSelect  aSelect;
+            aSelect.SetValue(aMaker.Value());
+            anElements.Append(aSelect);
+          }
+          if (!anElements.IsEmpty())
+          {
+            occ::handle<NCollection_HArray1<StepShape_GeometricSetSelect>> anArray =
+              new NCollection_HArray1<StepShape_GeometricSetSelect>(1, anElements.Length());
+            for (int i = 1; i <= anElements.Length(); ++i)
+            {
+              anArray->SetValue(i, anElements.Value(i));
+            }
+            occ::handle<StepShape_GeometricCurveSet> aSet = new StepShape_GeometricCurveSet();
+            aSet->Init(new TCollection_HAsciiString(), anArray);
+            anItem = aSet;
+            aSets.Append(std::make_pair(occ::handle<Standard_Transient>(aSet), aShape));
+          }
+        }
+      }
+      catch (const Standard_Failure&)
+      {
+        anItem.Nullify();
+      }
+      if (anItem.IsNull())
+      {
+        continue;
+      }
+      anItem->SetName(new TCollection_HAsciiString(anItemName));
+      anItems.Append(anItem);
+    }
+    if (anItems.IsEmpty())
+    {
+      continue;
+    }
+    occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anArray =
+      new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, anItems.Length());
+    for (int i = 1; i <= anItems.Length(); ++i)
+    {
+      anArray->SetValue(i, anItems.Value(i));
+    }
+    occ::handle<StepRepr_ConstructiveGeometryRepresentation> aCGR =
+      new StepRepr_ConstructiveGeometryRepresentation();
+    aCGR->Init(new TCollection_HAsciiString(aName), anArray, aPartRep->ContextOfItems());
+    occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship> aCGRR =
+      new StepRepr_ConstructiveGeometryRepresentationRelationship();
+    aCGRR->Init(new TCollection_HAsciiString(aRelationName),
+                new TCollection_HAsciiString(),
+                aPartRep,
+                aCGR);
+    aModel->AddWithRefs(aCGRR);
+    // GD&T on a set of curves: the set, in this representation
+    for (const auto& aSet : aSets)
+    {
+      GDTPresentationModel::Supplemental anEntry;
+      anEntry.Representation = aCGR;
+      anEntry.PDS            = aPDS;
+      theState.Supplementals.Bind(aSet.first, anEntry);
+      occ::handle<Transfer_SimpleBinderOfTransient> aBinder =
+        new Transfer_SimpleBinderOfTransient();
+      aBinder->SetResult(aSet.first);
+      aFP->Bind(TransferBRep::ShapeMapper(aFP, aSet.second), aBinder);
+    }
+  }
+}
+
 //=================================================================================================
 
 bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSession>& theWS,
@@ -5827,6 +6063,25 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
        aModelIter.Next())
   {
     myGDTCommonPDS = occ::down_cast<StepRepr_ProductDefinitionShape>(aModelIter.Value());
+  }
+
+  // Supplemental geometry first: GD&T on its curves identifies its items
+  {
+    NCollection_Map<occ::handle<Standard_Transient>> aTools;
+    for (NCollection_Map<TDF_Label>::Iterator aLabelIter(myRootLabels); aLabelIter.More();
+         aLabelIter.Next())
+    {
+      occ::handle<XCAFDoc_DimTolTool> aDGTTool =
+        XCAFDoc_DocumentTool::DimTolTool(aLabelIter.Value());
+      if (!aDGTTool.IsNull() && aTools.Add(aDGTTool))
+      {
+        writeSupplementalGeometry(theWS,
+                                  aGraph,
+                                  aDGTTool,
+                                  gdtState(myGDTPresentationDM),
+                                  theLocalFactors);
+      }
+    }
   }
 
   NCollection_DataMap<TCollection_AsciiString, occ::handle<Standard_Transient>> aDatumMap;
