@@ -21,6 +21,7 @@
 #include <NCollection_Sequence.hxx>
 #include <BRepClass3d_Intersector3d.hxx>
 #include <BRepClass3d_SClassifier.hxx>
+#include <BRepBndLib.hxx>
 #include <BRepClass3d_SolidExplorer.hxx>
 #include <ElCLib.hxx>
 #include <Geom_Surface.hxx>
@@ -291,14 +292,25 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
   // (the same prism, a point 0.03 inside the wall: its first line grazes
   // the wall and is right, the second leaves through the wall between the
   // wall and its polyhedron and finds no crossing there). Lines in one
-  // direction count once. Where the lines run out, the first is trusted
-  // as it was before.
+  // direction count once.
+  // The explorer has a line a face, to a point of it. Where its lines run
+  // out with a grazing answer unsettled, up to six lines of the
+  // classifier's own are taken, in fixed directions, each as long as the
+  // solid's box: a solid of one face, turned of a closed profile (#617's
+  // revolution), has one line, and from five points of 60000 in its box,
+  // all outside, that line touches the face 0.00 to 0.03 degrees off its
+  // tangent plane -- two crossings 0.002 to 0.02 apart, one found, and the
+  // point IN. Such a line that crosses nothing says OUT. Where those run
+  // out too, the first is trusted as it was before.
   const double                 THE_GRAZING_COS = 0.1;
   bool                         isStrict        = true;
   bool                         hasLoosePass    = false;
   int                          aGrazeState     = -1;
   int                          aDisputeState   = -1;
   NCollection_Sequence<gp_Dir> aCounted;
+  const int                    THE_NB_OWN_LINES = 6;
+  int                          aNbOwnLines      = 0;
+  Bnd_Box                      aSolidBox;
   while (isFaultyLine)
   {
     if (anIndFace == 0)
@@ -315,6 +327,33 @@ void BRepClass3d_SClassifier::Perform(BRepClass3d_SolidExplorer& SolidExplorer,
     if (aCurInd > anIndFace)
     {
       anIndFace = aCurInd;
+    }
+    else if (isStrict && aGrazeState >= 0 && aNbOwnLines < THE_NB_OWN_LINES)
+    {
+      static const double THE_OWN_DIRS[THE_NB_OWN_LINES][3] = {{0.3, 0.5, 0.81},
+                                                               {-0.7, 0.2, 0.68},
+                                                               {0.1, -0.9, 0.42},
+                                                               {-0.4, -0.6, -0.69},
+                                                               {0.8, -0.3, -0.52},
+                                                               {0.5, 0.6, -0.62}};
+      if (aSolidBox.IsVoid())
+      {
+        BRepBndLib::Add(SolidExplorer.GetShape(), aSolidBox);
+      }
+      L = gp_Lin(P,
+                 gp_Dir(THE_OWN_DIRS[aNbOwnLines][0],
+                        THE_OWN_DIRS[aNbOwnLines][1],
+                        THE_OWN_DIRS[aNbOwnLines][2]));
+      ++aNbOwnLines;
+      Par = GetAddToParam(L, 0., aSolidBox);
+      if (Par <= Precision::Confusion() || Par >= 1.e+20)
+      {
+        continue;
+      }
+      iFlag = 0;
+      // Such a line runs out of the solid's box: crossing nothing, the
+      // point is outside (the state is the last line's otherwise).
+      myState = 4;
     }
     else if (isStrict && hasLoosePass)
     {
