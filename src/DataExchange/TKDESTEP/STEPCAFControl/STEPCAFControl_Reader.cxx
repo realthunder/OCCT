@@ -4404,8 +4404,10 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
   bool isExistDatumTarget = false;
   for (int i = 1; i <= aSAs.Length(); i++)
   {
-    occ::handle<StepDimTol_PlacedDatumTargetFeature> aDT =
-      occ::down_cast<StepDimTol_PlacedDatumTargetFeature>(aSAs.Value(i));
+    // A placed datum target feature, or a datum target alone (NIST FTC-10's areas, each on
+    // its face by a usage of its own: it has no feature for datum target relationship)
+    occ::handle<StepDimTol_DatumTarget> aDT =
+      occ::down_cast<StepDimTol_DatumTarget>(aSAs.Value(i));
     if (aDT.IsNull())
     {
       continue;
@@ -4478,12 +4480,27 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
 
     if (aType == XCAFDimTolObjects_DatumTargetType_Area)
     {
-      // Area datum target
+      // Area datum target: of its feature, else of the target itself
+      occ::handle<StepRepr_ShapeAspect> aSA =
+        aRelationship.IsNull() ? occ::handle<StepRepr_ShapeAspect>(aDT)
+                               : aRelationship->RelatingShapeAspect();
       if (aRelationship.IsNull())
       {
-        continue;
+        for (Interface_EntityIterator anOwnIter = aGraph.Sharings(aDT); anOwnIter.More();
+             anOwnIter.Next())
+        {
+          occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> anOwn =
+            occ::down_cast<StepAP242_ItemIdentifiedRepresentationUsage>(anOwnIter.Value());
+          for (int j = 1; !anOwn.IsNull() && j <= anOwn->NbIdentifiedItem(); j++)
+          {
+            TDF_Label aShapeL = getShapeLabel(anOwn->IdentifiedItemValue(j), theWS, aSTool);
+            if (!aShapeL.IsNull())
+            {
+              aDTShapeLabels.Append(aShapeL);
+            }
+          }
+        }
       }
-      occ::handle<StepRepr_ShapeAspect>                 aSA = aRelationship->RelatingShapeAspect();
       Interface_EntityIterator                          aSAIter = aGraph.Sharings(aSA);
       occ::handle<StepAP242_GeometricItemSpecificUsage> aGISU;
       for (; aSAIter.More() && aGISU.IsNull(); aSAIter.Next())
@@ -6658,6 +6675,17 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         {
           isOfNotRead = true;
         }
+        // Of a dimension read that holds no graphic -- one given no value (NIST CTC-01's
+        // Linear Size.5 and .6, diameters of datum features): its graphic is one alone, on the
+        // shapes the dimension is of, as it is for one whose association names the shapes
+        // first (CTC-01's .10 and .11). Taken for a graphic of GD&T read, it was lost
+        if (!aDef.IsNull() && isPresentationLink(anAssoc) && myGDTMap.IsBound(aDef)
+            && (isDimensionalSize(aDef)
+                || aDef->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation)))
+            && !hasPresentation(myGDTMap.Find(aDef)))
+        {
+          isOfNotRead = true;
+        }
         if (!aDef.IsNull() && isPresentationLink(anAssoc) && myGDTMap.IsBound(aDef)
             && hasPresentation(myGDTMap.Find(aDef), &aHeld))
         {
@@ -6910,6 +6938,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       aByName.ChangeFind(aName->String()).Append(aLIt.Value());
     }
   }
+  NCollection_Map<occ::handle<Standard_Transient>> aSeenPlaceholders;
   for (int i = 1; i <= nb; i++)
   {
     occ::handle<StepAP242_DraughtingModelItemAssociationWithPlaceholder> aLink =
@@ -6934,10 +6963,20 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
     const occ::handle<Standard_Transient> aDef = aLink->Definition().Value();
     TDF_Label                             aOfL;
     TCollection_AsciiString               aHas, aHasName;
-    if (!aDef.IsNull() && myGDTMap.Find(aDef, aOfL) && !aOfL.IsNull())
+    // A placeholder two PMI are linked to (NIST STC-06's hole callout, its diameter's and its
+    // depth's) is the first's, and the second's as shared
+    const bool isShared = !aSeenPlaceholders.Add(aLink->AnnotationPlaceholder());
+    if (!aDef.IsNull() && myGDTMap.Find(aDef, aOfL) && !aOfL.IsNull()
+        && (hasPresentation(aOfL) || aName.IsEmpty() || !aByName.IsBound(aName)))
+    {
+      XCAFDoc_DimTolTool::SetPlaceholder(aOfL, aKind->String(), aName, isShared);
+      continue;
+    }
+    // Of a PMI that holds no graphic (a dimension given no value, NIST CTC-03's Linear Size.10):
+    // the graphic alone read for it is what is written again, and has its placeholder
+    if (!aOfL.IsNull())
     {
       XCAFDoc_DimTolTool::SetPlaceholder(aOfL, aKind->String(), aName);
-      continue;
     }
     if (aName.IsEmpty() || !aByName.IsBound(aName))
     {

@@ -253,14 +253,24 @@ public:
   //! (NIST STC-07: a dimension drawn as 'Oriented Linear Dimension.1' has the
   //! placeholder 'Oriented Linear Dimension.5'); empty, it is named as the graphic.
   //! Written to STEP it is given one, where its text is. An empty kind removes it.
+  //! theShared says it is the placeholder of another PMI written before it, of its kind, name
+  //! and place (NIST STC-06: a hole callout's one placeholder, its diameter's and its depth's):
+  //! written, it is linked to that one, not given one of its own.
   Standard_EXPORT static void SetPlaceholder(const TDF_Label&               theGDTL,
                                              const TCollection_AsciiString& theKind,
-                                             const TCollection_AsciiString& theName);
+                                             const TCollection_AsciiString& theName,
+                                             const bool                     theShared = false);
 
   //! The kind and name of the placeholder theGDTL has; false when it has none.
   Standard_EXPORT static bool GetPlaceholder(const TDF_Label&         theGDTL,
                                              TCollection_AsciiString& theKind,
                                              TCollection_AsciiString& theName);
+
+  //! As above, and whether it is another's (see SetPlaceholder).
+  Standard_EXPORT static bool GetPlaceholder(const TDF_Label&         theGDTL,
+                                             TCollection_AsciiString& theKind,
+                                             TCollection_AsciiString& theName,
+                                             bool&                    theShared);
 
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,
