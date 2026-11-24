@@ -88,6 +88,8 @@
 #include <Geom_Plane.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_SphericalSurface.hxx>
+#include <Geom_ToroidalSurface.hxx>
+#include <Geom_CylindricalSurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Geom_OffsetCurve.hxx>
 #include <NCollection_Array1.hxx>
@@ -6573,6 +6575,102 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
   //
   BRepLib::SortFaces(myFaceComp, aLF);
   //
+  // A face whose offset is no surface but a curve -- a fillet offset inward
+  // by its radius -- has no offset face, and its two long edges have one
+  // image between them: the faces either side of it meet there. Each built
+  // that image for itself, and nothing joined the two. From fix level 5 the
+  // one made first is the other's too (aTwins: each of the two edges to the
+  // other). Only where the two run alike: the same range, and at a
+  // parameter the same point once moved.
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aTwins;
+  if (BRepOffset_FixLevel() >= 5)
+  {
+    for (aItLF.Initialize(aLF); aItLF.More(); aItLF.Next())
+    {
+      const TopoDS_Face& aF = TopoDS::Face(aItLF.Value());
+      double             anOff = myFaceOffset.IsBound(aF) ? myFaceOffset(aF) : myOffset;
+      if (aF.Orientation() == TopAbs_REVERSED)
+      {
+        anOff = -anOff;
+      }
+      TopLoc_Location           aLoc;
+      occ::handle<Geom_Surface> aS = BRep_Tool::Surface(aF, aLoc);
+      if (aS.IsNull())
+      {
+        continue;
+      }
+      if (occ::handle<Geom_RectangularTrimmedSurface> aRT =
+            occ::down_cast<Geom_RectangularTrimmedSurface>(aS))
+      {
+        aS = aRT->BasisSurface();
+      }
+      if (!aS->IsKind(STANDARD_TYPE(Geom_ToroidalSurface))
+          && !aS->IsKind(STANDARD_TYPE(Geom_CylindricalSurface)))
+      {
+        continue;
+      }
+      BRepOffset_Status aStatus = BRepOffset_Good;
+      BRepOffset::Surface(aS, anOff, aStatus);
+      if (aStatus != BRepOffset_Degenerated)
+      {
+        continue;
+      }
+      TopoDS_Edge                                            aLong[2];
+      int                                                    aNbLong = 0;
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+      for (TopExp_Explorer anExp(aF, TopAbs_EDGE); anExp.More(); anExp.Next())
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(anExp.Current());
+        if (!aSeen.Add(anE) || BRep_Tool::Degenerated(anE) || BRepTools::IsReallyClosed(anE, aF))
+        {
+          continue;
+        }
+        if (aNbLong < 2)
+        {
+          aLong[aNbLong] = anE;
+        }
+        ++aNbLong;
+      }
+      if (aNbLong != 2 || aTwins.IsBound(aLong[0]) || aTwins.IsBound(aLong[1]))
+      {
+        continue;
+      }
+      double                          aF1, aL1, aF2, aL2;
+      const occ::handle<Geom2d_Curve> aC1 = BRep_Tool::CurveOnSurface(aLong[0], aF, aF1, aL1);
+      const occ::handle<Geom2d_Curve> aC2 = BRep_Tool::CurveOnSurface(aLong[1], aF, aF2, aL2);
+      if (aC1.IsNull() || aC2.IsNull() || std::abs(aF1 - aF2) > Precision::PConfusion()
+          || std::abs(aL1 - aL2) > Precision::PConfusion())
+      {
+        continue;
+      }
+      bool areAlike = true;
+      for (int k = 0; k <= 4 && areAlike; ++k)
+      {
+        const double u = aF1 + (aL1 - aF1) * k / 4.;
+        gp_Pnt       aP[2];
+        for (int j = 0; j < 2 && areAlike; ++j)
+        {
+          const gp_Pnt2d aUV = (j == 0 ? aC1 : aC2)->Value(u);
+          gp_Vec         aD1U, aD1V;
+          aS->D1(aUV.X(), aUV.Y(), aP[j], aD1U, aD1V);
+          gp_Vec aN = aD1U.Crossed(aD1V);
+          if (aN.Magnitude() < gp::Resolution())
+          {
+            areAlike = false;
+            break;
+          }
+          aP[j].Translate(aN.Normalized() * anOff);
+        }
+        areAlike = areAlike && aP[0].Distance(aP[1]) <= 10. * Precision::Confusion();
+      }
+      if (areAlike)
+      {
+        aTwins.Bind(aLong[0], aLong[1]);
+        aTwins.Bind(aLong[1], aLong[0]);
+      }
+    }
+  }
+  //
   Message_ProgressScope aPS(theRange, "Making offset faces", aLF.Extent());
   aItLF.Initialize(aLF);
   for (; aItLF.More(); aItLF.Next(), aPS.Next())
@@ -6617,6 +6715,25 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
           if (LE.Extent() == LA.Extent() || offsetsMeetAt(V2, myAnalyse, myFaceOffset, myOffset))
           {
             ShapeTgt.Bind(V2, OV2);
+          }
+        }
+        if (const TopoDS_Shape* pTwin = aTwins.Seek(Cur))
+        {
+          // the other long edge of a face with no offset: this image
+          const TopoDS_Edge& aTwin = TopoDS::Edge(*pTwin);
+          if (!ShapeTgt.IsBound(aTwin) && !myAnalyse.HasGenerated(aTwin))
+          {
+            ShapeTgt.Bind(aTwin, OTE);
+            TopoDS_Vertex aTV1, aTV2;
+            TopExp::Vertices(aTwin, aTV1, aTV2);
+            if (!ShapeTgt.IsBound(aTV1))
+            {
+              ShapeTgt.Bind(aTV1, OV1);
+            }
+            if (!ShapeTgt.IsBound(aTV2))
+            {
+              ShapeTgt.Bind(aTV2, OV2);
+            }
           }
         }
       }
