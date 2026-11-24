@@ -5544,10 +5544,17 @@ void BRepOffset_MakeOffset::MakeThickSolidAsGiven(const Message_ProgressRange& t
       }
       // (From fix level 5 a solid that opens nowhere is an answer too: the
       // walls closed over the whole of a removed face narrower than twice
-      // the thickness, the part hollow with no way in.)
+      // the thickness, the part hollow with no way in. And one as heavy as
+      // twice a skin: where the part is thinner than twice the thickness
+      // the walls of its two sides fill it, and it stays solid there, up to
+      // twice a wall thick -- the cup of a wall 1.9 thick, its floor or its
+      // bottom removed 1.2 inward, is the cup whole but for a pocket, 2513.7533
+      // and 2527.0493 of 2824.2918, where half the thickness times the area
+      // is less. What is through a wall is refused after this, as any answer.)
       isMade = theMO.myDone && IsSoundSolid(theMO.myOffsetShape)
                && (BRepOffset_FixLevel() >= 5 || !OpensNowhere(theMO.myOffsetShape, aRemoved))
-               && IsNoHeavierThanASkin(theMO.myOffsetShape, anOffset);
+               && IsNoHeavierThanASkin(theMO.myOffsetShape,
+                                       BRepOffset_FixLevel() >= 5 ? 2. * anOffset : anOffset);
       if (isMade && aWay == 1)
       {
         theMO.JoinEdgePieces();
