@@ -23,7 +23,10 @@ enum XCAFDimTolObjects_DatumTargetType
   XCAFDimTolObjects_DatumTargetType_Line,
   XCAFDimTolObjects_DatumTargetType_Rectangle,
   XCAFDimTolObjects_DatumTargetType_Circle,
-  XCAFDimTolObjects_DatumTargetType_Area
+  XCAFDimTolObjects_DatumTargetType_Area,
+  //! A circle that is a curve, not an area (AP242's 'circular curve': NIST FTC-06): its
+  //! diameter and axis as a circle's
+  XCAFDimTolObjects_DatumTargetType_CircularCurve
 };
 
 #endif // _XCAFDimTolObjects_DatumTargetType_HeaderFile

@@ -876,7 +876,8 @@ bool XCAFDoc_DimTolTool::GetPresentedWith(const TDF_Label& theGDTL, TDF_Label& t
 
 void XCAFDoc_DimTolTool::SetPlaceholder(const TDF_Label&               theGDTL,
                                         const TCollection_AsciiString& theKind,
-                                        const TCollection_AsciiString& theName)
+                                        const TCollection_AsciiString& theName,
+                                        const bool                     theShared)
 {
   if (theGDTL.IsNull())
   {
@@ -887,10 +888,10 @@ void XCAFDoc_DimTolTool::SetPlaceholder(const TDF_Label&               theGDTL,
     theGDTL.ForgetAttribute(XCAFDoc::GDTPlaceholderGUID());
     return;
   }
-  // One string: the kind, a line feed, the name
+  // One string: the kind, a line feed, the name; and a line feed more when it is shared
   TDataStd_AsciiString::Set(theGDTL,
                             XCAFDoc::GDTPlaceholderGUID(),
-                            theKind + "\n" + theName);
+                            theKind + "\n" + theName + (theShared ? "\n" : ""));
 }
 
 //=================================================================================================
@@ -899,6 +900,18 @@ bool XCAFDoc_DimTolTool::GetPlaceholder(const TDF_Label&         theGDTL,
                                         TCollection_AsciiString& theKind,
                                         TCollection_AsciiString& theName)
 {
+  bool isShared = false;
+  return GetPlaceholder(theGDTL, theKind, theName, isShared);
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetPlaceholder(const TDF_Label&         theGDTL,
+                                        TCollection_AsciiString& theKind,
+                                        TCollection_AsciiString& theName,
+                                        bool&                    theShared)
+{
+  theShared = false;
   occ::handle<TDataStd_AsciiString> aKind;
   if (theGDTL.IsNull() || !theGDTL.FindAttribute(XCAFDoc::GDTPlaceholderGUID(), aKind))
   {
@@ -911,6 +924,11 @@ bool XCAFDoc_DimTolTool::GetPlaceholder(const TDF_Label&         theGDTL,
   {
     theName = theKind.SubString(aBreak + 1, theKind.Length());
     theKind = aBreak > 1 ? theKind.SubString(1, aBreak - 1) : TCollection_AsciiString();
+    if (!theName.IsEmpty() && theName.Value(theName.Length()) == '\n')
+    {
+      theShared = true;
+      theName.Trunc(theName.Length() - 1);
+    }
   }
   return !theKind.IsEmpty();
 }

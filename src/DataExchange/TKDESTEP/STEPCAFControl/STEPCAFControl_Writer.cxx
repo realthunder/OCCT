@@ -303,6 +303,11 @@ public:
     NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> Geometry;
   };
   NCollection_Sequence<Link> Links;
+  //! The placeholders written, by kind, name and where they are: two PMI with one (NIST
+  //! STC-06's hole callout, of its diameter and its depth) are linked to it both, not given
+  //! one each. Its callout first, then the placeholder
+  NCollection_DataMap<TCollection_AsciiString, NCollection_Array1<occ::handle<Standard_Transient>>>
+    Placeholders;
 };
 
 //! theModel is the writer's myGDTPresentationDM, made in Init() and nowhere else
@@ -3379,8 +3384,9 @@ static void writePlaceholder(
                              const StepData_Factors&                        theLocalFactors)
 {
   TCollection_AsciiString aKind, aName;
+  bool                    isShared = false;
   if (theLabel.IsNull() || theDefinition.IsNull() || theDM.IsNull()
-      || !XCAFDoc_DimTolTool::GetPlaceholder(theLabel, aKind, aName))
+      || !XCAFDoc_DimTolTool::GetPlaceholder(theLabel, aKind, aName, isShared))
   {
     return;
   }
@@ -3393,6 +3399,35 @@ static void writePlaceholder(
   // Where its text is: the PMI's plane, at its text
   gp_Ax2 aPlace = theHasPlane ? thePlane : gp_Ax2();
   aPlace.SetLocation(theTextPosition);
+  // Another's, written already of this kind and name, there: this PMI's too
+  char aWhere[128];
+  std::snprintf(aWhere,
+                sizeof(aWhere),
+                "\n%.6g %.6g %.6g",
+                theTextPosition.X(),
+                theTextPosition.Y(),
+                theTextPosition.Z());
+  const TCollection_AsciiString aKey = aKind + "\n" + aName + aWhere;
+  const NCollection_Array1<occ::handle<Standard_Transient>>* aWritten =
+    isShared ? gdtState(theDM).Placeholders.Seek(aKey) : nullptr;
+  if (aWritten != nullptr)
+  {
+    occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anItems =
+      new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
+    anItems->SetValue(1, occ::down_cast<StepRepr_RepresentationItem>(aWritten->Value(1)));
+    StepAP242_ItemIdentifiedRepresentationUsageDefinition aDefinition;
+    aDefinition.SetValue(theDefinition);
+    occ::handle<StepAP242_DraughtingModelItemAssociationWithPlaceholder> aLink =
+      new StepAP242_DraughtingModelItemAssociationWithPlaceholder();
+    aLink->Init(new TCollection_HAsciiString(TCollection_AsciiString("PPH - ") + aName),
+                new TCollection_HAsciiString(),
+                aDefinition,
+                theDM,
+                anItems);
+    aLink->SetAnnotationPlaceholder(aWritten->Value(2));
+    aModel->AddWithRefs(aLink);
+    return;
+  }
   GeomToStep_MakeAxis2Placement3d               anAxisMaker(aPlace, theLocalFactors);
   const occ::handle<StepGeom_Axis2Placement3d>& anAxis = anAxisMaker.Value();
   anAxis->SetName(new TCollection_HAsciiString(TCollection_AsciiString("PPH - ") + aName));
@@ -3457,6 +3492,13 @@ static void writePlaceholder(
               anItems);
   aLink->SetAnnotationPlaceholder(aPlaceholder);
   aModel->AddWithRefs(aLink);
+  NCollection_Array1<occ::handle<Standard_Transient>> aThis(1, 2);
+  aThis.SetValue(1, aCallout);
+  aThis.SetValue(2, aPlaceholder);
+  if (!gdtState(theDM).Placeholders.IsBound(aKey))
+  {
+    gdtState(theDM).Placeholders.Bind(aKey, aThis);
+  }
   // A placeholder and its association are of AP242's second edition: the file says so (one
   // identified as the first edition and holding them is told off by SFA)
   setEdition2(aModel);
@@ -3855,6 +3897,8 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
       aDefinition.SetValue(aDT);
       anAreaGISU->SetDefinition(aDefinition);
       aModel->ReplaceEntity(aGISUNum, anAreaGISU);
+      // The target it is: related to its datum below (it was not, and the area was lost)
+      aDatumTarget = aDT;
     }
     else
     {
@@ -3911,7 +3955,8 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
             anItems->SetValue(2, aTargetValue);
             aModel->AddWithRefs(aTargetValue);
           }
-          else if (aDatumType == XCAFDimTolObjects_DatumTargetType_Circle)
+          else if (aDatumType == XCAFDimTolObjects_DatumTargetType_Circle
+                   || aDatumType == XCAFDimTolObjects_DatumTargetType_CircularCurve)
           {
             anItems = new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 2);
             aTargetValueName = new TCollection_HAsciiString("target diameter");
@@ -5832,7 +5877,11 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     // targets are of, whatever part they are on
     occ::handle<Standard_Transient> aWrittenDatum;
     bool                            isFirstDT = !aDatumMap.Find(aDatumKey, aWrittenDatum);
-    if (isFirstDT && !aPart.IsEmpty() && aOfNoPart.Contains(aDatumName))
+    // A target is of its letter's datum on its own part, else of its letter's datum wherever
+    // it is: a datum's targets may be on faces written as a part of their own (NIST FTC-10's K,
+    // its feature on the solid, its areas on surfaces beside it)
+    if (isFirstDT && !aPart.IsEmpty()
+        && (aOfNoPart.Contains(aDatumName) || anObject->IsDatumTarget()))
     {
       isFirstDT = !aDatumMap.Find(aDatumName, aWrittenDatum);
     }
@@ -6343,6 +6392,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     }
   }
   aState.Links.Clear();
+  aState.Placeholders.Clear();
   // Write Draughting model for Annotation Planes
   if (myGDTAnnotations.Length() > 0)
   {

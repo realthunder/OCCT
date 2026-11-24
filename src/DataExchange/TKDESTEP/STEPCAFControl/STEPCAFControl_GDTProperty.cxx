@@ -847,6 +847,11 @@ bool STEPCAFControl_GDTProperty::GetDatumTargetType(
     theType = XCAFDimTolObjects_DatumTargetType_Circle;
     return true;
   }
+  else if (aName.IsEqual("circular curve"))
+  {
+    theType = XCAFDimTolObjects_DatumTargetType_CircularCurve;
+    return true;
+  }
   else if (aName.IsEqual("rectangle"))
   {
     theType = XCAFDimTolObjects_DatumTargetType_Rectangle;
@@ -1254,6 +1259,9 @@ occ::handle<TCollection_HAsciiString> STEPCAFControl_GDTProperty::GetDatumTarget
       break;
     case XCAFDimTolObjects_DatumTargetType_Area:
       aName = new TCollection_HAsciiString("area");
+      break;
+    case XCAFDimTolObjects_DatumTargetType_CircularCurve:
+      aName = new TCollection_HAsciiString("circular curve");
       break;
     default:
       aName = new TCollection_HAsciiString();
