@@ -121,6 +121,13 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <TopoDSToStep_MakeGeometricCurveSet.hxx>
 #include <StepShape_GeometricCurveSet.hxx>
+#include <StepVisual_SurfaceStyleBoundary.hxx>
+#include <StepVisual_SurfaceSideStyle.hxx>
+#include <StepVisual_SurfaceStyleUsage.hxx>
+#include <StepVisual_CurveStyle.hxx>
+#include <StepVisual_PresentationStyleAssignment.hxx>
+#include <StepVisual_StyledItem.hxx>
+#include <StepShape_GeometricSet.hxx>
 #include <STEPConstruct_RenderingProperties.hxx>
 #include <Quantity_Color.hxx>
 #include <StepVisual_Colour.hxx>
@@ -5891,6 +5898,25 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
         break;
       }
     }
+    // A tessellated part (NIST FTC-08 -e4-tg) has no item for its faces: its shapes' own
+    for (TopoDS_Iterator anIter(aPart); anIter.More() && aPDS.IsNull(); anIter.Next())
+    {
+      TopLoc_Location                                       aLoc;
+      NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+      if (FindEntities(aFP, anIter.Value(), aLoc, aSeqRI) > 0)
+      {
+        aPDS = FindPDS(theGraph, aSeqRI.First(), aRC);
+      }
+    }
+    if (aPDS.IsNull())
+    {
+      TopLoc_Location                                       aLoc;
+      NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+      if (FindEntities(aFP, aPart, aLoc, aSeqRI) > 0)
+      {
+        aPDS = FindPDS(theGraph, aSeqRI.First(), aRC);
+      }
+    }
     occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
     for (Interface_EntityIterator anIter = aPDS.IsNull() ? Interface_EntityIterator()
                                                          : theGraph.Sharings(aPDS);
@@ -6006,15 +6032,69 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       Quantity_Color aColor;
       if (XCAFDoc_DimTolTool::GetSupplementalColor(anItemIter.Value(), aColor))
       {
-        // A surface's both: its fill and its curves (NIST's planes); else its curves
+        // As NIST's: one style each. A surface's is its fill and its boundary in the curve's
+        // colour (OCCT cannot write the parameter lines NIST's have too) (SFA reads the one style of an assignment, and stops at
+        // two: "Error getting color"); a curve set's, its curves' -- and each of its curves
+        // and points is drawn so, where SFA takes the colour from
         occ::handle<StepVisual_Colour> aColour = STEPConstruct_Styles::EncodeColor(aColor);
-        const bool isSurface = aKind == "plane" || aKind == "cylinder";
-        aStyles.AddStyle(anItem,
-                         aStyles.MakeColorPSA(anItem,
-                                              isSurface ? aColour : nullptr,
-                                              aColour,
-                                              STEPConstruct_RenderingProperties()),
-                         nullptr);
+        const STEPConstruct_RenderingProperties aProps;
+        occ::handle<StepVisual_PresentationStyleAssignment> aCurvePSA =
+          aStyles.MakeColorPSA(anItem, nullptr, aColour, aProps);
+        occ::handle<StepVisual_PresentationStyleAssignment> aPSA = aCurvePSA;
+        if (aKind == "plane" || aKind == "cylinder")
+        {
+          aPSA = aStyles.MakeColorPSA(anItem, aColour, nullptr, aProps);
+          occ::handle<StepVisual_CurveStyle> aCurve =
+            aCurvePSA.IsNull() || aCurvePSA->NbStyles() < 1
+              ? nullptr
+              : aCurvePSA->StylesValue(1).CurveStyle();
+          occ::handle<StepVisual_SurfaceStyleUsage> aUsage =
+            aPSA.IsNull() || aPSA->NbStyles() < 1 ? nullptr
+                                                  : aPSA->StylesValue(1).SurfaceStyleUsage();
+          occ::handle<StepVisual_SurfaceSideStyle> aSide =
+            aUsage.IsNull() ? nullptr : aUsage->Style();
+          if (!aCurve.IsNull() && !aSide.IsNull() && !aSide->Styles().IsNull())
+          {
+            occ::handle<StepVisual_SurfaceStyleBoundary> aBoundary =
+              new StepVisual_SurfaceStyleBoundary();
+            aBoundary->Init(aCurve);
+            const occ::handle<NCollection_HArray1<StepVisual_SurfaceStyleElementSelect>>& anOld =
+              aSide->Styles();
+            occ::handle<NCollection_HArray1<StepVisual_SurfaceStyleElementSelect>> aNew =
+              new NCollection_HArray1<StepVisual_SurfaceStyleElementSelect>(1,
+                                                                            anOld->Length() + 1);
+            int j = 1;
+            for (int i = anOld->Lower(); i <= anOld->Upper(); ++i)
+            {
+              aNew->SetValue(j++, anOld->Value(i));
+            }
+            StepVisual_SurfaceStyleElementSelect aBoundarySelect;
+            aBoundarySelect.SetValue(aBoundary);
+            aNew->SetValue(j, aBoundarySelect);
+            aSide->SetStyles(aNew);
+          }
+        }
+        auto aStyle = [&aStyles](const occ::handle<StepRepr_RepresentationItem>&           theItem,
+                                 const occ::handle<StepVisual_PresentationStyleAssignment>& thePSA) {
+          if (theItem.IsNull() || thePSA.IsNull())
+          {
+            return;
+          }
+          occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>>
+            aPSAs = new NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>(1,
+                                                                                                1);
+          aPSAs->SetValue(1, thePSA);
+          occ::handle<StepVisual_StyledItem> aStyled = new StepVisual_StyledItem();
+          aStyled->Init(new TCollection_HAsciiString(), aPSAs, theItem);
+          aStyles.AddStyle(aStyled);
+        };
+        aStyle(anItem, aPSA);
+        occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
+        for (int i = 1; !aSet.IsNull() && i <= aSet->NbElements(); ++i)
+        {
+          aStyle(occ::down_cast<StepRepr_RepresentationItem>(aSet->ElementsValue(i).Value()),
+                 aCurvePSA);
+        }
       }
     }
     if (anItems.IsEmpty())
