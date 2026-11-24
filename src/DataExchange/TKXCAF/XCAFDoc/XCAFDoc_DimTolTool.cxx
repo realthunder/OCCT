@@ -18,6 +18,11 @@
 #include <NCollection_Map.hxx>
 #include <TDataStd_AsciiString.hxx>
 #include <TDataStd_Name.hxx>
+#include <TDataStd_RealArray.hxx>
+#include <TDF_ChildIterator.hxx>
+#include <TDF_Reference.hxx>
+#include <TNaming_Builder.hxx>
+#include <TNaming_NamedShape.hxx>
 #include <TDataStd_TreeNode.hxx>
 #include <TDataStd_UAttribute.hxx>
 #include <TDF_Attribute.hxx>
@@ -578,6 +583,209 @@ bool XCAFDoc_DimTolTool::GetRefGeomToleranceLabels(
     theDimTols.Append(aGNode->GetChild(i)->Label());
   }
   return true;
+}
+
+//=================================================================================================
+
+// A group's string: "group", its name, its relationship's name; an item's: its kind, its name
+static TCollection_AsciiString supplementalLine(const TCollection_AsciiString& theText, int theN)
+{
+  // The theN-th line (from 1) of theText; empty past its last
+  int aLine = 1;
+  int aFrom = 1;
+  for (int i = 1; i <= theText.Length() + 1; ++i)
+  {
+    if (i <= theText.Length() && theText.Value(i) != '\n')
+    {
+      continue;
+    }
+    if (aLine == theN)
+    {
+      return i > aFrom ? theText.SubString(aFrom, i - 1) : TCollection_AsciiString();
+    }
+    ++aLine;
+    aFrom = i + 1;
+  }
+  return TCollection_AsciiString();
+}
+
+//=================================================================================================
+
+static bool supplementalText(const TDF_Label& theL, TCollection_AsciiString& theText)
+{
+  occ::handle<TDataStd_AsciiString> aText;
+  if (theL.IsNull() || !theL.FindAttribute(XCAFDoc::SupplementalGeometryGUID(), aText))
+  {
+    return false;
+  }
+  theText = aText->Get();
+  return true;
+}
+
+//=================================================================================================
+
+TDF_Label XCAFDoc_DimTolTool::AddSupplementalGeometry(
+  const TDF_Label&               theShapeL,
+  const TCollection_AsciiString& theName,
+  const TCollection_AsciiString& theRelationName) const
+{
+  if (theShapeL.IsNull())
+  {
+    return TDF_Label();
+  }
+  TDF_Label aGroupL = Label().NewChild();
+  TDataStd_AsciiString::Set(aGroupL,
+                            XCAFDoc::SupplementalGeometryGUID(),
+                            TCollection_AsciiString("group\n") + theName + "\n" + theRelationName);
+  TDF_Reference::Set(aGroupL, theShapeL);
+  return aGroupL;
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::GetSupplementalGeometry(NCollection_Sequence<TDF_Label>& theGroups) const
+{
+  theGroups.Clear();
+  for (TDF_ChildIterator anIter(Label()); anIter.More(); anIter.Next())
+  {
+    TCollection_AsciiString aText;
+    if (supplementalText(anIter.Value(), aText) && supplementalLine(aText, 1) == "group")
+    {
+      theGroups.Append(anIter.Value());
+    }
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetSupplementalGeometry(const TDF_Label&         theGroupL,
+                                                 TDF_Label&               theShapeL,
+                                                 TCollection_AsciiString& theName,
+                                                 TCollection_AsciiString& theRelationName)
+{
+  TCollection_AsciiString aText;
+  if (!supplementalText(theGroupL, aText) || supplementalLine(aText, 1) != "group")
+  {
+    return false;
+  }
+  theName         = supplementalLine(aText, 2);
+  theRelationName = supplementalLine(aText, 3);
+  occ::handle<TDF_Reference> aRef;
+  theShapeL = theGroupL.FindAttribute(TDF_Reference::GetID(), aRef) ? aRef->Get() : TDF_Label();
+  return true;
+}
+
+//=================================================================================================
+
+TDF_Label XCAFDoc_DimTolTool::AddSupplementalItem(const TDF_Label&               theGroupL,
+                                                  const TCollection_AsciiString& theKind,
+                                                  const TCollection_AsciiString& theName,
+                                                  const gp_Ax3&                  thePosition,
+                                                  const double                   theRadius,
+                                                  const TopoDS_Shape&            theShape)
+{
+  TCollection_AsciiString aText;
+  if (!supplementalText(theGroupL, aText) || supplementalLine(aText, 1) != "group"
+      || theKind.IsEmpty() || theKind == "group")
+  {
+    return TDF_Label();
+  }
+  TDF_Label anItemL = theGroupL.NewChild();
+  TDataStd_AsciiString::Set(anItemL, XCAFDoc::SupplementalGeometryGUID(), theKind + "\n" + theName);
+  // Its position: location, main direction, X direction; and a radius
+  occ::handle<TDataStd_RealArray> aPos = TDataStd_RealArray::Set(anItemL, 1, 10);
+  const gp_Pnt&                   aLoc = thePosition.Location();
+  const gp_Dir&                   aDir = thePosition.Direction();
+  const gp_Dir&                   anX  = thePosition.XDirection();
+  const double aValues[10] = {aLoc.X(), aLoc.Y(), aLoc.Z(), aDir.X(), aDir.Y(), aDir.Z(),
+                              anX.X(),  anX.Y(),  anX.Z(),  theRadius};
+  for (int i = 0; i < 10; ++i)
+  {
+    aPos->SetValue(i + 1, aValues[i]);
+  }
+  if (!theShape.IsNull())
+  {
+    TNaming_Builder aBuilder(anItemL);
+    aBuilder.Generated(theShape);
+  }
+  return anItemL;
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::GetSupplementalItems(const TDF_Label&                 theGroupL,
+                                              NCollection_Sequence<TDF_Label>& theItems)
+{
+  theItems.Clear();
+  if (theGroupL.IsNull())
+  {
+    return;
+  }
+  for (TDF_ChildIterator anIter(theGroupL); anIter.More(); anIter.Next())
+  {
+    if (IsSupplementalItem(anIter.Value()))
+    {
+      theItems.Append(anIter.Value());
+    }
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetSupplementalItem(const TDF_Label&         theItemL,
+                                             TCollection_AsciiString& theKind,
+                                             TCollection_AsciiString& theName,
+                                             gp_Ax3&                  thePosition,
+                                             double&                  theRadius,
+                                             TopoDS_Shape&            theShape)
+{
+  if (!IsSupplementalItem(theItemL))
+  {
+    return false;
+  }
+  TCollection_AsciiString aText;
+  supplementalText(theItemL, aText);
+  theKind   = supplementalLine(aText, 1);
+  theName   = supplementalLine(aText, 2);
+  theRadius = 0.0;
+  theShape.Nullify();
+  thePosition = gp_Ax3();
+  occ::handle<TDataStd_RealArray> aPos;
+  if (theItemL.FindAttribute(TDataStd_RealArray::GetID(), aPos) && aPos->Length() >= 10)
+  {
+    const int i = aPos->Lower();
+    try
+    {
+      thePosition = gp_Ax3(gp_Pnt(aPos->Value(i), aPos->Value(i + 1), aPos->Value(i + 2)),
+                           gp_Dir(aPos->Value(i + 3), aPos->Value(i + 4), aPos->Value(i + 5)),
+                           gp_Dir(aPos->Value(i + 6), aPos->Value(i + 7), aPos->Value(i + 8)));
+    }
+    catch (const Standard_Failure&)
+    {
+      // Directions that are no axis system: the default one
+    }
+    theRadius = aPos->Value(i + 9);
+  }
+  occ::handle<TNaming_NamedShape> aNS;
+  if (theItemL.FindAttribute(TNaming_NamedShape::GetID(), aNS))
+  {
+    theShape = aNS->Get();
+  }
+  return true;
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::IsSupplementalItem(const TDF_Label& theItemL)
+{
+  TCollection_AsciiString aText;
+  if (!supplementalText(theItemL, aText) || supplementalLine(aText, 1) == "group")
+  {
+    return false;
+  }
+  TCollection_AsciiString aGroupText;
+  return supplementalText(theItemL.Father(), aGroupText)
+         && supplementalLine(aGroupText, 1) == "group";
 }
 
 //=================================================================================================

@@ -160,6 +160,22 @@ const Standard_GUID& XCAFDoc::GDTPlaceholderGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::SupplementalGeometryGUID()
+{
+  static const Standard_GUID ID("5b8e2c41-9a7d-4f36-b0e2-3d61c8a94f17");
+  return ID;
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc::ProductRepresentationsGUID()
+{
+  static const Standard_GUID ID("e2a76f05-14c8-4d9b-8f3a-07b5d2e6c9a1");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");

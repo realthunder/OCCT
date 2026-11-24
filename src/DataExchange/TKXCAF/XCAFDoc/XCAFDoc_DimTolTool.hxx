@@ -27,6 +27,7 @@
 #include <NCollection_Array1.hxx>
 #include <NCollection_HArray1.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Ax3.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 
 class XCAFDoc_ShapeTool;
@@ -271,6 +272,52 @@ public:
                                              TCollection_AsciiString& theKind,
                                              TCollection_AsciiString& theName,
                                              bool&                    theShared);
+
+  //! Adds a group of supplemental geometry of the part theShapeL (STEP AP242: a
+  //! CONSTRUCTIVE_GEOMETRY_REPRESENTATION related to the part's shape representation):
+  //! reference and construction geometry beside the part's shape -- planes, cylinders, axis
+  //! systems, sets of curves -- that defines nothing of it, though GD&T may be on its curves
+  //! (NIST CTC-04: a cosmetic thread). theName is the representation's name, theRelationName
+  //! its relationship's. Its items are added with AddSupplementalItem.
+  Standard_EXPORT TDF_Label AddSupplementalGeometry(
+    const TDF_Label&               theShapeL,
+    const TCollection_AsciiString& theName,
+    const TCollection_AsciiString& theRelationName) const;
+
+  //! The groups of supplemental geometry, in the order they were added.
+  Standard_EXPORT void GetSupplementalGeometry(NCollection_Sequence<TDF_Label>& theGroups) const;
+
+  //! The part, name and relationship name of the group theGroupL; false when it is none.
+  Standard_EXPORT static bool GetSupplementalGeometry(const TDF_Label&         theGroupL,
+                                                      TDF_Label&               theShapeL,
+                                                      TCollection_AsciiString& theName,
+                                                      TCollection_AsciiString& theRelationName);
+
+  //! Adds an item to the group theGroupL. theKind is "plane", "cylinder" (thePosition its
+  //! axis, theRadius its radius), "axes" (an axis system, thePosition) or "curves" (a set of
+  //! curves and points, theShape; a shape GD&T is on). Returns its label, a null one when
+  //! theGroupL is no group.
+  Standard_EXPORT static TDF_Label AddSupplementalItem(const TDF_Label&               theGroupL,
+                                                       const TCollection_AsciiString& theKind,
+                                                       const TCollection_AsciiString& theName,
+                                                       const gp_Ax3&       thePosition,
+                                                       const double        theRadius,
+                                                       const TopoDS_Shape& theShape);
+
+  //! The items of the group theGroupL, in the order they were added.
+  Standard_EXPORT static void GetSupplementalItems(const TDF_Label&                 theGroupL,
+                                                   NCollection_Sequence<TDF_Label>& theItems);
+
+  //! The kind, name, position, radius and shape of the item theItemL; false when it is none.
+  Standard_EXPORT static bool GetSupplementalItem(const TDF_Label&         theItemL,
+                                                  TCollection_AsciiString& theKind,
+                                                  TCollection_AsciiString& theName,
+                                                  gp_Ax3&                  thePosition,
+                                                  double&                  theRadius,
+                                                  TopoDS_Shape&            theShape);
+
+  //! Whether theItemL is an item of supplemental geometry: GD&T on its curves refers to it.
+  Standard_EXPORT static bool IsSupplementalItem(const TDF_Label& theItemL);
 
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,
