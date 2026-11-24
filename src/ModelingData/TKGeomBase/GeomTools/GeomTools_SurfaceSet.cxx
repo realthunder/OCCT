@@ -856,7 +856,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, gp_Dir& D)
   GeomTools::GetReal(IS, X);
   GeomTools::GetReal(IS, Y);
   GeomTools::GetReal(IS, Z);
-  D.SetCoord(X, Y, Z);
+  D = GeomTools::DirAsWritten(X, Y, Z);
   return IS;
 }
 
@@ -867,12 +867,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, gp_Ax3& A3)
   gp_Pnt P(0., 0., 0.);
   gp_Dir A(gp_Dir::D::X), AX(gp_Dir::D::X), AY(gp_Dir::D::X);
   IS >> P >> A >> AX >> AY;
-  gp_Ax3 ax3(P, A, AX);
-  if (AY.DotCross(A, AX) < 0)
-  {
-    ax3.YReverse();
-  }
-  A3 = ax3;
+  A3 = GeomTools::Ax3AsWritten(P, A, AX, AY);
   return IS;
 }
 

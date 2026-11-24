@@ -512,6 +512,38 @@ void BRepOffset_Inter3d::FaceInter(const TopoDS_Face&    F1,
 
 //=================================================================================================
 
+void BRepOffset_Inter3d::ContextInter(const TopoDS_Face& theContextFace,
+                                      const TopoDS_Face& theOffsetFace)
+{
+  if (IsDone(theContextFace, theOffsetFace))
+  {
+    return;
+  }
+  TopoDS_Face aBig;
+  BRepOffset_Tool::EnLargeFace(theContextFace, aBig, false);
+  NCollection_List<TopoDS_Shape> aLInt1, aLInt2;
+  TopoDS_Edge                    aNullEdge;
+  TopoDS_Face                    aNullFace;
+  BRepOffset_Tool::Inter3D(aBig, theOffsetFace, aLInt1, aLInt2, mySide, aNullEdge, aNullFace, aNullFace);
+  BRep_Builder aBB;
+  for (NCollection_List<TopoDS_Shape>::Iterator it(aLInt1); it.More(); it.Next())
+  {
+    const TopoDS_Edge& anE = TopoDS::Edge(it.Value());
+    double             aF, aL;
+    if (BRep_Tool::CurveOnSurface(anE, theContextFace, aF, aL).IsNull())
+    {
+      const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(anE, aBig, aF, aL);
+      if (!aC2d.IsNull())
+      {
+        aBB.UpdateEdge(anE, aC2d, theContextFace, BRep_Tool::Tolerance(anE));
+      }
+    }
+  }
+  Store(theContextFace, theOffsetFace, aLInt1, aLInt2);
+}
+
+//=================================================================================================
+
 void BRepOffset_Inter3d::ConnexIntByArc(const NCollection_List<TopoDS_Shape>& /*SetOfFaces*/,
                                         const TopoDS_Shape&          ShapeInit,
                                         const BRepOffset_Analyse&    Analyse,

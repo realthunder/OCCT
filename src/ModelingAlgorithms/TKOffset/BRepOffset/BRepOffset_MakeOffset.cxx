@@ -63,6 +63,7 @@
 #include <NCollection_DataMap.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <BRepOffset.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepOffset_Inter2d.hxx>
 #include <BRepOffset_Inter3d.hxx>
 #include <BRepOffset_MakeOffset.hxx>
@@ -88,6 +89,8 @@
 #include <Geom_Plane.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_SphericalSurface.hxx>
+#include <Geom_ToroidalSurface.hxx>
+#include <Geom_CylindricalSurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Geom_OffsetCurve.hxx>
 #include <NCollection_Array1.hxx>
@@ -4738,6 +4741,9 @@ static bool HasVertexInAWall(
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
     aVE;
   TopExp::MapShapesAndAncestors(theResult, TopAbs_VERTEX, TopAbs_EDGE, aVE);
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+    aGivenEF;
+  TopExp::MapShapesAndAncestors(theGiven, TopAbs_EDGE, TopAbs_FACE, aGivenEF);
   occ::handle<IntTools_Context> aCtx = new IntTools_Context();
   for (int i = 1; i <= aVertices.Extent(); ++i)
   {
@@ -4800,10 +4806,45 @@ static bool HasVertexInAWall(
     {
       continue;
     }
+    // On a removed face's surface, the vertex is in no wall of a face beside
+    // that removed face: such a wall ends there, cut off by the surface, and
+    // its end is the solid's boundary -- up to where the offset of a face
+    // further off cuts it (the cup's floor removed by more than half its
+    // wall: the rim on the floor's plane ends on the outer side's offset,
+    // within the inner side's wall).
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aEndingHere;
+    for (size_t aR = 0; aR < aRims.size(); ++aR)
+    {
+      try
+      {
+        GeomAPI_ProjectPointOnSurf& aProj = *aRims[aR];
+        aProj.Perform(aP);
+        if (!(aProj.NbPoints() > 0 && aProj.LowerDistance() < aRimTol))
+        {
+          continue;
+        }
+      }
+      catch (Standard_Failure const&)
+      {
+        continue;
+      }
+      for (TopExp_Explorer anExpE(aRimFaces[aR], TopAbs_EDGE); anExpE.More(); anExpE.Next())
+      {
+        const NCollection_List<TopoDS_Shape>* aLF = aGivenEF.Seek(anExpE.Current());
+        if (!aLF)
+        {
+          continue;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(*aLF); itF.More(); itF.Next())
+        {
+          aEndingHere.Add(itF.Value());
+        }
+      }
+    }
     for (NCollection_List<Wall>::Iterator it(aWalls); it.More(); it.Next())
     {
       const Wall& aW = it.Value();
-      if (aW.Box.IsOut(aP))
+      if (aW.Box.IsOut(aP) || aEndingHere.Contains(aW.Face))
       {
         continue;
       }
@@ -6573,6 +6614,102 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
   //
   BRepLib::SortFaces(myFaceComp, aLF);
   //
+  // A face whose offset is no surface but a curve -- a fillet offset inward
+  // by its radius -- has no offset face, and its two long edges have one
+  // image between them: the faces either side of it meet there. Each built
+  // that image for itself, and nothing joined the two. From fix level 5 the
+  // one made first is the other's too (aTwins: each of the two edges to the
+  // other). Only where the two run alike: the same range, and at a
+  // parameter the same point once moved.
+  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> aTwins;
+  if (BRepOffset_FixLevel() >= 5)
+  {
+    for (aItLF.Initialize(aLF); aItLF.More(); aItLF.Next())
+    {
+      const TopoDS_Face& aF = TopoDS::Face(aItLF.Value());
+      double             anOff = myFaceOffset.IsBound(aF) ? myFaceOffset(aF) : myOffset;
+      if (aF.Orientation() == TopAbs_REVERSED)
+      {
+        anOff = -anOff;
+      }
+      TopLoc_Location           aLoc;
+      occ::handle<Geom_Surface> aS = BRep_Tool::Surface(aF, aLoc);
+      if (aS.IsNull())
+      {
+        continue;
+      }
+      if (occ::handle<Geom_RectangularTrimmedSurface> aRT =
+            occ::down_cast<Geom_RectangularTrimmedSurface>(aS))
+      {
+        aS = aRT->BasisSurface();
+      }
+      if (!aS->IsKind(STANDARD_TYPE(Geom_ToroidalSurface))
+          && !aS->IsKind(STANDARD_TYPE(Geom_CylindricalSurface)))
+      {
+        continue;
+      }
+      BRepOffset_Status aStatus = BRepOffset_Good;
+      BRepOffset::Surface(aS, anOff, aStatus);
+      if (aStatus != BRepOffset_Degenerated)
+      {
+        continue;
+      }
+      TopoDS_Edge                                            aLong[2];
+      int                                                    aNbLong = 0;
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+      for (TopExp_Explorer anExp(aF, TopAbs_EDGE); anExp.More(); anExp.Next())
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(anExp.Current());
+        if (!aSeen.Add(anE) || BRep_Tool::Degenerated(anE) || BRepTools::IsReallyClosed(anE, aF))
+        {
+          continue;
+        }
+        if (aNbLong < 2)
+        {
+          aLong[aNbLong] = anE;
+        }
+        ++aNbLong;
+      }
+      if (aNbLong != 2 || aTwins.IsBound(aLong[0]) || aTwins.IsBound(aLong[1]))
+      {
+        continue;
+      }
+      double                          aF1, aL1, aF2, aL2;
+      const occ::handle<Geom2d_Curve> aC1 = BRep_Tool::CurveOnSurface(aLong[0], aF, aF1, aL1);
+      const occ::handle<Geom2d_Curve> aC2 = BRep_Tool::CurveOnSurface(aLong[1], aF, aF2, aL2);
+      if (aC1.IsNull() || aC2.IsNull() || std::abs(aF1 - aF2) > Precision::PConfusion()
+          || std::abs(aL1 - aL2) > Precision::PConfusion())
+      {
+        continue;
+      }
+      bool areAlike = true;
+      for (int k = 0; k <= 4 && areAlike; ++k)
+      {
+        const double u = aF1 + (aL1 - aF1) * k / 4.;
+        gp_Pnt       aP[2];
+        for (int j = 0; j < 2 && areAlike; ++j)
+        {
+          const gp_Pnt2d aUV = (j == 0 ? aC1 : aC2)->Value(u);
+          gp_Vec         aD1U, aD1V;
+          aS->D1(aUV.X(), aUV.Y(), aP[j], aD1U, aD1V);
+          gp_Vec aN = aD1U.Crossed(aD1V);
+          if (aN.Magnitude() < gp::Resolution())
+          {
+            areAlike = false;
+            break;
+          }
+          aP[j].Translate(aN.Normalized() * anOff);
+        }
+        areAlike = areAlike && aP[0].Distance(aP[1]) <= 10. * Precision::Confusion();
+      }
+      if (areAlike)
+      {
+        aTwins.Bind(aLong[0], aLong[1]);
+        aTwins.Bind(aLong[1], aLong[0]);
+      }
+    }
+  }
+  //
   Message_ProgressScope aPS(theRange, "Making offset faces", aLF.Extent());
   aItLF.Initialize(aLF);
   for (; aItLF.More(); aItLF.Next(), aPS.Next())
@@ -6617,6 +6754,25 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
           if (LE.Extent() == LA.Extent() || offsetsMeetAt(V2, myAnalyse, myFaceOffset, myOffset))
           {
             ShapeTgt.Bind(V2, OV2);
+          }
+        }
+        if (const TopoDS_Shape* pTwin = aTwins.Seek(Cur))
+        {
+          // the other long edge of a face with no offset: this image
+          const TopoDS_Edge& aTwin = TopoDS::Edge(*pTwin);
+          if (!ShapeTgt.IsBound(aTwin) && !myAnalyse.HasGenerated(aTwin))
+          {
+            ShapeTgt.Bind(aTwin, OTE);
+            TopoDS_Vertex aTV1, aTV2;
+            TopExp::Vertices(aTwin, aTV1, aTV2);
+            if (!ShapeTgt.IsBound(aTV1))
+            {
+              ShapeTgt.Bind(aTV1, OV1);
+            }
+            if (!ShapeTgt.IsBound(aTV2))
+            {
+              ShapeTgt.Bind(aTV2, OV2);
+            }
           }
         }
       }
@@ -10782,6 +10938,157 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
     {
       myError = BRepOffset_UserBreak;
       return;
+    }
+    // With every pair of offset faces intersected, a removed face too is
+    // cut by the offsets of the faces that are no neighbours of it. Where
+    // two walls are nearer than twice the thickness and their offsets pass
+    // each other without meeting, the wall beside the removed face, cut off
+    // flush by its surface, ends on the offset of the wall beyond: the rim
+    // on the removed face reaches from the face's edge to that section, and
+    // the section with the neighbour's own offset, further out and within
+    // the other wall, bounds nothing. A cup turned of a wall 1.9 thick, its
+    // floor removed 1 inward: the rim on the floor's plane is the ring from
+    // the floor's edge (10.5) to the outer side's offset (11.406), the
+    // inner side's offset (11.521) buried in the outer wall. Refused before
+    // (sec 93, not solved: the floor). From fix level 5.
+    //  - a section with a face further off is kept where it lies within the
+    //    wall of a neighbour of the removed face: there it cuts that wall's
+    //    end off. Elsewhere it is in the void and cuts nothing.
+    //  - with such a section kept, a section with a neighbour's offset that
+    //    lies within the wall of that face further off is left out of the
+    //    removed face's loops.
+    if (BRepOffset_FixLevel() >= 5 && myJoin == GeomAbs_Arc)
+    {
+      // <theE> out of the descendants of <theF>
+      auto aForget = [&](const TopoDS_Shape& theF, const TopoDS_Shape& theE) {
+        NCollection_List<TopoDS_Shape>& aLD = myAsDes->ChangeDescendant(theF);
+        for (NCollection_List<TopoDS_Shape>::Iterator itD(aLD); itD.More();)
+        {
+          if (itD.Value().IsSame(theE))
+          {
+            aLD.Remove(itD);
+          }
+          else
+          {
+            itD.Next();
+          }
+        }
+      };
+      const double aT       = std::abs(myOffset);
+      const double aInAWall = aT - std::max(1.e-3 * aT, 10. * myTol);
+      // whether five points of <theE> are nearer to the face <theF> than the
+      // thickness
+      auto isWithin = [&](const TopoDS_Edge& theE, const TopoDS_Shape& theF) {
+        BRepAdaptor_Curve aBAC(theE);
+        if (Precision::IsInfinite(aBAC.FirstParameter())
+            || Precision::IsInfinite(aBAC.LastParameter()))
+        {
+          return false;
+        }
+        for (int k = 0; k < 5; ++k)
+        {
+          const gp_Pnt aP = aBAC.Value(
+            aBAC.FirstParameter()
+            + (aBAC.LastParameter() - aBAC.FirstParameter()) * (k + 0.5) / 5.);
+          BRepExtrema_DistShapeShape aDSS(BRepBuilderAPI_MakeVertex(aP).Vertex(), theF);
+          if (!(aDSS.IsDone() && aDSS.NbSolution() > 0 && aDSS.Value() < aInAWall))
+          {
+            return false;
+          }
+        }
+        return true;
+      };
+      for (int i = 1; i <= myFaces.Extent(); ++i)
+      {
+        const TopoDS_Face& aCF = TopoDS::Face(myFaces(i));
+        // the removed face's edges and vertices, and the faces across them
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aBeside;
+        NCollection_List<TopoDS_Shape>                         aNeighbours;
+        for (TopExp_Explorer anExpE(aCF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+        {
+          aBeside.Add(anExpE.Current());
+          if (!myAnalyse.HasAncestor(anExpE.Current()))
+          {
+            continue;
+          }
+          for (NCollection_List<TopoDS_Shape>::Iterator itA(myAnalyse.Ancestors(anExpE.Current()));
+               itA.More();
+               itA.Next())
+          {
+            if (aBeside.Add(itA.Value()) && !myFaces.Contains(itA.Value()))
+            {
+              aNeighbours.Append(itA.Value());
+            }
+          }
+        }
+        for (TopExp_Explorer anExpV(aCF, TopAbs_VERTEX); anExpV.More(); anExpV.Next())
+        {
+          aBeside.Add(anExpV.Current());
+        }
+        NCollection_List<TopoDS_Shape>                         aFar;
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFarSections;
+        for (NCollection_List<TopoDS_Shape>::Iterator itOF(OffsetFaces); itOF.More(); itOF.Next())
+        {
+          const TopoDS_Face&  anOF  = TopoDS::Face(itOF.Value());
+          const TopoDS_Shape& aFrom = myInitOffsetFace.ImageFrom(anOF);
+          if (aFrom.ShapeType() != TopAbs_FACE || aBeside.Contains(aFrom))
+          {
+            continue;
+          }
+          const int aNbBefore = NewEdges.Extent();
+          Inter.ContextInter(aCF, anOF);
+          bool isKept = false;
+          for (int k = aNbBefore + 1; k <= NewEdges.Extent(); ++k)
+          {
+            const TopoDS_Edge aSection      = TopoDS::Edge(NewEdges(k));
+            bool              isInNeighbour = false;
+            for (NCollection_List<TopoDS_Shape>::Iterator itN(aNeighbours);
+                 itN.More() && !isInNeighbour;
+                 itN.Next())
+            {
+              isInNeighbour = isWithin(aSection, itN.Value());
+            }
+            aFarSections.Add(aSection);
+            if (isInNeighbour)
+            {
+              isKept = true;
+            }
+            else
+            {
+              aForget(aCF, aSection);
+              aForget(anOF, aSection);
+            }
+          }
+          if (isKept)
+          {
+            aFar.Append(aFrom);
+          }
+        }
+        if (aFar.IsEmpty())
+        {
+          continue;
+        }
+        const NCollection_List<TopoDS_Shape> aSections = myAsDes->Descendant(aCF);
+        for (NCollection_List<TopoDS_Shape>::Iterator itS(aSections); itS.More(); itS.Next())
+        {
+          const TopoDS_Edge& aS = TopoDS::Edge(itS.Value());
+          if (aBeside.Contains(aS) || aFarSections.Contains(aS) || BRep_Tool::Degenerated(aS))
+          {
+            continue;
+          }
+          bool isBuried = false;
+          for (NCollection_List<TopoDS_Shape>::Iterator itF(aFar); itF.More() && !isBuried;
+               itF.Next())
+          {
+            isBuried = isWithin(aS, itF.Value());
+          }
+          if (isBuried)
+          {
+            SHOW_TOPO_SHAPE(aS, "ContextSectionBuried");
+            aForget(aCF, aS);
+          }
+        }
+      }
     }
     if (myJoin == GeomAbs_Intersection)
     {

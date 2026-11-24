@@ -117,6 +117,11 @@ public:
   //! Returns new edges
   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& NewEdges() { return myNewEdges; }
 
+public:
+  //! The section of a removed (context) face, its surface carried on, with
+  //! an offset face that is not of a neighbour of it.
+  Standard_EXPORT void ContextInter(const TopoDS_Face& theContextFace, const TopoDS_Face& theOffsetFace);
+
 private:
   //! Stores the intersection results into AsDes
   Standard_EXPORT void Store(const TopoDS_Face&                    F1,
