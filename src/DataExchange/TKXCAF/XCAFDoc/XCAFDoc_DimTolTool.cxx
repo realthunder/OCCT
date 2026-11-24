@@ -37,6 +37,7 @@
 #include <XCAFDoc_Dimension.hxx>
 #include <XCAFDoc_GeomTolerance.hxx>
 #include <XCAFDoc_Datum.hxx>
+#include <XCAFDoc_Color.hxx>
 #include <XCAFDoc_DimTol.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_GraphNode.hxx>
@@ -771,6 +772,30 @@ bool XCAFDoc_DimTolTool::GetSupplementalItem(const TDF_Label&         theItemL,
   {
     theShape = aNS->Get();
   }
+  return true;
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::SetSupplementalColor(const TDF_Label&      theItemL,
+                                              const Quantity_Color& theColor)
+{
+  if (IsSupplementalItem(theItemL))
+  {
+    XCAFDoc_Color::Set(theItemL, theColor);
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetSupplementalColor(const TDF_Label& theItemL, Quantity_Color& theColor)
+{
+  occ::handle<XCAFDoc_Color> aColor;
+  if (!IsSupplementalItem(theItemL) || !theItemL.FindAttribute(XCAFDoc_Color::GetID(), aColor))
+  {
+    return false;
+  }
+  theColor = aColor->GetColor();
   return true;
 }
 

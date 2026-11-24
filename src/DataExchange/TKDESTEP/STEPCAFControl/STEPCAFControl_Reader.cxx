@@ -162,6 +162,9 @@
 #include <StepShape_ValueFormatTypeQualifier.hxx>
 #include <StepShape_Vertex.hxx>
 #include <StepToGeom.hxx>
+#include <STEPConstruct_RenderingProperties.hxx>
+#include <Quantity_Color.hxx>
+#include <StepVisual_Colour.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentationRelationship.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentation.hxx>
 #include <StepGeom_CylindricalSurface.hxx>
@@ -6556,7 +6559,8 @@ static void readSupplementalGeometry(
   const Interface_Graph&                        aGraph = theWS->Graph();
   const occ::handle<Transfer_TransientProcess>& aTP =
     theWS->TransferReader()->TransientProcess();
-  const int aNb = aModel->NbEntities();
+  STEPConstruct_Styles aStyles(theWS);
+  const int            aNb = aModel->NbEntities();
   for (int i = 1; i <= aNb; i++)
   {
     occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship> aCGRR =
@@ -6634,6 +6638,7 @@ static void readSupplementalGeometry(
         continue;
       }
       const TCollection_AsciiString aName = aNameOf(anItem->Name());
+      TDF_Label                     anItemL;
       try
       {
         OCC_CATCH_SIGNALS
@@ -6643,7 +6648,7 @@ static void readSupplementalGeometry(
             StepToGeom::MakePlane(occ::down_cast<StepGeom_Plane>(anItem), theLocalFactors);
           if (!aPlane.IsNull())
           {
-            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+            anItemL = XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
                                                     "plane",
                                                     aName,
                                                     aPlane->Position(),
@@ -6658,7 +6663,7 @@ static void readSupplementalGeometry(
             theLocalFactors);
           if (!aCyl.IsNull())
           {
-            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+            anItemL = XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
                                                     "cylinder",
                                                     aName,
                                                     aCyl->Position(),
@@ -6673,7 +6678,7 @@ static void readSupplementalGeometry(
             theLocalFactors);
           if (!anAxes.IsNull())
           {
-            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+            anItemL = XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
                                                     "axes",
                                                     aName,
                                                     gp_Ax3(anAxes->Ax2()),
@@ -6690,7 +6695,7 @@ static void readSupplementalGeometry(
             aBinder.IsNull() ? TopoDS_Shape() : TransferBRep::ShapeResult(aTP, aBinder);
           if (!aShape.IsNull())
           {
-            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+            anItemL = XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
                                                     "curves",
                                                     aName,
                                                     gp_Ax3(),
@@ -6702,6 +6707,30 @@ static void readSupplementalGeometry(
       catch (const Standard_Failure&)
       {
         // Geometry that cannot be made: the item is left out
+      }
+      // The colour it is drawn in: its style's curve colour, else its surface's
+      for (Interface_EntityIterator aStyleIter = aGraph.Sharings(anItem);
+           !anItemL.IsNull() && aStyleIter.More();
+           aStyleIter.Next())
+      {
+        occ::handle<StepVisual_StyledItem> aStyled =
+          occ::down_cast<StepVisual_StyledItem>(aStyleIter.Value());
+        if (aStyled.IsNull())
+        {
+          continue;
+        }
+        occ::handle<StepVisual_Colour>    aSurface, aBoundary, aCurve;
+        STEPConstruct_RenderingProperties aProps;
+        bool                              isComponent = false;
+        aStyles.GetColors(aStyled, aSurface, aBoundary, aCurve, aProps, isComponent);
+        const occ::handle<StepVisual_Colour>& aColour =
+          !aCurve.IsNull() ? aCurve : (!aBoundary.IsNull() ? aBoundary : aSurface);
+        Quantity_Color aColor;
+        if (!aColour.IsNull() && STEPConstruct_Styles::DecodeColor(aColour, aColor))
+        {
+          XCAFDoc_DimTolTool::SetSupplementalColor(anItemL, aColor);
+          break;
+        }
       }
     }
   }

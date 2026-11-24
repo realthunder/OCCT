@@ -121,6 +121,9 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <TopoDSToStep_MakeGeometricCurveSet.hxx>
 #include <StepShape_GeometricCurveSet.hxx>
+#include <STEPConstruct_RenderingProperties.hxx>
+#include <Quantity_Color.hxx>
+#include <StepVisual_Colour.hxx>
 #include <Transfer_SimpleBinderOfTransient.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <TopExp_Explorer.hxx>
@@ -5847,6 +5850,9 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
   const occ::handle<Transfer_FinderProcess>&   aFP    = theWS->TransferWriter()->FinderProcess();
   NCollection_Sequence<TDF_Label>              aGroups;
   theDGTTool->GetSupplementalGeometry(aGroups);
+  // The items' colours, styles of a presentation of their own
+  STEPConstruct_Styles                        aStyles(theWS);
+  occ::handle<StepRepr_RepresentationContext> aStyleContext;
   for (NCollection_Sequence<TDF_Label>::Iterator aGroupIter(aGroups); aGroupIter.More();
        aGroupIter.Next())
   {
@@ -5997,6 +6003,19 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       }
       anItem->SetName(new TCollection_HAsciiString(anItemName));
       anItems.Append(anItem);
+      Quantity_Color aColor;
+      if (XCAFDoc_DimTolTool::GetSupplementalColor(anItemIter.Value(), aColor))
+      {
+        // A surface's both: its fill and its curves (NIST's planes); else its curves
+        occ::handle<StepVisual_Colour> aColour = STEPConstruct_Styles::EncodeColor(aColor);
+        const bool isSurface = aKind == "plane" || aKind == "cylinder";
+        aStyles.AddStyle(anItem,
+                         aStyles.MakeColorPSA(anItem,
+                                              isSurface ? aColour : nullptr,
+                                              aColour,
+                                              STEPConstruct_RenderingProperties()),
+                         nullptr);
+      }
     }
     if (anItems.IsEmpty())
     {
@@ -6018,6 +6037,10 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
                 aPartRep,
                 aCGR);
     aModel->AddWithRefs(aCGRR);
+    if (aStyleContext.IsNull())
+    {
+      aStyleContext = aPartRep->ContextOfItems();
+    }
     // GD&T on a set of curves: the set, in this representation
     for (const auto& aSet : aSets)
     {
@@ -6029,6 +6052,15 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
         new Transfer_SimpleBinderOfTransient();
       aBinder->SetResult(aSet.first);
       aFP->Bind(TransferBRep::ShapeMapper(aFP, aSet.second), aBinder);
+    }
+  }
+  if (aStyles.NbStyles() > 0 && !aStyleContext.IsNull())
+  {
+    occ::handle<StepVisual_MechanicalDesignGeometricPresentationRepresentation> aMDGPR;
+    occ::handle<StepData_StepModel> aStepModel = occ::down_cast<StepData_StepModel>(aModel);
+    if (aStyles.CreateMDGPR(aStyleContext, aMDGPR, aStepModel) && !aMDGPR.IsNull())
+    {
+      aModel->AddWithRefs(aMDGPR);
     }
   }
 }
@@ -6872,7 +6904,22 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
         occ::handle<StepData_UndefinedEntity> aView = new StepData_UndefinedEntity();
         aView->SetStepType("MODEL_GEOMETRIC_VIEW");
         occ::handle<Interface_UndefinedContent> aParams = aView->UndefinedContent();
-        aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString("''"));
+        // Named as its view: SFA takes a model_geometric_view of no name for a syntax error
+        // (recommended practice 9.4.2, figure 96), which NIST's own files have
+        TCollection_AsciiString aViewName =
+          aName.IsNull() || aName->IsEmpty() ? TCollection_AsciiString("view") : aName->String();
+        TCollection_AsciiString aQuoted("'");
+        for (int i = 1; i <= aViewName.Length(); ++i)
+        {
+          const char aChar = aViewName.Value(i);
+          if (aChar == '\'' || aChar == '\\')
+          {
+            aQuoted += aChar;
+          }
+          aQuoted += aChar;
+        }
+        aQuoted += "'";
+        aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString(aQuoted));
         aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString("''"));
         aParams->AddEntity(Interface_ParamIdent, aCamera);
         aParams->AddEntity(Interface_ParamIdent, aModelOfView);
