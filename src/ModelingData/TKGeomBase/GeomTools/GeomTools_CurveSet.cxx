@@ -685,7 +685,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, gp_Dir& D)
   GeomTools::GetReal(IS, X);
   GeomTools::GetReal(IS, Y);
   GeomTools::GetReal(IS, Z);
-  D.SetCoord(X, Y, Z);
+  D = GeomTools::DirAsWritten(X, Y, Z);
   return IS;
 }
 
@@ -709,7 +709,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, occ::handle<Geom_Circl
   double R = 0.;
   IS >> P >> A >> AX >> AY;
   GeomTools::GetReal(IS, R);
-  C = new Geom_Circle(gp_Ax2(P, A, AX), R);
+  C = new Geom_Circle(GeomTools::Ax2AsWritten(P, A, AX, AY), R);
   return IS;
 }
 
@@ -723,7 +723,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, occ::handle<Geom_Ellip
   IS >> P >> A >> AX >> AY;
   GeomTools::GetReal(IS, R1);
   GeomTools::GetReal(IS, R2);
-  E = new Geom_Ellipse(gp_Ax2(P, A, AX), R1, R2);
+  E = new Geom_Ellipse(GeomTools::Ax2AsWritten(P, A, AX, AY), R1, R2);
   return IS;
 }
 
@@ -736,7 +736,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, occ::handle<Geom_Parab
   double R1 = 0.;
   IS >> P >> A >> AX >> AY;
   GeomTools::GetReal(IS, R1);
-  C = new Geom_Parabola(gp_Ax2(P, A, AX), R1);
+  C = new Geom_Parabola(GeomTools::Ax2AsWritten(P, A, AX, AY), R1);
   return IS;
 }
 
@@ -750,7 +750,7 @@ static Standard_IStream& operator>>(Standard_IStream& IS, occ::handle<Geom_Hyper
   IS >> P >> A >> AX >> AY;
   GeomTools::GetReal(IS, R1);
   GeomTools::GetReal(IS, R2);
-  H = new Geom_Hyperbola(gp_Ax2(P, A, AX), R1, R2);
+  H = new Geom_Hyperbola(GeomTools::Ax2AsWritten(P, A, AX, AY), R1, R2);
   return IS;
 }
 
