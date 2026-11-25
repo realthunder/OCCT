@@ -393,6 +393,18 @@ public:
                                                 gp_Ax3&                          thePosition,
                                                 NCollection_Sequence<TDF_Label>& theFaces);
 
+  //! Gives the label theL -- a product's shape, a GD&T, a hole or an occurrence of one -- the
+  //! UUID a STEP file identifies it by (AP242 ed4 uuid_attribute: NIST STC-09's
+  //! v5_uuid_attribute), of the type theType ('V5_UUID_ATTRIBUTE'). An empty theUUID removes it.
+  Standard_EXPORT static void SetUUID(const TDF_Label&               theL,
+                                      const TCollection_AsciiString& theType,
+                                      const TCollection_AsciiString& theUUID);
+
+  //! The type and UUID of the label theL; false when it has none.
+  Standard_EXPORT static bool GetUUID(const TDF_Label&         theL,
+                                      TCollection_AsciiString& theType,
+                                      TCollection_AsciiString& theUUID);
+
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,
                                         NCollection_Sequence<TDF_Label>& theDatum) const;

@@ -1034,6 +1034,40 @@ bool XCAFDoc_DimTolTool::GetHoleOccurrence(const TDF_Label&                 theO
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetUUID(const TDF_Label&               theL,
+                                 const TCollection_AsciiString& theType,
+                                 const TCollection_AsciiString& theUUID)
+{
+  if (theL.IsNull())
+  {
+    return;
+  }
+  if (theUUID.IsEmpty())
+  {
+    theL.ForgetAttribute(XCAFDoc::UUIDGUID());
+    return;
+  }
+  TDataStd_AsciiString::Set(theL, XCAFDoc::UUIDGUID(), theType + "\n" + theUUID);
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetUUID(const TDF_Label&         theL,
+                                 TCollection_AsciiString& theType,
+                                 TCollection_AsciiString& theUUID)
+{
+  occ::handle<TDataStd_AsciiString> aText;
+  if (theL.IsNull() || !theL.FindAttribute(XCAFDoc::UUIDGUID(), aText))
+  {
+    return false;
+  }
+  theType = supplementalLine(aText->Get(), 1);
+  theUUID = supplementalLine(aText->Get(), 2);
+  return !theUUID.IsEmpty();
+}
+
+//=================================================================================================
+
 void XCAFDoc_DimTolTool::SetSupplementalColor(const TDF_Label&      theItemL,
                                               const Quantity_Color& theColor)
 {

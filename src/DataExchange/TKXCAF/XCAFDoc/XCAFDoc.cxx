@@ -200,6 +200,14 @@ const Standard_GUID& XCAFDoc::HoleGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::UUIDGUID()
+{
+  static const Standard_GUID ID("6e1c8d42-a95f-4b37-8c20-f1d74b9e3a58");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");

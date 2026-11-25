@@ -104,6 +104,10 @@ public:
   //! occurrence's name)
   Standard_EXPORT static const Standard_GUID& HoleGUID();
 
+  //! Return GUID of the string a label's UUID is kept as (STEP: its uuid_attribute's type
+  //! and identifier)
+  Standard_EXPORT static const Standard_GUID& UUIDGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();

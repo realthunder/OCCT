@@ -348,7 +348,48 @@ public:
     occ::handle<StepRepr_ProductDefinitionShape> PDS;
   };
   NCollection_DataMap<occ::handle<Standard_Transient>, Supplemental> Supplementals;
+  //! The semantic entity each GD&T label was written as (its tolerance, dimension, datum
+  //! feature): what its UUID identifies
+  NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>> Semantics;
 };
+
+//! An entity's UUID (XCAFDoc_DimTolTool::SetUUID): a uuid_attribute of it, of the type the
+//! file it was read from had ('V5_UUID_ATTRIBUTE'), as NIST STC-09 has them
+void writeUUID(const occ::handle<Interface_InterfaceModel>& theModel,
+               const TDF_Label&                             theL,
+               const occ::handle<Standard_Transient>&       theEnt)
+{
+  TCollection_AsciiString aType, aUUID;
+  if (theEnt.IsNull() || !XCAFDoc_DimTolTool::GetUUID(theL, aType, aUUID))
+  {
+    return;
+  }
+  if (aType.IsEmpty())
+  {
+    aType = "V5_UUID_ATTRIBUTE";
+  }
+  aType.UpperCase();
+  TCollection_AsciiString aQuoted("'");
+  for (int i = 1; i <= aUUID.Length(); ++i)
+  {
+    if (aUUID.Value(i) != '\'')
+    {
+      aQuoted += aUUID.Value(i);
+    }
+  }
+  aQuoted += "'";
+  occ::handle<StepData_UndefinedEntity> aList = new StepData_UndefinedEntity(true);
+  aList->UndefinedContent()->AddEntity(Interface_ParamIdent, theEnt);
+  occ::handle<StepData_UndefinedEntity> aSet = new StepData_UndefinedEntity(true);
+  aSet->SetStepType("UUID_SET_ITEM");
+  aSet->UndefinedContent()->AddEntity(Interface_ParamSub, aList);
+  occ::handle<StepData_UndefinedEntity> anAttr = new StepData_UndefinedEntity();
+  anAttr->SetStepType(aType.ToCString());
+  anAttr->UndefinedContent()->AddLiteral(Interface_ParamText,
+                                         new TCollection_HAsciiString(aQuoted));
+  anAttr->UndefinedContent()->AddEntity(Interface_ParamSub, aSet);
+  theModel->AddWithRefs(anAttr);
+}
 
 //! theModel is the writer's myGDTPresentationDM, made in Init() and nowhere else
 GDTPresentationModel& gdtState(const occ::handle<StepVisual_DraughtingModel>& theModel)
@@ -3726,6 +3767,12 @@ void STEPCAFControl_Writer::writePresentation(
   // graphic-only note on nothing, NIST CTC-05's rectangular regions -- the
   // callout is in the draughting model with no association: one to an empty
   // shape aspect a reader (SFA) takes for geometry it cannot find
+  // What its UUID identifies, the first entity it is written as
+  if (!theLabel.IsNull() && !theDimension.IsNull()
+      && !gdtState(myGDTPresentationDM).Semantics.IsBound(theLabel))
+  {
+    gdtState(myGDTPresentationDM).Semantics.Bind(theLabel, theDimension);
+  }
   writePlaceholder(theWS,
                    myGDTAnnotations,
                    myGDTPresentationDM,
@@ -6479,6 +6526,7 @@ static void writeHoles(const occ::handle<XSControl_WorkSession>& theWS,
     aContent->AddLiteral(Interface_ParamEnum,
                          new TCollection_HAsciiString(aDef.Through ? ".T." : ".F."));
     aModel->AddWithRefs(aHole);
+    writeUUID(aModel, aHoleIter.Value(), aHole);
     // The part's positions of holes, related to its shape
     if (!aPositions.IsBound(aPartL))
     {
@@ -6520,6 +6568,7 @@ static void writeHoles(const occ::handle<XSControl_WorkSession>& theWS,
       anOccContent->AddLiteral(Interface_ParamEnum, new TCollection_HAsciiString(".T."));
       anOccContent->AddEntity(Interface_ParamIdent, aHole);
       aModel->AddWithRefs(anOcc);
+      writeUUID(aModel, anOccIter.Value(), anOcc);
       // Where it is: its definition's axes mapped there
       GeomToStep_MakeAxis2Placement3d        aTargetMaker(aPosition, theLocalFactors);
       occ::handle<StepGeom_Axis2Placement3d> aTarget = aTargetMaker.Value();
@@ -7210,6 +7259,42 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     }
     myGDTPresentationDM->Init(new TCollection_HAsciiString(), aItems, aRC);
     aModel->AddWithRefs(myGDTPresentationDM);
+  }
+
+  // The UUIDs the GD&T and the products were read with (XCAFDoc_DimTolTool::SetUUID)
+  {
+    using SemanticMap = NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>>;
+    for (SemanticMap::Iterator anIter(aState.Semantics); anIter.More(); anIter.Next())
+    {
+      writeUUID(aModel, anIter.Key(), anIter.Value());
+    }
+    const occ::handle<Transfer_FinderProcess>& aFP = theWS->TransferWriter()->FinderProcess();
+    NCollection_Map<occ::handle<Standard_Transient>> aDone;
+    for (NCollection_DataMap<TDF_Label, TopoDS_Shape>::Iterator anIter(myLabels); anIter.More();
+         anIter.Next())
+    {
+      TCollection_AsciiString aType, aUUID;
+      if (!XCAFDoc_DimTolTool::GetUUID(anIter.Key(), aType, aUUID))
+      {
+        continue;
+      }
+      occ::handle<StepRepr_ProductDefinitionShape> aPDS;
+      occ::handle<StepRepr_RepresentationContext>  aPartRC;
+      for (TopExp_Explorer anExp(anIter.Value(), TopAbs_FACE); anExp.More() && aPDS.IsNull();
+           anExp.Next())
+      {
+        TopLoc_Location                                       aLoc;
+        NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+        if (FindEntities(aFP, anExp.Current(), aLoc, aSeqRI) > 0)
+        {
+          aPDS = FindPDS(aGraph, aSeqRI.First(), aPartRC);
+        }
+      }
+      if (!aPDS.IsNull() && aDone.Add(aPDS))
+      {
+        writeUUID(aModel, anIter.Key(), aPDS);
+      }
+    }
   }
 
   // The presentations not shown (XCAFDoc_DimTolTool::SetPresentationHidden): their callouts'

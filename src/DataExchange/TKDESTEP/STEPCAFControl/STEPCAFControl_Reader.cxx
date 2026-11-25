@@ -6744,6 +6744,84 @@ static void readSupplementalGeometry(
 //=================================================================================================
 
 //=======================================================================
+// function : uuidOf
+// purpose  : the UUID a file identifies theEnt by: a uuid_attribute (NIST STC-09's
+//            v5_uuid_attribute, an entity OCCT does not know) whose set of items holds it
+//=======================================================================
+static bool uuidOf(const Interface_Graph&                 theGraph,
+                   const occ::handle<Standard_Transient>& theEnt,
+                   TCollection_AsciiString&               theType,
+                   TCollection_AsciiString&               theUUID)
+{
+  if (theEnt.IsNull())
+  {
+    return false;
+  }
+  auto anIsUUID = [&](const occ::handle<Standard_Transient>& theCandidate) {
+    occ::handle<StepData_UndefinedEntity> anAttr =
+      occ::down_cast<StepData_UndefinedEntity>(theCandidate);
+    if (anAttr.IsNull() || anAttr->IsSub())
+    {
+      return false;
+    }
+    TCollection_AsciiString aType(anAttr->StepType());
+    const int               aLength = aType.Length();
+    if (aLength < 14 || aType.SubString(aLength - 13, aLength) != "UUID_ATTRIBUTE")
+    {
+      return false;
+    }
+    occ::handle<Interface_UndefinedContent> aContent = anAttr->UndefinedContent();
+    if (aContent->NbParams() < 1 || aContent->ParamValue(1).IsNull())
+    {
+      return false;
+    }
+    TCollection_AsciiString anId = aContent->ParamValue(1)->String();
+    if (anId.Length() >= 2 && anId.Value(1) == '\'' && anId.Value(anId.Length()) == '\'')
+    {
+      anId = anId.SubString(2, anId.Length() - 1);
+    }
+    theType = aType;
+    theUUID = anId;
+    return !theUUID.IsEmpty();
+  };
+  for (Interface_EntityIterator anIter = theGraph.Sharings(theEnt); anIter.More(); anIter.Next())
+  {
+    if (anIsUUID(anIter.Value()))
+    {
+      return true;
+    }
+    // Its set of items: a typed sub-list, shared by the attribute
+    occ::handle<StepData_UndefinedEntity> aSub =
+      occ::down_cast<StepData_UndefinedEntity>(anIter.Value());
+    if (aSub.IsNull() || !aSub->IsSub())
+    {
+      continue;
+    }
+    for (Interface_EntityIterator anUp = theGraph.Sharings(aSub); anUp.More(); anUp.Next())
+    {
+      if (anIsUUID(anUp.Value()))
+      {
+        return true;
+      }
+      occ::handle<StepData_UndefinedEntity> aSub2 =
+        occ::down_cast<StepData_UndefinedEntity>(anUp.Value());
+      if (aSub2.IsNull() || !aSub2->IsSub())
+      {
+        continue;
+      }
+      for (Interface_EntityIterator anUp2 = theGraph.Sharings(aSub2); anUp2.More(); anUp2.Next())
+      {
+        if (anIsUUID(anUp2.Value()))
+        {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+//=======================================================================
 // function : holeLength
 // purpose  : a length of a hole, in the document's unit: a measure with unit, or one OCCT does
 //            not know (positive_length_measure_with_unit), its first number
@@ -6941,6 +7019,11 @@ static void readHoles(
       }
       aHoleL = theDGTTool->AddHole(aPartL, aDef);
       aHoles.Bind(aHole, aHoleL);
+      TCollection_AsciiString aUUIDType, aUUID;
+      if (uuidOf(theWS->Graph(), aHole, aUUIDType, aUUID))
+      {
+        XCAFDoc_DimTolTool::SetUUID(aHoleL, aUUIDType, aUUID);
+      }
     }
     TCollection_AsciiString aName;
     if (!anOccContent->ParamValue(1).IsNull())
@@ -6980,7 +7063,12 @@ static void readHoles(
         aFaces.Append(aFaceL);
       }
     }
-    XCAFDoc_DimTolTool::AddHoleOccurrence(aHoleL, aName, aPosition, aFaces);
+    const TDF_Label anOccL = XCAFDoc_DimTolTool::AddHoleOccurrence(aHoleL, aName, aPosition, aFaces);
+    TCollection_AsciiString aUUIDType, aUUID;
+    if (uuidOf(theWS->Graph(), anOcc, aUUIDType, aUUID))
+    {
+      XCAFDoc_DimTolTool::SetUUID(anOccL, aUUIDType, aUUID);
+    }
   }
 }
 
@@ -7463,6 +7551,50 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       }
     }
   }
+  // The UUIDs a file identifies its GD&T and its products by (AP242 ed4 uuid_attribute:
+  // NIST STC-09's), kept on their labels to be written again
+  for (NCollection_DataMap<occ::handle<Standard_Transient>, TDF_Label>::Iterator anIter(myGDTMap);
+       anIter.More();
+       anIter.Next())
+  {
+    TCollection_AsciiString aUUIDType, aUUID;
+    TCollection_AsciiString aHas, aHasType;
+    if (!XCAFDoc_DimTolTool::GetUUID(anIter.Value(), aHasType, aHas)
+        && uuidOf(aGraph, anIter.Key(), aUUIDType, aUUID))
+    {
+      XCAFDoc_DimTolTool::SetUUID(anIter.Value(), aUUIDType, aUUID);
+    }
+  }
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<StepRepr_ProductDefinitionShape> aPDS =
+      occ::down_cast<StepRepr_ProductDefinitionShape>(aModel->Value(i));
+    TCollection_AsciiString aUUIDType, aUUID;
+    if (aPDS.IsNull() || !uuidOf(aGraph, aPDS, aUUIDType, aUUID))
+    {
+      continue;
+    }
+    occ::handle<StepBasic_ProductDefinition> aPD = aPDS->Definition().ProductDefinition();
+    occ::handle<Transfer_Binder>             aBinder =
+      aPD.IsNull() ? nullptr : theWS->TransferReader()->TransientProcess()->Find(aPD);
+    if (aBinder.IsNull() || !aBinder->HasResult())
+    {
+      continue;
+    }
+    const TopoDS_Shape aPart =
+      TransferBRep::ShapeResult(theWS->TransferReader()->TransientProcess(), aBinder);
+    TDF_Label aPartL;
+    if (!aPart.IsNull() && myMap.IsBound(aPart))
+    {
+      aPartL = myMap.Find(aPart);
+    }
+    else if (!aPart.IsNull())
+    {
+      aSTool->Search(aPart, aPartL, true, true, false);
+    }
+    XCAFDoc_DimTolTool::SetUUID(aPartL, aUUIDType, aUUID);
+  }
+
   // The graphics an INVISIBILITY lists (NIST STC-08's 29, STC-09's 75): of the PMI they present,
   // its own or by the associations of their callout
   for (int i = 1; i <= nb; i++)
