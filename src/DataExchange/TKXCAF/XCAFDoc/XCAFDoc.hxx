@@ -96,6 +96,10 @@ public:
   //! INVISIBILITY)
   Standard_EXPORT static const Standard_GUID& GDTHiddenGUID();
 
+  //! Return GUID of the mark of a GD&T whose presentation is given as curves (STEP: an
+  //! ANNOTATION_CURVE_OCCURRENCE of polylines and circles), not tessellated
+  Standard_EXPORT static const Standard_GUID& GDTCurvesGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();

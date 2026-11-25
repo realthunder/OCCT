@@ -336,6 +336,13 @@ public:
   //! Whether the presentation of the GD&T theGDTL is not shown.
   Standard_EXPORT static bool IsPresentationHidden(const TDF_Label& theGDTL);
 
+  //! Says the presentation of the GD&T theGDTL is given as curves (STEP: an annotation curve
+  //! occurrence of polylines and circles, NIST CTC-05's), not tessellated.
+  Standard_EXPORT static void SetPresentationCurves(const TDF_Label& theGDTL, const bool theCurves);
+
+  //! Whether the presentation of the GD&T theGDTL is given as curves.
+  Standard_EXPORT static bool IsPresentationCurves(const TDF_Label& theGDTL);
+
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,
                                         NCollection_Sequence<TDF_Label>& theDatum) const;

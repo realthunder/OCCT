@@ -802,6 +802,31 @@ bool XCAFDoc_DimTolTool::IsPresentationHidden(const TDF_Label& theGDTL)
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetPresentationCurves(const TDF_Label& theGDTL, const bool theCurves)
+{
+  if (theGDTL.IsNull())
+  {
+    return;
+  }
+  if (theCurves)
+  {
+    TDataStd_UAttribute::Set(theGDTL, XCAFDoc::GDTCurvesGUID());
+  }
+  else
+  {
+    theGDTL.ForgetAttribute(XCAFDoc::GDTCurvesGUID());
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::IsPresentationCurves(const TDF_Label& theGDTL)
+{
+  return !theGDTL.IsNull() && theGDTL.IsAttribute(XCAFDoc::GDTCurvesGUID());
+}
+
+//=================================================================================================
+
 void XCAFDoc_DimTolTool::SetSupplementalColor(const TDF_Label&      theItemL,
                                               const Quantity_Color& theColor)
 {

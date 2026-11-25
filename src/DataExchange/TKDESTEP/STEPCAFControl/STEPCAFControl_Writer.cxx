@@ -121,6 +121,14 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <TopoDSToStep_MakeGeometricCurveSet.hxx>
 #include <StepShape_GeometricCurveSet.hxx>
+#include <TopoDS_Edge.hxx>
+#include <BRep_Tool.hxx>
+#include <GeomToStep_MakeCurve.hxx>
+#include <Geom_Circle.hxx>
+#include <GCPnts_TangentialDeflection.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <StepGeom_Polyline.hxx>
+#include <StepVisual_AnnotationCurveOccurrence.hxx>
 #include <StepVisual_SurfaceStyleBoundary.hxx>
 #include <StepVisual_SurfaceSideStyle.hxx>
 #include <StepVisual_SurfaceStyleUsage.hxx>
@@ -3596,6 +3604,105 @@ static void writePlaceholder(
 // function : writePresentation
 // purpose  : auxiliary (write annotation plane and presentation)
 //======================================================================
+//=======================================================================
+// function : curvesOf
+// purpose  : a presentation's edges as a geometric curve set: a full circle a circle, any
+//            other edge a polyline through points along it
+//=======================================================================
+static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&     theShape,
+                                                        const StepData_Factors& theLocalFactors)
+{
+  NCollection_Sequence<StepShape_GeometricSetSelect> anElements;
+  // The polylines: each edge's points, chained to the one before where it starts at its end
+  // (a polyline read is an edge a segment)
+  NCollection_Sequence<NCollection_Sequence<gp_Pnt>> aChains;
+  const double                                       aTol = Precision::Confusion();
+  for (TopExp_Explorer anExp(theShape, TopAbs_EDGE); anExp.More(); anExp.Next())
+  {
+    const TopoDS_Edge& anEdge = TopoDS::Edge(anExp.Current());
+    if (BRep_Tool::Degenerated(anEdge))
+    {
+      continue;
+    }
+    BRepAdaptor_Curve aCurve(anEdge);
+    const double      aFirst = aCurve.FirstParameter(), aLast = aCurve.LastParameter();
+    if (aCurve.GetType() == GeomAbs_Circle && std::abs(aLast - aFirst - 2 * M_PI) < 1e-9)
+    {
+      GeomToStep_MakeCurve aMaker(new Geom_Circle(aCurve.Circle()), theLocalFactors);
+      if (aMaker.IsDone())
+      {
+        StepShape_GeometricSetSelect aSelect;
+        aSelect.SetValue(aMaker.Value());
+        anElements.Append(aSelect);
+      }
+      continue;
+    }
+    NCollection_Sequence<gp_Pnt> aPoints;
+    if (aCurve.GetType() == GeomAbs_Line)
+    {
+      aPoints.Append(aCurve.Value(aFirst));
+      aPoints.Append(aCurve.Value(aLast));
+    }
+    else
+    {
+      GCPnts_TangentialDeflection aDiscret(aCurve, 0.1, 0.01);
+      for (int i = 1; i <= aDiscret.NbPoints(); ++i)
+      {
+        aPoints.Append(aDiscret.Value(i));
+      }
+    }
+    if (anEdge.Orientation() == TopAbs_REVERSED)
+    {
+      aPoints.Reverse();
+    }
+    if (aPoints.Length() < 2)
+    {
+      continue;
+    }
+    if (!aChains.IsEmpty() && aChains.Last().Last().Distance(aPoints.First()) < aTol)
+    {
+      for (int i = 2; i <= aPoints.Length(); ++i)
+      {
+        aChains.ChangeLast().Append(aPoints.Value(i));
+      }
+    }
+    else
+    {
+      aChains.Append(aPoints);
+    }
+  }
+  for (const auto& aChain : aChains)
+  {
+    occ::handle<NCollection_HArray1<occ::handle<StepGeom_CartesianPoint>>> aPnts =
+      new NCollection_HArray1<occ::handle<StepGeom_CartesianPoint>>(1, aChain.Length());
+    for (int i = 1; i <= aChain.Length(); ++i)
+    {
+      GeomToStep_MakeCartesianPoint aMaker(aChain.Value(i), theLocalFactors.LengthFactor());
+      aPnts->SetValue(i, aMaker.Value());
+    }
+    occ::handle<StepGeom_Polyline> aPolyline = new StepGeom_Polyline();
+    aPolyline->Init(new TCollection_HAsciiString(), aPnts);
+    StepShape_GeometricSetSelect aSelect;
+    aSelect.SetValue(aPolyline);
+    anElements.Append(aSelect);
+  }
+  if (anElements.IsEmpty())
+  {
+    return nullptr;
+  }
+  occ::handle<NCollection_HArray1<StepShape_GeometricSetSelect>> anArray =
+    new NCollection_HArray1<StepShape_GeometricSetSelect>(1, anElements.Length());
+  for (int i = 1; i <= anElements.Length(); ++i)
+  {
+    anArray->SetValue(i, anElements.Value(i));
+  }
+  occ::handle<StepShape_GeometricCurveSet> aSet = new StepShape_GeometricCurveSet();
+  aSet->Init(new TCollection_HAsciiString(), anArray);
+  return aSet;
+}
+
+//=================================================================================================
+
 void STEPCAFControl_Writer::writePresentation(
   const occ::handle<XSControl_WorkSession>&    theWS,
   const TDF_Label&                             theLabel,
@@ -3647,24 +3754,47 @@ void STEPCAFControl_Writer::writePresentation(
   const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
 
   // Presentation
-  occ::handle<StepVisual_TessellatedGeometricSet> aGeomSet =
-    STEPCAFControl_GDTProperty::GetTessellation(thePresentation, theLocalFactors.LengthFactor());
-  if (aGeomSet.IsNull())
-  {
-    return;
-  }
   occ::handle<TCollection_HAsciiString> aPrsName =
     thePrsName.IsNull() ? new TCollection_HAsciiString() : thePrsName;
   // The occurrence named as the callout, the set by what it presents: one of
   // the names of AP242 PMI recommended practice 8.4 ("datum", "position",
   // "diameter dimension" ...), by which a reader (SFA) tells what it is; a
   // name missing is an error to it (8.1.1)
-  aGeomSet->SetName(new TCollection_HAsciiString(thePrsType ? thePrsType : "general note"));
-  occ::handle<StepVisual_TessellatedAnnotationOccurrence> aTAO =
-    new StepVisual_TessellatedAnnotationOccurrence();
-  aTAO->Init(aPrsName, myGDTPrsCurveStyle, aGeomSet);
+  occ::handle<TCollection_HAsciiString> aSetName =
+    new TCollection_HAsciiString(thePrsType ? thePrsType : "general note");
   StepVisual_DraughtingCalloutElement aDCElement;
-  aDCElement.SetValue(aTAO);
+  // Given as curves (XCAFDoc_DimTolTool::SetPresentationCurves; NIST CTC-05's), and of
+  // curves alone: an annotation curve occurrence of them -- a full circle a circle, any
+  // other curve a polyline -- as the file had it
+  occ::handle<StepShape_GeometricCurveSet> aCurves;
+  if (XCAFDoc_DimTolTool::IsPresentationCurves(theLabel)
+      && !TopExp_Explorer(thePresentation, TopAbs_FACE).More())
+  {
+    aCurves = curvesOf(thePresentation, theLocalFactors);
+  }
+  if (!aCurves.IsNull())
+  {
+    aCurves->SetName(aSetName);
+    occ::handle<StepVisual_AnnotationCurveOccurrence> anACO =
+      new StepVisual_AnnotationCurveOccurrence();
+    anACO->Init(aPrsName, myGDTPrsCurveStyle, aCurves);
+    aDCElement.SetValue(anACO);
+  }
+  else
+  {
+    occ::handle<StepVisual_TessellatedGeometricSet> aGeomSet =
+      STEPCAFControl_GDTProperty::GetTessellation(thePresentation,
+                                                  theLocalFactors.LengthFactor());
+    if (aGeomSet.IsNull())
+    {
+      return;
+    }
+    aGeomSet->SetName(aSetName);
+    occ::handle<StepVisual_TessellatedAnnotationOccurrence> aTAO =
+      new StepVisual_TessellatedAnnotationOccurrence();
+    aTAO->Init(aPrsName, myGDTPrsCurveStyle, aGeomSet);
+    aDCElement.SetValue(aTAO);
+  }
   occ::handle<NCollection_HArray1<StepVisual_DraughtingCalloutElement>> aTAOs =
     new NCollection_HArray1<StepVisual_DraughtingCalloutElement>(1, 1);
   aTAOs->SetValue(1, aDCElement);

@@ -184,6 +184,7 @@
 #include <StepVisual_Invisibility.hxx>
 #include <StepVisual_InvisibleItem.hxx>
 #include <StepVisual_AnnotationOccurrence.hxx>
+#include <StepVisual_AnnotationCurveOccurrence.hxx>
 #include <StepVisual_PlanarBox.hxx>
 #include <StepVisual_PresentationLayerAssignment.hxx>
 #include <StepVisual_PresentationStyleByContext.hxx>
@@ -7266,6 +7267,48 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
           {
             XCAFDoc_DimTolTool::SetPresentationHidden(myGDTMap.Find(aDef), true);
           }
+        }
+      }
+    }
+  }
+  // The graphics given as curves (NIST CTC-05's annotation curve occurrences of polylines and
+  // circles): of the PMI they present, written so again
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<StepVisual_AnnotationCurveOccurrence> anACO =
+      occ::down_cast<StepVisual_AnnotationCurveOccurrence>(aModel->Value(i));
+    if (anACO.IsNull())
+    {
+      continue;
+    }
+    NCollection_Sequence<occ::handle<Standard_Transient>> aPresenters;
+    aPresenters.Append(anACO);
+    for (Interface_EntityIterator anIter = aGraph.Sharings(anACO); anIter.More(); anIter.Next())
+    {
+      if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+      {
+        aPresenters.Append(anIter.Value());
+      }
+    }
+    for (const auto& aPresenter : aPresenters)
+    {
+      if (myGDTMap.IsBound(aPresenter))
+      {
+        XCAFDoc_DimTolTool::SetPresentationCurves(myGDTMap.Find(aPresenter), true);
+      }
+      for (Interface_EntityIterator anIter = aGraph.Sharings(aPresenter); anIter.More();
+           anIter.Next())
+      {
+        occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
+          occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+        if (aDMIA.IsNull())
+        {
+          continue;
+        }
+        const occ::handle<Standard_Transient> aDef = aDMIA->Definition().Value();
+        if (!aDef.IsNull() && myGDTMap.IsBound(aDef))
+        {
+          XCAFDoc_DimTolTool::SetPresentationCurves(myGDTMap.Find(aDef), true);
         }
       }
     }

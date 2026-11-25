@@ -184,6 +184,14 @@ const Standard_GUID& XCAFDoc::GDTHiddenGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::GDTCurvesGUID()
+{
+  static const Standard_GUID ID("3f6b9e27-c41d-4e58-9a02-d7e83c15b6f4");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");
