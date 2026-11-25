@@ -192,6 +192,14 @@ const Standard_GUID& XCAFDoc::GDTCurvesGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::HoleGUID()
+{
+  static const Standard_GUID ID("b47e2a19-5c83-4d6f-91a4-e2c06d38f5b7");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");

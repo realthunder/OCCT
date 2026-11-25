@@ -121,6 +121,9 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <TopoDSToStep_MakeGeometricCurveSet.hxx>
 #include <StepShape_GeometricCurveSet.hxx>
+#include <StepBasic_NamedUnit.hxx>
+#include <StepAP242_ItemIdentifiedRepresentationUsage.hxx>
+#include <StepRepr_ShapeRepresentationRelationship.hxx>
 #include <TopoDS_Edge.hxx>
 #include <BRep_Tool.hxx>
 #include <GeomToStep_MakeCurve.hxx>
@@ -6309,6 +6312,275 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
   }
 }
 
+//=======================================================================
+// function : writeHoles
+// purpose  : the holes of the parts (AP242 ed3 hole features, XCAFDoc_DimTolTool::AddHole):
+//            each its definition, each occurrence of it placed among a part's 'Positions of
+//            Holes' and identified with its faces, as NIST STC-09 has them
+//=======================================================================
+static void writeHoles(const occ::handle<XSControl_WorkSession>& theWS,
+                       const Interface_Graph&                    theGraph,
+                       const occ::handle<XCAFDoc_DimTolTool>&    theDGTTool,
+                       const StepData_Factors&                   theLocalFactors)
+{
+  const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
+  const occ::handle<Transfer_FinderProcess>&   aFP    = theWS->TransferWriter()->FinderProcess();
+  NCollection_Sequence<TDF_Label>              aHoles;
+  theDGTTool->GetHoles(aHoles);
+  // A real as STEP writes one: with its decimal point
+  auto aReal = [](const double theValue) {
+    char aBuf[64];
+    Sprintf(aBuf, "%.15G", theValue);
+    TCollection_AsciiString aText(aBuf);
+    const int anExp = aText.Search("E");
+    if (aText.Search(".") < 0)
+    {
+      if (anExp > 0)
+      {
+        aText.Insert(anExp, '.');
+      }
+      else
+      {
+        aText += ".";
+      }
+    }
+    return aText;
+  };
+  auto aQuoted = [](const TCollection_AsciiString& theText) {
+    TCollection_AsciiString aText("'");
+    for (int i = 1; i <= theText.Length(); ++i)
+    {
+      if (theText.Value(i) == '\'')
+      {
+        aText += '\'';
+      }
+      aText += theText.Value(i);
+    }
+    aText += "'";
+    return aText;
+  };
+  // Per part: its representation, and the representation of its holes' positions
+  NCollection_DataMap<TDF_Label, occ::handle<StepShape_ShapeRepresentation>> aPositions;
+  for (NCollection_Sequence<TDF_Label>::Iterator aHoleIter(aHoles); aHoleIter.More();
+       aHoleIter.Next())
+  {
+    TDF_Label                          aPartL;
+    XCAFDoc_DimTolTool::HoleDefinition aDef;
+    NCollection_Sequence<TDF_Label>    anOccs;
+    XCAFDoc_DimTolTool::GetHoleOccurrences(aHoleIter.Value(), anOccs);
+    if (!XCAFDoc_DimTolTool::GetHole(aHoleIter.Value(), aPartL, aDef) || aPartL.IsNull()
+        || anOccs.IsEmpty())
+    {
+      continue;
+    }
+    TDF_Label aProtoL = aPartL;
+    if (XCAFDoc_ShapeTool::IsReference(aPartL))
+    {
+      XCAFDoc_ShapeTool::GetReferredShape(aPartL, aProtoL);
+    }
+    // The part's product and shape representation: those an element of it was written in
+    const TopoDS_Shape                           aPart = XCAFDoc_ShapeTool::GetShape(aProtoL);
+    occ::handle<StepRepr_ProductDefinitionShape> aPDS;
+    occ::handle<StepRepr_RepresentationContext>  aRC;
+    for (TopExp_Explorer anExp(aPart, TopAbs_FACE); anExp.More() && aPDS.IsNull(); anExp.Next())
+    {
+      TopLoc_Location                                       aLoc;
+      NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+      if (FindEntities(aFP, anExp.Current(), aLoc, aSeqRI) > 0)
+      {
+        aPDS = FindPDS(theGraph, aSeqRI.First(), aRC);
+      }
+    }
+    occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
+    for (Interface_EntityIterator anIter = aPDS.IsNull() ? Interface_EntityIterator()
+                                                         : theGraph.Sharings(aPDS);
+         anIter.More() && aSDR.IsNull();
+         anIter.Next())
+    {
+      aSDR = occ::down_cast<StepShape_ShapeDefinitionRepresentation>(anIter.Value());
+    }
+    if (aSDR.IsNull() || aSDR->UsedRepresentation().IsNull())
+    {
+      continue;
+    }
+    occ::handle<StepRepr_Representation> aPartRep = aSDR->UsedRepresentation();
+    aRC                                            = aPartRep->ContextOfItems();
+    occ::handle<StepBasic_NamedUnit> aUnit         = GetUnit(aRC).NamedUnit();
+    const double                     aFactor       = theLocalFactors.LengthFactor();
+    auto aPositive = [&](const double theValue) {
+      occ::handle<StepData_UndefinedEntity> aMeasure = new StepData_UndefinedEntity();
+      aMeasure->SetStepType("POSITIVE_LENGTH_MEASURE_WITH_UNIT");
+      aMeasure->UndefinedContent()->AddLiteral(
+        Interface_ParamText,
+        new TCollection_HAsciiString(TCollection_AsciiString("POSITIVE_LENGTH_MEASURE(")
+                                     + aReal(theValue / aFactor) + ")"));
+      aMeasure->UndefinedContent()->AddEntity(Interface_ParamIdent, aUnit);
+      return aMeasure;
+    };
+    auto aTolerance = [&](const double theLower, const double theUpper) {
+      auto aLength = [&](const double theValue) {
+        occ::handle<StepBasic_LengthMeasureWithUnit> aLMWU = new StepBasic_LengthMeasureWithUnit();
+        occ::handle<StepBasic_MeasureValueMember>    aValue = new StepBasic_MeasureValueMember();
+        aValue->SetName("LENGTH_MEASURE");
+        aValue->SetReal(theValue / aFactor);
+        aLMWU->Init(aValue, GetUnit(aRC));
+        return aLMWU;
+      };
+      occ::handle<StepShape_ToleranceValue> aTol = new StepShape_ToleranceValue();
+      aTol->Init(aLength(theLower), aLength(theUpper));
+      return aTol;
+    };
+    // Its axes, in a representation of its own
+    GeomToStep_MakeAxis2Placement3d        anAxesMaker(aDef.Axes, theLocalFactors);
+    occ::handle<StepGeom_Axis2Placement3d> anAxes = anAxesMaker.Value();
+    anAxes->SetName(new TCollection_HAsciiString());
+    occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anAxesItems =
+      new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1);
+    anAxesItems->SetValue(1, anAxes);
+    occ::handle<StepShape_ShapeRepresentation> aHoleRep = new StepShape_ShapeRepresentation();
+    aHoleRep->Init(new TCollection_HAsciiString(), anAxesItems, aRC);
+    // The definition: name, description, depth and its tolerance, diameter and its, its
+    // placement, whether it goes through
+    occ::handle<StepData_UndefinedEntity> aHole = new StepData_UndefinedEntity();
+    TCollection_AsciiString               aType(aDef.Kind.IsEmpty() ? "basic_round_hole" : aDef.Kind);
+    aType.UpperCase();
+    aHole->SetStepType(aType.ToCString());
+    occ::handle<Interface_UndefinedContent> aContent = aHole->UndefinedContent();
+    auto aVoid = [&]() { aContent->AddLiteral(Interface_ParamVoid, new TCollection_HAsciiString("$")); };
+    aContent->AddLiteral(Interface_ParamText, new TCollection_HAsciiString(aQuoted(aDef.Name)));
+    aVoid();
+    if (aDef.HasDepth)
+    {
+      aContent->AddEntity(Interface_ParamIdent, aPositive(aDef.Depth));
+    }
+    else
+    {
+      aVoid();
+    }
+    if (aDef.HasDepth && aDef.DepthToleranced)
+    {
+      aContent->AddEntity(Interface_ParamIdent, aTolerance(aDef.DepthLower, aDef.DepthUpper));
+    }
+    else
+    {
+      aVoid();
+    }
+    aContent->AddEntity(Interface_ParamIdent, aPositive(aDef.Diameter));
+    if (aDef.DiameterToleranced)
+    {
+      aContent->AddEntity(Interface_ParamIdent,
+                          aTolerance(aDef.DiameterLower, aDef.DiameterUpper));
+    }
+    else
+    {
+      aVoid();
+    }
+    aContent->AddEntity(Interface_ParamIdent, aHoleRep);
+    aContent->AddLiteral(Interface_ParamEnum,
+                         new TCollection_HAsciiString(aDef.Through ? ".T." : ".F."));
+    aModel->AddWithRefs(aHole);
+    // The part's positions of holes, related to its shape
+    if (!aPositions.IsBound(aPartL))
+    {
+      occ::handle<StepShape_ShapeRepresentation> aPositionsRep = new StepShape_ShapeRepresentation();
+      aPositionsRep->Init(new TCollection_HAsciiString("Positions of Holes"),
+                          new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, 1),
+                          aRC);
+      aPositionsRep->Items()->SetValue(1, anAxes);
+      occ::handle<StepRepr_ShapeRepresentationRelationship> aRelation =
+        new StepRepr_ShapeRepresentationRelationship();
+      aRelation->Init(new TCollection_HAsciiString(),
+                      new TCollection_HAsciiString(),
+                      aPartRep,
+                      aPositionsRep);
+      aModel->AddWithRefs(aRelation);
+      aPositions.Bind(aPartL, aPositionsRep);
+    }
+    occ::handle<StepShape_ShapeRepresentation> aPositionsRep = aPositions.Find(aPartL);
+    occ::handle<StepRepr_RepresentationMap>    aMap          = new StepRepr_RepresentationMap();
+    aMap->Init(anAxes, aHoleRep);
+    NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> aPlaced;
+    for (NCollection_Sequence<TDF_Label>::Iterator anOccIter(anOccs); anOccIter.More();
+         anOccIter.Next())
+    {
+      TCollection_AsciiString         aName;
+      gp_Ax3                          aPosition;
+      NCollection_Sequence<TDF_Label> aFaceLs;
+      if (!XCAFDoc_DimTolTool::GetHoleOccurrence(anOccIter.Value(), aName, aPosition, aFaceLs))
+      {
+        continue;
+      }
+      occ::handle<StepData_UndefinedEntity> anOcc = new StepData_UndefinedEntity();
+      TCollection_AsciiString               anOccType = aType + "_OCCURRENCE";
+      anOcc->SetStepType(anOccType.ToCString());
+      occ::handle<Interface_UndefinedContent> anOccContent = anOcc->UndefinedContent();
+      anOccContent->AddLiteral(Interface_ParamText, new TCollection_HAsciiString(aQuoted(aName)));
+      anOccContent->AddLiteral(Interface_ParamVoid, new TCollection_HAsciiString("$"));
+      anOccContent->AddEntity(Interface_ParamIdent, aPDS);
+      anOccContent->AddLiteral(Interface_ParamEnum, new TCollection_HAsciiString(".T."));
+      anOccContent->AddEntity(Interface_ParamIdent, aHole);
+      aModel->AddWithRefs(anOcc);
+      // Where it is: its definition's axes mapped there
+      GeomToStep_MakeAxis2Placement3d        aTargetMaker(aPosition, theLocalFactors);
+      occ::handle<StepGeom_Axis2Placement3d> aTarget = aTargetMaker.Value();
+      aTarget->SetName(new TCollection_HAsciiString());
+      occ::handle<StepRepr_MappedItem> aMapped = new StepRepr_MappedItem();
+      aMapped->Init(new TCollection_HAsciiString(), aMap, aTarget);
+      aPlaced.Append(aMapped);
+      // Identified with its faces
+      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> anItems;
+      anItems.Append(aMapped);
+      for (const auto& aFaceL : aFaceLs)
+      {
+        TopLoc_Location                                       aLoc;
+        NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+        if (FindEntities(aFP, XCAFDoc_ShapeTool::GetShape(aFaceL), aLoc, aSeqRI) > 0)
+        {
+          occ::handle<StepRepr_RepresentationItem> aFace =
+            occ::down_cast<StepRepr_RepresentationItem>(aSeqRI.First());
+          if (!aFace.IsNull())
+          {
+            anItems.Append(aFace);
+          }
+        }
+      }
+      occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anArray =
+        new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, anItems.Length());
+      for (int i = 1; i <= anItems.Length(); ++i)
+      {
+        anArray->SetValue(i, anItems.Value(i));
+      }
+      StepAP242_ItemIdentifiedRepresentationUsageDefinition aDefinition;
+      aDefinition.SetValue(anOcc);
+      occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aUsage =
+        new StepAP242_ItemIdentifiedRepresentationUsage();
+      aUsage->Init(new TCollection_HAsciiString(),
+                   new TCollection_HAsciiString(),
+                   aDefinition,
+                   aPositionsRep,
+                   anArray);
+      aModel->AddWithRefs(aUsage);
+    }
+    // The positions: the part's origin first, then each mapped item
+    occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anOld =
+      aPositionsRep->Items();
+    occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> aNew =
+      new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(
+        1,
+        anOld->Length() + aPlaced.Length());
+    int j = 1;
+    for (int i = anOld->Lower(); i <= anOld->Upper(); ++i)
+    {
+      aNew->SetValue(j++, anOld->Value(i));
+    }
+    for (const auto& anItem : aPlaced)
+    {
+      aNew->SetValue(j++, anItem);
+    }
+    aPositionsRep->SetItems(aNew);
+  }
+}
+
 //=================================================================================================
 
 bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSession>& theWS,
@@ -6356,6 +6628,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                                   aDGTTool,
                                   gdtState(myGDTPresentationDM),
                                   theLocalFactors);
+        writeHoles(theWS, aGraph, aDGTTool, theLocalFactors);
       }
     }
   }

@@ -28,6 +28,7 @@
 #include <NCollection_HArray1.hxx>
 #include <TopoDS_Shape.hxx>
 #include <gp_Ax3.hxx>
+#include <TCollection_AsciiString.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 
 class XCAFDoc_ShapeTool;
@@ -342,6 +343,55 @@ public:
 
   //! Whether the presentation of the GD&T theGDTL is given as curves.
   Standard_EXPORT static bool IsPresentationCurves(const TDF_Label& theGDTL);
+
+  //! A hole as a STEP file defines it (AP242 ed3 hole features: NIST STC-09's
+  //! basic_round_hole): its kind (the STEP type), name, diameter, depth (none when
+  //! HasDepth is false), each with a tolerance or none, whether it goes through, and its
+  //! axes in its own coordinates.
+  struct HoleDefinition
+  {
+    TCollection_AsciiString Kind;
+    TCollection_AsciiString Name;
+    double                  Diameter            = 0.0;
+    bool                    DiameterToleranced  = false;
+    double                  DiameterLower       = 0.0;
+    double                  DiameterUpper       = 0.0;
+    bool                    HasDepth            = false;
+    double                  Depth               = 0.0;
+    bool                    DepthToleranced     = false;
+    double                  DepthLower          = 0.0;
+    double                  DepthUpper          = 0.0;
+    bool                    Through             = false;
+    gp_Ax3                  Axes;
+  };
+
+  //! Adds a hole of the part theShapeL; its occurrences are added with AddHoleOccurrence.
+  Standard_EXPORT TDF_Label AddHole(const TDF_Label& theShapeL, const HoleDefinition& theHole) const;
+
+  //! The holes, in the order they were added.
+  Standard_EXPORT void GetHoles(NCollection_Sequence<TDF_Label>& theHoles) const;
+
+  //! The part and definition of the hole theHoleL; false when it is none.
+  Standard_EXPORT static bool GetHole(const TDF_Label& theHoleL,
+                                      TDF_Label&       theShapeL,
+                                      HoleDefinition&  theHole);
+
+  //! Adds an occurrence of the hole theHoleL: its name, where it is in its part's
+  //! coordinates, and the faces it is of.
+  Standard_EXPORT static TDF_Label AddHoleOccurrence(const TDF_Label&               theHoleL,
+                                                     const TCollection_AsciiString& theName,
+                                                     const gp_Ax3&                  thePosition,
+                                                     const NCollection_Sequence<TDF_Label>& theFaces);
+
+  //! The occurrences of the hole theHoleL.
+  Standard_EXPORT static void GetHoleOccurrences(const TDF_Label&                 theHoleL,
+                                                 NCollection_Sequence<TDF_Label>& theOccurrences);
+
+  //! The name, position and faces of the occurrence theOccurrenceL; false when it is none.
+  Standard_EXPORT static bool GetHoleOccurrence(const TDF_Label&                 theOccurrenceL,
+                                                TCollection_AsciiString&         theName,
+                                                gp_Ax3&                          thePosition,
+                                                NCollection_Sequence<TDF_Label>& theFaces);
 
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,

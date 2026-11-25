@@ -100,6 +100,10 @@ public:
   //! ANNOTATION_CURVE_OCCURRENCE of polylines and circles), not tessellated
   Standard_EXPORT static const Standard_GUID& GDTCurvesGUID();
 
+  //! Return GUID of the string a hole of a part is kept as (its kind and name; an
+  //! occurrence's name)
+  Standard_EXPORT static const Standard_GUID& HoleGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();

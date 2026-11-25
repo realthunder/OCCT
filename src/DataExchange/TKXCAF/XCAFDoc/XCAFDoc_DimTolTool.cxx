@@ -19,6 +19,7 @@
 #include <TDataStd_AsciiString.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDataStd_RealArray.hxx>
+#include <TDataStd_ReferenceList.hxx>
 #include <TDF_ChildIterator.hxx>
 #include <TDF_Reference.hxx>
 #include <TNaming_Builder.hxx>
@@ -823,6 +824,212 @@ void XCAFDoc_DimTolTool::SetPresentationCurves(const TDF_Label& theGDTL, const b
 bool XCAFDoc_DimTolTool::IsPresentationCurves(const TDF_Label& theGDTL)
 {
   return !theGDTL.IsNull() && theGDTL.IsAttribute(XCAFDoc::GDTCurvesGUID());
+}
+
+//=================================================================================================
+
+static void setAxes(occ::handle<TDataStd_RealArray>& theArray, int theFrom, const gp_Ax3& theAx)
+{
+  const gp_Pnt& aLoc = theAx.Location();
+  const gp_Dir& aDir = theAx.Direction();
+  const gp_Dir& anX  = theAx.XDirection();
+  const double  aValues[9] =
+    {aLoc.X(), aLoc.Y(), aLoc.Z(), aDir.X(), aDir.Y(), aDir.Z(), anX.X(), anX.Y(), anX.Z()};
+  for (int i = 0; i < 9; ++i)
+  {
+    theArray->SetValue(theFrom + i, aValues[i]);
+  }
+}
+
+//=================================================================================================
+
+static gp_Ax3 axesOf(const occ::handle<TDataStd_RealArray>& theArray, int theFrom)
+{
+  try
+  {
+    return gp_Ax3(gp_Pnt(theArray->Value(theFrom),
+                         theArray->Value(theFrom + 1),
+                         theArray->Value(theFrom + 2)),
+                  gp_Dir(theArray->Value(theFrom + 3),
+                         theArray->Value(theFrom + 4),
+                         theArray->Value(theFrom + 5)),
+                  gp_Dir(theArray->Value(theFrom + 6),
+                         theArray->Value(theFrom + 7),
+                         theArray->Value(theFrom + 8)));
+  }
+  catch (const Standard_Failure&)
+  {
+    return gp_Ax3();
+  }
+}
+
+//=================================================================================================
+
+static bool holeText(const TDF_Label& theL, TCollection_AsciiString& theText)
+{
+  occ::handle<TDataStd_AsciiString> aText;
+  if (theL.IsNull() || !theL.FindAttribute(XCAFDoc::HoleGUID(), aText))
+  {
+    return false;
+  }
+  theText = aText->Get();
+  return true;
+}
+
+//=================================================================================================
+
+TDF_Label XCAFDoc_DimTolTool::AddHole(const TDF_Label& theShapeL, const HoleDefinition& theHole) const
+{
+  if (theShapeL.IsNull())
+  {
+    return TDF_Label();
+  }
+  TDF_Label aHoleL = Label().NewChild();
+  TDataStd_AsciiString::Set(aHoleL,
+                            XCAFDoc::HoleGUID(),
+                            TCollection_AsciiString("hole\n") + theHole.Kind + "\n" + theHole.Name);
+  TDF_Reference::Set(aHoleL, theShapeL);
+  occ::handle<TDataStd_RealArray> aValues = TDataStd_RealArray::Set(aHoleL, 1, 20);
+  const double aNumbers[11] = {theHole.Diameter,
+                               theHole.DiameterToleranced ? 1.0 : 0.0,
+                               theHole.DiameterLower,
+                               theHole.DiameterUpper,
+                               theHole.HasDepth ? 1.0 : 0.0,
+                               theHole.Depth,
+                               theHole.DepthToleranced ? 1.0 : 0.0,
+                               theHole.DepthLower,
+                               theHole.DepthUpper,
+                               theHole.Through ? 1.0 : 0.0,
+                               0.0};
+  for (int i = 0; i < 11; ++i)
+  {
+    aValues->SetValue(i + 1, aNumbers[i]);
+  }
+  setAxes(aValues, 12, theHole.Axes);
+  return aHoleL;
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::GetHoles(NCollection_Sequence<TDF_Label>& theHoles) const
+{
+  theHoles.Clear();
+  for (TDF_ChildIterator anIter(Label()); anIter.More(); anIter.Next())
+  {
+    TCollection_AsciiString aText;
+    if (holeText(anIter.Value(), aText) && supplementalLine(aText, 1) == "hole")
+    {
+      theHoles.Append(anIter.Value());
+    }
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetHole(const TDF_Label& theHoleL,
+                                 TDF_Label&       theShapeL,
+                                 HoleDefinition&  theHole)
+{
+  TCollection_AsciiString aText;
+  occ::handle<TDataStd_RealArray> aValues;
+  if (!holeText(theHoleL, aText) || supplementalLine(aText, 1) != "hole"
+      || !theHoleL.FindAttribute(TDataStd_RealArray::GetID(), aValues) || aValues->Length() < 20)
+  {
+    return false;
+  }
+  theHole.Kind = supplementalLine(aText, 2);
+  theHole.Name = supplementalLine(aText, 3);
+  const int i  = aValues->Lower();
+  theHole.Diameter           = aValues->Value(i);
+  theHole.DiameterToleranced = aValues->Value(i + 1) != 0.0;
+  theHole.DiameterLower      = aValues->Value(i + 2);
+  theHole.DiameterUpper      = aValues->Value(i + 3);
+  theHole.HasDepth           = aValues->Value(i + 4) != 0.0;
+  theHole.Depth              = aValues->Value(i + 5);
+  theHole.DepthToleranced    = aValues->Value(i + 6) != 0.0;
+  theHole.DepthLower         = aValues->Value(i + 7);
+  theHole.DepthUpper         = aValues->Value(i + 8);
+  theHole.Through            = aValues->Value(i + 9) != 0.0;
+  theHole.Axes               = axesOf(aValues, i + 11);
+  occ::handle<TDF_Reference> aRef;
+  theShapeL = theHoleL.FindAttribute(TDF_Reference::GetID(), aRef) ? aRef->Get() : TDF_Label();
+  return true;
+}
+
+//=================================================================================================
+
+TDF_Label XCAFDoc_DimTolTool::AddHoleOccurrence(const TDF_Label&               theHoleL,
+                                                const TCollection_AsciiString& theName,
+                                                const gp_Ax3&                  thePosition,
+                                                const NCollection_Sequence<TDF_Label>& theFaces)
+{
+  TCollection_AsciiString aText;
+  if (!holeText(theHoleL, aText) || supplementalLine(aText, 1) != "hole")
+  {
+    return TDF_Label();
+  }
+  TDF_Label anOccL = theHoleL.NewChild();
+  TDataStd_AsciiString::Set(anOccL,
+                            XCAFDoc::HoleGUID(),
+                            TCollection_AsciiString("occurrence\n") + theName);
+  occ::handle<TDataStd_RealArray> aValues = TDataStd_RealArray::Set(anOccL, 1, 9);
+  setAxes(aValues, 1, thePosition);
+  occ::handle<TDataStd_ReferenceList> aFaces = TDataStd_ReferenceList::Set(anOccL);
+  for (const auto& aFace : theFaces)
+  {
+    aFaces->Append(aFace);
+  }
+  return anOccL;
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::GetHoleOccurrences(const TDF_Label&                 theHoleL,
+                                            NCollection_Sequence<TDF_Label>& theOccurrences)
+{
+  theOccurrences.Clear();
+  if (theHoleL.IsNull())
+  {
+    return;
+  }
+  for (TDF_ChildIterator anIter(theHoleL); anIter.More(); anIter.Next())
+  {
+    TCollection_AsciiString aText;
+    if (holeText(anIter.Value(), aText) && supplementalLine(aText, 1) == "occurrence")
+    {
+      theOccurrences.Append(anIter.Value());
+    }
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetHoleOccurrence(const TDF_Label&                 theOccurrenceL,
+                                           TCollection_AsciiString&         theName,
+                                           gp_Ax3&                          thePosition,
+                                           NCollection_Sequence<TDF_Label>& theFaces)
+{
+  TCollection_AsciiString aText;
+  occ::handle<TDataStd_RealArray> aValues;
+  if (!holeText(theOccurrenceL, aText) || supplementalLine(aText, 1) != "occurrence"
+      || !theOccurrenceL.FindAttribute(TDataStd_RealArray::GetID(), aValues)
+      || aValues->Length() < 9)
+  {
+    return false;
+  }
+  theName     = supplementalLine(aText, 2);
+  thePosition = axesOf(aValues, aValues->Lower());
+  theFaces.Clear();
+  occ::handle<TDataStd_ReferenceList> aFaces;
+  if (theOccurrenceL.FindAttribute(TDataStd_ReferenceList::GetID(), aFaces))
+  {
+    for (NCollection_List<TDF_Label>::Iterator anIter(aFaces->List()); anIter.More();
+         anIter.Next())
+    {
+      theFaces.Append(anIter.Value());
+    }
+  }
+  return true;
 }
 
 //=================================================================================================

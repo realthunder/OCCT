@@ -171,6 +171,8 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <TDataStd_UAttribute.hxx>
 #include <XCAFDoc.hxx>
+#include <StepAP242_ItemIdentifiedRepresentationUsage.hxx>
+#include <StepBasic_MeasureWithUnit.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <StepVisual_AnnotationPlane.hxx>
 #include <StepVisual_CameraModelD3MultiClipping.hxx>
@@ -6741,6 +6743,249 @@ static void readSupplementalGeometry(
 
 //=================================================================================================
 
+//=======================================================================
+// function : holeLength
+// purpose  : a length of a hole, in the document's unit: a measure with unit, or one OCCT does
+//            not know (positive_length_measure_with_unit), its first number
+//=======================================================================
+static bool holeLength(const occ::handle<Standard_Transient>& theEnt,
+                       const double                           theFactor,
+                       double&                                theValue)
+{
+  occ::handle<StepBasic_MeasureWithUnit> aMeasure = occ::down_cast<StepBasic_MeasureWithUnit>(theEnt);
+  if (!aMeasure.IsNull())
+  {
+    theValue = aMeasure->ValueComponent() * theFactor;
+    return true;
+  }
+  occ::handle<StepData_UndefinedEntity> anUndefined = occ::down_cast<StepData_UndefinedEntity>(theEnt);
+  if (anUndefined.IsNull())
+  {
+    return false;
+  }
+  occ::handle<Interface_UndefinedContent> aContent = anUndefined->UndefinedContent();
+  for (int i = 1; i <= aContent->NbParams(); ++i)
+  {
+    const Interface_ParamType aType = aContent->ParamType(i);
+    if ((aType == Interface_ParamReal || aType == Interface_ParamInteger)
+        && !aContent->ParamValue(i).IsNull())
+    {
+      theValue = Atof(aContent->ParamValue(i)->ToCString()) * theFactor;
+      return true;
+    }
+    if (aContent->IsParamEntity(i))
+    {
+      occ::handle<StepData_UndefinedEntity> aSub =
+        occ::down_cast<StepData_UndefinedEntity>(aContent->ParamEntity(i));
+      if (!aSub.IsNull() && aSub->IsSub() && holeLength(aSub, theFactor, theValue))
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+//=======================================================================
+// function : readHoles
+// purpose  : the holes a file defines (AP242 ed3 hole features: NIST STC-09's
+//            basic_round_hole), each occurrence of them by its usage -- where it is, its faces
+//=======================================================================
+static void readHoles(
+  const occ::handle<XSControl_WorkSession>&                                    theWS,
+  const occ::handle<XCAFDoc_ShapeTool>&                                        theSTool,
+  const occ::handle<XCAFDoc_DimTolTool>&                                       theDGTTool,
+  const NCollection_DataMap<TopoDS_Shape, TDF_Label, TopTools_ShapeMapHasher>& theMap,
+  const StepData_Factors&                                                      theLocalFactors)
+{
+  const occ::handle<Interface_InterfaceModel>&  aModel = theWS->Model();
+  const occ::handle<Transfer_TransientProcess>& aTP = theWS->TransferReader()->TransientProcess();
+  // The factors of a representation's context, as the GD&T's are taken (its lengths in it)
+  auto aFactorsOf = [&](const occ::handle<StepRepr_Representation>& theRep) {
+    StepData_Factors aFactors = theLocalFactors;
+    if (!theRep.IsNull())
+    {
+      STEPControl_ActorRead anActor(aModel);
+      anActor.PrepareUnits(theRep, aTP, aFactors);
+    }
+    return aFactors;
+  };
+  // A definition's XCAF hole, made with its first occurrence: of that one's part
+  NCollection_DataMap<occ::handle<Standard_Transient>, TDF_Label> aHoles;
+  auto aPartOf = [&](const occ::handle<Standard_Transient>& thePDS) {
+    TDF_Label                                    aPartL;
+    occ::handle<StepRepr_ProductDefinitionShape> aPDS =
+      occ::down_cast<StepRepr_ProductDefinitionShape>(thePDS);
+    occ::handle<StepBasic_ProductDefinition> aPD =
+      aPDS.IsNull() ? nullptr : aPDS->Definition().ProductDefinition();
+    occ::handle<Transfer_Binder> aBinder = aPD.IsNull() ? nullptr : aTP->Find(aPD);
+    if (aBinder.IsNull() || !aBinder->HasResult())
+    {
+      return aPartL;
+    }
+    const TopoDS_Shape aPart = TransferBRep::ShapeResult(aTP, aBinder);
+    if (aPart.IsNull())
+    {
+      return aPartL;
+    }
+    if (theMap.IsBound(aPart))
+    {
+      aPartL = theMap.Find(aPart);
+    }
+    else
+    {
+      theSTool->Search(aPart, aPartL, true, true, false);
+    }
+    return aPartL;
+  };
+  auto aDefinitionOf = [&](const occ::handle<StepData_UndefinedEntity>& theHole,
+                           XCAFDoc_DimTolTool::HoleDefinition&          theDef) {
+    occ::handle<Interface_UndefinedContent> aContent = theHole->UndefinedContent();
+    if (aContent->NbParams() < 8)
+    {
+      return false;
+    }
+    occ::handle<StepRepr_Representation> aPlacement =
+      aContent->IsParamEntity(7) ? occ::down_cast<StepRepr_Representation>(aContent->ParamEntity(7))
+                                 : nullptr;
+    const StepData_Factors aFactors = aFactorsOf(aPlacement);
+    const double           aFactor  = aFactors.LengthFactor();
+    TCollection_AsciiString aKind(theHole->StepType());
+    aKind.LowerCase();
+    theDef.Kind = aKind;
+    if (!aContent->ParamValue(1).IsNull())
+    {
+      TCollection_AsciiString aName = aContent->ParamValue(1)->String();
+      // A text parameter keeps its quotes
+      if (aName.Length() >= 2 && aName.Value(1) == '\'' && aName.Value(aName.Length()) == '\'')
+      {
+        aName = aName.SubString(2, aName.Length() - 1);
+      }
+      theDef.Name = aName;
+    }
+    auto aTolerance = [&](int theParam, bool& theHas, double& theLower, double& theUpper) {
+      occ::handle<StepShape_ToleranceValue> aTol =
+        aContent->IsParamEntity(theParam)
+          ? occ::down_cast<StepShape_ToleranceValue>(aContent->ParamEntity(theParam))
+          : nullptr;
+      theHas = !aTol.IsNull() && holeLength(aTol->LowerBound(), aFactor, theLower)
+               && holeLength(aTol->UpperBound(), aFactor, theUpper);
+    };
+    theDef.HasDepth = aContent->IsParamEntity(3)
+                      && holeLength(aContent->ParamEntity(3), aFactor, theDef.Depth);
+    aTolerance(4, theDef.DepthToleranced, theDef.DepthLower, theDef.DepthUpper);
+    if (!aContent->IsParamEntity(5)
+        || !holeLength(aContent->ParamEntity(5), aFactor, theDef.Diameter))
+    {
+      return false;
+    }
+    aTolerance(6, theDef.DiameterToleranced, theDef.DiameterLower, theDef.DiameterUpper);
+    for (int i = 1; !aPlacement.IsNull() && i <= aPlacement->NbItems(); ++i)
+    {
+      occ::handle<StepGeom_Axis2Placement3d> anAx =
+        occ::down_cast<StepGeom_Axis2Placement3d>(aPlacement->ItemsValue(i));
+      occ::handle<Geom_Axis2Placement> anAxes =
+        anAx.IsNull() ? nullptr : StepToGeom::MakeAxis2Placement(anAx, aFactors);
+      if (!anAxes.IsNull())
+      {
+        theDef.Axes = gp_Ax3(anAxes->Ax2());
+        break;
+      }
+    }
+    const occ::handle<TCollection_HAsciiString> aThrough = aContent->ParamValue(8);
+    theDef.Through = !aThrough.IsNull() && aThrough->Search("T") > 0;
+    return true;
+  };
+  const int aNb = aModel->NbEntities();
+  for (int i = 1; i <= aNb; i++)
+  {
+    occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aUsage =
+      occ::down_cast<StepAP242_ItemIdentifiedRepresentationUsage>(aModel->Value(i));
+    if (aUsage.IsNull()
+        || aUsage->IsKind(STANDARD_TYPE(StepAP242_DraughtingModelItemAssociation)))
+    {
+      continue;
+    }
+    occ::handle<StepData_UndefinedEntity> anOcc =
+      occ::down_cast<StepData_UndefinedEntity>(aUsage->Definition().Value());
+    if (anOcc.IsNull())
+    {
+      continue;
+    }
+    const TCollection_AsciiString anOccType(anOcc->StepType());
+    occ::handle<Interface_UndefinedContent> anOccContent = anOcc->UndefinedContent();
+    if (anOccType.Search("HOLE") <= 0 || anOccType.Search("OCCURRENCE") <= 0
+        || anOccContent->NbParams() < 5 || !anOccContent->IsParamEntity(5))
+    {
+      continue;
+    }
+    occ::handle<StepData_UndefinedEntity> aHole =
+      occ::down_cast<StepData_UndefinedEntity>(anOccContent->ParamEntity(5));
+    if (aHole.IsNull())
+    {
+      continue;
+    }
+    TDF_Label aHoleL;
+    if (aHoles.IsBound(aHole))
+    {
+      aHoleL = aHoles.Find(aHole);
+    }
+    else
+    {
+      XCAFDoc_DimTolTool::HoleDefinition aDef;
+      const TDF_Label                    aPartL =
+        anOccContent->IsParamEntity(3) ? aPartOf(anOccContent->ParamEntity(3)) : TDF_Label();
+      if (aPartL.IsNull() || !aDefinitionOf(aHole, aDef))
+      {
+        continue;
+      }
+      aHoleL = theDGTTool->AddHole(aPartL, aDef);
+      aHoles.Bind(aHole, aHoleL);
+    }
+    TCollection_AsciiString aName;
+    if (!anOccContent->ParamValue(1).IsNull())
+    {
+      aName = anOccContent->ParamValue(1)->String();
+      if (aName.Length() >= 2 && aName.Value(1) == '\'' && aName.Value(aName.Length()) == '\'')
+      {
+        aName = aName.SubString(2, aName.Length() - 1);
+      }
+    }
+    // Where it is (a mapped item of its definition's placement), and its faces
+    gp_Ax3                          aPosition;
+    NCollection_Sequence<TDF_Label> aFaces;
+    const StepData_Factors          aPositionFactors = aFactorsOf(aUsage->UsedRepresentation());
+    for (int j = 1; j <= aUsage->NbIdentifiedItem(); ++j)
+    {
+      occ::handle<StepRepr_RepresentationItem> anItem = aUsage->IdentifiedItemValue(j);
+      occ::handle<StepRepr_MappedItem>         aMapped = occ::down_cast<StepRepr_MappedItem>(anItem);
+      if (!aMapped.IsNull())
+      {
+        occ::handle<StepGeom_Axis2Placement3d> aTarget =
+          occ::down_cast<StepGeom_Axis2Placement3d>(aMapped->MappingTarget());
+        occ::handle<Geom_Axis2Placement> anAxes =
+          aTarget.IsNull() ? nullptr : StepToGeom::MakeAxis2Placement(aTarget, aPositionFactors);
+        if (!anAxes.IsNull())
+        {
+          aPosition = gp_Ax3(anAxes->Ax2());
+        }
+        continue;
+      }
+      occ::handle<Transfer_Binder> aBinder = anItem.IsNull() ? nullptr : aTP->Find(anItem);
+      const TopoDS_Shape           aShape =
+        aBinder.IsNull() ? TopoDS_Shape() : TransferBRep::ShapeResult(aTP, aBinder);
+      TDF_Label aFaceL;
+      if (!aShape.IsNull() && theSTool->Search(aShape, aFaceL, true, true, true))
+      {
+        aFaces.Append(aFaceL);
+      }
+    }
+    XCAFDoc_DimTolTool::AddHoleOccurrence(aHoleL, aName, aPosition, aFaces);
+  }
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& theWS,
                                      const occ::handle<TDocStd_Document>&      theDoc,
                                      const StepData_Factors&                   theLocalFactors)
@@ -6762,6 +7007,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
     return false;
   }
   readSupplementalGeometry(theWS, aSTool, aDGTTool, myMap, theLocalFactors);
+  readHoles(theWS, aSTool, aDGTTool, myMap, theLocalFactors);
 
   int nb = aModel->NbEntities();
   for (int i = 1; i <= nb; i++)

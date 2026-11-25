@@ -144,11 +144,15 @@ void RWStepAP242_RWItemIdentifiedRepresentationUsage::WriteStep(
   }
   else
   {
+    // A set of items, as the select's other member has it: SET_REPRESENTATION_ITEM((...)),
+    // as the reader reads it (NIST STC-09's holes: a placement and two faces each)
+    SW.OpenTypedSub("SET_REPRESENTATION_ITEM");
     SW.OpenSub();
     for (int i = 1; i <= ent->NbIdentifiedItem(); i++)
     {
       SW.Send(ent->IdentifiedItemValue(i));
     }
+    SW.CloseSub();
     SW.CloseSub();
   }
 }

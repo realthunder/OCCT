@@ -15,6 +15,8 @@
 
 #include <StepAP242_ItemIdentifiedRepresentationUsageDefinition.hxx>
 #include <MoniTool_Macros.hxx>
+#include <StepData_UndefinedEntity.hxx>
+#include <TCollection_AsciiString.hxx>
 #include <StepAP214_AppliedApprovalAssignment.hxx>
 #include <StepAP214_AppliedDateAndTimeAssignment.hxx>
 #include <StepAP214_AppliedDateAssignment.hxx>
@@ -114,6 +116,17 @@ int StepAP242_ItemIdentifiedRepresentationUsageDefinition::CaseNum(
   if (ent->IsKind(STANDARD_TYPE(StepRepr_ShapeAspectRelationship)))
   {
     return 17;
+  }
+  // A hole occurrence (AP242 ed3: basic_round_hole_occurrence, a shape aspect no class is
+  // for): kept as it is read, so that its usages -- its faces, its position -- are
+  occ::handle<StepData_UndefinedEntity> anUndefined = occ::down_cast<StepData_UndefinedEntity>(ent);
+  if (!anUndefined.IsNull())
+  {
+    const TCollection_AsciiString aType(anUndefined->StepType());
+    if (aType.Search("HOLE") > 0 && aType.Search("OCCURRENCE") > 0)
+    {
+      return 18;
+    }
   }
   return 0;
 }
