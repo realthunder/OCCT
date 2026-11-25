@@ -1219,6 +1219,42 @@ bool XCAFDoc_DimTolTool::GetViewSupplemental(const TDF_Label&                 th
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetAspectStructure(const TDF_Label&               theGDTL,
+                                            const bool                     theIsSecond,
+                                            const TCollection_AsciiString& theStructure)
+{
+  if (theGDTL.IsNull())
+  {
+    return;
+  }
+  const Standard_GUID& anID =
+    theIsSecond ? XCAFDoc::SecondAspectStructureGUID() : XCAFDoc::AspectStructureGUID();
+  theGDTL.ForgetAttribute(anID);
+  if (!theStructure.IsEmpty())
+  {
+    TDataStd_AsciiString::Set(theGDTL, anID, theStructure);
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetAspectStructure(const TDF_Label&         theGDTL,
+                                            const bool               theIsSecond,
+                                            TCollection_AsciiString& theStructure)
+{
+  occ::handle<TDataStd_AsciiString> aText;
+  const Standard_GUID&              anID =
+    theIsSecond ? XCAFDoc::SecondAspectStructureGUID() : XCAFDoc::AspectStructureGUID();
+  if (theGDTL.IsNull() || !theGDTL.FindAttribute(anID, aText))
+  {
+    return false;
+  }
+  theStructure = aText->Get();
+  return !theStructure.IsEmpty();
+}
+
+//=================================================================================================
+
 bool XCAFDoc_DimTolTool::IsSupplementalItem(const TDF_Label& theItemL)
 {
   TCollection_AsciiString aText;

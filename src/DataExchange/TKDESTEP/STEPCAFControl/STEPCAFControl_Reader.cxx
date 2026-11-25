@@ -101,6 +101,12 @@
 #include <StepGeom_Plane.hxx>
 #include <StepDimTol_PlacedDatumTargetFeature.hxx>
 #include <StepRepr_DerivedShapeAspect.hxx>
+#include <StepRepr_CompositeShapeAspect.hxx>
+#include <StepRepr_CompositeGroupShapeAspect.hxx>
+#include <StepRepr_ContinuosShapeAspect.hxx>
+#include <StepDimTol_DatumTarget.hxx>
+#include <cstdio>
+#include <cstring>
 #include <StepRepr_DescriptiveRepresentationItem.hxx>
 #include <StepRepr_MappedItem.hxx>
 #include <StepRepr_MeasureRepresentationItem.hxx>
@@ -4323,6 +4329,127 @@ static void collectShapeAspect(const occ::handle<StepRepr_ShapeAspect>&         
   }
 }
 
+//=======================================================================
+// function : aspectText
+// purpose  : a name or description in an aspect structure, its reserved characters as %XX
+//            (XCAFDoc_DimTolTool::SetAspectStructure)
+//=======================================================================
+static TCollection_AsciiString aspectText(const occ::handle<TCollection_HAsciiString>& theText)
+{
+  TCollection_AsciiString anOut;
+  if (theText.IsNull())
+  {
+    return anOut;
+  }
+  const TCollection_AsciiString& aText = theText->String();
+  for (int i = 1; i <= aText.Length(); ++i)
+  {
+    const char aChar = aText.Value(i);
+    if (std::strchr("%{|}(),+", aChar) != nullptr)
+    {
+      char aCode[4];
+      std::snprintf(aCode, sizeof(aCode), "%%%02X", static_cast<unsigned char>(aChar));
+      anOut += aCode;
+    }
+    else
+    {
+      anOut += aChar;
+    }
+  }
+  return anOut;
+}
+
+//=======================================================================
+// function : aspectStructure
+// purpose  : how a composite shape aspect groups the shapes of a GD&T, as
+//            XCAFDoc_DimTolTool::SetAspectStructure says it: its composite and composite group
+//            shape aspects, each leaf the labels its items were read as. False for a structure
+//            it cannot say (all around, derived, a leaf that is a composite of another kind)
+//=======================================================================
+static bool aspectStructure(
+  const occ::handle<StepRepr_ShapeAspect>& theSA,
+  const Interface_Graph&                   theGraph,
+  const NCollection_DataMap<occ::handle<Standard_Transient>,
+                            NCollection_Sequence<occ::handle<Standard_Transient>>>& theLeafItems,
+  const NCollection_DataMap<occ::handle<Standard_Transient>, NCollection_Sequence<TDF_Label>>&
+                           theItemLabels,
+  TCollection_AsciiString& theOut)
+{
+  if (theSA.IsNull() || !theSA->IsKind(STANDARD_TYPE(StepRepr_CompositeShapeAspect))
+      || theSA->IsKind(STANDARD_TYPE(StepRepr_ContinuosShapeAspect)))
+  {
+    return false;
+  }
+  TCollection_AsciiString aMembers;
+  for (Interface_EntityIterator anIter = theGraph.Sharings(theSA); anIter.More(); anIter.Next())
+  {
+    occ::handle<StepRepr_ShapeAspectRelationship> aSAR =
+      occ::down_cast<StepRepr_ShapeAspectRelationship>(anIter.Value());
+    if (aSAR.IsNull() || anIter.Value()->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation))
+        || aSAR->RelatingShapeAspect() != theSA || aSAR->RelatedShapeAspect().IsNull()
+        || aSAR->RelatedShapeAspect()->IsKind(STANDARD_TYPE(StepDimTol_Datum)))
+    {
+      continue;
+    }
+    const occ::handle<StepRepr_ShapeAspect>& aChild = aSAR->RelatedShapeAspect();
+    TCollection_AsciiString                  aMember;
+    if (aChild->IsKind(STANDARD_TYPE(StepRepr_CompositeShapeAspect)))
+    {
+      if (!aspectStructure(aChild, theGraph, theLeafItems, theItemLabels, aMember))
+      {
+        return false;
+      }
+    }
+    else if (aChild->IsKind(STANDARD_TYPE(StepRepr_DerivedShapeAspect))
+             || aChild->IsKind(STANDARD_TYPE(StepDimTol_DatumFeature))
+             || aChild->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)))
+    {
+      return false;
+    }
+    else
+    {
+      const NCollection_Sequence<occ::handle<Standard_Transient>>* anItems =
+        theLeafItems.Seek(aChild);
+      for (int i = 1; anItems != nullptr && i <= anItems->Length(); ++i)
+      {
+        const NCollection_Sequence<TDF_Label>* aLabels = theItemLabels.Seek(anItems->Value(i));
+        for (int j = 1; aLabels != nullptr && j <= aLabels->Length(); ++j)
+        {
+          TCollection_AsciiString anEntry;
+          TDF_Tool::Entry(aLabels->Value(j), anEntry);
+          if (!aMember.IsEmpty())
+          {
+            aMember += "+";
+          }
+          aMember += anEntry;
+        }
+      }
+    }
+    if (aMember.IsEmpty())
+    {
+      // A leaf of no shape read: not a member
+      continue;
+    }
+    if (!aMembers.IsEmpty())
+    {
+      aMembers += ",";
+    }
+    aMembers += aMember;
+  }
+  if (aMembers.IsEmpty())
+  {
+    return false;
+  }
+  theOut = theSA->IsKind(STANDARD_TYPE(StepRepr_CompositeGroupShapeAspect)) ? "G{" : "C{";
+  theOut += aspectText(theSA->Name());
+  theOut += "|";
+  theOut += aspectText(theSA->Description());
+  theOut += "}(";
+  theOut += aMembers;
+  theOut += ")";
+  return true;
+}
+
 //=================================================================================================
 
 static TDF_Label getShapeLabel(const occ::handle<StepRepr_RepresentationItem>& theItem,
@@ -4985,6 +5112,14 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
 
   // find RepresentationItem for current Ent
   NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI1, aSeqRI2;
+  // How a composite shape aspect groups them: the items of each of its leaves, the labels each
+  // item is read as, the composite of each side (XCAFDoc_DimTolTool::SetAspectStructure)
+  NCollection_DataMap<occ::handle<Standard_Transient>,
+                      NCollection_Sequence<occ::handle<Standard_Transient>>>
+    aLeafItems;
+  NCollection_DataMap<occ::handle<Standard_Transient>, NCollection_Sequence<TDF_Label>>
+                                    anItemLabels;
+  occ::handle<StepRepr_ShapeAspect> aTopSA1, aTopSA2;
 
   // Collect all Shape_Aspect entities: a size with a datum feature applies to itself (what it
   // shares beside is its product definition shape, not a tolerance on all of it)
@@ -5396,22 +5531,38 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
           {
             continue;
           }
+          if (!aLeafItems.IsBound(aSAs.Value(i)))
+          {
+            aLeafItems.Bind(aSAs.Value(i), NCollection_Sequence<occ::handle<Standard_Transient>>());
+          }
           int j = 1;
           for (; j <= aGISU->NbIdentifiedItem(); j++)
           {
             aSeqRI.Append(aGISU->IdentifiedItemValue(j));
+            aLeafItems.ChangeFind(aSAs.Value(i)).Append(aGISU->IdentifiedItemValue(j));
           }
         }
       }
       if (!aSeqRI.IsEmpty())
       {
+        // A composite shape aspect: how it groups them is kept (a pattern of features)
+        // -- a tolerance of a feature of size is on its size's (NIST STC-07's positions)
+        occ::handle<StepRepr_ShapeAspect> aTop =
+          isAllAround ? occ::handle<StepRepr_ShapeAspect>()
+                      : occ::down_cast<StepRepr_ShapeAspect>(anAtr);
+        if (!isAllAround && anAtr->IsKind(STANDARD_TYPE(StepShape_DimensionalSize)))
+        {
+          aTop = occ::down_cast<StepShape_DimensionalSize>(anAtr)->AppliesTo();
+        }
         if (aSeqRI1.IsEmpty())
         {
           aSeqRI1 = aSeqRI;
+          aTopSA1 = aTop;
         }
         else
         {
           aSeqRI2 = aSeqRI;
+          aTopSA2 = aTop;
         }
       }
     }
@@ -5450,6 +5601,7 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
       occ::handle<Transfer_Binder> aBinder = aTP->MapItem(anIndex);
       aSh                                  = TransferBRep::ShapeResult(aBinder);
     }
+    const int aFrom = aShLS1.Length();
     if (!aSh.IsNull())
     {
       TDF_Label aShL;
@@ -5473,6 +5625,15 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
         aShLS1.Append(aShL);
       }
     }
+    NCollection_Sequence<TDF_Label> anItemLs;
+    for (int k = aFrom + 1; k <= aShLS1.Length(); ++k)
+    {
+      anItemLs.Append(aShLS1.Value(k));
+    }
+    if (!anItemLabels.IsBound(aSeqRI1.Value(i)))
+    {
+      anItemLabels.Bind(aSeqRI1.Value(i), anItemLs);
+    }
   }
   if (!aSeqRI2.IsEmpty())
   {
@@ -5488,6 +5649,7 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
         occ::handle<Transfer_Binder> aBinder = aTP->MapItem(anIndex);
         aSh                                  = TransferBRep::ShapeResult(aBinder);
       }
+      const int aFrom = aShLS2.Length();
       if (!aSh.IsNull())
       {
         TDF_Label aShL;
@@ -5510,6 +5672,15 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
         {
           aShLS2.Append(aShL);
         }
+      }
+      NCollection_Sequence<TDF_Label> anItemLs;
+      for (int k = aFrom + 1; k <= aShLS2.Length(); ++k)
+      {
+        anItemLs.Append(aShLS2.Value(k));
+      }
+      if (!anItemLabels.IsBound(aSeqRI2.Value(i)))
+      {
+        anItemLabels.Bind(aSeqRI2.Value(i), anItemLs);
       }
     }
   }
@@ -5599,6 +5770,28 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
     {
       TCollection_ExtendedString str(aSemanticName->String());
       TDataStd_Name::Set(aGDTL, str);
+    }
+
+    // How a composite shape aspect groups its shapes (NIST: a pattern of holes, each of two
+    // faces): kept, for it to be written so again -- by the entity's number too, the GD&T on
+    // the same one on one again
+    const occ::handle<Interface_InterfaceModel>& aStructModel = theWS->Model();
+    TCollection_AsciiString                      aStructure;
+    if (aWholePDS.IsNull()
+        && aspectStructure(aTopSA1, aGraph, aLeafItems, anItemLabels, aStructure))
+    {
+      XCAFDoc_DimTolTool::SetAspectStructure(
+        aGDTL,
+        false,
+        TCollection_AsciiString("@") + aStructModel->Number(aTopSA1) + aStructure);
+    }
+    aStructure.Clear();
+    if (aspectStructure(aTopSA2, aGraph, aLeafItems, anItemLabels, aStructure))
+    {
+      XCAFDoc_DimTolTool::SetAspectStructure(
+        aGDTL,
+        true,
+        TCollection_AsciiString("@") + aStructModel->Number(aTopSA2) + aStructure);
     }
 
     readDatumsAP242(theEnt, aGDTL, theDoc, theWS, theLocalFactors);
