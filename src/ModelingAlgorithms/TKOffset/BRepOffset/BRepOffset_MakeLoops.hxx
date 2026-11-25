@@ -68,4 +68,9 @@ private:
 Standard_EXPORT NCollection_List<TopoDS_Shape> BRepOffset_MakeLoops_ThawedVertices(
   const bool theIsCleared);
 
+//! (realthunder) The distance within which the loops of this thread take two
+//! vertices for one (BRepAlgo_Loop::SetTolConf), <theTolConf> from now on; 0
+//! leaves the loop's own, 0.001. Returns the one it replaces.
+Standard_EXPORT double BRepOffset_MakeLoops_TolConf(const double theTolConf);
+
 #endif // _BRepOffset_MakeLoops_HeaderFile
