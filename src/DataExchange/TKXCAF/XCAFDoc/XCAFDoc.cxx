@@ -184,6 +184,22 @@ const Standard_GUID& XCAFDoc::GDTHiddenGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::GDTHiddenCalloutGUID()
+{
+  static const Standard_GUID ID("a5b03c56-c1d1-40a8-a0bb-8c8390f27bf4");
+  return ID;
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc::GDTPlaceholderHiddenGUID()
+{
+  static const Standard_GUID ID("e109e62c-9931-4962-85ce-1804e875c7be");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::GDTCurvesGUID()
 {
   static const Standard_GUID ID("3f6b9e27-c41d-4e58-9a02-d7e83c15b6f4");

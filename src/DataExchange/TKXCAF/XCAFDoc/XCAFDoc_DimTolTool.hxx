@@ -337,6 +337,21 @@ public:
   //! Whether the presentation of the GD&T theGDTL is not shown.
   Standard_EXPORT static bool IsPresentationHidden(const TDF_Label& theGDTL);
 
+  //! Says the hidden GD&T theGDTL had its callout listed by the INVISIBILITY, not its graphic
+  //! (NIST FTC-09): written so again.
+  Standard_EXPORT static void SetPresentationHiddenCallout(const TDF_Label& theGDTL,
+                                                           const bool       theCallout);
+
+  //! Whether the hidden GD&T theGDTL is hidden by its callout.
+  Standard_EXPORT static bool IsPresentationHiddenCallout(const TDF_Label& theGDTL);
+
+  //! Says the annotation placeholder of the GD&T theGDTL is not shown, while it is hidden (STEP:
+  //! listed by an INVISIBILITY; NIST STC-06 hides 19, STC-08 none of its hidden PMI's).
+  Standard_EXPORT static void SetPlaceholderHidden(const TDF_Label& theGDTL, const bool theHidden);
+
+  //! Whether the annotation placeholder of the GD&T theGDTL is not shown.
+  Standard_EXPORT static bool IsPlaceholderHidden(const TDF_Label& theGDTL);
+
   //! Says the presentation of the GD&T theGDTL is given as curves (STEP: an annotation curve
   //! occurrence of polylines and circles, NIST CTC-05's), not tessellated.
   Standard_EXPORT static void SetPresentationCurves(const TDF_Label& theGDTL, const bool theCurves);

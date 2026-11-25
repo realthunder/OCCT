@@ -803,6 +803,57 @@ bool XCAFDoc_DimTolTool::IsPresentationHidden(const TDF_Label& theGDTL)
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetPresentationHiddenCallout(const TDF_Label& theGDTL,
+                                                      const bool       theCallout)
+{
+  if (theGDTL.IsNull())
+  {
+    return;
+  }
+  if (theCallout)
+  {
+    TDataStd_UAttribute::Set(theGDTL, XCAFDoc::GDTHiddenCalloutGUID());
+  }
+  else
+  {
+    theGDTL.ForgetAttribute(XCAFDoc::GDTHiddenCalloutGUID());
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::IsPresentationHiddenCallout(const TDF_Label& theGDTL)
+{
+  return !theGDTL.IsNull() && theGDTL.IsAttribute(XCAFDoc::GDTHiddenCalloutGUID());
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::SetPlaceholderHidden(const TDF_Label& theGDTL, const bool theHidden)
+{
+  if (theGDTL.IsNull())
+  {
+    return;
+  }
+  if (theHidden)
+  {
+    TDataStd_UAttribute::Set(theGDTL, XCAFDoc::GDTPlaceholderHiddenGUID());
+  }
+  else
+  {
+    theGDTL.ForgetAttribute(XCAFDoc::GDTPlaceholderHiddenGUID());
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::IsPlaceholderHidden(const TDF_Label& theGDTL)
+{
+  return !theGDTL.IsNull() && theGDTL.IsAttribute(XCAFDoc::GDTPlaceholderHiddenGUID());
+}
+
+//=================================================================================================
+
 void XCAFDoc_DimTolTool::SetPresentationCurves(const TDF_Label& theGDTL, const bool theCurves)
 {
   if (theGDTL.IsNull())

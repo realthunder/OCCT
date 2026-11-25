@@ -341,6 +341,8 @@ public:
   //! one each. Its callout first, then the placeholder
   NCollection_DataMap<TCollection_AsciiString, NCollection_Array1<occ::handle<Standard_Transient>>>
     Placeholders;
+  //! The placeholder each GD&T label was written with (its own): hidden with it
+  NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>> PlaceholderOf;
   //! Supplemental geometry written (XCAFDoc_DimTolTool::AddSupplementalGeometry): each set of
   //! curves, the item GD&T on it identifies, with its constructive geometry representation --
   //! the representation the usage is of -- and its part's shape
@@ -3662,6 +3664,7 @@ static void writePlaceholder(
   {
     gdtState(theDM).Placeholders.Bind(aKey, aThis);
   }
+  gdtState(theDM).PlaceholderOf.Bind(theLabel, aPlaceholder);
   // A placeholder and its association are of AP242's second edition: the file says so (one
   // identified as the first edition and holding them is told off by SFA)
   setEdition2(aModel);
@@ -7375,10 +7378,25 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
       {
         continue;
       }
+      // Its placeholder too, when the file hid it (NIST STC-06 hides its 19, STC-08 none)
+      const occ::handle<Standard_Transient>* aPlaceholder =
+        XCAFDoc_DimTolTool::IsPlaceholderHidden(anIter.Key())
+          ? aState.PlaceholderOf.Seek(anIter.Key())
+          : nullptr;
+      if (aPlaceholder != nullptr)
+      {
+        aHidden.Append(*aPlaceholder);
+      }
+      const bool isCallout = XCAFDoc_DimTolTool::IsPresentationHiddenCallout(anIter.Key());
       for (const auto& anItem : anIter.Value())
       {
         occ::handle<StepVisual_DraughtingCallout> aCallout =
           occ::down_cast<StepVisual_DraughtingCallout>(anItem);
+        if (isCallout && !aCallout.IsNull())
+        {
+          aHidden.Append(aCallout);
+          continue;
+        }
         for (int i = 1; !aCallout.IsNull() && i <= aCallout->NbContents(); ++i)
         {
           occ::handle<StepVisual_StyledItem> anOccurrence =

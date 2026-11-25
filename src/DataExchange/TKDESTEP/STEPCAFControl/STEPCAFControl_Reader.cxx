@@ -7526,17 +7526,32 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
     // A placeholder two PMI are linked to (NIST STC-06's hole callout, its diameter's and its
     // depth's) is the first's, and the second's as shared
     const bool isShared = !aSeenPlaceholders.Add(aLink->AnnotationPlaceholder());
+    // Not shown (an INVISIBILITY lists it: NIST STC-06's 19), kept so
+    bool isHidden = false;
+    for (Interface_EntityIterator anIter = aGraph.Sharings(aLink->AnnotationPlaceholder());
+         anIter.More() && !isHidden;
+         anIter.Next())
+    {
+      isHidden = anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_Invisibility));
+    }
+    auto aSet = [&](const TDF_Label& theL, const bool theShared) {
+      XCAFDoc_DimTolTool::SetPlaceholder(theL, aKind->String(), aName, theShared);
+      if (isHidden)
+      {
+        XCAFDoc_DimTolTool::SetPlaceholderHidden(theL, true);
+      }
+    };
     if (!aDef.IsNull() && myGDTMap.Find(aDef, aOfL) && !aOfL.IsNull()
         && (hasPresentation(aOfL) || aName.IsEmpty() || !aByName.IsBound(aName)))
     {
-      XCAFDoc_DimTolTool::SetPlaceholder(aOfL, aKind->String(), aName, isShared);
+      aSet(aOfL, isShared);
       continue;
     }
     // Of a PMI that holds no graphic (a dimension given no value, NIST CTC-03's Linear Size.10):
     // the graphic alone read for it is what is written again, and has its placeholder
     if (!aOfL.IsNull())
     {
-      XCAFDoc_DimTolTool::SetPlaceholder(aOfL, aKind->String(), aName);
+      aSet(aOfL, false);
     }
     if (aName.IsEmpty() || !aByName.IsBound(aName))
     {
@@ -7547,7 +7562,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
     {
       if (!XCAFDoc_DimTolTool::GetPlaceholder(aLIt.Value(), aHas, aHasName))
       {
-        XCAFDoc_DimTolTool::SetPlaceholder(aLIt.Value(), aKind->String(), aName);
+        aSet(aLIt.Value(), false);
         break;
       }
     }
@@ -7611,8 +7626,11 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
          ++j)
     {
       occ::handle<Standard_Transient> anItem = anInvisibility->InvisibleItems()->Value(j).Value();
+      // Its callout listed (NIST FTC-09's 44): the PMI hidden by it, written so again
+      const bool isCallout =
+        !anItem.IsNull() && anItem->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout));
       if (anItem.IsNull()
-          || !(anItem->IsKind(STANDARD_TYPE(StepVisual_AnnotationOccurrence))
+          || !(isCallout || anItem->IsKind(STANDARD_TYPE(StepVisual_AnnotationOccurrence))
                || anItem->IsKind(STANDARD_TYPE(StepVisual_TessellatedAnnotationOccurrence))))
       {
         continue;
@@ -7621,16 +7639,23 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       aPresenters.Append(anItem);
       for (Interface_EntityIterator anIter = aGraph.Sharings(anItem); anIter.More(); anIter.Next())
       {
-        if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+        if (!isCallout && anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
         {
           aPresenters.Append(anIter.Value());
         }
       }
+      auto aHide = [isCallout](const TDF_Label& theL) {
+        XCAFDoc_DimTolTool::SetPresentationHidden(theL, true);
+        if (isCallout)
+        {
+          XCAFDoc_DimTolTool::SetPresentationHiddenCallout(theL, true);
+        }
+      };
       for (const auto& aPresenter : aPresenters)
       {
         if (myGDTMap.IsBound(aPresenter))
         {
-          XCAFDoc_DimTolTool::SetPresentationHidden(myGDTMap.Find(aPresenter), true);
+          aHide(myGDTMap.Find(aPresenter));
         }
         for (Interface_EntityIterator anIter = aGraph.Sharings(aPresenter); anIter.More();
              anIter.Next())
@@ -7644,7 +7669,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
           const occ::handle<Standard_Transient> aDef = aDMIA->Definition().Value();
           if (!aDef.IsNull() && myGDTMap.IsBound(aDef))
           {
-            XCAFDoc_DimTolTool::SetPresentationHidden(myGDTMap.Find(aDef), true);
+            aHide(myGDTMap.Find(aDef));
           }
         }
       }
