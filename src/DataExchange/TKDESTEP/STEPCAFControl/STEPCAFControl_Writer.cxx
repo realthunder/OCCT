@@ -1439,7 +1439,8 @@ static void MakeSTEPStyles(
   const occ::handle<XCAFDoc_ShapeTool>&                                          theShTool,
   const XCAFPrs_Style*                                                           theInherit,
   const bool                                                                     theIsComponent,
-  const bool                                                                     theVisMaterialMode)
+  const bool                                                                     theVisMaterialMode,
+  NCollection_Sequence<occ::handle<StepVisual_StyledItem>>*                      theHidden = nullptr)
 {
   // skip already processed shapes
   if (!theMap.Add(theShape))
@@ -1551,7 +1552,12 @@ static void MakeSTEPStyles(
         } // end of component case
 
         aSTEPstyle = theStyles.AddStyle(anItem, aPSA, theOverride);
-        aHasOwn    = false;
+        // A part of the shape hidden alone: its style listed by an invisibility
+        if (theHidden && !aStyle.IsVisible() && !aSTEPstyle.IsNull())
+        {
+          theHidden->Append(aSTEPstyle);
+        }
+        aHasOwn = false;
       }
     }
   }
@@ -1578,7 +1584,8 @@ static void MakeSTEPStyles(
                    theShTool,
                    (aHasOwn ? &aStyle : nullptr),
                    false,
-                   theVisMaterialMode);
+                   theVisMaterialMode,
+                   theHidden);
   }
 }
 
@@ -1655,13 +1662,14 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
       const TDF_Label&   aSeqValue = aSeqIter.Value();
       XCAFPrs_Style      aStyle;
       Quantity_ColorRGBA aColor;
-      if (aSeqValue == aLabel)
+      // check for invisible status of object on label, and of a part of it hidden alone
+      const bool isSubVisible = XCAFDoc_ColorTool::IsVisible(aSeqValue);
+      if (!isSubVisible)
       {
-        // check for invisible status of object on label
-        if (!XCAFDoc_ColorTool::IsVisible(aSeqValue))
+        aStyle.SetVisibility(false);
+        if (aSeqValue == aLabel)
         {
           anIsVisible = false;
-          aStyle.SetVisibility(false);
         }
       }
       if (XCAFDoc_ColorTool::GetColor(aSeqValue, XCAFDoc_ColorGen, aColor))
@@ -1693,7 +1701,7 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
         }
       }
       if (!aStyle.IsSetColorCurv() && !aStyle.IsSetColorSurf() && aStyle.Material().IsNull()
-          && anIsVisible)
+          && isSubVisible)
       {
         continue;
       }
@@ -1719,6 +1727,7 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
     occ::handle<StepVisual_StyledItem>                     anOverride;
     NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMap;
 
+    NCollection_Sequence<occ::handle<StepVisual_StyledItem>> aHidden;
     MakeSTEPStyles(Styles,
                    aShape,
                    aSettings,
@@ -1730,7 +1739,8 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
                    aSTool,
                    nullptr,
                    anIsComponent,
-                   GetVisualMaterialMode());
+                   GetVisualMaterialMode(),
+                   &aHidden);
 
     const occ::handle<XSControl_TransferWriter>& aTW = theWS->TransferWriter();
     const occ::handle<Transfer_FinderProcess>&   aFP = aTW->FinderProcess();
@@ -1807,6 +1817,21 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
           aMDGPR->SetItems(aNewItems);
         }
       } // end of work with CDSR
+    }
+    if (anIsVisible && !aHidden.IsEmpty())
+    {
+      // The parts hidden alone (NIST STC-08's surface beside its solid): their styles
+      occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anItems =
+        new NCollection_HArray1<StepVisual_InvisibleItem>(1, aHidden.Length());
+      for (int i = 1; i <= aHidden.Length(); ++i)
+      {
+        StepVisual_InvisibleItem anInvItem;
+        anInvItem.SetValue(aHidden.Value(i));
+        anItems->SetValue(i, anInvItem);
+      }
+      occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
+      anInvisibility->Init(anItems);
+      theWS->Model()->AddWithRefs(anInvisibility);
     }
     if (!anIsVisible)
     {
@@ -6782,6 +6807,52 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     }
     myGDTPresentationDM->Init(new TCollection_HAsciiString(), aItems, aRC);
     aModel->AddWithRefs(myGDTPresentationDM);
+  }
+
+  // The presentations not shown (XCAFDoc_DimTolTool::SetPresentationHidden): their callouts'
+  // occurrences listed by an invisibility, as NIST's are. One drawn in another's graphic hides
+  // nothing of it
+  {
+    NCollection_Sequence<occ::handle<Standard_Transient>> aHidden;
+    using ItemMap =
+      NCollection_DataMap<TDF_Label, NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>>;
+    for (ItemMap::Iterator anIter(aState.Items); anIter.More(); anIter.Next())
+    {
+      TDF_Label aHost;
+      if (!XCAFDoc_DimTolTool::IsPresentationHidden(anIter.Key())
+          || XCAFDoc_DimTolTool::GetPresentedWith(anIter.Key(), aHost))
+      {
+        continue;
+      }
+      for (const auto& anItem : anIter.Value())
+      {
+        occ::handle<StepVisual_DraughtingCallout> aCallout =
+          occ::down_cast<StepVisual_DraughtingCallout>(anItem);
+        for (int i = 1; !aCallout.IsNull() && i <= aCallout->NbContents(); ++i)
+        {
+          occ::handle<StepVisual_StyledItem> anOccurrence =
+            occ::down_cast<StepVisual_StyledItem>(aCallout->ContentsValue(i).Value());
+          if (!anOccurrence.IsNull())
+          {
+            aHidden.Append(anOccurrence);
+          }
+        }
+      }
+    }
+    if (!aHidden.IsEmpty())
+    {
+      occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anItems =
+        new NCollection_HArray1<StepVisual_InvisibleItem>(1, aHidden.Length());
+      for (int i = 1; i <= aHidden.Length(); ++i)
+      {
+        StepVisual_InvisibleItem anInvItem;
+        anInvItem.SetValue(aHidden.Value(i));
+        anItems->SetValue(i, anInvItem);
+      }
+      occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
+      anInvisibility->Init(anItems);
+      aModel->AddWithRefs(anInvisibility);
+    }
   }
 
   writeViews(theWS, aRC, theLocalFactors);

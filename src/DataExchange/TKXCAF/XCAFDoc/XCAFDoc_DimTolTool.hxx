@@ -329,6 +329,13 @@ public:
   Standard_EXPORT static bool GetSupplementalColor(const TDF_Label& theItemL,
                                                    Quantity_Color&  theColor);
 
+  //! Says the presentation of the GD&T theGDTL is shown or not (STEP: its graphic listed by an
+  //! INVISIBILITY -- NIST STC-08 hides 29, STC-09 75).
+  Standard_EXPORT static void SetPresentationHidden(const TDF_Label& theGDTL, const bool theHidden);
+
+  //! Whether the presentation of the GD&T theGDTL is not shown.
+  Standard_EXPORT static bool IsPresentationHidden(const TDF_Label& theGDTL);
+
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,
                                         NCollection_Sequence<TDF_Label>& theDatum) const;

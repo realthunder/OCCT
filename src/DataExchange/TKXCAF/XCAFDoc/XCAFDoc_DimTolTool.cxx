@@ -777,6 +777,31 @@ bool XCAFDoc_DimTolTool::GetSupplementalItem(const TDF_Label&         theItemL,
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetPresentationHidden(const TDF_Label& theGDTL, const bool theHidden)
+{
+  if (theGDTL.IsNull())
+  {
+    return;
+  }
+  if (theHidden)
+  {
+    TDataStd_UAttribute::Set(theGDTL, XCAFDoc::GDTHiddenGUID());
+  }
+  else
+  {
+    theGDTL.ForgetAttribute(XCAFDoc::GDTHiddenGUID());
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::IsPresentationHidden(const TDF_Label& theGDTL)
+{
+  return !theGDTL.IsNull() && theGDTL.IsAttribute(XCAFDoc::GDTHiddenGUID());
+}
+
+//=================================================================================================
+
 void XCAFDoc_DimTolTool::SetSupplementalColor(const TDF_Label&      theItemL,
                                               const Quantity_Color& theColor)
 {
