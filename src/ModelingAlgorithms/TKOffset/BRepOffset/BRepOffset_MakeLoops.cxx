@@ -38,6 +38,10 @@
 #include <NCollection_Map.hxx>
 
 #include <cstdio>
+#include <BRepLib.hxx>
+#include <TopoDS_TShape.hxx>
+
+static void WidenSubstitute(const TopoDS_Shape& theOld, const TopoDS_Shape& theNew);
 
 // The pieces a loop cut an edge into, added to the edge's image.
 //
@@ -285,13 +289,7 @@ void BRepOffset_MakeLoops::Build(const NCollection_List<TopoDS_Shape>& LF,
             TopoDS_Shape NewV = myVerVerMap(V);
             E.Free(true);
             NewV.Orientation(V.Orientation());
-            occ::handle<BRep_TVertex>& TV    = *((occ::handle<BRep_TVertex>*)&V.TShape());
-            occ::handle<BRep_TVertex>& NewTV = *((occ::handle<BRep_TVertex>*)&NewV.TShape());
-            if (TV->Tolerance() > NewTV->Tolerance())
-            {
-              NewTV->Tolerance(TV->Tolerance());
-            }
-            NewTV->ChangePoints().Append(TV->ChangePoints());
+            WidenSubstitute(V, NewV);
             AsDes->Replace(V, NewV);
             BB.Remove(E, V);
             BB.Add(E, NewV);
@@ -929,13 +927,7 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
             TopoDS_Shape NewV = myVerVerMap(V);
             E.Free(true);
             NewV.Orientation(V.Orientation());
-            occ::handle<BRep_TVertex>& TV    = *((occ::handle<BRep_TVertex>*)&V.TShape());
-            occ::handle<BRep_TVertex>& NewTV = *((occ::handle<BRep_TVertex>*)&NewV.TShape());
-            if (TV->Tolerance() > NewTV->Tolerance())
-            {
-              NewTV->Tolerance(TV->Tolerance());
-            }
-            NewTV->ChangePoints().Append(TV->ChangePoints());
+            WidenSubstitute(V, NewV);
             AsDes->Replace(V, NewV);
             BB.Remove(E, V);
             BB.Add(E, NewV);
@@ -1042,4 +1034,60 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
       }
     }
   }
+}//=================================================================================================
+
+// The thawed copies of frozen vertices widened in this computation, by the
+// TShape they stand for (BRepOffset_MakeLoops_ThawedVertices).
+static thread_local NCollection_DataMap<const TopoDS_TShape*, TopoDS_Shape> theThawedVertices;
+
+NCollection_List<TopoDS_Shape> BRepOffset_MakeLoops_ThawedVertices(const bool theIsCleared)
+{
+  NCollection_List<TopoDS_Shape> aCopies;
+  for (NCollection_DataMap<const TopoDS_TShape*, TopoDS_Shape>::Iterator anIt(theThawedVertices);
+       anIt.More();
+       anIt.Next())
+  {
+    aCopies.Append(anIt.Value());
+  }
+  if (theIsCleared)
+  {
+    theThawedVertices.Clear();
+  }
+  return aCopies;
 }
+
+//=======================================================================
+// function : WidenSubstitute
+// purpose  : <theNew> takes the place of <theOld> on an edge: it is widened
+//            to <theOld>'s tolerance and takes its parameters. Where
+//            <theNew> is frozen -- a vertex of the shape given, a FreeCAD
+//            document's value (the TKBRep Immutable flag) -- a thawed copy
+//            of it is widened instead, to be put in its place in the
+//            offset's shells (BRepLib_PutThawed); the edge keeps <theNew>
+//            till then. Widened in place, a frozen vertex threw, and the
+//            thickness was refused where the same shape unfrozen was made:
+//            the cylinder with both ends chamfered 2, a chamfer removed 1.5
+//            inward.
+//=======================================================================
+static void WidenSubstitute(const TopoDS_Shape& theOld, const TopoDS_Shape& theNew)
+{
+  const occ::handle<BRep_TVertex>& aTV = *((occ::handle<BRep_TVertex>*)&theOld.TShape());
+  occ::handle<BRep_TVertex>        aNewTV = *((occ::handle<BRep_TVertex>*)&theNew.TShape());
+  if (aNewTV->Immutable())
+  {
+    TopoDS_Shape* aCopy = theThawedVertices.ChangeSeek(aNewTV.get());
+    if (aCopy == nullptr)
+    {
+      aCopy = theThawedVertices.Bound(aNewTV.get(),
+                                      BRepLib_ThawedVertex(TopoDS::Vertex(theNew)));
+    }
+    aNewTV = *((occ::handle<BRep_TVertex>*)&aCopy->TShape());
+  }
+  if (aTV->Tolerance() > aNewTV->Tolerance())
+  {
+    aNewTV->Tolerance(aTV->Tolerance());
+  }
+  aNewTV->ChangePoints().Append(aTV->ChangePoints());
+}
+
+
