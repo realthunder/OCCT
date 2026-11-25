@@ -113,6 +113,7 @@
 #include <StepGeom_Plane.hxx>
 #include <StepRepr_CompGroupShAspAndCompShAspAndDatumFeatAndShAsp.hxx>
 #include <StepRepr_AllAroundShapeAspect.hxx>
+#include <StepRepr_CompositeGroupShapeAspect.hxx>
 #include <StepRepr_CompositeShapeAspect.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentation.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentationRelationship.hxx>
@@ -296,6 +297,10 @@
 #include <XSControl_WorkSession.hxx>
 #include <UnitsMethods.hxx>
 
+#include <map>
+#include <string>
+#include <vector>
+
 //=======================================================================
 // function : GetLabelName
 // purpose  : auxiliary function: take name of label and append it to str
@@ -357,6 +362,11 @@ public:
     Placeholders;
   //! The placeholder each GD&T label was written with (its own): hidden with it
   NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>> PlaceholderOf;
+  //! The composite shape aspects written as a file grouped them, by that structure
+  //! (XCAFDoc_DimTolTool::SetAspectStructure, of label entries): two PMI on one pattern of
+  //! features -- a position and the size of its holes, NIST CTC-04's 'Position.3' -- on one
+  //! composite, as there, not one each
+  std::map<std::string, occ::handle<StepRepr_ShapeAspect>> Aspects;
   //! Supplemental geometry written (XCAFDoc_DimTolTool::AddSupplementalGeometry): each set of
   //! curves, the item GD&T on it identifies, with its constructive geometry representation --
   //! the representation the usage is of -- and its part's shape
@@ -3539,6 +3549,304 @@ static occ::handle<StepRepr_ReprItemAndMeasureWithUnit> CreateDimValue(
   }
 }
 
+namespace
+{
+//! A composite shape aspect of a GD&T's shapes, as XCAFDoc_DimTolTool::SetAspectStructure says
+//! it: a composite ('C') or composite group ('G') of members, or a leaf, the entries of the
+//! shapes of one shape aspect
+struct AspectNode
+{
+  char                     Kind = 0;
+  std::string              Name, Description;
+  std::vector<std::string> Entries;
+  std::vector<AspectNode>  Members;
+};
+
+//! A name or description of an aspect structure, its %XX decoded, up to theStop
+bool aspectText(const std::string& theText, size_t& thePos, char theStop, std::string& theOut)
+{
+  theOut.clear();
+  while (thePos < theText.size() && theText[thePos] != theStop)
+  {
+    if (theText[thePos] == '%' && thePos + 2 < theText.size())
+    {
+      theOut += static_cast<char>(std::stoi(theText.substr(thePos + 1, 2), nullptr, 16));
+      thePos += 3;
+    }
+    else
+    {
+      theOut += theText[thePos++];
+    }
+  }
+  if (thePos >= theText.size())
+  {
+    return false;
+  }
+  ++thePos;
+  return true;
+}
+
+//! Where an aspect structure's node starts: after its identity, if it says one (what it is
+//! shared by, GDTPresentationModel::Aspects)
+size_t aspectStart(const std::string& theText)
+{
+  if (theText.empty() || theText[0] != '@')
+  {
+    return 0;
+  }
+  const size_t aPos = theText.find_first_not_of("0123456789", 1);
+  return aPos == std::string::npos ? theText.size() : aPos;
+}
+
+//! A node of an aspect structure at thePos; false when it is not one
+bool aspectNode(const std::string& theText, size_t& thePos, AspectNode& theNode)
+{
+  if (thePos + 1 >= theText.size() || (theText[thePos] != 'C' && theText[thePos] != 'G')
+      || theText[thePos + 1] != '{')
+  {
+    return false;
+  }
+  theNode.Kind = theText[thePos];
+  thePos += 2;
+  if (!aspectText(theText, thePos, '|', theNode.Name)
+      || !aspectText(theText, thePos, '}', theNode.Description) || thePos >= theText.size()
+      || theText[thePos] != '(')
+  {
+    return false;
+  }
+  ++thePos;
+  for (;;)
+  {
+    AspectNode aMember;
+    if (thePos + 1 < theText.size() && theText[thePos + 1] == '{')
+    {
+      if (!aspectNode(theText, thePos, aMember))
+      {
+        return false;
+      }
+    }
+    else
+    {
+      std::string anEntry;
+      while (thePos < theText.size() && theText[thePos] != ',' && theText[thePos] != ')')
+      {
+        if (theText[thePos] == '+')
+        {
+          aMember.Entries.push_back(anEntry);
+          anEntry.clear();
+        }
+        else
+        {
+          anEntry += theText[thePos];
+        }
+        ++thePos;
+      }
+      if (anEntry.empty())
+      {
+        return false;
+      }
+      aMember.Entries.push_back(anEntry);
+    }
+    theNode.Members.push_back(aMember);
+    if (thePos >= theText.size())
+    {
+      return false;
+    }
+    if (theText[thePos++] == ')')
+    {
+      return true;
+    }
+  }
+}
+
+//! Whether every shape aspect of theSAs is a leaf of theNode once, and its leaves name no other
+bool aspectCovers(const AspectNode&                                                theNode,
+                  const std::map<std::string, occ::handle<StepRepr_ShapeAspect>>& theSAs,
+                  std::map<std::string, int>&                                      theUses)
+{
+  for (const AspectNode& aMember : theNode.Members)
+  {
+    if (aMember.Kind != 0)
+    {
+      if (!aspectCovers(aMember, theSAs, theUses))
+      {
+        return false;
+      }
+      continue;
+    }
+    for (const std::string& anEntry : aMember.Entries)
+    {
+      if (theSAs.find(anEntry) == theSAs.end() || ++theUses[anEntry] > 1)
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+//! The composite shape aspect of theNode, its members written
+occ::handle<StepRepr_ShapeAspect> writeAspectNode(
+  const occ::handle<Interface_InterfaceModel>&                     theModel,
+  const AspectNode&                                                theNode,
+  const std::map<std::string, occ::handle<StepRepr_ShapeAspect>>& theSAs,
+  const occ::handle<StepRepr_ShapeAspect>&                         theFirst,
+  const bool                                                       theIsDescribed)
+{
+  occ::handle<StepRepr_CompositeShapeAspect> aCSA;
+  if (theNode.Kind == 'G')
+  {
+    aCSA = new StepRepr_CompositeGroupShapeAspect();
+  }
+  else
+  {
+    aCSA = new StepRepr_CompositeShapeAspect();
+  }
+  aCSA->Init(new TCollection_HAsciiString(theNode.Name.c_str()),
+             new TCollection_HAsciiString(theNode.Description.c_str()),
+             theFirst->OfShape(),
+             theFirst->ProductDefinitional());
+  theModel->AddWithRefs(aCSA);
+  auto aRelate = [&](const occ::handle<StepRepr_ShapeAspect>& theMember) {
+    occ::handle<StepRepr_ShapeAspectRelationship> aSAR = new StepRepr_ShapeAspectRelationship();
+    aSAR->Init(new TCollection_HAsciiString(),
+               false,
+               theIsDescribed ? new TCollection_HAsciiString() : nullptr,
+               aCSA,
+               theMember);
+    theModel->AddWithRefs(aSAR);
+  };
+  for (const AspectNode& aMember : theNode.Members)
+  {
+    if (aMember.Kind != 0)
+    {
+      aRelate(writeAspectNode(theModel, aMember, theSAs, theFirst, theIsDescribed));
+      continue;
+    }
+    for (const std::string& anEntry : aMember.Entries)
+    {
+      aRelate(theSAs.at(anEntry));
+    }
+  }
+  return aCSA;
+}
+} // namespace
+
+//=======================================================================
+// function : writeComposite
+// purpose  : the shape aspect of a GD&T's several shapes, theSAs the shape aspect of each of
+//            theShapeLs (null, one not written): composite as theStructure groups them
+//            (XCAFDoc_DimTolTool::SetAspectStructure -- NIST's pattern of holes, a composite
+//            group shape aspect of a composite shape aspect each) when it groups them all;
+//            else one composite, or all around, of them all
+//=======================================================================
+static occ::handle<StepRepr_ShapeAspect> writeComposite(
+  const occ::handle<Interface_InterfaceModel>&                   theModel,
+  const NCollection_Sequence<TDF_Label>&                         theShapeLs,
+  const NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>& theSAs,
+  const TCollection_AsciiString&                                 theStructure,
+  const bool                                                     theIsAllAround,
+  const bool                                                     theIsDescribed,
+  bool&                                                          theIsStructured)
+{
+  theIsStructured = false;
+  occ::handle<StepRepr_ShapeAspect>                        aFirst;
+  std::map<std::string, occ::handle<StepRepr_ShapeAspect>> anOf;
+  for (int i = 1; i <= theSAs.Length() && i <= theShapeLs.Length(); ++i)
+  {
+    if (theSAs.Value(i).IsNull())
+    {
+      continue;
+    }
+    if (aFirst.IsNull())
+    {
+      aFirst = theSAs.Value(i);
+    }
+    TCollection_AsciiString anEntry;
+    TDF_Tool::Entry(theShapeLs.Value(i), anEntry);
+    anOf[anEntry.ToCString()] = theSAs.Value(i);
+  }
+  if (aFirst.IsNull())
+  {
+    return nullptr;
+  }
+  AspectNode        aRoot;
+  const std::string aText = theStructure.ToCString();
+  size_t            aPos  = aspectStart(aText);
+  std::map<std::string, int> aUses;
+  if (!theIsAllAround && !aText.empty() && aspectNode(aText, aPos, aRoot) && aPos == aText.size()
+      && aspectCovers(aRoot, anOf, aUses) && aUses.size() == anOf.size())
+  {
+    theIsStructured = true;
+    return writeAspectNode(theModel, aRoot, anOf, aFirst, theIsDescribed);
+  }
+  occ::handle<StepRepr_CompositeShapeAspect> aCSA;
+  if (theIsAllAround)
+  {
+    aCSA = new StepRepr_AllAroundShapeAspect();
+  }
+  else
+  {
+    aCSA = new StepRepr_CompositeShapeAspect();
+  }
+  aCSA->Init(aFirst->Name(),
+             aFirst->Description(),
+             aFirst->OfShape(),
+             aFirst->ProductDefinitional());
+  theModel->AddWithRefs(aCSA);
+  for (int i = 1; i <= theSAs.Length(); ++i)
+  {
+    if (theSAs.Value(i).IsNull())
+    {
+      continue;
+    }
+    occ::handle<StepRepr_ShapeAspectRelationship> aSAR = new StepRepr_ShapeAspectRelationship();
+    aSAR->Init(new TCollection_HAsciiString(),
+               false,
+               theIsDescribed ? new TCollection_HAsciiString() : nullptr,
+               aCSA,
+               theSAs.Value(i));
+    theModel->AddWithRefs(aSAR);
+  }
+  return aCSA;
+}
+
+//=======================================================================
+// function : sharedComposite
+// purpose  : the composite theStructure was written as already, if it was and it groups the
+//            shapes theShapeLs, each once and no other (a PMI's shapes changed since it was
+//            read are not grouped as another's)
+//=======================================================================
+static occ::handle<StepRepr_ShapeAspect> sharedComposite(
+  const std::map<std::string, occ::handle<StepRepr_ShapeAspect>>& theWritten,
+  const TCollection_AsciiString&                                  theStructure,
+  const NCollection_Sequence<TDF_Label>&                          theShapeLs)
+{
+  const auto anIt =
+    theStructure.IsEmpty() ? theWritten.end() : theWritten.find(theStructure.ToCString());
+  if (anIt == theWritten.end())
+  {
+    return nullptr;
+  }
+  std::map<std::string, occ::handle<StepRepr_ShapeAspect>> anOf;
+  for (const TDF_Label& aShapeL : theShapeLs)
+  {
+    TCollection_AsciiString anEntry;
+    TDF_Tool::Entry(aShapeL, anEntry);
+    anOf[anEntry.ToCString()] = anIt->second;
+  }
+  const std::string aText = theStructure.ToCString();
+  size_t            aPos  = aspectStart(aText);
+  AspectNode        aRoot;
+  std::map<std::string, int> aUses;
+  if (aspectNode(aText, aPos, aRoot) && aPos == aText.size() && aspectCovers(aRoot, anOf, aUses)
+      && aUses.size() == anOf.size())
+  {
+    return anIt->second;
+  }
+  return nullptr;
+}
+
 //=======================================================================
 // function : writeShapeAspect
 // purpose  : auxiliary (write Shape_Aspect entity for given shape)
@@ -5541,35 +5849,36 @@ occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomToler
   }
   else
   {
-    occ::handle<StepRepr_CompositeShapeAspect> aCSA;
-    for (NCollection_Sequence<TDF_Label>::Iterator aShIter(theShapeSeqL); aShIter.More();
-         aShIter.Next())
+    // Grouped as the file grouped them, if it did (a pattern of features): on the composite
+    // another PMI so grouped is on, if one is
+    TCollection_AsciiString aStructure;
+    XCAFDoc_DimTolTool::GetAspectStructure(theGeomTolL, false, aStructure);
+    std::map<std::string, occ::handle<StepRepr_ShapeAspect>>& aWritten =
+      gdtState(myGDTPresentationDM).Aspects;
+    aMainSA = isAllAround ? occ::handle<StepRepr_ShapeAspect>()
+                          : sharedComposite(aWritten, aStructure, theShapeSeqL);
+    if (aMainSA.IsNull())
     {
-      TopoDS_Shape                      aShape = XCAFDoc_ShapeTool::GetShape(aShIter.Value());
-      occ::handle<StepRepr_ShapeAspect> aSA =
-        writeShapeAspect(theWS, theGeomTolL, aShape, dummyRC, dummyGISU);
-      if (aSA.IsNull())
+      NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
+      for (NCollection_Sequence<TDF_Label>::Iterator aShIter(theShapeSeqL); aShIter.More();
+           aShIter.Next())
       {
-        continue;
+        TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(aShIter.Value());
+        aSAs.Append(writeShapeAspect(theWS, theGeomTolL, aShape, dummyRC, dummyGISU));
       }
-      if (aCSA.IsNull())
+      bool isStructured = false;
+      aMainSA           = writeComposite(aModel,
+                                         theShapeSeqL,
+                                         aSAs,
+                                         aStructure,
+                                         isAllAround,
+                                         false,
+                                         isStructured);
+      if (isStructured)
       {
-        if (isAllAround)
-        {
-          aCSA = new StepRepr_AllAroundShapeAspect();
-        }
-        else
-        {
-          aCSA = new StepRepr_CompositeShapeAspect();
-        }
-        aCSA->Init(aSA->Name(), aSA->Description(), aSA->OfShape(), aSA->ProductDefinitional());
-        aModel->AddWithRefs(aCSA);
+        aWritten[aStructure.ToCString()] = aMainSA;
       }
-      occ::handle<StepRepr_ShapeAspectRelationship> aSAR = new StepRepr_ShapeAspectRelationship();
-      aSAR->Init(new TCollection_HAsciiString(), false, nullptr, aCSA, aSA);
-      aModel->AddWithRefs(aSAR);
     }
-    aMainSA = aCSA;
   }
   StepDimTol_GeometricToleranceTarget aGTTarget;
   if (!aWholePDS.IsNull())
@@ -7143,6 +7452,17 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
 
     // Write links with shapes
     occ::handle<StepRepr_ShapeAspect> aFirstSA, aSecondSA;
+    // The composite a structure was written as already, if it was; one written so, kept
+    std::map<std::string, occ::handle<StepRepr_ShapeAspect>>& aWritten =
+      gdtState(myGDTPresentationDM).Aspects;
+    const auto keepAspect = [&aWritten](const TCollection_AsciiString&           theStructure,
+                                        const occ::handle<StepRepr_ShapeAspect>& theSA,
+                                        const bool                               theIsStructured) {
+      if (theIsStructured && !theSA.IsNull())
+      {
+        aWritten[theStructure.ToCString()] = theSA;
+      }
+    };
     if (aFirstShapeL.Length() == 1)
     {
       TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(aFirstShapeL.Value(1));
@@ -7154,35 +7474,28 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     }
     else if (aFirstShapeL.Length() > 1)
     {
-      occ::handle<StepRepr_CompositeShapeAspect> aCSA;
-      for (int shIt = 1; shIt <= aFirstShapeL.Length(); shIt++)
+      // Grouped as the file grouped them, if it did (a pattern of features): on the
+      // composite another PMI so grouped is on, if one is
+      TCollection_AsciiString aStructure;
+      XCAFDoc_DimTolTool::GetAspectStructure(aDimensionL, false, aStructure);
+      aFirstSA = sharedComposite(aWritten, aStructure, aFirstShapeL);
+      if (aFirstSA.IsNull())
       {
-        TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(aFirstShapeL.Value(shIt));
-        occ::handle<StepRepr_ShapeAspect> aSA =
-          writeShapeAspect(theWS, aDimensionL, aShape, dummyRC, dummyGISU);
-        if (aSA.IsNull())
+        NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
+        for (int shIt = 1; shIt <= aFirstShapeL.Length(); shIt++)
         {
-          continue;
+          TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(aFirstShapeL.Value(shIt));
+          aSAs.Append(writeShapeAspect(theWS, aDimensionL, aShape, dummyRC, dummyGISU));
+          if (!aSAs.Last().IsNull() && aRC.IsNull() && !dummyRC.IsNull())
+          {
+            aRC = dummyRC;
+          }
         }
-        if (aCSA.IsNull())
-        {
-          aCSA = new StepRepr_CompositeShapeAspect();
-          aCSA->Init(aSA->Name(), aSA->Description(), aSA->OfShape(), aSA->ProductDefinitional());
-          aModel->AddWithRefs(aCSA);
-        }
-        occ::handle<StepRepr_ShapeAspectRelationship> aSAR = new StepRepr_ShapeAspectRelationship();
-        aSAR->Init(new TCollection_HAsciiString(),
-                   false,
-                   new TCollection_HAsciiString(),
-                   aCSA,
-                   aSA);
-        aModel->AddWithRefs(aSAR);
-        if (aRC.IsNull() && !dummyRC.IsNull())
-        {
-          aRC = dummyRC;
-        }
+        bool isStructured = false;
+        aFirstSA =
+          writeComposite(aModel, aFirstShapeL, aSAs, aStructure, false, true, isStructured);
+        keepAspect(aStructure, aFirstSA, isStructured);
       }
-      aFirstSA = aCSA;
     }
     if (aSecondShapeL.Length() == 1)
     {
@@ -7195,34 +7508,28 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     }
     else if (aSecondShapeL.Length() > 1)
     {
-      occ::handle<StepRepr_CompositeShapeAspect> aCSA;
-      for (int shIt = 1; shIt <= aSecondShapeL.Length(); shIt++)
+      // (Its composite was written only by the shape aspects referring to it, and of a shape
+      // that wrote none, from a null one: written now as the first side's is)
+      TCollection_AsciiString aStructure;
+      XCAFDoc_DimTolTool::GetAspectStructure(aDimensionL, true, aStructure);
+      aSecondSA = sharedComposite(aWritten, aStructure, aSecondShapeL);
+      if (aSecondSA.IsNull())
       {
-        TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(aSecondShapeL.Value(shIt));
-        occ::handle<StepRepr_ShapeAspect> aSA =
-          writeShapeAspect(theWS, aDimensionL, aShape, dummyRC, dummyGISU);
-        if (aCSA.IsNull() && !aSA.IsNull())
+        NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
+        for (int shIt = 1; shIt <= aSecondShapeL.Length(); shIt++)
         {
-          aCSA = new StepRepr_CompositeShapeAspect();
+          TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(aSecondShapeL.Value(shIt));
+          aSAs.Append(writeShapeAspect(theWS, aDimensionL, aShape, dummyRC, dummyGISU));
+          if (aRC.IsNull() && !dummyRC.IsNull())
+          {
+            aRC = dummyRC;
+          }
         }
-        aCSA->Init(aSA->Name(), aSA->Description(), aSA->OfShape(), aSA->ProductDefinitional());
-        if (!aSA.IsNull())
-        {
-          occ::handle<StepRepr_ShapeAspectRelationship> aSAR =
-            new StepRepr_ShapeAspectRelationship();
-          aSAR->Init(new TCollection_HAsciiString(),
-                     false,
-                     new TCollection_HAsciiString(),
-                     aCSA,
-                     aSA);
-          aModel->AddWithRefs(aSAR);
-        }
-        if (aRC.IsNull() && !dummyRC.IsNull())
-        {
-          aRC = dummyRC;
-        }
+        bool isStructured = false;
+        aSecondSA =
+          writeComposite(aModel, aSecondShapeL, aSAs, aStructure, false, true, isStructured);
+        keepAspect(aStructure, aSecondSA, isStructured);
       }
-      aSecondSA = aCSA;
     }
 
     if (anObject->GetType() == XCAFDimTolObjects_DimensionType_DimensionPresentation)

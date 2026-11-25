@@ -120,6 +120,14 @@ public:
   //! twelve)
   Standard_EXPORT static const Standard_GUID& ViewSupplementalGUID();
 
+  //! Return GUID of how the shapes of a GD&T are grouped, its first ones (STEP: the composite
+  //! and composite group shape aspects of a pattern of features, of a feature of several faces:
+  //! XCAFDoc_DimTolTool::SetAspectStructure)
+  Standard_EXPORT static const Standard_GUID& AspectStructureGUID();
+
+  //! Return GUID of how the second shapes of a dimension are grouped
+  Standard_EXPORT static const Standard_GUID& SecondAspectStructureGUID();
+
   //! Return GUID of the mark of a GD&T whose presentation is given as curves (STEP: an
   //! ANNOTATION_CURVE_OCCURRENCE of polylines and circles), not tessellated
   Standard_EXPORT static const Standard_GUID& GDTCurvesGUID();

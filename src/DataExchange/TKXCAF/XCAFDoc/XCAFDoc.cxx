@@ -224,6 +224,22 @@ const Standard_GUID& XCAFDoc::ViewSupplementalGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::AspectStructureGUID()
+{
+  static const Standard_GUID ID("0d2c6a8e-5b3f-4f71-9e64-2a7c18d4b9f0");
+  return ID;
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc::SecondAspectStructureGUID()
+{
+  static const Standard_GUID ID("7e91b4c2-3d05-4a8f-b6e1-c59f02a7d364");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::GDTCurvesGUID()
 {
   static const Standard_GUID ID("3f6b9e27-c41d-4e58-9a02-d7e83c15b6f4");

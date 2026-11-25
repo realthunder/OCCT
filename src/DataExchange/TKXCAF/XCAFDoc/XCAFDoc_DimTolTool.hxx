@@ -331,6 +331,30 @@ public:
   Standard_EXPORT static bool GetViewSupplemental(const TDF_Label&                 theViewL,
                                                   NCollection_Sequence<TDF_Label>& theItems);
 
+  //! Says how the shapes of the GD&T theGDTL are grouped, its first (theIsSecond false) or
+  //! its second ones: STEP's composite shape aspects of them, which a pattern of features and a
+  //! feature of several faces are given as (NIST: a composite group shape aspect 'pattern of
+  //! features' of a composite shape aspect 'unified geometric item' a hole). theStructure is
+  //! a node, after the composite's identity, if it says one:
+  //!   structure := ['@' digits] node
+  //!   node      := ('C' | 'G') '{' name '|' description '}' '(' member (',' member)* ')'
+  //!   member    := node | entry ('+' entry)*
+  //! 'C' a composite shape aspect, 'G' a composite group shape aspect; an entry is one of the
+  //! GD&T's shapes, by its label's entry (TDF_Tool::Entry); several, one shape aspect of them.
+  //! '%', '{', '|', '}', '(', ')', ',', '+' in a name or description are written %XX. GD&T of
+  //! one structure, its identity too, are on one composite (STEP: the reader's identity is the
+  //! entity's number, NIST CTC-04's position and size of one pattern of holes share theirs,
+  //! CTC-02's two alike do not). An empty structure says nothing.
+  Standard_EXPORT static void SetAspectStructure(const TDF_Label&               theGDTL,
+                                                 const bool                     theIsSecond,
+                                                 const TCollection_AsciiString& theStructure);
+
+  //! How the shapes of the GD&T theGDTL are grouped (SetAspectStructure); false when it does
+  //! not say.
+  Standard_EXPORT static bool GetAspectStructure(const TDF_Label&         theGDTL,
+                                                 const bool               theIsSecond,
+                                                 TCollection_AsciiString& theStructure);
+
   //! Gives the item theItemL the colour it is drawn in (NIST's supplemental geometry is
   //! white or black).
   Standard_EXPORT static void SetSupplementalColor(const TDF_Label&      theItemL,
