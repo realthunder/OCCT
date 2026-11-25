@@ -5437,10 +5437,14 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   // the dome outward refused): only an attempt refused is made so, and one
   // with an answer, valid or not, keeps it. And only where a face kept is a
   // cylinder, a torus or a sphere whose offset turns inside out by less than
-  // that 0.001 (BRepOffset_Reversed, and not so offset 0.001 less): made
-  // again for every refusal, the corpus at level 5 took a quarter longer.
+  // twice that 0.001 (BRepOffset_Reversed, and not so offset 0.002 less):
+  // made again for every refusal, the corpus at level 5 took a quarter
+  // longer. Twice, for the loop drops a piece of an edge whose ends are
+  // within 0.001 in the face's (u, v), not in space (BRepAlgo_Loop::CutEdge,
+  // held to the smaller distance too): the tube's inner wall removed was
+  // refused to 0.0013 over the radius.
   auto aIsAHairOverARadius = [&]() -> bool {
-    constexpr double aHair = 1.e-3;
+    constexpr double aHair = 2.e-3;
     for (TopExp_Explorer anExp(aShapeAsked, TopAbs_FACE); anExp.More(); anExp.Next())
     {
       const TopoDS_Face& aF = TopoDS::Face(anExp.Current());

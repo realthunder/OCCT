@@ -4951,7 +4951,12 @@ void BRepAlgo_Loop::CutEdge(const TopoDS_Edge&                    E,
     {
       gp_Pnt2d pf, pl;
       BRep_Tool::UVPoints(EE, myFace, pf, pl);
-      if (pf.Distance(pl) <= Tol && !BRep_Tool::IsClosed(EE))
+      // (no shorter than the loop tells two vertices apart, where it is told
+      // to tell them apart closer than its own 0.001 -- SetTolConf: a tube
+      // round a removed wall's edge, cut 0.0008 from its end, lost the piece
+      // of its seam between the two, and its end circle was left a wire of
+      // its own)
+      if (pf.Distance(pl) <= std::min(Tol, myTolConf) && !BRep_Tool::IsClosed(EE))
       {
         SHOW_TOPO_SHAPE(EE, "CutEdgeRemove2");
         NE.Remove(it);
