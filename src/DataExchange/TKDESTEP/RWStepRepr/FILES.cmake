@@ -10,6 +10,8 @@ set(OCCT_RWStepRepr_FILES
   RWStepRepr_RWAssemblyComponentUsage.pxx
   RWStepRepr_RWAssemblyComponentUsageSubstitute.cxx
   RWStepRepr_RWAssemblyComponentUsageSubstitute.pxx
+  RWStepRepr_RWBasicRoundHoleOccurrence.cxx
+  RWStepRepr_RWBasicRoundHoleOccurrence.pxx
   RWStepRepr_RWBetweenShapeAspect.cxx
   RWStepRepr_RWBetweenShapeAspect.pxx
   RWStepRepr_RWBooleanRepresentationItem.cxx

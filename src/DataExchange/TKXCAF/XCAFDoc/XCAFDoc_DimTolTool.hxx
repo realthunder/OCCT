@@ -337,9 +337,15 @@ public:
   //! features' of a composite shape aspect 'unified geometric item' a hole). theStructure is
   //! a node, after the composite's identity, if it says one:
   //!   structure := ['@' digits] node
-  //!   node      := ('C' | 'G') '{' name '|' description '}' '(' member (',' member)* ')'
+  //!   node      := kind '{' name '|' description '}' '(' member (',' member)* ')'
+  //!   kind      := 'C' | 'G' | 'D' | 'F' | 'H'
   //!   member    := node | entry ('+' entry)*
-  //! 'C' a composite shape aspect, 'G' a composite group shape aspect; an entry is one of the
+  //! 'C' a composite shape aspect, 'G' a composite group shape aspect, 'D' -- the node said
+  //! first only -- a datum feature, 'F' one that is a composite group shape aspect too (its own
+  //! shapes a member, then its members): on a GD&T, the GD&T on the feature itself, written on
+  //! the one written for the datum on those shapes; on a datum (theGDTL a datum's label), how
+  //! its feature is written, and named. 'H' a member that is
+  //! a hole occurrence, its faces (XCAFDoc_DimTolTool::AddHoleOccurrence); an entry is one of the
   //! GD&T's shapes, by its label's entry (TDF_Tool::Entry); several, one shape aspect of them.
   //! '%', '{', '|', '}', '(', ')', ',', '+' in a name or description are written %XX. GD&T of
   //! one structure, its identity too, are on one composite (STEP: the reader's identity is the

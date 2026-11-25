@@ -1362,6 +1362,7 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_ReadWriteModule, StepData_ReadWriteModule
 #include "../RWStepAP242/RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit.pxx"
 #include "../RWStepShape/RWStepShape_RWDimensionalSizeWithDatumFeature.pxx"
+#include "../RWStepRepr/RWStepRepr_RWBasicRoundHoleOccurrence.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthMaxTol.pxx"
 #include "../RWStepVisual/RWStepVisual_RWAnnotationCurveOccurrence.pxx"
@@ -1417,6 +1418,7 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_ReadWriteModule, StepData_ReadWriteModule
 #include <StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDefUnit.hxx>
 #include <StepShape_DimensionalSizeWithDatumFeature.hxx>
+#include <StepRepr_BasicRoundHoleOccurrence.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMaxTol.hxx>
 #include <StepVisual_AnnotationCurveOccurrence.hxx>
@@ -2387,6 +2389,7 @@ static constexpr std::string_view Reco_DraughtingModelItemAssociationWithPlaceho
   "DRAUGHTING_MODEL_ITEM_ASSOCIATION_WITH_PLACEHOLDER");
 static constexpr std::string_view Reco_DimensionalSizeWithDatumFeature(
   "DIMENSIONAL_SIZE_WITH_DATUM_FEATURE");
+static constexpr std::string_view Reco_BasicRoundHoleOccurrence("BASIC_ROUND_HOLE_OCCURRENCE");
 static constexpr std::string_view Reco_AnnotationPlane("ANNOTATION_PLANE");
 
 static constexpr std::string_view Reco_TessellatedAnnotationOccurrence(
@@ -3775,6 +3778,7 @@ static void initializeTypenums(StringViewDataMap& theTypenums)
   theTypenums.Bind(Reco_SurfaceStyleReflectanceAmbientDiffuseSpecular, 826);
   theTypenums.Bind(Reco_DraughtingModelItemAssociationWithPlaceholder, 827);
   theTypenums.Bind(Reco_DimensionalSizeWithDatumFeature, 829);
+  theTypenums.Bind(Reco_BasicRoundHoleOccurrence, 830);
 }
 
 // Initialize theTypeshor map
@@ -6468,6 +6472,8 @@ const std::string_view& RWStepAP214_ReadWriteModule::StepType(const int CN) cons
       return Reco_DraughtingModelItemAssociationWithPlaceholder;
     case 829:
       return Reco_DimensionalSizeWithDatumFeature;
+    case 830:
+      return Reco_BasicRoundHoleOccurrence;
     default:
       return PasReco;
   }
@@ -11452,6 +11458,12 @@ void RWStepAP214_ReadWriteModule::ReadStep(const int                            
       aTool.ReadStep(data, num, ach, anent);
     }
     break;
+    case 830: {
+      DeclareAndCast(StepRepr_BasicRoundHoleOccurrence, anent, ent);
+      RWStepRepr_RWBasicRoundHoleOccurrence aTool;
+      aTool.ReadStep(data, num, ach, anent);
+    }
+    break;
     default:
       ach->AddFail("Type Mismatch when reading - Entity");
   }
@@ -16371,6 +16383,12 @@ void RWStepAP214_ReadWriteModule::WriteStep(const int                           
     case 829: {
       DeclareAndCast(StepShape_DimensionalSizeWithDatumFeature, anent, ent);
       RWStepShape_RWDimensionalSizeWithDatumFeature aTool;
+      aTool.WriteStep(SW, anent);
+    }
+    break;
+    case 830: {
+      DeclareAndCast(StepRepr_BasicRoundHoleOccurrence, anent, ent);
+      RWStepRepr_RWBasicRoundHoleOccurrence aTool;
       aTool.WriteStep(SW, anent);
     }
     break;

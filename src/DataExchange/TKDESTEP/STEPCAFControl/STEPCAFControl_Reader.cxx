@@ -102,6 +102,7 @@
 #include <StepDimTol_PlacedDatumTargetFeature.hxx>
 #include <StepRepr_DerivedShapeAspect.hxx>
 #include <StepRepr_CompositeShapeAspect.hxx>
+#include <StepRepr_BasicRoundHoleOccurrence.hxx>
 #include <StepRepr_CompositeGroupShapeAspect.hxx>
 #include <StepRepr_ContinuosShapeAspect.hxx>
 #include <StepDimTol_DatumTarget.hxx>
@@ -135,6 +136,7 @@
 #include <StepShape_AngularLocation.hxx>
 #include <StepShape_ClosedShell.hxx>
 #include <StepShape_ConnectedFaceSet.hxx>
+#include <StepRepr_CompGroupShAspAndCompShAspAndDatumFeatAndShAsp.hxx>
 #include <StepRepr_CompShAspAndDatumFeatAndShAsp.hxx>
 #include <StepShape_DimensionalCharacteristicRepresentation.hxx>
 #include <StepShape_DimensionalSizeWithPath.hxx>
@@ -4360,11 +4362,43 @@ static TCollection_AsciiString aspectText(const occ::handle<TCollection_HAsciiSt
 }
 
 //=======================================================================
+// function : aspectEntries
+// purpose  : the entries of the labels a leaf shape aspect's items were read as, '+' between
+//=======================================================================
+static TCollection_AsciiString aspectEntries(
+  const occ::handle<StepRepr_ShapeAspect>& theSA,
+  const NCollection_DataMap<occ::handle<Standard_Transient>,
+                            NCollection_Sequence<occ::handle<Standard_Transient>>>& theLeafItems,
+  const NCollection_DataMap<occ::handle<Standard_Transient>, NCollection_Sequence<TDF_Label>>&
+    theItemLabels)
+{
+  TCollection_AsciiString                                      anOut;
+  const NCollection_Sequence<occ::handle<Standard_Transient>>* anItems = theLeafItems.Seek(theSA);
+  for (int i = 1; anItems != nullptr && i <= anItems->Length(); ++i)
+  {
+    const NCollection_Sequence<TDF_Label>* aLabels = theItemLabels.Seek(anItems->Value(i));
+    for (int j = 1; aLabels != nullptr && j <= aLabels->Length(); ++j)
+    {
+      TCollection_AsciiString anEntry;
+      TDF_Tool::Entry(aLabels->Value(j), anEntry);
+      if (!anOut.IsEmpty())
+      {
+        anOut += "+";
+      }
+      anOut += anEntry;
+    }
+  }
+  return anOut;
+}
+
+//=======================================================================
 // function : aspectStructure
 // purpose  : how a composite shape aspect groups the shapes of a GD&T, as
 //            XCAFDoc_DimTolTool::SetAspectStructure says it: its composite and composite group
-//            shape aspects, each leaf the labels its items were read as. False for a structure
-//            it cannot say (all around, derived, a leaf that is a composite of another kind)
+//            shape aspects, each leaf the labels its items were read as -- and, the GD&T on a
+//            datum feature itself (NIST STC-06's flatness of the face datum D is on), that
+//            feature, its own shapes and its members. False for a structure it cannot say
+//            (all around, derived, a member that is a composite of another kind)
 //=======================================================================
 static bool aspectStructure(
   const occ::handle<StepRepr_ShapeAspect>& theSA,
@@ -4373,14 +4407,27 @@ static bool aspectStructure(
                             NCollection_Sequence<occ::handle<Standard_Transient>>>& theLeafItems,
   const NCollection_DataMap<occ::handle<Standard_Transient>, NCollection_Sequence<TDF_Label>>&
                            theItemLabels,
-  TCollection_AsciiString& theOut)
+  TCollection_AsciiString& theOut,
+  const bool               theIsTop = true)
 {
-  if (theSA.IsNull() || !theSA->IsKind(STANDARD_TYPE(StepRepr_CompositeShapeAspect))
+  if (theSA.IsNull())
+  {
+    return false;
+  }
+  // A datum feature of several shapes is a complex one: a composite (group) shape aspect too
+  const bool isDatumFeature =
+    theIsTop
+    && (theSA->IsKind(STANDARD_TYPE(StepDimTol_DatumFeature))
+        || theSA->IsKind(STANDARD_TYPE(StepRepr_CompShAspAndDatumFeatAndShAsp)));
+  if ((!isDatumFeature && !theSA->IsKind(STANDARD_TYPE(StepRepr_CompositeShapeAspect)))
       || theSA->IsKind(STANDARD_TYPE(StepRepr_ContinuosShapeAspect)))
   {
     return false;
   }
-  TCollection_AsciiString aMembers;
+  // A datum feature's own shapes, first
+  TCollection_AsciiString aMembers =
+    isDatumFeature ? aspectEntries(theSA, theLeafItems, theItemLabels)
+                   : TCollection_AsciiString();
   for (Interface_EntityIterator anIter = theGraph.Sharings(theSA); anIter.More(); anIter.Next())
   {
     occ::handle<StepRepr_ShapeAspectRelationship> aSAR =
@@ -4393,11 +4440,28 @@ static bool aspectStructure(
     }
     const occ::handle<StepRepr_ShapeAspect>& aChild = aSAR->RelatedShapeAspect();
     TCollection_AsciiString                  aMember;
+    if (isDatumFeature
+        && (aChild->IsKind(STANDARD_TYPE(StepDimTol_DatumFeature))
+            || aChild->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget))))
+    {
+      // Another datum's, not this one's shapes (collectShapeAspect)
+      continue;
+    }
     if (aChild->IsKind(STANDARD_TYPE(StepRepr_CompositeShapeAspect)))
     {
-      if (!aspectStructure(aChild, theGraph, theLeafItems, theItemLabels, aMember))
+      if (!aspectStructure(aChild, theGraph, theLeafItems, theItemLabels, aMember, false))
       {
         return false;
+      }
+    }
+    else if (aChild->IsKind(STANDARD_TYPE(StepRepr_BasicRoundHoleOccurrence)))
+    {
+      // A hole occurrence (NIST STC-09's positions of a pattern of holes): its faces
+      const TCollection_AsciiString aFaces = aspectEntries(aChild, theLeafItems, theItemLabels);
+      if (!aFaces.IsEmpty())
+      {
+        aMember = TCollection_AsciiString("H{") + aspectText(aChild->Name()) + "|"
+                  + aspectText(aChild->Description()) + "}(" + aFaces + ")";
       }
     }
     else if (aChild->IsKind(STANDARD_TYPE(StepRepr_DerivedShapeAspect))
@@ -4408,22 +4472,7 @@ static bool aspectStructure(
     }
     else
     {
-      const NCollection_Sequence<occ::handle<Standard_Transient>>* anItems =
-        theLeafItems.Seek(aChild);
-      for (int i = 1; anItems != nullptr && i <= anItems->Length(); ++i)
-      {
-        const NCollection_Sequence<TDF_Label>* aLabels = theItemLabels.Seek(anItems->Value(i));
-        for (int j = 1; aLabels != nullptr && j <= aLabels->Length(); ++j)
-        {
-          TCollection_AsciiString anEntry;
-          TDF_Tool::Entry(aLabels->Value(j), anEntry);
-          if (!aMember.IsEmpty())
-          {
-            aMember += "+";
-          }
-          aMember += anEntry;
-        }
-      }
+      aMember = aspectEntries(aChild, theLeafItems, theItemLabels);
     }
     if (aMember.IsEmpty())
     {
@@ -4440,7 +4489,13 @@ static bool aspectStructure(
   {
     return false;
   }
-  theOut = theSA->IsKind(STANDARD_TYPE(StepRepr_CompositeGroupShapeAspect)) ? "G{" : "C{";
+  theOut =
+    isDatumFeature
+      ? (theSA->IsKind(STANDARD_TYPE(StepRepr_CompGroupShAspAndCompShAspAndDatumFeatAndShAsp))
+           ? "F{"
+           : "D{")
+    : theSA->IsKind(STANDARD_TYPE(StepRepr_CompositeGroupShapeAspect)) ? "G{"
+                                                                         : "C{";
   theOut += aspectText(theSA->Name());
   theOut += "|";
   theOut += aspectText(theSA->Description());
@@ -4527,7 +4582,13 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
   // feature (NIST CTC-02, CTC-03, FTC-06, STC-08)
   aSAs.Append(theDat);
 
-  // Collect shape labels
+  // Collect shape labels -- each leaf's items and the label each is, for how its feature
+  // groups them (aspectStructure)
+  NCollection_DataMap<occ::handle<Standard_Transient>,
+                      NCollection_Sequence<occ::handle<Standard_Transient>>>
+    aLeafItems;
+  NCollection_DataMap<occ::handle<Standard_Transient>, NCollection_Sequence<TDF_Label>>
+    anItemLabels;
   for (int i = 1; i <= aSAs.Length(); i++)
   {
     occ::handle<StepRepr_ShapeAspect> aSA = aSAs.Value(i);
@@ -4553,12 +4614,23 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
       {
         continue;
       }
+      if (!aLeafItems.IsBound(aSA))
+      {
+        aLeafItems.Bind(aSA, NCollection_Sequence<occ::handle<Standard_Transient>>());
+      }
       for (int j = 1; j <= aGISU->NbIdentifiedItem(); j++)
       {
-        TDF_Label aShapeL = getShapeLabel(aGISU->IdentifiedItemValue(j), theWS, aSTool);
+        const occ::handle<StepRepr_RepresentationItem> anItem = aGISU->IdentifiedItemValue(j);
+        const TDF_Label aShapeL = getShapeLabel(anItem, theWS, aSTool);
+        aLeafItems.ChangeFind(aSA).Append(anItem);
+        if (!anItemLabels.IsBound(anItem))
+        {
+          anItemLabels.Bind(anItem, NCollection_Sequence<TDF_Label>());
+        }
         if (!aShapeL.IsNull())
         {
           aShapeLabels.Append(aShapeL);
+          anItemLabels.ChangeFind(anItem).Append(aShapeL);
         }
       }
     }
@@ -4806,9 +4878,11 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
     {
       occ::handle<StepRepr_ShapeAspect> aSA = aSAs.Value(i);
       // A datum feature that is its own size is its size's: bound to both, the first
-      // read had it, by the order of the file
+      // read had it, by the order of the file. A hole occurrence of its feature is the hole's
+      // (NIST STC-09's datum E: its UUID is the hole's)
       if (aSA.IsNull() || aSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget))
-          || aSA->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature)))
+          || aSA->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature))
+          || aSA->IsKind(STANDARD_TYPE(StepRepr_BasicRoundHoleOccurrence)))
       {
         continue;
       }
@@ -4826,6 +4900,24 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
     aDGTTool->Lock(aDatL);
     aDat = XCAFDoc_Datum::Set(aDatL);
     aDGTTool->SetDatum(aShapeLabels, aDatL);
+    // How its feature groups its shapes, and what the feature is named (NIST STC-09's
+    // datum E: a composite group of a hole's two faces and a hole occurrence), kept for it to
+    // be written so again
+    for (int i = 1; i <= aRelatingSAs.Length(); i++)
+    {
+      const occ::handle<StepRepr_ShapeAspect>& aFeature = aRelatingSAs.Value(i);
+      TCollection_AsciiString                  aStructure;
+      if (!aFeature->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget))
+          && !aFeature->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature))
+          && aspectStructure(aFeature, aGraph, aLeafItems, anItemLabels, aStructure))
+      {
+        XCAFDoc_DimTolTool::SetAspectStructure(
+          aDatL,
+          false,
+          TCollection_AsciiString("@") + theWS->Model()->Number(aFeature) + aStructure);
+        break;
+      }
+    }
     aDatObj->SetName(theDat->Identification());
     aDatObj->SetPosition(thePositionCounter);
     if (!theXCAFModifiers.IsEmpty())
@@ -7240,21 +7332,47 @@ static void readHoles(
     {
       continue;
     }
-    occ::handle<StepData_UndefinedEntity> anOcc =
-      occ::down_cast<StepData_UndefinedEntity>(aUsage->Definition().Value());
-    if (anOcc.IsNull())
+    // A round hole's, the shape aspect it is; of another kind, an entity the toolkit does not
+    // know: its name, its part's shape and its definition
+    const occ::handle<Standard_Transient>  anOcc = aUsage->Definition().Value();
+    occ::handle<StepData_UndefinedEntity>  aHole;
+    occ::handle<Standard_Transient>        anOfShape;
+    TCollection_AsciiString                aName;
+    if (const occ::handle<StepRepr_BasicRoundHoleOccurrence> aRound =
+          occ::down_cast<StepRepr_BasicRoundHoleOccurrence>(anOcc))
     {
-      continue;
+      aHole     = occ::down_cast<StepData_UndefinedEntity>(aRound->Definition());
+      anOfShape = aRound->OfShape();
+      if (!aRound->Name().IsNull())
+      {
+        aName = aRound->Name()->String();
+      }
     }
-    const TCollection_AsciiString anOccType(anOcc->StepType());
-    occ::handle<Interface_UndefinedContent> anOccContent = anOcc->UndefinedContent();
-    if (anOccType.Search("HOLE") <= 0 || anOccType.Search("OCCURRENCE") <= 0
-        || anOccContent->NbParams() < 5 || !anOccContent->IsParamEntity(5))
+    else if (const occ::handle<StepData_UndefinedEntity> anUnknown =
+               occ::down_cast<StepData_UndefinedEntity>(anOcc))
     {
-      continue;
+      const TCollection_AsciiString           anOccType(anUnknown->StepType());
+      occ::handle<Interface_UndefinedContent> anOccContent = anUnknown->UndefinedContent();
+      if (anOccType.Search("HOLE") <= 0 || anOccType.Search("OCCURRENCE") <= 0
+          || anOccContent->NbParams() < 5 || !anOccContent->IsParamEntity(5))
+      {
+        continue;
+      }
+      aHole = occ::down_cast<StepData_UndefinedEntity>(anOccContent->ParamEntity(5));
+      if (anOccContent->IsParamEntity(3))
+      {
+        anOfShape = anOccContent->ParamEntity(3);
+      }
+      if (!anOccContent->ParamValue(1).IsNull())
+      {
+        aName = anOccContent->ParamValue(1)->String();
+        if (aName.Length() >= 2 && aName.Value(1) == '\''
+            && aName.Value(aName.Length()) == '\'')
+        {
+          aName = aName.SubString(2, aName.Length() - 1);
+        }
+      }
     }
-    occ::handle<StepData_UndefinedEntity> aHole =
-      occ::down_cast<StepData_UndefinedEntity>(anOccContent->ParamEntity(5));
     if (aHole.IsNull())
     {
       continue;
@@ -7267,8 +7385,7 @@ static void readHoles(
     else
     {
       XCAFDoc_DimTolTool::HoleDefinition aDef;
-      const TDF_Label                    aPartL =
-        anOccContent->IsParamEntity(3) ? aPartOf(anOccContent->ParamEntity(3)) : TDF_Label();
+      const TDF_Label aPartL = anOfShape.IsNull() ? TDF_Label() : aPartOf(anOfShape);
       if (aPartL.IsNull() || !aDefinitionOf(aHole, aDef))
       {
         continue;
@@ -7279,15 +7396,6 @@ static void readHoles(
       if (uuidOf(theWS->Graph(), aHole, aUUIDType, aUUID))
       {
         XCAFDoc_DimTolTool::SetUUID(aHoleL, aUUIDType, aUUID);
-      }
-    }
-    TCollection_AsciiString aName;
-    if (!anOccContent->ParamValue(1).IsNull())
-    {
-      aName = anOccContent->ParamValue(1)->String();
-      if (aName.Length() >= 2 && aName.Value(1) == '\'' && aName.Value(aName.Length()) == '\'')
-      {
-        aName = aName.SubString(2, aName.Length() - 1);
       }
     }
     // Where it is (a mapped item of its definition's placement), and its faces
