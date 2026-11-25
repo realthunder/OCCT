@@ -208,6 +208,14 @@ const Standard_GUID& XCAFDoc::SupplementalLayerGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::CitedDocumentsGUID()
+{
+  static const Standard_GUID ID("37218b38-89db-44f5-856d-d4da00d215aa");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::GDTCurvesGUID()
 {
   static const Standard_GUID ID("3f6b9e27-c41d-4e58-9a02-d7e83c15b6f4");

@@ -108,6 +108,12 @@ public:
   //! presentation_layer_assignment of it, its name and description)
   Standard_EXPORT static const Standard_GUID& SupplementalLayerGUID();
 
+  //! Return GUID of the list of the documents a part's GD&T cites (STEP: the applied document
+  //! references of the additional context of its product definition -- the standards it follows,
+  //! NIST FTC-10's 'ASME Y14.41-2003'), one string each of its fields, as
+  //! STEPCAFControl_Reader keeps them
+  Standard_EXPORT static const Standard_GUID& CitedDocumentsGUID();
+
   //! Return GUID of the mark of a GD&T whose presentation is given as curves (STEP: an
   //! ANNOTATION_CURVE_OCCURRENCE of polylines and circles), not tessellated
   Standard_EXPORT static const Standard_GUID& GDTCurvesGUID();

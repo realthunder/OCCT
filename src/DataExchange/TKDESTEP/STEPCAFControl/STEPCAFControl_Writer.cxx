@@ -217,6 +217,19 @@
 #include <TCollection_AsciiString.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <NCollection_Map.hxx>
+#include <StepAP214_AppliedDocumentReference.hxx>
+#include <StepAP214_DocumentReferenceItem.hxx>
+#include <StepBasic_Document.hxx>
+#include <StepBasic_DocumentType.hxx>
+#include <StepBasic_DocumentProductEquivalence.hxx>
+#include <StepBasic_RoleAssociation.hxx>
+#include <StepBasic_RoleSelect.hxx>
+#include <StepBasic_ObjectRole.hxx>
+#include <StepBasic_ProductDefinitionContext.hxx>
+#include <StepBasic_ApplicationContext.hxx>
+#include <StepBasic_ProductContext.hxx>
+#include <StepBasic_ProductRelatedProductCategory.hxx>
+#include <StepBasic_ProductOrFormationOrDefinition.hxx>
 #include <TDataStd_ExtStringList.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDataStd_TreeNode.hxx>
@@ -2001,6 +2014,183 @@ bool STEPCAFControl_Writer::writeNames(const occ::handle<XSControl_WorkSession>&
   return true;
 }
 
+//=======================================================================
+// function : writeCitedDocuments
+// purpose  : the documents a part's GD&T cites (XCAFDoc::CitedDocumentsGUID, as
+//            STEPCAFControl_Reader keeps them): as the file had them -- an applied document
+//            reference of an additional context of the part's product definition, its role,
+//            and the product (or formation) the document is equivalent to (NIST FTC-10's 'ASME
+//            Y14.41-2003'; SFA lists them as the file's standards)
+//=======================================================================
+static void writeCitedDocuments(
+  const occ::handle<XSControl_WorkSession>&            theWS,
+  const NCollection_DataMap<TDF_Label, TopoDS_Shape>& theLabels,
+  const TDF_Label&                                    theLabel)
+{
+  if (theLabel.IsNull())
+  {
+    return;
+  }
+  for (int i = 1; i <= theLabel.NbChildren(); i++)
+  {
+    writeCitedDocuments(theWS, theLabels, theLabel.FindChild(i));
+  }
+  occ::handle<TDataStd_ExtStringList> aList;
+  if (!theLabel.FindAttribute(XCAFDoc::CitedDocumentsGUID(), aList) || !theLabels.IsBound(theLabel))
+  {
+    return;
+  }
+  const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
+  const occ::handle<Transfer_FinderProcess>&   aFP = theWS->TransferWriter()->FinderProcess();
+  occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
+  if (!aFP->FindTypedTransient(TransferBRep::ShapeMapper(aFP, theLabels.Find(theLabel)),
+                               STANDARD_TYPE(StepShape_ShapeDefinitionRepresentation),
+                               aSDR)
+      || aSDR->Definition().PropertyDefinition().IsNull())
+  {
+    return;
+  }
+  const occ::handle<StepBasic_ProductDefinition> aPD =
+    aSDR->Definition().PropertyDefinition()->Definition().ProductDefinition();
+  if (aPD.IsNull())
+  {
+    return;
+  }
+  auto aStr = [](const TCollection_AsciiString& theText) {
+    return new TCollection_HAsciiString(theText);
+  };
+  auto aQuoted = [](const TCollection_AsciiString& theText) {
+    TCollection_AsciiString aQ("'");
+    for (int i = 1; i <= theText.Length(); i++)
+    {
+      aQ += theText.Value(i);
+      if (theText.Value(i) == '\'')
+      {
+        aQ += '\'';
+      }
+    }
+    return new TCollection_HAsciiString(aQ + "'");
+  };
+  // One context each of the same application, stage and role (STC-07's four documents cite one)
+  NCollection_DataMap<TCollection_AsciiString, occ::handle<StepBasic_ProductDefinitionContext>>
+    aContexts;
+  for (NCollection_List<TCollection_ExtendedString>::Iterator anIter(aList->List()); anIter.More();
+       anIter.Next())
+  {
+    NCollection_Sequence<TCollection_AsciiString> aF;
+    TCollection_AsciiString                       aLine(anIter.Value());
+    TCollection_AsciiString aField;
+    for (int k = 1; k <= aLine.Length(); k++)
+    {
+      if (aLine.Value(k) == '\n')
+      {
+        aF.Append(aField);
+        aField.Clear();
+      }
+      else
+      {
+        aField += aLine.Value(k);
+      }
+    }
+    aF.Append(aField);
+    if (aF.Length() < 19)
+    {
+      continue;
+    }
+    // The additional context of the part's product definition
+    const TCollection_AsciiString aKey = aF(1) + "\n" + aF(2) + "\n" + aF(3);
+    occ::handle<StepBasic_ProductDefinitionContext> aContext;
+    if (!aContexts.Find(aKey, aContext))
+    {
+      occ::handle<StepBasic_ApplicationContext> anApp = new StepBasic_ApplicationContext();
+      anApp->Init(aStr(aF(1)));
+      aContext = new StepBasic_ProductDefinitionContext();
+      aContext->Init(aStr(""), anApp, aStr(aF(2)));
+      occ::handle<StepData_UndefinedEntity> aRole = new StepData_UndefinedEntity();
+      aRole->SetStepType("PRODUCT_DEFINITION_CONTEXT_ROLE");
+      aRole->UndefinedContent()->AddLiteral(Interface_ParamText, aQuoted(aF(3)));
+      aRole->UndefinedContent()->AddLiteral(Interface_ParamText, aQuoted(""));
+      occ::handle<StepData_UndefinedEntity> anAssoc = new StepData_UndefinedEntity();
+      anAssoc->SetStepType("PRODUCT_DEFINITION_CONTEXT_ASSOCIATION");
+      anAssoc->UndefinedContent()->AddEntity(Interface_ParamIdent, aPD);
+      anAssoc->UndefinedContent()->AddEntity(Interface_ParamIdent, aContext);
+      anAssoc->UndefinedContent()->AddEntity(Interface_ParamIdent, aRole);
+      aModel->AddWithRefs(aRole);
+      aModel->AddWithRefs(aContext);
+      aModel->AddWithRefs(anAssoc);
+      aContexts.Bind(aKey, aContext);
+    }
+    // The document, and the reference of it the context has
+    occ::handle<StepBasic_DocumentType> aType = new StepBasic_DocumentType();
+    aType->Init(aStr(aF(7)));
+    occ::handle<StepBasic_Document> aDoc = new StepBasic_Document();
+    aDoc->Init(aStr(aF(4)), aStr(aF(5)), aF(6) != "$", aStr(aF(6) == "$" ? "" : aF(6)), aType);
+    occ::handle<NCollection_HArray1<StepAP214_DocumentReferenceItem>> anItems =
+      new NCollection_HArray1<StepAP214_DocumentReferenceItem>(1, 1);
+    StepAP214_DocumentReferenceItem anItem;
+    anItem.SetValue(aContext);
+    anItems->SetValue(1, anItem);
+    occ::handle<StepAP214_AppliedDocumentReference> aRef = new StepAP214_AppliedDocumentReference();
+    aRef->Init(aDoc, aStr(aF(8)), anItems);
+    aModel->AddWithRefs(aRef);
+    if (!aF(9).IsEmpty())
+    {
+      occ::handle<StepBasic_ObjectRole> aRole = new StepBasic_ObjectRole();
+      aRole->Init(aStr(aF(9)), aF(10) != "$", aStr(aF(10) == "$" ? "" : aF(10)));
+      StepBasic_RoleSelect aWith;
+      aWith.SetValue(aRef);
+      occ::handle<StepBasic_RoleAssociation> anRA = new StepBasic_RoleAssociation();
+      anRA->Init(aRole, aWith);
+      aModel->AddWithRefs(anRA);
+    }
+    // The product it is equivalent to, and its formation
+    if (aF(11).IsEmpty())
+    {
+      continue;
+    }
+    occ::handle<StepBasic_ApplicationContext> aProductApp = new StepBasic_ApplicationContext();
+    aProductApp->Init(aStr(aF(15)));
+    occ::handle<StepBasic_ProductContext> aProductContext = new StepBasic_ProductContext();
+    aProductContext->Init(aStr(""), aProductApp, aStr(aF(16)));
+    occ::handle<NCollection_HArray1<occ::handle<StepBasic_ProductContext>>> aFrames =
+      new NCollection_HArray1<occ::handle<StepBasic_ProductContext>>(1, 1);
+    aFrames->SetValue(1, aProductContext);
+    occ::handle<StepBasic_Product> aProduct = new StepBasic_Product();
+    aProduct->Init(aStr(aF(12)), aStr(aF(13)), aStr(aF(14)), aFrames);
+    aModel->AddWithRefs(aProduct);
+    if (!aF(17).IsEmpty())
+    {
+      occ::handle<NCollection_HArray1<occ::handle<StepBasic_Product>>> aProducts =
+        new NCollection_HArray1<occ::handle<StepBasic_Product>>(1, 1);
+      aProducts->SetValue(1, aProduct);
+      occ::handle<StepBasic_ProductRelatedProductCategory> aCategory =
+        new StepBasic_ProductRelatedProductCategory();
+      aCategory->Init(aStr(aF(17)), true, aStr(""), aProducts);
+      aModel->AddWithRefs(aCategory);
+    }
+    occ::handle<StepBasic_ProductDefinitionFormation> aFormation;
+    if (!aF(18).IsEmpty() || aF(11) == "formation")
+    {
+      aFormation = new StepBasic_ProductDefinitionFormation();
+      aFormation->Init(aStr(aF(18)), aStr(aF(19)), aProduct);
+      aModel->AddWithRefs(aFormation);
+    }
+    StepBasic_ProductOrFormationOrDefinition anEquivalent;
+    if (aF(11) == "formation" && !aFormation.IsNull())
+    {
+      anEquivalent.SetValue(aFormation);
+    }
+    else
+    {
+      anEquivalent.SetValue(aProduct);
+    }
+    occ::handle<StepBasic_DocumentProductEquivalence> anEq =
+      new StepBasic_DocumentProductEquivalence();
+    anEq->Init(aStr("equivalence"), true, aStr(""), aDoc, anEquivalent);
+    aModel->AddWithRefs(anEq);
+  }
+}
+
 //=================================================================================================
 
 bool STEPCAFControl_Writer::writeMetadata(const occ::handle<XSControl_WorkSession>& theWS,
@@ -2016,6 +2206,7 @@ bool STEPCAFControl_Writer::writeMetadata(const occ::handle<XSControl_WorkSessio
        aLabelIter.Next())
   {
     writeMetadataForLabel(theWS, aLabelIter.Value());
+    writeCitedDocuments(theWS, myLabels, aLabelIter.Value());
   }
 
   return true;
