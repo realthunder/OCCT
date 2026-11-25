@@ -63,6 +63,8 @@
 #include <NCollection_DataMap.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <BRepOffset.hxx>
+#include <TopoDS_TShape.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepOffset_Inter2d.hxx>
 #include <BRepOffset_Inter3d.hxx>
@@ -3728,8 +3730,34 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
       }
       try
       {
-        ShapeUpgrade_UnifySameDomain aUSD(aGiven, true, true, false);
-        aUSD.KeepShapes(aKeep);
+        // The merge writes pcurves and ranges on the edges it is given, which
+        // a frozen shape (a FreeCAD document's value) refuses: the merge
+        // threw, and the lune ball, a sphere and its flat halves, its spheres
+        // removed, was refused frozen where it was made unfrozen. A frozen
+        // shape is merged as a copy, the copy's history before the merge's.
+        TopoDS_Shape                   aToMerge = aGiven;
+        occ::handle<BRepTools_History> aCopied;
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aKeepCopied;
+        if (aGiven.Immutable())
+        {
+          BRepBuilderAPI_Copy aCopy(aGiven, false, false);
+          if (!aCopy.IsDone())
+          {
+            throw Standard_Failure("the frozen shape was not copied");
+          }
+          NCollection_List<TopoDS_Shape> anArgs;
+          anArgs.Append(aGiven);
+          aCopied  = new BRepTools_History(anArgs, aCopy);
+          aToMerge = aCopy.Shape();
+          for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator anIt(aKeep);
+               anIt.More();
+               anIt.Next())
+          {
+            aKeepCopied.Add(aCopy.ModifiedShape(anIt.Value()));
+          }
+        }
+        ShapeUpgrade_UnifySameDomain aUSD(aToMerge, true, true, false);
+        aUSD.KeepShapes(aCopied.IsNull() ? aKeep : aKeepCopied);
         aUSD.Build();
         TopoDS_Shape aU = aUSD.Shape();
         while (!aU.IsNull() && aU.ShapeType() == TopAbs_COMPOUND && aU.NbChildren() == 1)
@@ -3746,6 +3774,11 @@ bool BRepOffset_MakeOffset::MakeThickSolidOfSplit(const Message_ProgressRange& t
         {
           aUnion   = aU;
           aUnified = aUSD.History();
+          if (!aCopied.IsNull())
+          {
+            aCopied->Merge(aUnified);
+            aUnified = aCopied;
+          }
         }
       }
       catch (Standard_Failure const&)
@@ -12372,12 +12405,61 @@ void BRepOffset_MakeOffset::MakeSolid(const Message_ProgressRange& theRange)
   B.MakeSolid(Sol);
   Sol.Closed(true);
   bool aMakeSolid = (myShape.ShapeType() == TopAbs_SOLID) || myThickening;
+  // A closed shell smaller than a thousandth of the thickness bounds
+  // nothing to speak of: where two fillets that mitre at a corner are offset
+  // inward by a hair less than their radius, their offsets are tubes of that
+  // hair, and at the corner they close a pair of faces of 2e-8 round one
+  // edge of 0.0003 -- a shell of no volume, as many as the corners, which
+  // made the solid invalid (the hexagon with its top edges filleted 1.5, a
+  // side removed 1.4998 inward: six such shells beside the right one, 0.0004
+  // across). Nor one within the tolerance of its own vertices. From fix
+  // level 5 such a shell is dropped where another stays.
+  const double aSliverSize = 1.e-3 * std::abs(myOffset);
+  auto isSliver = [aSliverSize](const TopoDS_Shape& theShell) {
+    Bnd_Box aBox;
+    BRepBndLib::Add(theShell, aBox);
+    if (aBox.IsVoid())
+    {
+      return true;
+    }
+    double aTol = Precision::Confusion();
+    for (TopExp_Explorer anExpV(theShell, TopAbs_VERTEX); anExpV.More(); anExpV.Next())
+    {
+      aTol = std::max(aTol, BRep_Tool::Tolerance(TopoDS::Vertex(anExpV.Current())));
+    }
+    return std::sqrt(aBox.SquareExtent()) < std::max(2. * aTol, aSliverSize);
+  };
+  int aNbKept = 0;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSlivers;
+  if (BRepOffset_FixLevel() >= 5)
+  {
+    for (exp.Init(myOffsetShape, TopAbs_SHELL); exp.More(); exp.Next())
+    {
+      if (BRep_Tool::IsClosed(exp.Current()) && isSliver(exp.Current()))
+      {
+        aSlivers.Add(exp.Current());
+      }
+      else
+      {
+        ++aNbKept;
+      }
+    }
+    if (aNbKept == 0)
+    {
+      aSlivers.Clear();
+    }
+  }
   for (exp.Init(myOffsetShape, TopAbs_SHELL); exp.More(); exp.Next())
   {
     if (!aPS.More())
     {
       myError = BRepOffset_UserBreak;
       return;
+    }
+    if (aSlivers.Contains(exp.Current()))
+    {
+      SHOW_TOPO_SHAPE(exp.Current(), "SliverShellDropped");
+      continue;
     }
     TopoDS_Shell Sh = TopoDS::Shell(exp.Current());
     if (myThickening && myOffset > 0.)

@@ -123,9 +123,16 @@ bool BRep_Builder_IsCache(const Standard_Transient* theRepresentation)
 //! compiler's rounding leaves 1e-7 an ulp above another's; a growth within
 //! what a tolerance can mean is no change to an Immutable shape, and is not
 //! made to it either.
+//! A tolerance held under Precision::Confusion() is read as that: BRep_Tool
+//! reports no less, so a caller handing back what it was told asks for no
+//! change. (An edge of a filleted box holds a raw tolerance under 1e-7; the
+//! offset of a sphere turned off its pole added a pcurve to it with the 1e-7
+//! BRep_Tool gave, and a frozen edge refused it: the thickness refused where
+//! the same shape unfrozen was made.)
 static bool covers(const double theHeld, const double theTol)
 {
-  return theTol <= theHeld + std::max(1.e-4 * Precision::Confusion(), 1.e-5 * theHeld);
+  const double aHeld = std::max(theHeld, Precision::Confusion());
+  return theTol <= aHeld + std::max(1.e-4 * Precision::Confusion(), 1.e-5 * aHeld);
 }
 
 //! For an Immutable target: true when the call changes nothing (the caller
