@@ -332,6 +332,16 @@ bool BRepLib::BuildCurve3d(const TopoDS_Edge&  AnEdge,
   {
     return true;
   }
+  // A degenerated edge gets no 3d curve below, and a frozen one (the TKBRep
+  // Immutable flag, a FreeCAD document's value) cannot have its pcurves
+  // brought to one range either: as it is, it is all there is to build. (The
+  // pole of a sphere of a shape frozen: the offset's faces built their 3d
+  // curves, the range of the pole's pcurves was set, the edge refused it,
+  // and the thickness was refused where the same shape unfrozen was made.)
+  if (AnEdge.Immutable() && BRep_Tool::Degenerated(AnEdge))
+  {
+    return true;
+  }
   //
   // this should not exists but UpdateEdge makes funny things
   // if the edge is not same range
