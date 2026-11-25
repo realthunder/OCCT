@@ -60,4 +60,12 @@ private:
   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> myVerVerMap;
 };
 
+//! (realthunder) The thawed copies of the frozen vertices the loops widened
+//! in the computation under way (the TKBRep Immutable flag: a vertex of a
+//! shape given that a FreeCAD document froze), for BRepLib_PutThawed to put
+//! in the place of those vertices in the result; with <theIsCleared>, none
+//! after.
+Standard_EXPORT NCollection_List<TopoDS_Shape> BRepOffset_MakeLoops_ThawedVertices(
+  const bool theIsCleared);
+
 #endif // _BRepOffset_MakeLoops_HeaderFile
