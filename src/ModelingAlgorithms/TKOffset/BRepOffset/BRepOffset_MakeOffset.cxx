@@ -1224,6 +1224,8 @@ static bool WallsCrossAtRemovedFace(
 
 void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRange)
 {
+  // No thawed vertex of an earlier computation is put in this one's shells.
+  BRepOffset_MakeLoops_ThawedVertices(true);
   // Every band of a periodic face is made by the loops only where
   // Intersection3D() asks for it, and in this computation only.
   struct EverySeamBandScope
@@ -1873,6 +1875,16 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
   if (myError != BRepOffset_NoError)
   {
     return;
+  }
+  // The vertices of the shape given the loops widened, where it is frozen,
+  // were widened as thawed copies: those take their place in the shells
+  // (BRepOffset_MakeLoops_ThawedVertices).
+  {
+    const NCollection_List<TopoDS_Shape> aThawed = BRepOffset_MakeLoops_ThawedVertices(true);
+    if (!aThawed.IsEmpty() && !myOffsetShape.IsNull())
+    {
+      BRepLib_PutThawed(myOffsetShape, aThawed);
+    }
   }
   if (myOffsetShape.IsNull())
   {
@@ -5142,6 +5154,61 @@ static thread_local bool theIsOnAnalyticTwin = false;
 //=======================================================================
 void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange)
 {
+  // The shape given is frozen while the thick solid is made, as a value of
+  // a FreeCAD document is, and thawed after: what would change a vertex or
+  // an edge of it -- a loop's wire merging two vertices it finds within each
+  // other's tolerance, a tolerance widened -- changes a copy (the TKBRep
+  // Immutable flag). Not frozen, the shape was changed behind its owner's
+  // back where an attempt failed: the hexagon with its top edges filleted
+  // 1.5, a fillet removed 1.5 inward, refused -- and a vertex of the shape
+  // given moved 1.5 down, its tolerance 1.5, the shape broken for the next
+  // operation on it. And an unfrozen shape is made as a frozen one, a
+  // FreeCAD document's, is. From fix level 5; a shape frozen already stays
+  // so.
+  struct FreezeScope
+  {
+    NCollection_List<occ::handle<TopoDS_TShape>> myThawed;
+
+    explicit FreezeScope(const TopoDS_Shape& theShape)
+    {
+      NCollection_Map<occ::handle<TopoDS_TShape>> aSeen;
+      Freeze(theShape, aSeen);
+    }
+
+    void Freeze(const TopoDS_Shape&                          theShape,
+                NCollection_Map<occ::handle<TopoDS_TShape>>& theSeen)
+    {
+      if (theShape.IsNull())
+      {
+        return;
+      }
+      const occ::handle<TopoDS_TShape>& aT = theShape.TShape();
+      if (aT->Immutable() || !theSeen.Add(aT))
+      {
+        return;
+      }
+      for (TopoDS_Iterator anIt(theShape, false, false); anIt.More(); anIt.Next())
+      {
+        Freeze(anIt.Value(), theSeen);
+      }
+      aT->Immutable(true);
+      myThawed.Append(aT);
+    }
+
+    ~FreezeScope()
+    {
+      for (NCollection_List<occ::handle<TopoDS_TShape>>::Iterator anIt(myThawed); anIt.More();
+           anIt.Next())
+      {
+        anIt.Value()->Immutable(false);
+      }
+    }
+  };
+  std::unique_ptr<FreezeScope> aFreeze;
+  if (theThickSolidDepth == 0 && !theIsOnAnalyticTwin && BRepOffset_FixLevel() >= 5)
+  {
+    aFreeze.reset(new FreezeScope(myInitialShape));
+  }
   if (theThickSolidDepth != 0 || theIsOnAnalyticTwin || myThickening || myOriginalFaces.IsEmpty())
   {
     MakeThickSolidAsGiven(theRange);
