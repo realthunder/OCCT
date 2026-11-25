@@ -128,6 +128,7 @@
 #include <BRep_Tool.hxx>
 #include <GeomToStep_MakeCurve.hxx>
 #include <Geom_Circle.hxx>
+#include <Geom_BSplineCurve.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <StepGeom_Polyline.hxx>
@@ -3700,7 +3701,8 @@ static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&    
   // The polylines: each edge's points, chained to the one before where it starts at its end
   // (a polyline read is an edge a segment)
   NCollection_Sequence<NCollection_Sequence<gp_Pnt>> aChains;
-  const double                                       aTol = Precision::Confusion();
+  const double                                       aTol         = Precision::Confusion();
+  bool                                               aLastSegment = false;
   for (TopExp_Explorer anExp(theShape, TopAbs_EDGE); anExp.More(); anExp.Next())
   {
     const TopoDS_Edge& anEdge = TopoDS::Edge(anExp.Current());
@@ -3719,12 +3721,29 @@ static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&    
         aSelect.SetValue(aMaker.Value());
         anElements.Append(aSelect);
       }
+      aLastSegment = false;
       continue;
     }
     NCollection_Sequence<gp_Pnt> aPoints;
     if (aCurve.GetType() == GeomAbs_Line)
     {
       aPoints.Append(aCurve.Value(aFirst));
+      aPoints.Append(aCurve.Value(aLast));
+    }
+    else if (aCurve.GetType() == GeomAbs_BSplineCurve && aCurve.Degree() == 1)
+    {
+      // A polyline read (STEPToGeom makes a polyline a degree 1 B-spline): its own points,
+      // not points along it (NIST CTC-05: 4.7 times as many)
+      const occ::handle<Geom_BSplineCurve> aSpline = aCurve.BSpline();
+      aPoints.Append(aCurve.Value(aFirst));
+      for (int i = 1; i <= aSpline->NbKnots(); ++i)
+      {
+        const double aKnot = aSpline->Knot(i);
+        if (aKnot > aFirst + Precision::PConfusion() && aKnot < aLast - Precision::PConfusion())
+        {
+          aPoints.Append(aCurve.Value(aKnot));
+        }
+      }
       aPoints.Append(aCurve.Value(aLast));
     }
     else
@@ -3743,7 +3762,10 @@ static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&    
     {
       continue;
     }
-    if (!aChains.IsEmpty() && aChains.Last().Last().Distance(aPoints.First()) < aTol)
+    // A segment chained (a curve the file gave as a polyline, read as one edge, is its own)
+    const bool isSegment = aCurve.GetType() == GeomAbs_Line;
+    if (isSegment && aLastSegment && !aChains.IsEmpty()
+        && aChains.Last().Last().Distance(aPoints.First()) < aTol)
     {
       for (int i = 2; i <= aPoints.Length(); ++i)
       {
@@ -3754,6 +3776,7 @@ static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&    
     {
       aChains.Append(aPoints);
     }
+    aLastSegment = isSegment;
   }
   for (const auto& aChain : aChains)
   {
