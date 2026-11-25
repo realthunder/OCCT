@@ -128,6 +128,7 @@
 #include <StepVisual_PresentationStyleAssignment.hxx>
 #include <StepVisual_StyledItem.hxx>
 #include <StepShape_GeometricSet.hxx>
+#include <StepGeom_TrimmedCurve.hxx>
 #include <STEPConstruct_RenderingProperties.hxx>
 #include <Quantity_Color.hxx>
 #include <StepVisual_Colour.hxx>
@@ -6090,10 +6091,18 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
         };
         aStyle(anItem, aPSA);
         occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
+        // SFA colours a trimmed curve by its basis curve, any other member by itself
+        // (NIST FTC-10's lines)
         for (int i = 1; !aSet.IsNull() && i <= aSet->NbElements(); ++i)
         {
-          aStyle(occ::down_cast<StepRepr_RepresentationItem>(aSet->ElementsValue(i).Value()),
-                 aCurvePSA);
+          occ::handle<StepRepr_RepresentationItem> aMember =
+            occ::down_cast<StepRepr_RepresentationItem>(aSet->ElementsValue(i).Value());
+          if (occ::handle<StepGeom_TrimmedCurve> aTrimmed =
+                occ::down_cast<StepGeom_TrimmedCurve>(aMember))
+          {
+            aMember = aTrimmed->BasisCurve();
+          }
+          aStyle(aMember, aCurvePSA);
         }
       }
     }
