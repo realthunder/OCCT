@@ -121,6 +121,17 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <TopoDSToStep_MakeGeometricCurveSet.hxx>
 #include <StepShape_GeometricCurveSet.hxx>
+#include <StepVisual_SurfaceStyleBoundary.hxx>
+#include <StepVisual_SurfaceSideStyle.hxx>
+#include <StepVisual_SurfaceStyleUsage.hxx>
+#include <StepVisual_CurveStyle.hxx>
+#include <StepVisual_PresentationStyleAssignment.hxx>
+#include <StepVisual_StyledItem.hxx>
+#include <StepShape_GeometricSet.hxx>
+#include <StepGeom_TrimmedCurve.hxx>
+#include <STEPConstruct_RenderingProperties.hxx>
+#include <Quantity_Color.hxx>
+#include <StepVisual_Colour.hxx>
 #include <Transfer_SimpleBinderOfTransient.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <TopExp_Explorer.hxx>
@@ -1428,7 +1439,8 @@ static void MakeSTEPStyles(
   const occ::handle<XCAFDoc_ShapeTool>&                                          theShTool,
   const XCAFPrs_Style*                                                           theInherit,
   const bool                                                                     theIsComponent,
-  const bool                                                                     theVisMaterialMode)
+  const bool                                                                     theVisMaterialMode,
+  NCollection_Sequence<occ::handle<StepVisual_StyledItem>>*                      theHidden = nullptr)
 {
   // skip already processed shapes
   if (!theMap.Add(theShape))
@@ -1540,7 +1552,12 @@ static void MakeSTEPStyles(
         } // end of component case
 
         aSTEPstyle = theStyles.AddStyle(anItem, aPSA, theOverride);
-        aHasOwn    = false;
+        // A part of the shape hidden alone: its style listed by an invisibility
+        if (theHidden && !aStyle.IsVisible() && !aSTEPstyle.IsNull())
+        {
+          theHidden->Append(aSTEPstyle);
+        }
+        aHasOwn = false;
       }
     }
   }
@@ -1567,7 +1584,8 @@ static void MakeSTEPStyles(
                    theShTool,
                    (aHasOwn ? &aStyle : nullptr),
                    false,
-                   theVisMaterialMode);
+                   theVisMaterialMode,
+                   theHidden);
   }
 }
 
@@ -1644,13 +1662,14 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
       const TDF_Label&   aSeqValue = aSeqIter.Value();
       XCAFPrs_Style      aStyle;
       Quantity_ColorRGBA aColor;
-      if (aSeqValue == aLabel)
+      // check for invisible status of object on label, and of a part of it hidden alone
+      const bool isSubVisible = XCAFDoc_ColorTool::IsVisible(aSeqValue);
+      if (!isSubVisible)
       {
-        // check for invisible status of object on label
-        if (!XCAFDoc_ColorTool::IsVisible(aSeqValue))
+        aStyle.SetVisibility(false);
+        if (aSeqValue == aLabel)
         {
           anIsVisible = false;
-          aStyle.SetVisibility(false);
         }
       }
       if (XCAFDoc_ColorTool::GetColor(aSeqValue, XCAFDoc_ColorGen, aColor))
@@ -1682,7 +1701,7 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
         }
       }
       if (!aStyle.IsSetColorCurv() && !aStyle.IsSetColorSurf() && aStyle.Material().IsNull()
-          && anIsVisible)
+          && isSubVisible)
       {
         continue;
       }
@@ -1708,6 +1727,7 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
     occ::handle<StepVisual_StyledItem>                     anOverride;
     NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMap;
 
+    NCollection_Sequence<occ::handle<StepVisual_StyledItem>> aHidden;
     MakeSTEPStyles(Styles,
                    aShape,
                    aSettings,
@@ -1719,7 +1739,8 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
                    aSTool,
                    nullptr,
                    anIsComponent,
-                   GetVisualMaterialMode());
+                   GetVisualMaterialMode(),
+                   &aHidden);
 
     const occ::handle<XSControl_TransferWriter>& aTW = theWS->TransferWriter();
     const occ::handle<Transfer_FinderProcess>&   aFP = aTW->FinderProcess();
@@ -1796,6 +1817,21 @@ bool STEPCAFControl_Writer::writeColors(const occ::handle<XSControl_WorkSession>
           aMDGPR->SetItems(aNewItems);
         }
       } // end of work with CDSR
+    }
+    if (anIsVisible && !aHidden.IsEmpty())
+    {
+      // The parts hidden alone (NIST STC-08's surface beside its solid): their styles
+      occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anItems =
+        new NCollection_HArray1<StepVisual_InvisibleItem>(1, aHidden.Length());
+      for (int i = 1; i <= aHidden.Length(); ++i)
+      {
+        StepVisual_InvisibleItem anInvItem;
+        anInvItem.SetValue(aHidden.Value(i));
+        anItems->SetValue(i, anInvItem);
+      }
+      occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
+      anInvisibility->Init(anItems);
+      theWS->Model()->AddWithRefs(anInvisibility);
     }
     if (!anIsVisible)
     {
@@ -5847,6 +5883,9 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
   const occ::handle<Transfer_FinderProcess>&   aFP    = theWS->TransferWriter()->FinderProcess();
   NCollection_Sequence<TDF_Label>              aGroups;
   theDGTTool->GetSupplementalGeometry(aGroups);
+  // The items' colours, styles of a presentation of their own
+  STEPConstruct_Styles                        aStyles(theWS);
+  occ::handle<StepRepr_RepresentationContext> aStyleContext;
   for (NCollection_Sequence<TDF_Label>::Iterator aGroupIter(aGroups); aGroupIter.More();
        aGroupIter.Next())
   {
@@ -5883,6 +5922,25 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       if (!aPDS.IsNull())
       {
         break;
+      }
+    }
+    // A tessellated part (NIST FTC-08 -e4-tg) has no item for its faces: its shapes' own
+    for (TopoDS_Iterator anIter(aPart); anIter.More() && aPDS.IsNull(); anIter.Next())
+    {
+      TopLoc_Location                                       aLoc;
+      NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+      if (FindEntities(aFP, anIter.Value(), aLoc, aSeqRI) > 0)
+      {
+        aPDS = FindPDS(theGraph, aSeqRI.First(), aRC);
+      }
+    }
+    if (aPDS.IsNull())
+    {
+      TopLoc_Location                                       aLoc;
+      NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+      if (FindEntities(aFP, aPart, aLoc, aSeqRI) > 0)
+      {
+        aPDS = FindPDS(theGraph, aSeqRI.First(), aRC);
       }
     }
     occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
@@ -5997,6 +6055,81 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       }
       anItem->SetName(new TCollection_HAsciiString(anItemName));
       anItems.Append(anItem);
+      Quantity_Color aColor;
+      if (XCAFDoc_DimTolTool::GetSupplementalColor(anItemIter.Value(), aColor))
+      {
+        // As NIST's: one style each. A surface's is its fill and its boundary in the curve's
+        // colour (OCCT cannot write the parameter lines NIST's have too) (SFA reads the one style of an assignment, and stops at
+        // two: "Error getting color"); a curve set's, its curves' -- and each of its curves
+        // and points is drawn so, where SFA takes the colour from
+        occ::handle<StepVisual_Colour> aColour = STEPConstruct_Styles::EncodeColor(aColor);
+        const STEPConstruct_RenderingProperties aProps;
+        occ::handle<StepVisual_PresentationStyleAssignment> aCurvePSA =
+          aStyles.MakeColorPSA(anItem, nullptr, aColour, aProps);
+        occ::handle<StepVisual_PresentationStyleAssignment> aPSA = aCurvePSA;
+        if (aKind == "plane" || aKind == "cylinder")
+        {
+          aPSA = aStyles.MakeColorPSA(anItem, aColour, nullptr, aProps);
+          occ::handle<StepVisual_CurveStyle> aCurve =
+            aCurvePSA.IsNull() || aCurvePSA->NbStyles() < 1
+              ? nullptr
+              : aCurvePSA->StylesValue(1).CurveStyle();
+          occ::handle<StepVisual_SurfaceStyleUsage> aUsage =
+            aPSA.IsNull() || aPSA->NbStyles() < 1 ? nullptr
+                                                  : aPSA->StylesValue(1).SurfaceStyleUsage();
+          occ::handle<StepVisual_SurfaceSideStyle> aSide =
+            aUsage.IsNull() ? nullptr : aUsage->Style();
+          if (!aCurve.IsNull() && !aSide.IsNull() && !aSide->Styles().IsNull())
+          {
+            occ::handle<StepVisual_SurfaceStyleBoundary> aBoundary =
+              new StepVisual_SurfaceStyleBoundary();
+            aBoundary->Init(aCurve);
+            const occ::handle<NCollection_HArray1<StepVisual_SurfaceStyleElementSelect>>& anOld =
+              aSide->Styles();
+            occ::handle<NCollection_HArray1<StepVisual_SurfaceStyleElementSelect>> aNew =
+              new NCollection_HArray1<StepVisual_SurfaceStyleElementSelect>(1,
+                                                                            anOld->Length() + 1);
+            int j = 1;
+            for (int i = anOld->Lower(); i <= anOld->Upper(); ++i)
+            {
+              aNew->SetValue(j++, anOld->Value(i));
+            }
+            StepVisual_SurfaceStyleElementSelect aBoundarySelect;
+            aBoundarySelect.SetValue(aBoundary);
+            aNew->SetValue(j, aBoundarySelect);
+            aSide->SetStyles(aNew);
+          }
+        }
+        auto aStyle = [&aStyles](const occ::handle<StepRepr_RepresentationItem>&           theItem,
+                                 const occ::handle<StepVisual_PresentationStyleAssignment>& thePSA) {
+          if (theItem.IsNull() || thePSA.IsNull())
+          {
+            return;
+          }
+          occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>>
+            aPSAs = new NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>(1,
+                                                                                                1);
+          aPSAs->SetValue(1, thePSA);
+          occ::handle<StepVisual_StyledItem> aStyled = new StepVisual_StyledItem();
+          aStyled->Init(new TCollection_HAsciiString(), aPSAs, theItem);
+          aStyles.AddStyle(aStyled);
+        };
+        aStyle(anItem, aPSA);
+        occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
+        // SFA colours a trimmed curve by its basis curve, any other member by itself
+        // (NIST FTC-10's lines)
+        for (int i = 1; !aSet.IsNull() && i <= aSet->NbElements(); ++i)
+        {
+          occ::handle<StepRepr_RepresentationItem> aMember =
+            occ::down_cast<StepRepr_RepresentationItem>(aSet->ElementsValue(i).Value());
+          if (occ::handle<StepGeom_TrimmedCurve> aTrimmed =
+                occ::down_cast<StepGeom_TrimmedCurve>(aMember))
+          {
+            aMember = aTrimmed->BasisCurve();
+          }
+          aStyle(aMember, aCurvePSA);
+        }
+      }
     }
     if (anItems.IsEmpty())
     {
@@ -6018,6 +6151,10 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
                 aPartRep,
                 aCGR);
     aModel->AddWithRefs(aCGRR);
+    if (aStyleContext.IsNull())
+    {
+      aStyleContext = aPartRep->ContextOfItems();
+    }
     // GD&T on a set of curves: the set, in this representation
     for (const auto& aSet : aSets)
     {
@@ -6029,6 +6166,15 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
         new Transfer_SimpleBinderOfTransient();
       aBinder->SetResult(aSet.first);
       aFP->Bind(TransferBRep::ShapeMapper(aFP, aSet.second), aBinder);
+    }
+  }
+  if (aStyles.NbStyles() > 0 && !aStyleContext.IsNull())
+  {
+    occ::handle<StepVisual_MechanicalDesignGeometricPresentationRepresentation> aMDGPR;
+    occ::handle<StepData_StepModel> aStepModel = occ::down_cast<StepData_StepModel>(aModel);
+    if (aStyles.CreateMDGPR(aStyleContext, aMDGPR, aStepModel) && !aMDGPR.IsNull())
+    {
+      aModel->AddWithRefs(aMDGPR);
     }
   }
 }
@@ -6663,6 +6809,52 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     aModel->AddWithRefs(myGDTPresentationDM);
   }
 
+  // The presentations not shown (XCAFDoc_DimTolTool::SetPresentationHidden): their callouts'
+  // occurrences listed by an invisibility, as NIST's are. One drawn in another's graphic hides
+  // nothing of it
+  {
+    NCollection_Sequence<occ::handle<Standard_Transient>> aHidden;
+    using ItemMap =
+      NCollection_DataMap<TDF_Label, NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>>;
+    for (ItemMap::Iterator anIter(aState.Items); anIter.More(); anIter.Next())
+    {
+      TDF_Label aHost;
+      if (!XCAFDoc_DimTolTool::IsPresentationHidden(anIter.Key())
+          || XCAFDoc_DimTolTool::GetPresentedWith(anIter.Key(), aHost))
+      {
+        continue;
+      }
+      for (const auto& anItem : anIter.Value())
+      {
+        occ::handle<StepVisual_DraughtingCallout> aCallout =
+          occ::down_cast<StepVisual_DraughtingCallout>(anItem);
+        for (int i = 1; !aCallout.IsNull() && i <= aCallout->NbContents(); ++i)
+        {
+          occ::handle<StepVisual_StyledItem> anOccurrence =
+            occ::down_cast<StepVisual_StyledItem>(aCallout->ContentsValue(i).Value());
+          if (!anOccurrence.IsNull())
+          {
+            aHidden.Append(anOccurrence);
+          }
+        }
+      }
+    }
+    if (!aHidden.IsEmpty())
+    {
+      occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anItems =
+        new NCollection_HArray1<StepVisual_InvisibleItem>(1, aHidden.Length());
+      for (int i = 1; i <= aHidden.Length(); ++i)
+      {
+        StepVisual_InvisibleItem anInvItem;
+        anInvItem.SetValue(aHidden.Value(i));
+        anItems->SetValue(i, anInvItem);
+      }
+      occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
+      anInvisibility->Init(anItems);
+      aModel->AddWithRefs(anInvisibility);
+    }
+  }
+
   writeViews(theWS, aRC, theLocalFactors);
   return true;
 }
@@ -6872,7 +7064,22 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
         occ::handle<StepData_UndefinedEntity> aView = new StepData_UndefinedEntity();
         aView->SetStepType("MODEL_GEOMETRIC_VIEW");
         occ::handle<Interface_UndefinedContent> aParams = aView->UndefinedContent();
-        aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString("''"));
+        // Named as its view: SFA takes a model_geometric_view of no name for a syntax error
+        // (recommended practice 9.4.2, figure 96), which NIST's own files have
+        TCollection_AsciiString aViewName =
+          aName.IsNull() || aName->IsEmpty() ? TCollection_AsciiString("view") : aName->String();
+        TCollection_AsciiString aQuoted("'");
+        for (int i = 1; i <= aViewName.Length(); ++i)
+        {
+          const char aChar = aViewName.Value(i);
+          if (aChar == '\'' || aChar == '\\')
+          {
+            aQuoted += aChar;
+          }
+          aQuoted += aChar;
+        }
+        aQuoted += "'";
+        aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString(aQuoted));
         aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString("''"));
         aParams->AddEntity(Interface_ParamIdent, aCamera);
         aParams->AddEntity(Interface_ParamIdent, aModelOfView);

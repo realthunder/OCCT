@@ -176,6 +176,14 @@ const Standard_GUID& XCAFDoc::ProductRepresentationsGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::GDTHiddenGUID()
+{
+  static const Standard_GUID ID("9d3c51e8-62b7-4a0f-a5e1-c84f20b7d3a6");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");

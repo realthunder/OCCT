@@ -92,6 +92,10 @@ public:
   //! representations (STEP: a SHAPE_REPRESENTATION related to each), not an assembly of products
   Standard_EXPORT static const Standard_GUID& ProductRepresentationsGUID();
 
+  //! Return GUID of the mark of a GD&T whose presentation is not shown (STEP: listed by an
+  //! INVISIBILITY)
+  Standard_EXPORT static const Standard_GUID& GDTHiddenGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();

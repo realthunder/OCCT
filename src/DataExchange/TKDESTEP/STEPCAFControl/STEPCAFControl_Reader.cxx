@@ -162,6 +162,9 @@
 #include <StepShape_ValueFormatTypeQualifier.hxx>
 #include <StepShape_Vertex.hxx>
 #include <StepToGeom.hxx>
+#include <STEPConstruct_RenderingProperties.hxx>
+#include <Quantity_Color.hxx>
+#include <StepVisual_Colour.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentationRelationship.hxx>
 #include <StepRepr_ConstructiveGeometryRepresentation.hxx>
 #include <StepGeom_CylindricalSurface.hxx>
@@ -179,6 +182,8 @@
 #include <StepVisual_DraughtingCalloutElement.hxx>
 #include <StepVisual_DraughtingModel.hxx>
 #include <StepVisual_Invisibility.hxx>
+#include <StepVisual_InvisibleItem.hxx>
+#include <StepVisual_AnnotationOccurrence.hxx>
 #include <StepVisual_PlanarBox.hxx>
 #include <StepVisual_PresentationLayerAssignment.hxx>
 #include <StepVisual_PresentationStyleByContext.hxx>
@@ -6556,7 +6561,8 @@ static void readSupplementalGeometry(
   const Interface_Graph&                        aGraph = theWS->Graph();
   const occ::handle<Transfer_TransientProcess>& aTP =
     theWS->TransferReader()->TransientProcess();
-  const int aNb = aModel->NbEntities();
+  STEPConstruct_Styles aStyles(theWS);
+  const int            aNb = aModel->NbEntities();
   for (int i = 1; i <= aNb; i++)
   {
     occ::handle<StepRepr_ConstructiveGeometryRepresentationRelationship> aCGRR =
@@ -6634,6 +6640,7 @@ static void readSupplementalGeometry(
         continue;
       }
       const TCollection_AsciiString aName = aNameOf(anItem->Name());
+      TDF_Label                     anItemL;
       try
       {
         OCC_CATCH_SIGNALS
@@ -6643,7 +6650,7 @@ static void readSupplementalGeometry(
             StepToGeom::MakePlane(occ::down_cast<StepGeom_Plane>(anItem), theLocalFactors);
           if (!aPlane.IsNull())
           {
-            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+            anItemL = XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
                                                     "plane",
                                                     aName,
                                                     aPlane->Position(),
@@ -6658,7 +6665,7 @@ static void readSupplementalGeometry(
             theLocalFactors);
           if (!aCyl.IsNull())
           {
-            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+            anItemL = XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
                                                     "cylinder",
                                                     aName,
                                                     aCyl->Position(),
@@ -6673,7 +6680,7 @@ static void readSupplementalGeometry(
             theLocalFactors);
           if (!anAxes.IsNull())
           {
-            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+            anItemL = XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
                                                     "axes",
                                                     aName,
                                                     gp_Ax3(anAxes->Ax2()),
@@ -6690,7 +6697,7 @@ static void readSupplementalGeometry(
             aBinder.IsNull() ? TopoDS_Shape() : TransferBRep::ShapeResult(aTP, aBinder);
           if (!aShape.IsNull())
           {
-            XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
+            anItemL = XCAFDoc_DimTolTool::AddSupplementalItem(aGroupL,
                                                     "curves",
                                                     aName,
                                                     gp_Ax3(),
@@ -6702,6 +6709,30 @@ static void readSupplementalGeometry(
       catch (const Standard_Failure&)
       {
         // Geometry that cannot be made: the item is left out
+      }
+      // The colour it is drawn in: its style's curve colour, else its surface's
+      for (Interface_EntityIterator aStyleIter = aGraph.Sharings(anItem);
+           !anItemL.IsNull() && aStyleIter.More();
+           aStyleIter.Next())
+      {
+        occ::handle<StepVisual_StyledItem> aStyled =
+          occ::down_cast<StepVisual_StyledItem>(aStyleIter.Value());
+        if (aStyled.IsNull())
+        {
+          continue;
+        }
+        occ::handle<StepVisual_Colour>    aSurface, aBoundary, aCurve;
+        STEPConstruct_RenderingProperties aProps;
+        bool                              isComponent = false;
+        aStyles.GetColors(aStyled, aSurface, aBoundary, aCurve, aProps, isComponent);
+        const occ::handle<StepVisual_Colour>& aColour =
+          !aCurve.IsNull() ? aCurve : (!aBoundary.IsNull() ? aBoundary : aSurface);
+        Quantity_Color aColor;
+        if (!aColour.IsNull() && STEPConstruct_Styles::DecodeColor(aColour, aColor))
+        {
+          XCAFDoc_DimTolTool::SetSupplementalColor(anItemL, aColor);
+          break;
+        }
       }
     }
   }
@@ -6961,9 +6992,15 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         }
         else if (aDMIA->Definition().PropertyDefinition().IsNull())
         {
+          // Of an entity OCCT does not know -- a shape aspect of a later edition, a hole
+          // occurrence (NIST STC-09 -e4's two hidden labels of 'RectPattern.5', a
+          // basic_round_hole_occurrence): a graphic alone, not lost
+          const occ::handle<Standard_Transient> aDef = aDMIA->Definition().Value();
+          const bool isOfUnknown =
+            aDef.IsNull() || aDef->IsKind(STANDARD_TYPE(StepData_UndefinedEntity));
           if (aSecondOf.IsNull())
           {
-            if (!isOfNotRead)
+            if (!isOfNotRead && !isOfUnknown)
             {
               continue;
             }
@@ -7176,6 +7213,60 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       {
         XCAFDoc_DimTolTool::SetPlaceholder(aLIt.Value(), aKind->String(), aName);
         break;
+      }
+    }
+  }
+  // The graphics an INVISIBILITY lists (NIST STC-08's 29, STC-09's 75): of the PMI they present,
+  // its own or by the associations of their callout
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<StepVisual_Invisibility> anInvisibility =
+      occ::down_cast<StepVisual_Invisibility>(aModel->Value(i));
+    if (anInvisibility.IsNull() || anInvisibility->InvisibleItems().IsNull())
+    {
+      continue;
+    }
+    for (int j = anInvisibility->InvisibleItems()->Lower();
+         j <= anInvisibility->InvisibleItems()->Upper();
+         ++j)
+    {
+      occ::handle<Standard_Transient> anItem = anInvisibility->InvisibleItems()->Value(j).Value();
+      if (anItem.IsNull()
+          || !(anItem->IsKind(STANDARD_TYPE(StepVisual_AnnotationOccurrence))
+               || anItem->IsKind(STANDARD_TYPE(StepVisual_TessellatedAnnotationOccurrence))))
+      {
+        continue;
+      }
+      NCollection_Sequence<occ::handle<Standard_Transient>> aPresenters;
+      aPresenters.Append(anItem);
+      for (Interface_EntityIterator anIter = aGraph.Sharings(anItem); anIter.More(); anIter.Next())
+      {
+        if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+        {
+          aPresenters.Append(anIter.Value());
+        }
+      }
+      for (const auto& aPresenter : aPresenters)
+      {
+        if (myGDTMap.IsBound(aPresenter))
+        {
+          XCAFDoc_DimTolTool::SetPresentationHidden(myGDTMap.Find(aPresenter), true);
+        }
+        for (Interface_EntityIterator anIter = aGraph.Sharings(aPresenter); anIter.More();
+             anIter.Next())
+        {
+          occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
+            occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+          if (aDMIA.IsNull())
+          {
+            continue;
+          }
+          const occ::handle<Standard_Transient> aDef = aDMIA->Definition().Value();
+          if (!aDef.IsNull() && myGDTMap.IsBound(aDef))
+          {
+            XCAFDoc_DimTolTool::SetPresentationHidden(myGDTMap.Find(aDef), true);
+          }
+        }
       }
     }
   }

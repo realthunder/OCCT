@@ -35,6 +35,7 @@ class TDF_Label;
 class Standard_GUID;
 class TCollection_HAsciiString;
 class TCollection_AsciiString;
+class Quantity_Color;
 
 //! Attribute containing GD&T section of XCAF document.
 //! Provide tools for GD&T section management.
@@ -318,6 +319,22 @@ public:
 
   //! Whether theItemL is an item of supplemental geometry: GD&T on its curves refers to it.
   Standard_EXPORT static bool IsSupplementalItem(const TDF_Label& theItemL);
+
+  //! Gives the item theItemL the colour it is drawn in (NIST's supplemental geometry is
+  //! white or black).
+  Standard_EXPORT static void SetSupplementalColor(const TDF_Label&      theItemL,
+                                                   const Quantity_Color& theColor);
+
+  //! The colour of the item theItemL; false when it has none.
+  Standard_EXPORT static bool GetSupplementalColor(const TDF_Label& theItemL,
+                                                   Quantity_Color&  theColor);
+
+  //! Says the presentation of the GD&T theGDTL is shown or not (STEP: its graphic listed by an
+  //! INVISIBILITY -- NIST STC-08 hides 29, STC-09 75).
+  Standard_EXPORT static void SetPresentationHidden(const TDF_Label& theGDTL, const bool theHidden);
+
+  //! Whether the presentation of the GD&T theGDTL is not shown.
+  Standard_EXPORT static bool IsPresentationHidden(const TDF_Label& theGDTL);
 
   //! Returns Datum label defined for theShapeL label.
   Standard_EXPORT bool GetRefDatumLabel(const TDF_Label&                 theShapeL,
