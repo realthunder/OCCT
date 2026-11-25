@@ -366,6 +366,14 @@ public:
     occ::handle<StepRepr_ProductDefinitionShape> PDS;
   };
   NCollection_DataMap<occ::handle<Standard_Transient>, Supplemental> Supplementals;
+  //! Each item of supplemental geometry written, with the context of its representation: what
+  //! a view's subset of them lists (XCAFDoc_DimTolTool::SetViewSupplemental)
+  struct SupplementalItem
+  {
+    occ::handle<StepRepr_RepresentationItem>    Item;
+    occ::handle<StepRepr_RepresentationContext> Context;
+  };
+  NCollection_DataMap<TDF_Label, SupplementalItem> SupplementalItems;
   //! The semantic entity each GD&T label was written as (its tolerance, dimension, datum
   //! feature): what its UUID identifies
   NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>> Semantics;
@@ -6493,6 +6501,10 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       }
       anItem->SetName(new TCollection_HAsciiString(anItemName));
       anItems.Append(anItem);
+      GDTPresentationModel::SupplementalItem aWritten;
+      aWritten.Item    = anItem;
+      aWritten.Context = aPartRep->ContextOfItems();
+      theState.SupplementalItems.Bind(anItemIter.Value(), aWritten);
       occ::handle<StepVisual_StyledItem> anItemStyle;
       Quantity_Color                     aColor;
       if (XCAFDoc_DimTolTool::GetSupplementalColor(anItemIter.Value(), aColor))
@@ -7818,6 +7830,51 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
         aMapped->Init(new TCollection_HAsciiString(),
                       aMap,
                       GeomToStep_MakeAxis2Placement3d(theLocalFactors).Value());
+        anItems.Append(aMapped);
+      }
+      // The supplemental geometry it shows, a 'supplemental geometry subset' of it as NIST
+      // STC-06's views have it: a shape representation of the items, so described, mapped
+      NCollection_Sequence<TDF_Label> aSupplementalLs;
+      XCAFDoc_DimTolTool::GetViewSupplemental(aViewL, aSupplementalLs);
+      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> aSubset;
+      occ::handle<StepRepr_RepresentationContext>                    aSubsetContext;
+      for (NCollection_Sequence<TDF_Label>::Iterator anIter(aSupplementalLs); anIter.More();
+           anIter.Next())
+      {
+        const GDTPresentationModel::SupplementalItem* aWritten =
+          gdtState(myGDTPresentationDM).SupplementalItems.Seek(anIter.Value());
+        if (aWritten != nullptr)
+        {
+          aSubset.Append(aWritten->Item);
+          aSubsetContext = aWritten->Context;
+        }
+      }
+      if (!aSubset.IsEmpty())
+      {
+        occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> aSubsetItems =
+          new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, aSubset.Length());
+        for (int i = 1; i <= aSubset.Length(); ++i)
+        {
+          aSubsetItems->SetValue(i, aSubset.Value(i));
+        }
+        occ::handle<StepShape_ShapeRepresentation> aSubsetRep =
+          new StepShape_ShapeRepresentation();
+        aSubsetRep->Init(new TCollection_HAsciiString("supplemental geometry"),
+                         aSubsetItems,
+                         aSubsetContext);
+        occ::handle<StepData_UndefinedEntity> aDescription = new StepData_UndefinedEntity();
+        aDescription->SetStepType("DESCRIPTION_ATTRIBUTE");
+        aDescription->UndefinedContent()->AddLiteral(
+          Interface_ParamText,
+          new TCollection_HAsciiString("'supplemental geometry subset'"));
+        aDescription->UndefinedContent()->AddEntity(Interface_ParamIdent, aSubsetRep);
+        aModel->AddWithRefs(aDescription);
+        occ::handle<StepGeom_Axis2Placement3d> anOrigin =
+          GeomToStep_MakeAxis2Placement3d(theLocalFactors).Value();
+        occ::handle<StepRepr_RepresentationMap> aMap = new StepRepr_RepresentationMap();
+        aMap->Init(anOrigin, aSubsetRep);
+        occ::handle<StepRepr_MappedItem> aMapped = new StepRepr_MappedItem();
+        aMapped->Init(new TCollection_HAsciiString(), aMap, anOrigin);
         anItems.Append(aMapped);
       }
       NCollection_Sequence<TDF_Label> aGDTs;

@@ -321,6 +321,16 @@ public:
   //! Whether theItemL is an item of supplemental geometry: GD&T on its curves refers to it.
   Standard_EXPORT static bool IsSupplementalItem(const TDF_Label& theItemL);
 
+  //! Says the view theViewL shows the items of supplemental geometry theItems, in that order
+  //! (STEP: a 'supplemental geometry subset' in its draughting model -- NIST STC-06's views each
+  //! show some of the part's planes and curves). An empty list says nothing.
+  Standard_EXPORT static void SetViewSupplemental(const TDF_Label&                       theViewL,
+                                                  const NCollection_Sequence<TDF_Label>& theItems);
+
+  //! The items of supplemental geometry the view theViewL shows; false when it says none.
+  Standard_EXPORT static bool GetViewSupplemental(const TDF_Label&                 theViewL,
+                                                  NCollection_Sequence<TDF_Label>& theItems);
+
   //! Gives the item theItemL the colour it is drawn in (NIST's supplemental geometry is
   //! white or black).
   Standard_EXPORT static void SetSupplementalColor(const TDF_Label&      theItemL,

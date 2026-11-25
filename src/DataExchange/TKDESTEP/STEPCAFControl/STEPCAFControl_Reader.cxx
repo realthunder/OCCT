@@ -169,6 +169,7 @@
 #include <StepRepr_ConstructiveGeometryRepresentation.hxx>
 #include <StepGeom_CylindricalSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
+#include <TDataStd_Integer.hxx>
 #include <TDataStd_UAttribute.hxx>
 #include <XCAFDoc.hxx>
 #include <StepAP242_ItemIdentifiedRepresentationUsage.hxx>
@@ -6560,6 +6561,17 @@ static void setGeomTolObjectToXCAF(const occ::handle<Standard_Transient>&    the
 //=================================================================================================
 
 //=======================================================================
+// function : supplementalEntityGUID
+// purpose  : the entity an item of supplemental geometry was read from, while the file is
+//            read: a view's subset of them names them by their entities
+//=======================================================================
+static const Standard_GUID& supplementalEntityGUID()
+{
+  static const Standard_GUID ID("bb5f9451-80b2-46e7-a1d4-9f3170ce1a56");
+  return ID;
+}
+
+//=======================================================================
 // function : readSupplementalGeometry
 // purpose  : each CONSTRUCTIVE_GEOMETRY_REPRESENTATION of a part as a group of its
 //            supplemental geometry: planes, cylinders, axis systems, sets of curves
@@ -6782,6 +6794,11 @@ static void readSupplementalGeometry(
           XCAFDoc_DimTolTool::SetSupplementalColor(anItemL, aColor);
           break;
         }
+      }
+      // Which entity it was, for a view showing it to find it (ReadViews forgets it)
+      if (!anItemL.IsNull())
+      {
+        TDataStd_Integer::Set(anItemL, supplementalEntityGUID(), aModel->Number(anItem));
       }
     }
   }
@@ -8351,6 +8368,30 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
     return false;
   }
 
+  // The items of supplemental geometry read, by the entity each was read from: a view's
+  // subset of them names them so
+  NCollection_DataMap<int, TDF_Label> aSupplementalOf;
+  {
+    NCollection_Sequence<TDF_Label> aGroups;
+    aDGTTool->GetSupplementalGeometry(aGroups);
+    for (NCollection_Sequence<TDF_Label>::Iterator aGroupIter(aGroups); aGroupIter.More();
+         aGroupIter.Next())
+    {
+      NCollection_Sequence<TDF_Label> anItems;
+      XCAFDoc_DimTolTool::GetSupplementalItems(aGroupIter.Value(), anItems);
+      for (NCollection_Sequence<TDF_Label>::Iterator anItemIter(anItems); anItemIter.More();
+           anItemIter.Next())
+      {
+        occ::handle<TDataStd_Integer> aNumber;
+        if (anItemIter.Value().FindAttribute(supplementalEntityGUID(), aNumber))
+        {
+          aSupplementalOf.Bind(aNumber->Get(), anItemIter.Value());
+          anItemIter.Value().ForgetAttribute(supplementalEntityGUID());
+        }
+      }
+    }
+  }
+
   int nb = aModel->NbEntities();
   for (int i = 1; i <= nb; i++)
   {
@@ -8450,7 +8491,7 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
     {
       continue;
     }
-    NCollection_Sequence<TDF_Label> aShapes, aGDTs;
+    NCollection_Sequence<TDF_Label> aShapes, aGDTs, aSupplementals;
     Interface_EntityIterator        anIter = aGraph.Shareds(aDModel);
     for (; anIter.More(); anIter.Next())
     {
@@ -8461,7 +8502,22 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
         if (occ::handle<StepRepr_Representation> aRepr =
               anItem->MappingSource()->MappedRepresentation())
         {
-          collectViewShapes(theWS, theDoc, aRepr, aShapes);
+          // A 'supplemental geometry subset': a representation of items of supplemental
+          // geometry, the ones the view shows (NIST STC-06's views); else shapes
+          bool isSubset = false;
+          for (int j = 1; !aRepr->Items().IsNull() && j <= aRepr->NbItems(); ++j)
+          {
+            const TDF_Label* anItemL = aSupplementalOf.Seek(aModel->Number(aRepr->ItemsValue(j)));
+            if (anItemL != nullptr)
+            {
+              aSupplementals.Append(*anItemL);
+              isSubset = true;
+            }
+          }
+          if (!isSubset)
+          {
+            collectViewShapes(theWS, theDoc, aRepr, aShapes);
+          }
         }
       }
       else if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_AnnotationOccurrence))
@@ -8526,6 +8582,7 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
     occ::handle<XCAFDoc_View> aView  = XCAFDoc_View::Set(aViewL);
     aView->SetObject(anObj);
     aViewTool->SetView(aShapes, aGDTs, aClippingPlanes, aViewL);
+    XCAFDoc_DimTolTool::SetViewSupplemental(aViewL, aSupplementals);
     aViewTool->Lock(aViewL);
   }
   return true;

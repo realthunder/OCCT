@@ -1177,6 +1177,48 @@ bool XCAFDoc_DimTolTool::GetSupplementalLayer(const TDF_Label&         theItemL,
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetViewSupplemental(const TDF_Label&                       theViewL,
+                                             const NCollection_Sequence<TDF_Label>& theItems)
+{
+  if (theViewL.IsNull())
+  {
+    return;
+  }
+  theViewL.ForgetAttribute(XCAFDoc::ViewSupplementalGUID());
+  if (theItems.IsEmpty())
+  {
+    return;
+  }
+  occ::handle<TDataStd_ReferenceList> aList =
+    TDataStd_ReferenceList::Set(theViewL, XCAFDoc::ViewSupplementalGUID());
+  for (NCollection_Sequence<TDF_Label>::Iterator anIter(theItems); anIter.More(); anIter.Next())
+  {
+    if (IsSupplementalItem(anIter.Value()))
+    {
+      aList->Append(anIter.Value());
+    }
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetViewSupplemental(const TDF_Label&                 theViewL,
+                                             NCollection_Sequence<TDF_Label>& theItems)
+{
+  occ::handle<TDataStd_ReferenceList> aList;
+  if (theViewL.IsNull() || !theViewL.FindAttribute(XCAFDoc::ViewSupplementalGUID(), aList))
+  {
+    return false;
+  }
+  for (NCollection_List<TDF_Label>::Iterator anIter(aList->List()); anIter.More(); anIter.Next())
+  {
+    theItems.Append(anIter.Value());
+  }
+  return !aList->IsEmpty();
+}
+
+//=================================================================================================
+
 bool XCAFDoc_DimTolTool::IsSupplementalItem(const TDF_Label& theItemL)
 {
   TCollection_AsciiString aText;

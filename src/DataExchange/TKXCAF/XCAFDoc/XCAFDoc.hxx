@@ -114,6 +114,12 @@ public:
   //! STEPCAFControl_Reader keeps them
   Standard_EXPORT static const Standard_GUID& CitedDocumentsGUID();
 
+  //! Return GUID of the list of the supplemental geometry a view shows (STEP: a shape
+  //! representation of items of a constructive geometry representation, described as a
+  //! 'supplemental geometry subset', mapped into the view's draughting model -- NIST STC-06's
+  //! twelve)
+  Standard_EXPORT static const Standard_GUID& ViewSupplementalGUID();
+
   //! Return GUID of the mark of a GD&T whose presentation is given as curves (STEP: an
   //! ANNOTATION_CURVE_OCCURRENCE of polylines and circles), not tessellated
   Standard_EXPORT static const Standard_GUID& GDTCurvesGUID();
