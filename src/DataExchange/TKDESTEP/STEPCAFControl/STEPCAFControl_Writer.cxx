@@ -215,6 +215,7 @@
 #include <TCollection_AsciiString.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <NCollection_Map.hxx>
+#include <TDataStd_ExtStringList.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDataStd_TreeNode.hxx>
 #include <TDataStd_UAttribute.hxx>
@@ -2016,6 +2017,10 @@ bool STEPCAFControl_Writer::writeMetadata(const occ::handle<XSControl_WorkSessio
   return true;
 }
 
+// The length (or angle) unit of a representation context, below
+static StepBasic_Unit GetUnit(const occ::handle<StepRepr_RepresentationContext>& theRC,
+                              const bool                                         theIsAngle);
+
 //=================================================================================================
 
 bool STEPCAFControl_Writer::writeMetadataForLabel(const occ::handle<XSControl_WorkSession>& theWS,
@@ -2109,6 +2114,8 @@ bool STEPCAFControl_Writer::writeMetadataForLabel(const occ::handle<XSControl_Wo
   }
 
   // Export real metadata.
+  occ::handle<TDataStd_ExtStringList> aMeasures;
+  theLabel.FindAttribute(XCAFDoc::AttributeMeasuresGUID(), aMeasures);
   const NCollection_DataMap<TCollection_ExtendedString, double>& aRealMap =
     aNamedData->GetRealsContainer();
   for (NCollection_DataMap<TCollection_ExtendedString, double>::Iterator anIter(aRealMap);
@@ -2117,10 +2124,43 @@ bool STEPCAFControl_Writer::writeMetadataForLabel(const occ::handle<XSControl_Wo
   {
     const TCollection_ExtendedString& aKey   = anIter.Key();
     const double                      aValue = anIter.Value();
+    const occ::handle<TCollection_HAsciiString> aItemName = new TCollection_HAsciiString(aKey);
+    // A length the file gave as one written as one, in the file's length unit (NIST STC-06)
+    TCollection_ExtendedString aMeasure;
+    if (!aMeasures.IsNull())
+    {
+      for (NCollection_List<TCollection_ExtendedString>::Iterator aMIt(aMeasures->List());
+           aMIt.More();)
+      {
+        const bool isKey = aMIt.Value() == aKey;
+        aMIt.Next();
+        if (!aMIt.More())
+        {
+          break;
+        }
+        if (isKey)
+        {
+          aMeasure = aMIt.Value();
+        }
+        aMIt.Next();
+      }
+    }
+    if (aMeasure == "LENGTH_MEASURE" || aMeasure == "POSITIVE_LENGTH_MEASURE")
+    {
+      occ::handle<StepBasic_MeasureValueMember> aMVM = new StepBasic_MeasureValueMember;
+      aMVM->SetName(TCollection_AsciiString(aMeasure).ToCString());
+      aMVM->SetReal(aValue * aModel->LocalLengthUnit() / aModel->WriteLengthUnit());
+      occ::handle<StepRepr_MeasureRepresentationItem> aMRI =
+        new StepRepr_MeasureRepresentationItem;
+      aMRI->Init(new TCollection_HAsciiString(""),
+                 aMVM,
+                 GetUnit(aSDR->UsedRepresentation()->ContextOfItems(), false));
+      writeMetadataRepresentationItem(aKey, aModel, aSDR, aProdDef, aMRI);
+      continue;
+    }
     // Create real representation item for the value.
     const occ::handle<StepRepr_RealRepresentationItem> aRealItem =
       new StepRepr_RealRepresentationItem();
-    const occ::handle<TCollection_HAsciiString> aItemName = new TCollection_HAsciiString(aKey);
     aRealItem->Init(aItemName, aValue);
 
     writeMetadataRepresentationItem(aKey, aModel, aSDR, aProdDef, aRealItem);

@@ -208,6 +208,14 @@ const Standard_GUID& XCAFDoc::UUIDGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::AttributeMeasuresGUID()
+{
+  static const Standard_GUID ID("25daaaa8-89b6-411a-bb7e-f6f032127f78");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");

@@ -200,6 +200,7 @@
 #include <Standard_Transient.hxx>
 #include <NCollection_HSequence.hxx>
 #include <NCollection_Map.hxx>
+#include <TDataStd_ExtStringList.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDataStd_TreeNode.hxx>
 #include <TDF_Label.hxx>
@@ -9181,6 +9182,53 @@ bool STEPCAFControl_Reader::findReprItems(
 
 //=================================================================================================
 
+// The measure a real attribute of a label was given as (XCAFDoc::AttributeMeasuresGUID: pairs of
+// key and measure), or none (null)
+static void setAttributeMeasure(const TDF_Label&               theLabel,
+                                const TCollection_AsciiString& theKey,
+                                const char*                    theMeasure)
+{
+  occ::handle<TDataStd_ExtStringList> aList;
+  if (!theLabel.FindAttribute(XCAFDoc::AttributeMeasuresGUID(), aList))
+  {
+    if (theMeasure == nullptr)
+    {
+      return;
+    }
+    aList = TDataStd_ExtStringList::Set(theLabel, XCAFDoc::AttributeMeasuresGUID());
+  }
+  const TCollection_ExtendedString aKey(theKey);
+  NCollection_List<TCollection_ExtendedString> aKept;
+  for (NCollection_List<TCollection_ExtendedString>::Iterator anIt(aList->List()); anIt.More();)
+  {
+    const TCollection_ExtendedString aName = anIt.Value();
+    anIt.Next();
+    if (!anIt.More())
+    {
+      break;
+    }
+    if (aName != aKey)
+    {
+      aKept.Append(aName);
+      aKept.Append(anIt.Value());
+    }
+    anIt.Next();
+  }
+  if (theMeasure != nullptr)
+  {
+    aKept.Append(aKey);
+    aKept.Append(TCollection_ExtendedString(theMeasure));
+  }
+  aList->Clear();
+  for (NCollection_List<TCollection_ExtendedString>::Iterator anIt(aKept); anIt.More();
+       anIt.Next())
+  {
+    aList->Append(anIt.Value());
+  }
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Reader::fillAttributes(
   const occ::handle<XSControl_WorkSession>&       theWS,
   const occ::handle<StepRepr_PropertyDefinition>& thePropDef,
@@ -9351,6 +9399,13 @@ bool STEPCAFControl_Reader::fillAttributes(
           }
         }
         theAttr->SetReal(aPropName, aValue);
+        // A length kept as one (NIST STC-06's inch attributes), the real in the document's
+        // length unit
+        setAttributeMeasure(theAttr->Label(),
+                            aPropName,
+                            aValType == "LENGTH_MEASURE" || aValType == "POSITIVE_LENGTH_MEASURE"
+                              ? aValType.ToCString()
+                              : nullptr);
         continue;
       }
 
@@ -9371,6 +9426,7 @@ bool STEPCAFControl_Reader::fillAttributes(
           else if (aParamType == Interface_ParamReal)
           {
             theAttr->SetReal(aPropName, aMeasureValueMem->Real());
+            setAttributeMeasure(theAttr->Label(), aPropName, nullptr);
           }
         }
         continue;
@@ -9389,6 +9445,7 @@ bool STEPCAFControl_Reader::fillAttributes(
         occ::handle<StepRepr_RealRepresentationItem> aRealItem =
           occ::down_cast<StepRepr_RealRepresentationItem>(anItem);
         theAttr->SetReal(aPropName, aRealItem->Value());
+        setAttributeMeasure(theAttr->Label(), aPropName, nullptr);
         continue;
       }
 

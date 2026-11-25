@@ -108,6 +108,11 @@ public:
   //! and identifier)
   Standard_EXPORT static const Standard_GUID& UUIDGUID();
 
+  //! Return GUID of the list of a label's attribute measures: pairs of a key of its named
+  //! data's reals and the measure it was given as (STEP: 'LENGTH_MEASURE' of a user defined
+  //! attribute's measure_representation_item, the real in the document's length unit)
+  Standard_EXPORT static const Standard_GUID& AttributeMeasuresGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();
