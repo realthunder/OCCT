@@ -77,6 +77,8 @@ void StepRepr_PropertyDefinition::SetDescription(
   const occ::handle<TCollection_HAsciiString>& aDescription)
 {
   theDescription = aDescription;
+  // Written, as it is set (a user defined attribute's was '$', its description lost)
+  defDescription = !aDescription.IsNull();
 }
 
 //=================================================================================================

@@ -128,6 +128,7 @@
 #include <BRep_Tool.hxx>
 #include <GeomToStep_MakeCurve.hxx>
 #include <Geom_Circle.hxx>
+#include <Geom_BSplineCurve.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <StepGeom_Polyline.hxx>
@@ -201,6 +202,7 @@
 #include <StepVisual_PresentationStyleAssignment.hxx>
 #include <StepVisual_PresentationStyleSelect.hxx>
 #include <StepVisual_Invisibility.hxx>
+#include <StepVisual_LayeredItem.hxx>
 #include <StepVisual_InvisibleItem.hxx>
 #include <StepVisual_MechanicalDesignGeometricPresentationRepresentation.hxx>
 #include <StepVisual_NullStyleMember.hxx>
@@ -215,6 +217,20 @@
 #include <TCollection_AsciiString.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <NCollection_Map.hxx>
+#include <StepAP214_AppliedDocumentReference.hxx>
+#include <StepAP214_DocumentReferenceItem.hxx>
+#include <StepBasic_Document.hxx>
+#include <StepBasic_DocumentType.hxx>
+#include <StepBasic_DocumentProductEquivalence.hxx>
+#include <StepBasic_RoleAssociation.hxx>
+#include <StepBasic_RoleSelect.hxx>
+#include <StepBasic_ObjectRole.hxx>
+#include <StepBasic_ProductDefinitionContext.hxx>
+#include <StepBasic_ApplicationContext.hxx>
+#include <StepBasic_ProductContext.hxx>
+#include <StepBasic_ProductRelatedProductCategory.hxx>
+#include <StepBasic_ProductOrFormationOrDefinition.hxx>
+#include <TDataStd_ExtStringList.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDataStd_TreeNode.hxx>
 #include <TDataStd_UAttribute.hxx>
@@ -339,6 +355,8 @@ public:
   //! one each. Its callout first, then the placeholder
   NCollection_DataMap<TCollection_AsciiString, NCollection_Array1<occ::handle<Standard_Transient>>>
     Placeholders;
+  //! The placeholder each GD&T label was written with (its own): hidden with it
+  NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>> PlaceholderOf;
   //! Supplemental geometry written (XCAFDoc_DimTolTool::AddSupplementalGeometry): each set of
   //! curves, the item GD&T on it identifies, with its constructive geometry representation --
   //! the representation the usage is of -- and its part's shape
@@ -1996,6 +2014,183 @@ bool STEPCAFControl_Writer::writeNames(const occ::handle<XSControl_WorkSession>&
   return true;
 }
 
+//=======================================================================
+// function : writeCitedDocuments
+// purpose  : the documents a part's GD&T cites (XCAFDoc::CitedDocumentsGUID, as
+//            STEPCAFControl_Reader keeps them): as the file had them -- an applied document
+//            reference of an additional context of the part's product definition, its role,
+//            and the product (or formation) the document is equivalent to (NIST FTC-10's 'ASME
+//            Y14.41-2003'; SFA lists them as the file's standards)
+//=======================================================================
+static void writeCitedDocuments(
+  const occ::handle<XSControl_WorkSession>&            theWS,
+  const NCollection_DataMap<TDF_Label, TopoDS_Shape>& theLabels,
+  const TDF_Label&                                    theLabel)
+{
+  if (theLabel.IsNull())
+  {
+    return;
+  }
+  for (int i = 1; i <= theLabel.NbChildren(); i++)
+  {
+    writeCitedDocuments(theWS, theLabels, theLabel.FindChild(i));
+  }
+  occ::handle<TDataStd_ExtStringList> aList;
+  if (!theLabel.FindAttribute(XCAFDoc::CitedDocumentsGUID(), aList) || !theLabels.IsBound(theLabel))
+  {
+    return;
+  }
+  const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
+  const occ::handle<Transfer_FinderProcess>&   aFP = theWS->TransferWriter()->FinderProcess();
+  occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
+  if (!aFP->FindTypedTransient(TransferBRep::ShapeMapper(aFP, theLabels.Find(theLabel)),
+                               STANDARD_TYPE(StepShape_ShapeDefinitionRepresentation),
+                               aSDR)
+      || aSDR->Definition().PropertyDefinition().IsNull())
+  {
+    return;
+  }
+  const occ::handle<StepBasic_ProductDefinition> aPD =
+    aSDR->Definition().PropertyDefinition()->Definition().ProductDefinition();
+  if (aPD.IsNull())
+  {
+    return;
+  }
+  auto aStr = [](const TCollection_AsciiString& theText) {
+    return new TCollection_HAsciiString(theText);
+  };
+  auto aQuoted = [](const TCollection_AsciiString& theText) {
+    TCollection_AsciiString aQ("'");
+    for (int i = 1; i <= theText.Length(); i++)
+    {
+      aQ += theText.Value(i);
+      if (theText.Value(i) == '\'')
+      {
+        aQ += '\'';
+      }
+    }
+    return new TCollection_HAsciiString(aQ + "'");
+  };
+  // One context each of the same application, stage and role (STC-07's four documents cite one)
+  NCollection_DataMap<TCollection_AsciiString, occ::handle<StepBasic_ProductDefinitionContext>>
+    aContexts;
+  for (NCollection_List<TCollection_ExtendedString>::Iterator anIter(aList->List()); anIter.More();
+       anIter.Next())
+  {
+    NCollection_Sequence<TCollection_AsciiString> aF;
+    TCollection_AsciiString                       aLine(anIter.Value());
+    TCollection_AsciiString aField;
+    for (int k = 1; k <= aLine.Length(); k++)
+    {
+      if (aLine.Value(k) == '\n')
+      {
+        aF.Append(aField);
+        aField.Clear();
+      }
+      else
+      {
+        aField += aLine.Value(k);
+      }
+    }
+    aF.Append(aField);
+    if (aF.Length() < 19)
+    {
+      continue;
+    }
+    // The additional context of the part's product definition
+    const TCollection_AsciiString aKey = aF(1) + "\n" + aF(2) + "\n" + aF(3);
+    occ::handle<StepBasic_ProductDefinitionContext> aContext;
+    if (!aContexts.Find(aKey, aContext))
+    {
+      occ::handle<StepBasic_ApplicationContext> anApp = new StepBasic_ApplicationContext();
+      anApp->Init(aStr(aF(1)));
+      aContext = new StepBasic_ProductDefinitionContext();
+      aContext->Init(aStr(""), anApp, aStr(aF(2)));
+      occ::handle<StepData_UndefinedEntity> aRole = new StepData_UndefinedEntity();
+      aRole->SetStepType("PRODUCT_DEFINITION_CONTEXT_ROLE");
+      aRole->UndefinedContent()->AddLiteral(Interface_ParamText, aQuoted(aF(3)));
+      aRole->UndefinedContent()->AddLiteral(Interface_ParamText, aQuoted(""));
+      occ::handle<StepData_UndefinedEntity> anAssoc = new StepData_UndefinedEntity();
+      anAssoc->SetStepType("PRODUCT_DEFINITION_CONTEXT_ASSOCIATION");
+      anAssoc->UndefinedContent()->AddEntity(Interface_ParamIdent, aPD);
+      anAssoc->UndefinedContent()->AddEntity(Interface_ParamIdent, aContext);
+      anAssoc->UndefinedContent()->AddEntity(Interface_ParamIdent, aRole);
+      aModel->AddWithRefs(aRole);
+      aModel->AddWithRefs(aContext);
+      aModel->AddWithRefs(anAssoc);
+      aContexts.Bind(aKey, aContext);
+    }
+    // The document, and the reference of it the context has
+    occ::handle<StepBasic_DocumentType> aType = new StepBasic_DocumentType();
+    aType->Init(aStr(aF(7)));
+    occ::handle<StepBasic_Document> aDoc = new StepBasic_Document();
+    aDoc->Init(aStr(aF(4)), aStr(aF(5)), aF(6) != "$", aStr(aF(6) == "$" ? "" : aF(6)), aType);
+    occ::handle<NCollection_HArray1<StepAP214_DocumentReferenceItem>> anItems =
+      new NCollection_HArray1<StepAP214_DocumentReferenceItem>(1, 1);
+    StepAP214_DocumentReferenceItem anItem;
+    anItem.SetValue(aContext);
+    anItems->SetValue(1, anItem);
+    occ::handle<StepAP214_AppliedDocumentReference> aRef = new StepAP214_AppliedDocumentReference();
+    aRef->Init(aDoc, aStr(aF(8)), anItems);
+    aModel->AddWithRefs(aRef);
+    if (!aF(9).IsEmpty())
+    {
+      occ::handle<StepBasic_ObjectRole> aRole = new StepBasic_ObjectRole();
+      aRole->Init(aStr(aF(9)), aF(10) != "$", aStr(aF(10) == "$" ? "" : aF(10)));
+      StepBasic_RoleSelect aWith;
+      aWith.SetValue(aRef);
+      occ::handle<StepBasic_RoleAssociation> anRA = new StepBasic_RoleAssociation();
+      anRA->Init(aRole, aWith);
+      aModel->AddWithRefs(anRA);
+    }
+    // The product it is equivalent to, and its formation
+    if (aF(11).IsEmpty())
+    {
+      continue;
+    }
+    occ::handle<StepBasic_ApplicationContext> aProductApp = new StepBasic_ApplicationContext();
+    aProductApp->Init(aStr(aF(15)));
+    occ::handle<StepBasic_ProductContext> aProductContext = new StepBasic_ProductContext();
+    aProductContext->Init(aStr(""), aProductApp, aStr(aF(16)));
+    occ::handle<NCollection_HArray1<occ::handle<StepBasic_ProductContext>>> aFrames =
+      new NCollection_HArray1<occ::handle<StepBasic_ProductContext>>(1, 1);
+    aFrames->SetValue(1, aProductContext);
+    occ::handle<StepBasic_Product> aProduct = new StepBasic_Product();
+    aProduct->Init(aStr(aF(12)), aStr(aF(13)), aStr(aF(14)), aFrames);
+    aModel->AddWithRefs(aProduct);
+    if (!aF(17).IsEmpty())
+    {
+      occ::handle<NCollection_HArray1<occ::handle<StepBasic_Product>>> aProducts =
+        new NCollection_HArray1<occ::handle<StepBasic_Product>>(1, 1);
+      aProducts->SetValue(1, aProduct);
+      occ::handle<StepBasic_ProductRelatedProductCategory> aCategory =
+        new StepBasic_ProductRelatedProductCategory();
+      aCategory->Init(aStr(aF(17)), true, aStr(""), aProducts);
+      aModel->AddWithRefs(aCategory);
+    }
+    occ::handle<StepBasic_ProductDefinitionFormation> aFormation;
+    if (!aF(18).IsEmpty() || aF(11) == "formation")
+    {
+      aFormation = new StepBasic_ProductDefinitionFormation();
+      aFormation->Init(aStr(aF(18)), aStr(aF(19)), aProduct);
+      aModel->AddWithRefs(aFormation);
+    }
+    StepBasic_ProductOrFormationOrDefinition anEquivalent;
+    if (aF(11) == "formation" && !aFormation.IsNull())
+    {
+      anEquivalent.SetValue(aFormation);
+    }
+    else
+    {
+      anEquivalent.SetValue(aProduct);
+    }
+    occ::handle<StepBasic_DocumentProductEquivalence> anEq =
+      new StepBasic_DocumentProductEquivalence();
+    anEq->Init(aStr("equivalence"), true, aStr(""), aDoc, anEquivalent);
+    aModel->AddWithRefs(anEq);
+  }
+}
+
 //=================================================================================================
 
 bool STEPCAFControl_Writer::writeMetadata(const occ::handle<XSControl_WorkSession>& theWS,
@@ -2011,10 +2206,15 @@ bool STEPCAFControl_Writer::writeMetadata(const occ::handle<XSControl_WorkSessio
        aLabelIter.Next())
   {
     writeMetadataForLabel(theWS, aLabelIter.Value());
+    writeCitedDocuments(theWS, myLabels, aLabelIter.Value());
   }
 
   return true;
 }
+
+// The length (or angle) unit of a representation context, below
+static StepBasic_Unit GetUnit(const occ::handle<StepRepr_RepresentationContext>& theRC,
+                              const bool                                         theIsAngle);
 
 //=================================================================================================
 
@@ -2109,6 +2309,8 @@ bool STEPCAFControl_Writer::writeMetadataForLabel(const occ::handle<XSControl_Wo
   }
 
   // Export real metadata.
+  occ::handle<TDataStd_ExtStringList> aMeasures;
+  theLabel.FindAttribute(XCAFDoc::AttributeMeasuresGUID(), aMeasures);
   const NCollection_DataMap<TCollection_ExtendedString, double>& aRealMap =
     aNamedData->GetRealsContainer();
   for (NCollection_DataMap<TCollection_ExtendedString, double>::Iterator anIter(aRealMap);
@@ -2117,10 +2319,43 @@ bool STEPCAFControl_Writer::writeMetadataForLabel(const occ::handle<XSControl_Wo
   {
     const TCollection_ExtendedString& aKey   = anIter.Key();
     const double                      aValue = anIter.Value();
+    const occ::handle<TCollection_HAsciiString> aItemName = new TCollection_HAsciiString(aKey);
+    // A length the file gave as one written as one, in the file's length unit (NIST STC-06)
+    TCollection_ExtendedString aMeasure;
+    if (!aMeasures.IsNull())
+    {
+      for (NCollection_List<TCollection_ExtendedString>::Iterator aMIt(aMeasures->List());
+           aMIt.More();)
+      {
+        const bool isKey = aMIt.Value() == aKey;
+        aMIt.Next();
+        if (!aMIt.More())
+        {
+          break;
+        }
+        if (isKey)
+        {
+          aMeasure = aMIt.Value();
+        }
+        aMIt.Next();
+      }
+    }
+    if (aMeasure == "LENGTH_MEASURE" || aMeasure == "POSITIVE_LENGTH_MEASURE")
+    {
+      occ::handle<StepBasic_MeasureValueMember> aMVM = new StepBasic_MeasureValueMember;
+      aMVM->SetName(TCollection_AsciiString(aMeasure).ToCString());
+      aMVM->SetReal(aValue * aModel->LocalLengthUnit() / aModel->WriteLengthUnit());
+      occ::handle<StepRepr_MeasureRepresentationItem> aMRI =
+        new StepRepr_MeasureRepresentationItem;
+      aMRI->Init(new TCollection_HAsciiString(""),
+                 aMVM,
+                 GetUnit(aSDR->UsedRepresentation()->ContextOfItems(), false));
+      writeMetadataRepresentationItem(aKey, aModel, aSDR, aProdDef, aMRI);
+      continue;
+    }
     // Create real representation item for the value.
     const occ::handle<StepRepr_RealRepresentationItem> aRealItem =
       new StepRepr_RealRepresentationItem();
-    const occ::handle<TCollection_HAsciiString> aItemName = new TCollection_HAsciiString(aKey);
     aRealItem->Init(aItemName, aValue);
 
     writeMetadataRepresentationItem(aKey, aModel, aSDR, aProdDef, aRealItem);
@@ -3621,6 +3856,7 @@ static void writePlaceholder(
   {
     gdtState(theDM).Placeholders.Bind(aKey, aThis);
   }
+  gdtState(theDM).PlaceholderOf.Bind(theLabel, aPlaceholder);
   // A placeholder and its association are of AP242's second edition: the file says so (one
   // identified as the first edition and holding them is told off by SFA)
   setEdition2(aModel);
@@ -3660,7 +3896,8 @@ static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&    
   // The polylines: each edge's points, chained to the one before where it starts at its end
   // (a polyline read is an edge a segment)
   NCollection_Sequence<NCollection_Sequence<gp_Pnt>> aChains;
-  const double                                       aTol = Precision::Confusion();
+  const double                                       aTol         = Precision::Confusion();
+  bool                                               aLastSegment = false;
   for (TopExp_Explorer anExp(theShape, TopAbs_EDGE); anExp.More(); anExp.Next())
   {
     const TopoDS_Edge& anEdge = TopoDS::Edge(anExp.Current());
@@ -3679,12 +3916,29 @@ static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&    
         aSelect.SetValue(aMaker.Value());
         anElements.Append(aSelect);
       }
+      aLastSegment = false;
       continue;
     }
     NCollection_Sequence<gp_Pnt> aPoints;
     if (aCurve.GetType() == GeomAbs_Line)
     {
       aPoints.Append(aCurve.Value(aFirst));
+      aPoints.Append(aCurve.Value(aLast));
+    }
+    else if (aCurve.GetType() == GeomAbs_BSplineCurve && aCurve.Degree() == 1)
+    {
+      // A polyline read (STEPToGeom makes a polyline a degree 1 B-spline): its own points,
+      // not points along it (NIST CTC-05: 4.7 times as many)
+      const occ::handle<Geom_BSplineCurve> aSpline = aCurve.BSpline();
+      aPoints.Append(aCurve.Value(aFirst));
+      for (int i = 1; i <= aSpline->NbKnots(); ++i)
+      {
+        const double aKnot = aSpline->Knot(i);
+        if (aKnot > aFirst + Precision::PConfusion() && aKnot < aLast - Precision::PConfusion())
+        {
+          aPoints.Append(aCurve.Value(aKnot));
+        }
+      }
       aPoints.Append(aCurve.Value(aLast));
     }
     else
@@ -3703,7 +3957,10 @@ static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&    
     {
       continue;
     }
-    if (!aChains.IsEmpty() && aChains.Last().Last().Distance(aPoints.First()) < aTol)
+    // A segment chained (a curve the file gave as a polyline, read as one edge, is its own)
+    const bool isSegment = aCurve.GetType() == GeomAbs_Line;
+    if (isSegment && aLastSegment && !aChains.IsEmpty()
+        && aChains.Last().Last().Distance(aPoints.First()) < aTol)
     {
       for (int i = 2; i <= aPoints.Length(); ++i)
       {
@@ -3714,6 +3971,7 @@ static occ::handle<StepShape_GeometricCurveSet> curvesOf(const TopoDS_Shape&    
     {
       aChains.Append(aPoints);
     }
+    aLastSegment = isSegment;
   }
   for (const auto& aChain : aChains)
   {
@@ -6235,7 +6493,8 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       }
       anItem->SetName(new TCollection_HAsciiString(anItemName));
       anItems.Append(anItem);
-      Quantity_Color aColor;
+      occ::handle<StepVisual_StyledItem> anItemStyle;
+      Quantity_Color                     aColor;
       if (XCAFDoc_DimTolTool::GetSupplementalColor(anItemIter.Value(), aColor))
       {
         // As NIST's: one style each. A surface's is its fill and its boundary in the curve's
@@ -6281,10 +6540,11 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           }
         }
         auto aStyle = [&aStyles](const occ::handle<StepRepr_RepresentationItem>&           theItem,
-                                 const occ::handle<StepVisual_PresentationStyleAssignment>& thePSA) {
+                                 const occ::handle<StepVisual_PresentationStyleAssignment>& thePSA)
+          -> occ::handle<StepVisual_StyledItem> {
           if (theItem.IsNull() || thePSA.IsNull())
           {
-            return;
+            return nullptr;
           }
           occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>>
             aPSAs = new NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>(1,
@@ -6293,8 +6553,9 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           occ::handle<StepVisual_StyledItem> aStyled = new StepVisual_StyledItem();
           aStyled->Init(new TCollection_HAsciiString(), aPSAs, theItem);
           aStyles.AddStyle(aStyled);
+          return aStyled;
         };
-        aStyle(anItem, aPSA);
+        anItemStyle = aStyle(anItem, aPSA);
         occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
         // SFA colours a trimmed curve by its basis curve, any other member by itself
         // (NIST FTC-10's lines)
@@ -6309,6 +6570,39 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           }
           aStyle(aMember, aCurvePSA);
         }
+      }
+      // On its layer, as the file had it; hidden by it, else by its style (NIST FTC-07 hides 13
+      // items by their layer)
+      TCollection_AsciiString aLayerName, aLayerDescription;
+      occ::handle<StepVisual_PresentationLayerAssignment> aLayer;
+      if (XCAFDoc_DimTolTool::GetSupplementalLayer(anItemIter.Value(),
+                                                   aLayerName,
+                                                   aLayerDescription))
+      {
+        occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
+          new NCollection_HArray1<StepVisual_LayeredItem>(1, 1);
+        StepVisual_LayeredItem aLayeredItem;
+        aLayeredItem.SetValue(anItem);
+        aLayered->SetValue(1, aLayeredItem);
+        aLayer = new StepVisual_PresentationLayerAssignment();
+        aLayer->Init(new TCollection_HAsciiString(aLayerName),
+                     new TCollection_HAsciiString(aLayerDescription),
+                     aLayered);
+        aModel->AddWithRefs(aLayer);
+      }
+      occ::handle<Standard_Transient> aHiding =
+        aLayer.IsNull() ? occ::handle<Standard_Transient>(anItemStyle)
+                        : occ::handle<Standard_Transient>(aLayer);
+      if (XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value()) && !aHiding.IsNull())
+      {
+        occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
+          new NCollection_HArray1<StepVisual_InvisibleItem>(1, 1);
+        StepVisual_InvisibleItem anInvisibleItem;
+        anInvisibleItem.SetValue(aHiding);
+        anInvisible->SetValue(1, anInvisibleItem);
+        occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
+        anInvisibility->Init(anInvisible);
+        aModel->AddWithRefs(anInvisibility);
       }
     }
     if (anItems.IsEmpty())
@@ -7312,10 +7606,25 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
       {
         continue;
       }
+      // Its placeholder too, when the file hid it (NIST STC-06 hides its 19, STC-08 none)
+      const occ::handle<Standard_Transient>* aPlaceholder =
+        XCAFDoc_DimTolTool::IsPlaceholderHidden(anIter.Key())
+          ? aState.PlaceholderOf.Seek(anIter.Key())
+          : nullptr;
+      if (aPlaceholder != nullptr)
+      {
+        aHidden.Append(*aPlaceholder);
+      }
+      const bool isCallout = XCAFDoc_DimTolTool::IsPresentationHiddenCallout(anIter.Key());
       for (const auto& anItem : anIter.Value())
       {
         occ::handle<StepVisual_DraughtingCallout> aCallout =
           occ::down_cast<StepVisual_DraughtingCallout>(anItem);
+        if (isCallout && !aCallout.IsNull())
+        {
+          aHidden.Append(aCallout);
+          continue;
+        }
         for (int i = 1; !aCallout.IsNull() && i <= aCallout->NbContents(); ++i)
         {
           occ::handle<StepVisual_StyledItem> anOccurrence =

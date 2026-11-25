@@ -96,6 +96,24 @@ public:
   //! INVISIBILITY)
   Standard_EXPORT static const Standard_GUID& GDTHiddenGUID();
 
+  //! Return GUID of the mark of a hidden GD&T whose callout was listed by the INVISIBILITY,
+  //! not its graphic (NIST FTC-09's 44)
+  Standard_EXPORT static const Standard_GUID& GDTHiddenCalloutGUID();
+
+  //! Return GUID of the mark of a GD&T whose annotation placeholder is not shown (STEP: listed
+  //! by an INVISIBILITY, NIST STC-06's 19)
+  Standard_EXPORT static const Standard_GUID& GDTPlaceholderHiddenGUID();
+
+  //! Return GUID of the layer an item of supplemental geometry is on (STEP: the
+  //! presentation_layer_assignment of it, its name and description)
+  Standard_EXPORT static const Standard_GUID& SupplementalLayerGUID();
+
+  //! Return GUID of the list of the documents a part's GD&T cites (STEP: the applied document
+  //! references of the additional context of its product definition -- the standards it follows,
+  //! NIST FTC-10's 'ASME Y14.41-2003'), one string each of its fields, as
+  //! STEPCAFControl_Reader keeps them
+  Standard_EXPORT static const Standard_GUID& CitedDocumentsGUID();
+
   //! Return GUID of the mark of a GD&T whose presentation is given as curves (STEP: an
   //! ANNOTATION_CURVE_OCCURRENCE of polylines and circles), not tessellated
   Standard_EXPORT static const Standard_GUID& GDTCurvesGUID();
@@ -107,6 +125,11 @@ public:
   //! Return GUID of the string a label's UUID is kept as (STEP: its uuid_attribute's type
   //! and identifier)
   Standard_EXPORT static const Standard_GUID& UUIDGUID();
+
+  //! Return GUID of the list of a label's attribute measures: pairs of a key of its named
+  //! data's reals and the measure it was given as (STEP: 'LENGTH_MEASURE' of a user defined
+  //! attribute's measure_representation_item, the real in the document's length unit)
+  Standard_EXPORT static const Standard_GUID& AttributeMeasuresGUID();
 
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 

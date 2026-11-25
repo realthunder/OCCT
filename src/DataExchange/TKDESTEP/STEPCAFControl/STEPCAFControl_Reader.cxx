@@ -200,6 +200,17 @@
 #include <Standard_Transient.hxx>
 #include <NCollection_HSequence.hxx>
 #include <NCollection_Map.hxx>
+#include <StepAP214_AppliedDocumentReference.hxx>
+#include <StepBasic_Document.hxx>
+#include <StepBasic_DocumentType.hxx>
+#include <StepBasic_DocumentProductEquivalence.hxx>
+#include <StepBasic_RoleAssociation.hxx>
+#include <StepBasic_ObjectRole.hxx>
+#include <StepBasic_ProductDefinitionContext.hxx>
+#include <StepBasic_ApplicationContext.hxx>
+#include <StepBasic_ProductContext.hxx>
+#include <StepBasic_ProductRelatedProductCategory.hxx>
+#include <TDataStd_ExtStringList.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDataStd_TreeNode.hxx>
 #include <TDF_Label.hxx>
@@ -6713,6 +6724,41 @@ static void readSupplementalGeometry(
       {
         // Geometry that cannot be made: the item is left out
       }
+      // Its layer, and whether the file shows it: hidden by its layer (NIST FTC-07's 13) or by
+      // its style
+      bool isHidden = false;
+      auto aListed  = [&aGraph](const occ::handle<Standard_Transient>& theEnt) {
+        for (Interface_EntityIterator anIter = aGraph.Sharings(theEnt); anIter.More();
+             anIter.Next())
+        {
+          if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_Invisibility)))
+          {
+            return true;
+          }
+        }
+        return false;
+      };
+      for (Interface_EntityIterator anIter = aGraph.Sharings(anItem);
+           !anItemL.IsNull() && anIter.More();
+           anIter.Next())
+      {
+        if (occ::handle<StepVisual_PresentationLayerAssignment> aLayer =
+              occ::down_cast<StepVisual_PresentationLayerAssignment>(anIter.Value()))
+        {
+          XCAFDoc_DimTolTool::SetSupplementalLayer(anItemL,
+                                                   aNameOf(aLayer->Name()),
+                                                   aNameOf(aLayer->Description()));
+          isHidden = isHidden || aListed(aLayer);
+        }
+        else if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_StyledItem)))
+        {
+          isHidden = isHidden || aListed(anIter.Value());
+        }
+      }
+      if (isHidden)
+      {
+        XCAFDoc_DimTolTool::SetPresentationHidden(anItemL, true);
+      }
       // The colour it is drawn in: its style's curve colour, else its surface's
       for (Interface_EntityIterator aStyleIter = aGraph.Sharings(anItem);
            !anItemL.IsNull() && aStyleIter.More();
@@ -7068,6 +7114,210 @@ static void readHoles(
     if (uuidOf(theWS->Graph(), anOcc, aUUIDType, aUUID))
     {
       XCAFDoc_DimTolTool::SetUUID(anOccL, aUUIDType, aUUID);
+    }
+  }
+}
+
+//=======================================================================
+// function : readCitedDocuments
+// purpose  : the documents a part's GD&T cites -- the standards it follows: an applied
+//            document reference of the additional context of its product definition (NIST
+//            FTC-10's 'ASME Y14.41-2003', STC-07's four) -- kept on the part's label
+//            (XCAFDoc::CitedDocumentsGUID), each a string of its fields one a line: the
+//            context's application, life cycle stage and role; the document's id, name,
+//            description and type; the reference's source; its role's name and description;
+//            what the document is equivalent to ('product', 'formation' or none), that
+//            product's id, name, description, context application and discipline, category,
+//            and its formation's id and description. '$' is a description the file did not give
+//=======================================================================
+static void readCitedDocuments(
+  const occ::handle<XSControl_WorkSession>&                                    theWS,
+  const occ::handle<XCAFDoc_ShapeTool>&                                        theSTool,
+  const NCollection_DataMap<TopoDS_Shape, TDF_Label, TopTools_ShapeMapHasher>& theMap)
+{
+  const occ::handle<Interface_InterfaceModel>&  aModel = theWS->Model();
+  const Interface_Graph&                        aGraph = theWS->Graph();
+  const occ::handle<Transfer_TransientProcess>& aTP =
+    theWS->TransferReader()->TransientProcess();
+  auto aText = [](const occ::handle<TCollection_HAsciiString>& theStr) {
+    return theStr.IsNull() ? TCollection_AsciiString() : theStr->String();
+  };
+  auto aOptional = [](const bool theHas, const occ::handle<TCollection_HAsciiString>& theStr) {
+    return !theHas || theStr.IsNull() ? TCollection_AsciiString("$") : theStr->String();
+  };
+  // A literal of an entity no class is for: its text, unquoted
+  auto aLiteral = [](const occ::handle<Interface_UndefinedContent>& theContent, const int theI) {
+    if (theContent.IsNull() || theI > theContent->NbParams() || theContent->IsParamEntity(theI)
+        || theContent->ParamValue(theI).IsNull())
+    {
+      return TCollection_AsciiString();
+    }
+    TCollection_AsciiString aValue = theContent->ParamValue(theI)->String();
+    if (aValue.Length() >= 2 && aValue.Value(1) == '\'' && aValue.Value(aValue.Length()) == '\'')
+    {
+      aValue = aValue.SubString(2, aValue.Length() - 1);
+    }
+    return aValue;
+  };
+  for (int i = 1; i <= aModel->NbEntities(); i++)
+  {
+    occ::handle<StepAP214_AppliedDocumentReference> aRef =
+      occ::down_cast<StepAP214_AppliedDocumentReference>(aModel->Value(i));
+    if (aRef.IsNull() || aRef->AssignedDocument().IsNull())
+    {
+      continue;
+    }
+    const occ::handle<StepBasic_Document>& aDoc = aRef->AssignedDocument();
+    // Its role, and what it is equivalent to
+    TCollection_AsciiString aRoleName, aRoleDescription("$");
+    for (Interface_EntityIterator anIter = aGraph.Sharings(aRef); anIter.More(); anIter.Next())
+    {
+      occ::handle<StepBasic_RoleAssociation> aRA =
+        occ::down_cast<StepBasic_RoleAssociation>(anIter.Value());
+      if (!aRA.IsNull() && !aRA->Role().IsNull())
+      {
+        aRoleName        = aText(aRA->Role()->Name());
+        aRoleDescription = aOptional(aRA->Role()->HasDescription(), aRA->Role()->Description());
+      }
+    }
+    TCollection_AsciiString                      anEquivalent;
+    occ::handle<StepBasic_Product>               aProduct;
+    occ::handle<StepBasic_ProductDefinitionFormation> aFormation;
+    for (Interface_EntityIterator anIter = aGraph.Sharings(aDoc); anIter.More(); anIter.Next())
+    {
+      occ::handle<StepBasic_DocumentProductEquivalence> anEq =
+        occ::down_cast<StepBasic_DocumentProductEquivalence>(anIter.Value());
+      if (anEq.IsNull())
+      {
+        continue;
+      }
+      if (!anEq->RelatedProduct().ProductDefinitionFormation().IsNull())
+      {
+        anEquivalent = "formation";
+        aFormation   = anEq->RelatedProduct().ProductDefinitionFormation();
+        aProduct     = aFormation->OfProduct();
+      }
+      else if (!anEq->RelatedProduct().Product().IsNull())
+      {
+        anEquivalent = "product";
+        aProduct     = anEq->RelatedProduct().Product();
+      }
+    }
+    TCollection_AsciiString aCategory;
+    for (Interface_EntityIterator anIter = aProduct.IsNull() ? Interface_EntityIterator()
+                                                             : aGraph.Sharings(aProduct);
+         anIter.More();
+         anIter.Next())
+    {
+      if (aFormation.IsNull())
+      {
+        occ::handle<StepBasic_ProductDefinitionFormation> aPDF =
+          occ::down_cast<StepBasic_ProductDefinitionFormation>(anIter.Value());
+        if (!aPDF.IsNull() && aPDF->OfProduct() == aProduct)
+        {
+          aFormation = aPDF;
+        }
+      }
+      occ::handle<StepBasic_ProductRelatedProductCategory> aPRPC =
+        occ::down_cast<StepBasic_ProductRelatedProductCategory>(anIter.Value());
+      if (!aPRPC.IsNull() && aCategory.IsEmpty())
+      {
+        aCategory = aText(aPRPC->Name());
+      }
+    }
+    occ::handle<StepBasic_ProductContext> aProductContext =
+      aProduct.IsNull() || aProduct->NbFrameOfReference() < 1
+        ? nullptr
+        : aProduct->FrameOfReferenceValue(1);
+    // Each context it is of: the additional context of a product definition
+    for (int j = 1; j <= aRef->NbItems(); j++)
+    {
+      occ::handle<StepBasic_ProductDefinitionContext> aContext =
+        occ::down_cast<StepBasic_ProductDefinitionContext>(aRef->ItemsValue(j).Value());
+      if (aContext.IsNull())
+      {
+        continue;
+      }
+      for (Interface_EntityIterator anIter = aGraph.Sharings(aContext); anIter.More();
+           anIter.Next())
+      {
+        occ::handle<StepData_UndefinedEntity> anAssoc =
+          occ::down_cast<StepData_UndefinedEntity>(anIter.Value());
+        if (anAssoc.IsNull()
+            || TCollection_AsciiString(anAssoc->StepType()) != "PRODUCT_DEFINITION_CONTEXT_ASSOCIATION")
+        {
+          continue;
+        }
+        occ::handle<Interface_UndefinedContent> aContent = anAssoc->UndefinedContent();
+        occ::handle<StepBasic_ProductDefinition> aPD =
+          aContent->NbParams() >= 1 && aContent->IsParamEntity(1)
+            ? occ::down_cast<StepBasic_ProductDefinition>(aContent->ParamEntity(1))
+            : nullptr;
+        occ::handle<StepData_UndefinedEntity> aRole =
+          aContent->NbParams() >= 3 && aContent->IsParamEntity(3)
+            ? occ::down_cast<StepData_UndefinedEntity>(aContent->ParamEntity(3))
+            : nullptr;
+        occ::handle<Transfer_Binder> aBinder = aPD.IsNull() ? nullptr : aTP->Find(aPD);
+        const TopoDS_Shape           aPart   = aBinder.IsNull() || !aBinder->HasResult()
+                                                 ? TopoDS_Shape()
+                                                 : TransferBRep::ShapeResult(aTP, aBinder);
+        TDF_Label                    aPartL;
+        if (aPart.IsNull())
+        {
+          continue;
+        }
+        if (theMap.IsBound(aPart))
+        {
+          aPartL = theMap.Find(aPart);
+        }
+        else
+        {
+          theSTool->Search(aPart, aPartL, true, true, false);
+        }
+        if (aPartL.IsNull())
+        {
+          continue;
+        }
+        const occ::handle<StepBasic_ApplicationContext> anApp = aContext->FrameOfReference();
+        TCollection_AsciiString aFields[] = {
+          anApp.IsNull() ? TCollection_AsciiString() : aText(anApp->Application()),
+          aText(aContext->LifeCycleStage()),
+          aRole.IsNull() ? TCollection_AsciiString() : aLiteral(aRole->UndefinedContent(), 1),
+          aText(aDoc->Id()),
+          aText(aDoc->Name()),
+          aOptional(aDoc->HasDescription(), aDoc->Description()),
+          aDoc->Kind().IsNull() ? TCollection_AsciiString() : aText(aDoc->Kind()->ProductDataType()),
+          aText(aRef->Source()),
+          aRoleName,
+          aRoleDescription,
+          anEquivalent,
+          aProduct.IsNull() ? TCollection_AsciiString() : aText(aProduct->Id()),
+          aProduct.IsNull() ? TCollection_AsciiString() : aText(aProduct->Name()),
+          aProduct.IsNull() ? TCollection_AsciiString() : aText(aProduct->Description()),
+          aProductContext.IsNull() || aProductContext->FrameOfReference().IsNull()
+            ? TCollection_AsciiString()
+            : aText(aProductContext->FrameOfReference()->Application()),
+          aProductContext.IsNull() ? TCollection_AsciiString()
+                                   : aText(aProductContext->DisciplineType()),
+          aCategory,
+          aFormation.IsNull() ? TCollection_AsciiString() : aText(aFormation->Id()),
+          aFormation.IsNull() ? TCollection_AsciiString() : aText(aFormation->Description())};
+        TCollection_AsciiString aLine;
+        for (const auto& aField : aFields)
+        {
+          if (&aField != &aFields[0])
+          {
+            aLine += "\n";
+          }
+          aLine += aField;
+        }
+        occ::handle<TDataStd_ExtStringList> aList;
+        if (!aPartL.FindAttribute(XCAFDoc::CitedDocumentsGUID(), aList))
+        {
+          aList = TDataStd_ExtStringList::Set(aPartL, XCAFDoc::CitedDocumentsGUID());
+        }
+        aList->Append(TCollection_ExtendedString(aLine));
+      }
     }
   }
 }
@@ -7525,17 +7775,32 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
     // A placeholder two PMI are linked to (NIST STC-06's hole callout, its diameter's and its
     // depth's) is the first's, and the second's as shared
     const bool isShared = !aSeenPlaceholders.Add(aLink->AnnotationPlaceholder());
+    // Not shown (an INVISIBILITY lists it: NIST STC-06's 19), kept so
+    bool isHidden = false;
+    for (Interface_EntityIterator anIter = aGraph.Sharings(aLink->AnnotationPlaceholder());
+         anIter.More() && !isHidden;
+         anIter.Next())
+    {
+      isHidden = anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_Invisibility));
+    }
+    auto aSet = [&](const TDF_Label& theL, const bool theShared) {
+      XCAFDoc_DimTolTool::SetPlaceholder(theL, aKind->String(), aName, theShared);
+      if (isHidden)
+      {
+        XCAFDoc_DimTolTool::SetPlaceholderHidden(theL, true);
+      }
+    };
     if (!aDef.IsNull() && myGDTMap.Find(aDef, aOfL) && !aOfL.IsNull()
         && (hasPresentation(aOfL) || aName.IsEmpty() || !aByName.IsBound(aName)))
     {
-      XCAFDoc_DimTolTool::SetPlaceholder(aOfL, aKind->String(), aName, isShared);
+      aSet(aOfL, isShared);
       continue;
     }
     // Of a PMI that holds no graphic (a dimension given no value, NIST CTC-03's Linear Size.10):
     // the graphic alone read for it is what is written again, and has its placeholder
     if (!aOfL.IsNull())
     {
-      XCAFDoc_DimTolTool::SetPlaceholder(aOfL, aKind->String(), aName);
+      aSet(aOfL, false);
     }
     if (aName.IsEmpty() || !aByName.IsBound(aName))
     {
@@ -7546,7 +7811,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
     {
       if (!XCAFDoc_DimTolTool::GetPlaceholder(aLIt.Value(), aHas, aHasName))
       {
-        XCAFDoc_DimTolTool::SetPlaceholder(aLIt.Value(), aKind->String(), aName);
+        aSet(aLIt.Value(), false);
         break;
       }
     }
@@ -7595,6 +7860,9 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
     XCAFDoc_DimTolTool::SetUUID(aPartL, aUUIDType, aUUID);
   }
 
+  // The standards its GD&T follows, as the file cites them
+  readCitedDocuments(theWS, aSTool, myMap);
+
   // The graphics an INVISIBILITY lists (NIST STC-08's 29, STC-09's 75): of the PMI they present,
   // its own or by the associations of their callout
   for (int i = 1; i <= nb; i++)
@@ -7610,8 +7878,11 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
          ++j)
     {
       occ::handle<Standard_Transient> anItem = anInvisibility->InvisibleItems()->Value(j).Value();
+      // Its callout listed (NIST FTC-09's 44): the PMI hidden by it, written so again
+      const bool isCallout =
+        !anItem.IsNull() && anItem->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout));
       if (anItem.IsNull()
-          || !(anItem->IsKind(STANDARD_TYPE(StepVisual_AnnotationOccurrence))
+          || !(isCallout || anItem->IsKind(STANDARD_TYPE(StepVisual_AnnotationOccurrence))
                || anItem->IsKind(STANDARD_TYPE(StepVisual_TessellatedAnnotationOccurrence))))
       {
         continue;
@@ -7620,16 +7891,23 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       aPresenters.Append(anItem);
       for (Interface_EntityIterator anIter = aGraph.Sharings(anItem); anIter.More(); anIter.Next())
       {
-        if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+        if (!isCallout && anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
         {
           aPresenters.Append(anIter.Value());
         }
       }
+      auto aHide = [isCallout](const TDF_Label& theL) {
+        XCAFDoc_DimTolTool::SetPresentationHidden(theL, true);
+        if (isCallout)
+        {
+          XCAFDoc_DimTolTool::SetPresentationHiddenCallout(theL, true);
+        }
+      };
       for (const auto& aPresenter : aPresenters)
       {
         if (myGDTMap.IsBound(aPresenter))
         {
-          XCAFDoc_DimTolTool::SetPresentationHidden(myGDTMap.Find(aPresenter), true);
+          aHide(myGDTMap.Find(aPresenter));
         }
         for (Interface_EntityIterator anIter = aGraph.Sharings(aPresenter); anIter.More();
              anIter.Next())
@@ -7643,7 +7921,7 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
           const occ::handle<Standard_Transient> aDef = aDMIA->Definition().Value();
           if (!aDef.IsNull() && myGDTMap.IsBound(aDef))
           {
-            XCAFDoc_DimTolTool::SetPresentationHidden(myGDTMap.Find(aDef), true);
+            aHide(myGDTMap.Find(aDef));
           }
         }
       }
@@ -9181,6 +9459,53 @@ bool STEPCAFControl_Reader::findReprItems(
 
 //=================================================================================================
 
+// The measure a real attribute of a label was given as (XCAFDoc::AttributeMeasuresGUID: pairs of
+// key and measure), or none (null)
+static void setAttributeMeasure(const TDF_Label&               theLabel,
+                                const TCollection_AsciiString& theKey,
+                                const char*                    theMeasure)
+{
+  occ::handle<TDataStd_ExtStringList> aList;
+  if (!theLabel.FindAttribute(XCAFDoc::AttributeMeasuresGUID(), aList))
+  {
+    if (theMeasure == nullptr)
+    {
+      return;
+    }
+    aList = TDataStd_ExtStringList::Set(theLabel, XCAFDoc::AttributeMeasuresGUID());
+  }
+  const TCollection_ExtendedString aKey(theKey);
+  NCollection_List<TCollection_ExtendedString> aKept;
+  for (NCollection_List<TCollection_ExtendedString>::Iterator anIt(aList->List()); anIt.More();)
+  {
+    const TCollection_ExtendedString aName = anIt.Value();
+    anIt.Next();
+    if (!anIt.More())
+    {
+      break;
+    }
+    if (aName != aKey)
+    {
+      aKept.Append(aName);
+      aKept.Append(anIt.Value());
+    }
+    anIt.Next();
+  }
+  if (theMeasure != nullptr)
+  {
+    aKept.Append(aKey);
+    aKept.Append(TCollection_ExtendedString(theMeasure));
+  }
+  aList->Clear();
+  for (NCollection_List<TCollection_ExtendedString>::Iterator anIt(aKept); anIt.More();
+       anIt.Next())
+  {
+    aList->Append(anIt.Value());
+  }
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Reader::fillAttributes(
   const occ::handle<XSControl_WorkSession>&       theWS,
   const occ::handle<StepRepr_PropertyDefinition>& thePropDef,
@@ -9351,6 +9676,13 @@ bool STEPCAFControl_Reader::fillAttributes(
           }
         }
         theAttr->SetReal(aPropName, aValue);
+        // A length kept as one (NIST STC-06's inch attributes), the real in the document's
+        // length unit
+        setAttributeMeasure(theAttr->Label(),
+                            aPropName,
+                            aValType == "LENGTH_MEASURE" || aValType == "POSITIVE_LENGTH_MEASURE"
+                              ? aValType.ToCString()
+                              : nullptr);
         continue;
       }
 
@@ -9371,6 +9703,7 @@ bool STEPCAFControl_Reader::fillAttributes(
           else if (aParamType == Interface_ParamReal)
           {
             theAttr->SetReal(aPropName, aMeasureValueMem->Real());
+            setAttributeMeasure(theAttr->Label(), aPropName, nullptr);
           }
         }
         continue;
@@ -9389,6 +9722,7 @@ bool STEPCAFControl_Reader::fillAttributes(
         occ::handle<StepRepr_RealRepresentationItem> aRealItem =
           occ::down_cast<StepRepr_RealRepresentationItem>(anItem);
         theAttr->SetReal(aPropName, aRealItem->Value());
+        setAttributeMeasure(theAttr->Label(), aPropName, nullptr);
         continue;
       }
 

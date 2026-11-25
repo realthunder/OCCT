@@ -13,10 +13,13 @@
 
 #include <MoniTool_Macros.hxx>
 #include <Standard_Transient.hxx>
+#include <StepData_UndefinedEntity.hxx>
+#include <StepVisual_DraughtingCallout.hxx>
 #include <StepVisual_InvisibleItem.hxx>
 #include <StepVisual_PresentationLayerAssignment.hxx>
 #include <StepVisual_PresentationRepresentation.hxx>
 #include <StepVisual_StyledItem.hxx>
+#include <TCollection_AsciiString.hxx>
 
 StepVisual_InvisibleItem::StepVisual_InvisibleItem() = default;
 
@@ -37,6 +40,18 @@ int StepVisual_InvisibleItem::CaseNum(const occ::handle<Standard_Transient>& ent
   if (ent->IsKind(STANDARD_TYPE(StepVisual_PresentationRepresentation)))
   {
     return 3;
+  }
+  // A callout (AP242's invisible_item has draughting_callout: NIST FTC-09 hides 44)
+  if (ent->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+  {
+    return 4;
+  }
+  // An annotation placeholder (AP242 ed2, a styled item no class is for: NIST STC-06 hides 19)
+  occ::handle<StepData_UndefinedEntity> anUndefined = occ::down_cast<StepData_UndefinedEntity>(ent);
+  if (!anUndefined.IsNull()
+      && TCollection_AsciiString(anUndefined->StepType()).Search("PLACEHOLDER_OCCURRENCE") > 0)
+  {
+    return 5;
   }
   return 0;
 }

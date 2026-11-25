@@ -330,12 +330,38 @@ public:
   Standard_EXPORT static bool GetSupplementalColor(const TDF_Label& theItemL,
                                                    Quantity_Color&  theColor);
 
+  //! Puts the item theItemL on the layer theName (NIST's are on layers, '-1' 'Layer-1', which a
+  //! file may hide: FTC-07 hides 13 items so). Its being hidden is SetPresentationHidden's.
+  Standard_EXPORT static void SetSupplementalLayer(const TDF_Label&               theItemL,
+                                                   const TCollection_AsciiString& theName,
+                                                   const TCollection_AsciiString& theDescription);
+
+  //! The layer of the item theItemL, its name and description; false when it is on none.
+  Standard_EXPORT static bool GetSupplementalLayer(const TDF_Label&         theItemL,
+                                                   TCollection_AsciiString& theName,
+                                                   TCollection_AsciiString& theDescription);
+
   //! Says the presentation of the GD&T theGDTL is shown or not (STEP: its graphic listed by an
   //! INVISIBILITY -- NIST STC-08 hides 29, STC-09 75).
   Standard_EXPORT static void SetPresentationHidden(const TDF_Label& theGDTL, const bool theHidden);
 
   //! Whether the presentation of the GD&T theGDTL is not shown.
   Standard_EXPORT static bool IsPresentationHidden(const TDF_Label& theGDTL);
+
+  //! Says the hidden GD&T theGDTL had its callout listed by the INVISIBILITY, not its graphic
+  //! (NIST FTC-09): written so again.
+  Standard_EXPORT static void SetPresentationHiddenCallout(const TDF_Label& theGDTL,
+                                                           const bool       theCallout);
+
+  //! Whether the hidden GD&T theGDTL is hidden by its callout.
+  Standard_EXPORT static bool IsPresentationHiddenCallout(const TDF_Label& theGDTL);
+
+  //! Says the annotation placeholder of the GD&T theGDTL is not shown, while it is hidden (STEP:
+  //! listed by an INVISIBILITY; NIST STC-06 hides 19, STC-08 none of its hidden PMI's).
+  Standard_EXPORT static void SetPlaceholderHidden(const TDF_Label& theGDTL, const bool theHidden);
+
+  //! Whether the annotation placeholder of the GD&T theGDTL is not shown.
+  Standard_EXPORT static bool IsPlaceholderHidden(const TDF_Label& theGDTL);
 
   //! Says the presentation of the GD&T theGDTL is given as curves (STEP: an annotation curve
   //! occurrence of polylines and circles, NIST CTC-05's), not tessellated.

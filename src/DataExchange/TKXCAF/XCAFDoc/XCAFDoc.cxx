@@ -184,6 +184,38 @@ const Standard_GUID& XCAFDoc::GDTHiddenGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::GDTHiddenCalloutGUID()
+{
+  static const Standard_GUID ID("a5b03c56-c1d1-40a8-a0bb-8c8390f27bf4");
+  return ID;
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc::GDTPlaceholderHiddenGUID()
+{
+  static const Standard_GUID ID("e109e62c-9931-4962-85ce-1804e875c7be");
+  return ID;
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc::SupplementalLayerGUID()
+{
+  static const Standard_GUID ID("8ecb87e5-127a-4266-89c7-9fb1d097ab8e");
+  return ID;
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc::CitedDocumentsGUID()
+{
+  static const Standard_GUID ID("37218b38-89db-44f5-856d-d4da00d215aa");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::GDTCurvesGUID()
 {
   static const Standard_GUID ID("3f6b9e27-c41d-4e58-9a02-d7e83c15b6f4");
@@ -203,6 +235,14 @@ const Standard_GUID& XCAFDoc::HoleGUID()
 const Standard_GUID& XCAFDoc::UUIDGUID()
 {
   static const Standard_GUID ID("6e1c8d42-a95f-4b37-8c20-f1d74b9e3a58");
+  return ID;
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc::AttributeMeasuresGUID()
+{
+  static const Standard_GUID ID("25daaaa8-89b6-411a-bb7e-f6f032127f78");
   return ID;
 }
 

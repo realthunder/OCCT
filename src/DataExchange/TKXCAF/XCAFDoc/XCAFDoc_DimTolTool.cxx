@@ -803,6 +803,57 @@ bool XCAFDoc_DimTolTool::IsPresentationHidden(const TDF_Label& theGDTL)
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetPresentationHiddenCallout(const TDF_Label& theGDTL,
+                                                      const bool       theCallout)
+{
+  if (theGDTL.IsNull())
+  {
+    return;
+  }
+  if (theCallout)
+  {
+    TDataStd_UAttribute::Set(theGDTL, XCAFDoc::GDTHiddenCalloutGUID());
+  }
+  else
+  {
+    theGDTL.ForgetAttribute(XCAFDoc::GDTHiddenCalloutGUID());
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::IsPresentationHiddenCallout(const TDF_Label& theGDTL)
+{
+  return !theGDTL.IsNull() && theGDTL.IsAttribute(XCAFDoc::GDTHiddenCalloutGUID());
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::SetPlaceholderHidden(const TDF_Label& theGDTL, const bool theHidden)
+{
+  if (theGDTL.IsNull())
+  {
+    return;
+  }
+  if (theHidden)
+  {
+    TDataStd_UAttribute::Set(theGDTL, XCAFDoc::GDTPlaceholderHiddenGUID());
+  }
+  else
+  {
+    theGDTL.ForgetAttribute(XCAFDoc::GDTPlaceholderHiddenGUID());
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::IsPlaceholderHidden(const TDF_Label& theGDTL)
+{
+  return !theGDTL.IsNull() && theGDTL.IsAttribute(XCAFDoc::GDTPlaceholderHiddenGUID());
+}
+
+//=================================================================================================
+
 void XCAFDoc_DimTolTool::SetPresentationCurves(const TDF_Label& theGDTL, const bool theCurves)
 {
   if (theGDTL.IsNull())
@@ -1087,6 +1138,40 @@ bool XCAFDoc_DimTolTool::GetSupplementalColor(const TDF_Label& theItemL, Quantit
     return false;
   }
   theColor = aColor->GetColor();
+  return true;
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::SetSupplementalLayer(const TDF_Label&               theItemL,
+                                              const TCollection_AsciiString& theName,
+                                              const TCollection_AsciiString& theDescription)
+{
+  if (IsSupplementalItem(theItemL))
+  {
+    TDataStd_AsciiString::Set(theItemL,
+                              XCAFDoc::SupplementalLayerGUID(),
+                              theName + "\n" + theDescription);
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetSupplementalLayer(const TDF_Label&         theItemL,
+                                              TCollection_AsciiString& theName,
+                                              TCollection_AsciiString& theDescription)
+{
+  occ::handle<TDataStd_AsciiString> aLayer;
+  if (!IsSupplementalItem(theItemL)
+      || !theItemL.FindAttribute(XCAFDoc::SupplementalLayerGUID(), aLayer))
+  {
+    return false;
+  }
+  const TCollection_AsciiString& aValue = aLayer->Get();
+  const int                      aCut   = aValue.Search("\n");
+  theName        = aCut > 0 ? aValue.SubString(1, aCut - 1) : aValue;
+  theDescription = aCut > 0 && aCut < aValue.Length() ? aValue.SubString(aCut + 1, aValue.Length())
+                                                      : TCollection_AsciiString();
   return true;
 }
 
