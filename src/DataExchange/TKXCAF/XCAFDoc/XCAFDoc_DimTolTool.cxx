@@ -1143,6 +1143,40 @@ bool XCAFDoc_DimTolTool::GetSupplementalColor(const TDF_Label& theItemL, Quantit
 
 //=================================================================================================
 
+void XCAFDoc_DimTolTool::SetSupplementalLayer(const TDF_Label&               theItemL,
+                                              const TCollection_AsciiString& theName,
+                                              const TCollection_AsciiString& theDescription)
+{
+  if (IsSupplementalItem(theItemL))
+  {
+    TDataStd_AsciiString::Set(theItemL,
+                              XCAFDoc::SupplementalLayerGUID(),
+                              theName + "\n" + theDescription);
+  }
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetSupplementalLayer(const TDF_Label&         theItemL,
+                                              TCollection_AsciiString& theName,
+                                              TCollection_AsciiString& theDescription)
+{
+  occ::handle<TDataStd_AsciiString> aLayer;
+  if (!IsSupplementalItem(theItemL)
+      || !theItemL.FindAttribute(XCAFDoc::SupplementalLayerGUID(), aLayer))
+  {
+    return false;
+  }
+  const TCollection_AsciiString& aValue = aLayer->Get();
+  const int                      aCut   = aValue.Search("\n");
+  theName        = aCut > 0 ? aValue.SubString(1, aCut - 1) : aValue;
+  theDescription = aCut > 0 && aCut < aValue.Length() ? aValue.SubString(aCut + 1, aValue.Length())
+                                                      : TCollection_AsciiString();
+  return true;
+}
+
+//=================================================================================================
+
 bool XCAFDoc_DimTolTool::IsSupplementalItem(const TDF_Label& theItemL)
 {
   TCollection_AsciiString aText;

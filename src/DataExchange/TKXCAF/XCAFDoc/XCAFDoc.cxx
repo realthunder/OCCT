@@ -200,6 +200,14 @@ const Standard_GUID& XCAFDoc::GDTPlaceholderHiddenGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::SupplementalLayerGUID()
+{
+  static const Standard_GUID ID("8ecb87e5-127a-4266-89c7-9fb1d097ab8e");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::GDTCurvesGUID()
 {
   static const Standard_GUID ID("3f6b9e27-c41d-4e58-9a02-d7e83c15b6f4");

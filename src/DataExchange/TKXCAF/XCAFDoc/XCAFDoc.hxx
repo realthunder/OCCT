@@ -104,6 +104,10 @@ public:
   //! by an INVISIBILITY, NIST STC-06's 19)
   Standard_EXPORT static const Standard_GUID& GDTPlaceholderHiddenGUID();
 
+  //! Return GUID of the layer an item of supplemental geometry is on (STEP: the
+  //! presentation_layer_assignment of it, its name and description)
+  Standard_EXPORT static const Standard_GUID& SupplementalLayerGUID();
+
   //! Return GUID of the mark of a GD&T whose presentation is given as curves (STEP: an
   //! ANNOTATION_CURVE_OCCURRENCE of polylines and circles), not tessellated
   Standard_EXPORT static const Standard_GUID& GDTCurvesGUID();

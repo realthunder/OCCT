@@ -6714,6 +6714,41 @@ static void readSupplementalGeometry(
       {
         // Geometry that cannot be made: the item is left out
       }
+      // Its layer, and whether the file shows it: hidden by its layer (NIST FTC-07's 13) or by
+      // its style
+      bool isHidden = false;
+      auto aListed  = [&aGraph](const occ::handle<Standard_Transient>& theEnt) {
+        for (Interface_EntityIterator anIter = aGraph.Sharings(theEnt); anIter.More();
+             anIter.Next())
+        {
+          if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_Invisibility)))
+          {
+            return true;
+          }
+        }
+        return false;
+      };
+      for (Interface_EntityIterator anIter = aGraph.Sharings(anItem);
+           !anItemL.IsNull() && anIter.More();
+           anIter.Next())
+      {
+        if (occ::handle<StepVisual_PresentationLayerAssignment> aLayer =
+              occ::down_cast<StepVisual_PresentationLayerAssignment>(anIter.Value()))
+        {
+          XCAFDoc_DimTolTool::SetSupplementalLayer(anItemL,
+                                                   aNameOf(aLayer->Name()),
+                                                   aNameOf(aLayer->Description()));
+          isHidden = isHidden || aListed(aLayer);
+        }
+        else if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_StyledItem)))
+        {
+          isHidden = isHidden || aListed(anIter.Value());
+        }
+      }
+      if (isHidden)
+      {
+        XCAFDoc_DimTolTool::SetPresentationHidden(anItemL, true);
+      }
       // The colour it is drawn in: its style's curve colour, else its surface's
       for (Interface_EntityIterator aStyleIter = aGraph.Sharings(anItem);
            !anItemL.IsNull() && aStyleIter.More();

@@ -202,6 +202,7 @@
 #include <StepVisual_PresentationStyleAssignment.hxx>
 #include <StepVisual_PresentationStyleSelect.hxx>
 #include <StepVisual_Invisibility.hxx>
+#include <StepVisual_LayeredItem.hxx>
 #include <StepVisual_InvisibleItem.hxx>
 #include <StepVisual_MechanicalDesignGeometricPresentationRepresentation.hxx>
 #include <StepVisual_NullStyleMember.hxx>
@@ -6301,7 +6302,8 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       }
       anItem->SetName(new TCollection_HAsciiString(anItemName));
       anItems.Append(anItem);
-      Quantity_Color aColor;
+      occ::handle<StepVisual_StyledItem> anItemStyle;
+      Quantity_Color                     aColor;
       if (XCAFDoc_DimTolTool::GetSupplementalColor(anItemIter.Value(), aColor))
       {
         // As NIST's: one style each. A surface's is its fill and its boundary in the curve's
@@ -6347,10 +6349,11 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           }
         }
         auto aStyle = [&aStyles](const occ::handle<StepRepr_RepresentationItem>&           theItem,
-                                 const occ::handle<StepVisual_PresentationStyleAssignment>& thePSA) {
+                                 const occ::handle<StepVisual_PresentationStyleAssignment>& thePSA)
+          -> occ::handle<StepVisual_StyledItem> {
           if (theItem.IsNull() || thePSA.IsNull())
           {
-            return;
+            return nullptr;
           }
           occ::handle<NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>>
             aPSAs = new NCollection_HArray1<occ::handle<StepVisual_PresentationStyleAssignment>>(1,
@@ -6359,8 +6362,9 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           occ::handle<StepVisual_StyledItem> aStyled = new StepVisual_StyledItem();
           aStyled->Init(new TCollection_HAsciiString(), aPSAs, theItem);
           aStyles.AddStyle(aStyled);
+          return aStyled;
         };
-        aStyle(anItem, aPSA);
+        anItemStyle = aStyle(anItem, aPSA);
         occ::handle<StepShape_GeometricSet> aSet = occ::down_cast<StepShape_GeometricSet>(anItem);
         // SFA colours a trimmed curve by its basis curve, any other member by itself
         // (NIST FTC-10's lines)
@@ -6375,6 +6379,39 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           }
           aStyle(aMember, aCurvePSA);
         }
+      }
+      // On its layer, as the file had it; hidden by it, else by its style (NIST FTC-07 hides 13
+      // items by their layer)
+      TCollection_AsciiString aLayerName, aLayerDescription;
+      occ::handle<StepVisual_PresentationLayerAssignment> aLayer;
+      if (XCAFDoc_DimTolTool::GetSupplementalLayer(anItemIter.Value(),
+                                                   aLayerName,
+                                                   aLayerDescription))
+      {
+        occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
+          new NCollection_HArray1<StepVisual_LayeredItem>(1, 1);
+        StepVisual_LayeredItem aLayeredItem;
+        aLayeredItem.SetValue(anItem);
+        aLayered->SetValue(1, aLayeredItem);
+        aLayer = new StepVisual_PresentationLayerAssignment();
+        aLayer->Init(new TCollection_HAsciiString(aLayerName),
+                     new TCollection_HAsciiString(aLayerDescription),
+                     aLayered);
+        aModel->AddWithRefs(aLayer);
+      }
+      occ::handle<Standard_Transient> aHiding =
+        aLayer.IsNull() ? occ::handle<Standard_Transient>(anItemStyle)
+                        : occ::handle<Standard_Transient>(aLayer);
+      if (XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value()) && !aHiding.IsNull())
+      {
+        occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
+          new NCollection_HArray1<StepVisual_InvisibleItem>(1, 1);
+        StepVisual_InvisibleItem anInvisibleItem;
+        anInvisibleItem.SetValue(aHiding);
+        anInvisible->SetValue(1, anInvisibleItem);
+        occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
+        anInvisibility->Init(anInvisible);
+        aModel->AddWithRefs(anInvisibility);
       }
     }
     if (anItems.IsEmpty())

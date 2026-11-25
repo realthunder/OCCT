@@ -330,6 +330,17 @@ public:
   Standard_EXPORT static bool GetSupplementalColor(const TDF_Label& theItemL,
                                                    Quantity_Color&  theColor);
 
+  //! Puts the item theItemL on the layer theName (NIST's are on layers, '-1' 'Layer-1', which a
+  //! file may hide: FTC-07 hides 13 items so). Its being hidden is SetPresentationHidden's.
+  Standard_EXPORT static void SetSupplementalLayer(const TDF_Label&               theItemL,
+                                                   const TCollection_AsciiString& theName,
+                                                   const TCollection_AsciiString& theDescription);
+
+  //! The layer of the item theItemL, its name and description; false when it is on none.
+  Standard_EXPORT static bool GetSupplementalLayer(const TDF_Label&         theItemL,
+                                                   TCollection_AsciiString& theName,
+                                                   TCollection_AsciiString& theDescription);
+
   //! Says the presentation of the GD&T theGDTL is shown or not (STEP: its graphic listed by an
   //! INVISIBILITY -- NIST STC-08 hides 29, STC-09 75).
   Standard_EXPORT static void SetPresentationHidden(const TDF_Label& theGDTL, const bool theHidden);
