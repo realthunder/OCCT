@@ -43,6 +43,17 @@
 
 static void WidenSubstitute(const TopoDS_Shape& theOld, const TopoDS_Shape& theNew);
 
+// The distance within which this thread's loops take two vertices for one
+// (BRepOffset_MakeLoops_TolConf); 0 leaves BRepAlgo_Loop's own.
+static thread_local double theLoopTolConf = 0.;
+
+double BRepOffset_MakeLoops_TolConf(const double theTolConf)
+{
+  const double anOld = theLoopTolConf;
+  theLoopTolConf     = theTolConf;
+  return anOld;
+}
+
 // The pieces a loop cut an edge into, added to the edge's image.
 //
 // A face that takes an edge whole leaves it as its own image. Cut by a
@@ -96,6 +107,10 @@ void BRepOffset_MakeLoops::Build(const NCollection_List<TopoDS_Shape>& LF,
   NCollection_List<TopoDS_Shape>::Iterator it(LF);
   NCollection_List<TopoDS_Shape>::Iterator itl, itLCE;
   BRepAlgo_Loop                            Loops;
+  if (theLoopTolConf > 0.)
+  {
+    Loops.SetTolConf(theLoopTolConf);
+  }
   Loops.VerticesForSubstitute(myVerVerMap);
   Loops.SetImageVV(theImageVV);
   Message_ProgressScope aPSOuter(theRange, nullptr, 2);
@@ -350,6 +365,10 @@ void BRepOffset_MakeLoops::BuildOnContext(const NCollection_List<TopoDS_Shape>& 
   NCollection_List<TopoDS_Shape>::Iterator it(LContext);
   NCollection_List<TopoDS_Shape>::Iterator itl, itLCE;
   BRepAlgo_Loop                            Loops;
+  if (theLoopTolConf > 0.)
+  {
+    Loops.SetTolConf(theLoopTolConf);
+  }
   Loops.VerticesForSubstitute(myVerVerMap);
   TopExp_Explorer                                        exp;
   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> MapExtent;
@@ -609,6 +628,10 @@ void BRepOffset_MakeLoops::BuildFaces(const NCollection_List<TopoDS_Shape>& LF,
   NCollection_List<TopoDS_Shape>::Iterator itr, itl, itLCE;
   bool                                     ToRebuild;
   BRepAlgo_Loop                            Loops;
+  if (theLoopTolConf > 0.)
+  {
+    Loops.SetTolConf(theLoopTolConf);
+  }
   Loops.VerticesForSubstitute(myVerVerMap);
   BRep_Builder B;
 

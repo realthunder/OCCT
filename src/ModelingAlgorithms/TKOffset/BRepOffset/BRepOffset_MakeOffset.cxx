@@ -5424,6 +5424,94 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       myError = BRepOffset_UnknownError;
     }
   }
+  // From fix level 5: refused still, made again with the loops
+  // taking two vertices for one only within 100 x Precision::Confusion(),
+  // not BRepAlgo_Loop's own 0.001 -- a distance that knows nothing of the
+  // shape's size. A tube with its top edges filleted 1, its outer wall
+  // removed 1.0005 inward: the offset of its top cuts the offset of the
+  // inner wall 0.0005 below where the fillet's offset ended it, the loop
+  // took the two vertices on the wall's seam for one, the wall was never cut
+  // and the offset came apart -- refused from just over the fillets' radius
+  // to 0.001 over it. Smaller everywhere, the loops leave apart vertices
+  // that are one (a loose end 0.00066 in the join of the suite's dome, and
+  // the dome outward refused): only an attempt refused is made so, and one
+  // with an answer, valid or not, keeps it. And only where a face kept is a
+  // cylinder, a torus or a sphere whose offset turns inside out by less than
+  // that 0.001 (BRepOffset_Reversed, and not so offset 0.001 less): made
+  // again for every refusal, the corpus at level 5 took a quarter longer.
+  auto aIsAHairOverARadius = [&]() -> bool {
+    constexpr double aHair = 1.e-3;
+    for (TopExp_Explorer anExp(aShapeAsked, TopAbs_FACE); anExp.More(); anExp.Next())
+    {
+      const TopoDS_Face& aF = TopoDS::Face(anExp.Current());
+      if (aRemovedAsked.Contains(aF))
+      {
+        continue;
+      }
+      const double* aOwn  = aFaceOffsetsAsked.Seek(aF);
+      double        anOff = aOwn ? *aOwn : anOffsetAsked;
+      if (std::abs(anOff) <= aHair)
+      {
+        continue;
+      }
+      if (aF.Orientation() == TopAbs_REVERSED)
+      {
+        anOff = -anOff;
+      }
+      TopLoc_Location           aLoc;
+      occ::handle<Geom_Surface> aS = BRep_Tool::Surface(aF, aLoc);
+      if (aS.IsNull())
+      {
+        continue;
+      }
+      if (occ::handle<Geom_RectangularTrimmedSurface> aRT =
+            occ::down_cast<Geom_RectangularTrimmedSurface>(aS))
+      {
+        aS = aRT->BasisSurface();
+      }
+      if (!aS->IsKind(STANDARD_TYPE(Geom_ToroidalSurface))
+          && !aS->IsKind(STANDARD_TYPE(Geom_CylindricalSurface))
+          && !aS->IsKind(STANDARD_TYPE(Geom_SphericalSurface)))
+      {
+        continue;
+      }
+      BRepOffset_Status aStatus = BRepOffset_Good;
+      BRepOffset::Surface(aS, anOff, aStatus);
+      if (aStatus != BRepOffset_Reversed)
+      {
+        continue;
+      }
+      BRepOffset::Surface(aS, anOff > 0. ? anOff - aHair : anOff + aHair, aStatus);
+      if (aStatus != BRepOffset_Reversed)
+      {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (isManifoldAsked && !myDone && aIsAHairOverARadius())
+  {
+    struct TolConfScope
+    {
+      const double myOld;
+
+      TolConfScope()
+          : myOld(BRepOffset_MakeLoops_TolConf(100. * Precision::Confusion()))
+      {
+      }
+
+      ~TolConfScope() { BRepOffset_MakeLoops_TolConf(myOld); }
+    };
+    {
+      const TolConfScope aScope;
+      anAskAgain(isInterAsked, aJoinAsked);
+    }
+    if (!(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()))
+    {
+      myDone  = false;
+      myError = BRepOffset_UnknownError;
+    }
+  }
   if (isManifoldAsked && myDone && HasEdgeOnMoreThanTwoFaces(myOffsetShape))
   {
     myDone  = false;
