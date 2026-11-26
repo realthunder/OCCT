@@ -1190,6 +1190,27 @@ occ::handle<Transfer_Binder> STEPControl_ActorWrite::TransferShape(
           }
           if (!TopExp_Explorer(aChild, TopAbs_EDGE).More())
           {
+            // A compound of points alone (a sketch of points: NIST CTC-04's 'Sketch.7' and
+            // 'Sketch.23'): one set of them, as it is one shape -- not one with every other
+            // point of the part. Each point is found by its vertex all the same (transferVertex)
+            bool isPoints = aChild.NbChildren() > 0;
+            for (TopoDS_Iterator aMemberIter(aChild); aMemberIter.More() && isPoints;
+                 aMemberIter.Next())
+            {
+              isPoints = aMemberIter.Value().ShapeType() == TopAbs_VERTEX;
+            }
+            if (isPoints)
+            {
+              for (TopoDS_Iterator aMemberIter(aChild); aMemberIter.More(); aMemberIter.Next())
+              {
+                aInCurveSet.Add(aMemberIter.Value());
+              }
+              RepItemSeq->Append(aChild);
+            }
+            else
+            {
+              aCurveSets(aChild);
+            }
             continue;
           }
           // A compound of compounds only groups them: each of its own a set (NIST STC-09's
@@ -1243,6 +1264,10 @@ occ::handle<Transfer_Binder> STEPControl_ActorWrite::TransferShape(
       for (VertexExp.Init(theShape, TopAbs_VERTEX, TopAbs_EDGE); VertexExp.More();
            VertexExp.Next())
       {
+        if (aInCurveSet.Contains(VertexExp.Current()))
+        {
+          continue;
+        }
         aVertexBuilder.Add(aSoloVertices, VertexExp.Current());
         hasSoloVertex = true;
       }
