@@ -987,14 +987,22 @@ void BRepOffset_Tool::PipeInter(const TopoDS_Face&              F1,
         // 5e-4 before its end, and with its end put on the vertex its last
         // 1e-4 lay 37 deg off the rest, along the edge beside it. The
         // walked points but the last lie on a straight course to the vertex.
-        // Only between tubes that are cylinders and tori: between the
+        // Only where one of the tubes is a cylinder or a torus: between the
         // B-spline tubes of #613's blends the walked line refitted lost
         // answers the moved end below has (the ridge blends at 1, the side
-        // blends at 0.5 and 1).
+        // blends at 0.5 and 1). (One of them, not both: the box with its
+        // upright and its top edges rounded, a top fillet removed 17 x 0.05
+        // outward -- 0.8500000000000001, and not at 0.85 --, the tube round
+        // its straight edge a cylinder and the one round its end a B-spline
+        // surface, the two tangent at the vertex: the walk of their section
+        // ended 9.5e-6 beside it, the fitted curve lay 5.7e-5 off the tubes
+        // there and past the end of the cylinder's, whose wire it crossed;
+        // the result was invalid at every level. The walked line refitted
+        // is 3.3e-8 off them.)
         auto aIsRound = [](const occ::handle<GeomAdaptor_Surface>& theS) {
           return theS->GetType() == GeomAbs_Cylinder || theS->GetType() == GeomAbs_Torus;
         };
-        if (!isWalked && aIsRound(AS1) && aIsRound(AS2) && BRepOffset_FixLevel() >= 5)
+        if (!isWalked && (aIsRound(AS1) || aIsRound(AS2)) && BRepOffset_FixLevel() >= 5)
         {
           bool isOff = false;
           for (int k = 0; k < 2; ++k)
