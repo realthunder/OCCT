@@ -10422,7 +10422,14 @@ void BRepOffset_MakeOffset::ToContext(
   {
     const bool   isRefused = BRepOffset_FixLevel() >= 5 && !theIsCapTangentWide;
     const double aT        = std::abs(myOffset);
-    const double aSlack    = std::max(1.e-3 * aT, 10. * myTol);
+    // (From fix level 5 two tubes are taken for touching within ten times the
+    // tolerance, not a thousandth of the thickness: the tube's top, 2 wide,
+    // removed 0.9999 outward has its two tubes 0.0002 apart and its answer
+    // without this, 1701.4929, which the refusal took from it for the one
+    // without tubes, 1499.0837. Where they do touch, the wall is of no
+    // thickness along that line and there is no sound solid with the tubes.)
+    const double aSlack = BRepOffset_FixLevel() >= 5 ? 10. * myTol
+                                                     : std::max(1.e-3 * aT, 10. * myTol);
     const int    aNbS      = 33;
     // the distance of a point from an edge
     auto aDistance = [](const gp_Pnt& theP, const TopoDS_Edge& theE) {
