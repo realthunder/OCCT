@@ -111,6 +111,8 @@
 #include <StepGeom_GeometricRepresentationContextAndGlobalUnitAssignedContext.hxx>
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
 #include <StepGeom_Plane.hxx>
+#include <StepRepr_CentreOfSymmetry.hxx>
+#include <StepShape_DimensionalSizeWithDatumFeature.hxx>
 #include <StepRepr_CompGroupShAspAndCompShAspAndDatumFeatAndShAsp.hxx>
 #include <StepRepr_AllAroundShapeAspect.hxx>
 #include <StepRepr_BasicRoundHoleOccurrence.hxx>
@@ -3618,7 +3620,7 @@ size_t aspectStart(const std::string& theText)
 bool aspectNode(const std::string& theText, size_t& thePos, AspectNode& theNode)
 {
   if (thePos + 1 >= theText.size()
-      || std::strchr("CGDFH", theText[thePos]) == nullptr
+      || std::strchr("CGDFHSW", theText[thePos]) == nullptr
       || theText[thePos + 1] != '{')
   {
     return false;
@@ -3685,6 +3687,11 @@ bool aspectCovers(const AspectNode&                 theNode,
 {
   for (const AspectNode& aMember : theNode.Members)
   {
+    if (theNode.Kind == 'S' && &aMember != &theNode.Members.front())
+    {
+      // A centre of symmetry's own axis: supplemental geometry, none of the PMI's shapes
+      continue;
+    }
     if (aMember.Kind != 0)
     {
       if (!aspectCovers(aMember, theOf, theUses))
@@ -3729,17 +3736,113 @@ void aspectEntries(const AspectNode& theNode, std::vector<std::string>& theOut)
 occ::handle<StepRepr_ShapeAspect> writeAspectNode(
   const occ::handle<Interface_InterfaceModel>&                          theModel,
   const AspectNode&                                                     theNode,
-  const std::function<occ::handle<StepRepr_ShapeAspect>(const std::string&)>& theSA,
+  const std::function<occ::handle<StepRepr_ShapeAspect>(const std::vector<std::string>&)>&
+    theSA,
   const std::map<std::string, occ::handle<StepRepr_ShapeAspect>>&       theHoles,
   const bool                                                            theIsDescribed);
 
+//! The usage theSA was just written with (the last entity of theModel: writeShapeAspect's
+//! geometric item specific usage), null if it is not
+occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> usageOf(
+  const occ::handle<Interface_InterfaceModel>& theModel,
+  const occ::handle<StepRepr_ShapeAspect>&     theSA)
+{
+  if (theSA.IsNull() || theModel->NbEntities() == 0)
+  {
+    return nullptr;
+  }
+  occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aUsage =
+    occ::down_cast<StepAP242_ItemIdentifiedRepresentationUsage>(
+      theModel->Value(theModel->NbEntities()));
+  if (aUsage.IsNull() || aUsage->Definition().Value() != theSA)
+  {
+    return nullptr;
+  }
+  return aUsage;
+}
+
+//! theSA, just written for one shape, of theItems too: one shape aspect of several shapes, its
+//! usage an item_identified_representation_usage of them all (NIST STC-07's surfaces of two
+//! faces, a set_representation_item)
+void widenUsage(const occ::handle<Interface_InterfaceModel>&                          theModel,
+                const occ::handle<StepRepr_ShapeAspect>&                              theSA,
+                const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>& theItems)
+{
+  const occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aUsage =
+    usageOf(theModel, theSA);
+  if (aUsage.IsNull() || theItems.IsEmpty())
+  {
+    return;
+  }
+  occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anItems =
+    new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(
+      1,
+      aUsage->NbIdentifiedItem() + theItems.Length());
+  int anIndex = 1;
+  for (int i = 1; i <= aUsage->NbIdentifiedItem(); ++i)
+  {
+    anItems->SetValue(anIndex++, aUsage->IdentifiedItemValue(i));
+  }
+  for (const occ::handle<StepRepr_RepresentationItem>& anItem : theItems)
+  {
+    anItems->SetValue(anIndex++, anItem);
+  }
+  occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aSet =
+    new StepAP242_ItemIdentifiedRepresentationUsage();
+  aSet->Init(aUsage->Name(),
+             aUsage->Description(),
+             aUsage->Definition(),
+             aUsage->UsedRepresentation(),
+             anItems);
+  theModel->ReplaceEntity(theModel->Number(aUsage), aSet);
+}
+
+//! A centre of symmetry (NIST STC-07's axes of its holes) derived from theFrom: in the place of
+//! the shape aspect theAxis was just written as with its usage -- its own geometry, an axis of
+//! the supplemental geometry -- else of none
+occ::handle<StepRepr_ShapeAspect> writeCentre(const occ::handle<Interface_InterfaceModel>& theModel,
+                                              const AspectNode&                            theNode,
+                                              const occ::handle<StepRepr_ShapeAspect>&     theFrom,
+                                              const occ::handle<StepRepr_ShapeAspect>&     theAxis)
+{
+  occ::handle<StepRepr_CentreOfSymmetry> aCentre = new StepRepr_CentreOfSymmetry();
+  aCentre->Init(new TCollection_HAsciiString(theNode.Name.c_str()),
+                new TCollection_HAsciiString(theNode.Description.c_str()),
+                theFrom->OfShape(),
+                StepData_LTrue);
+  const occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aUsage =
+    usageOf(theModel, theAxis);
+  if (!aUsage.IsNull())
+  {
+    theModel->ReplaceEntity(theModel->Number(theAxis), aCentre);
+    StepAP242_ItemIdentifiedRepresentationUsageDefinition aDefinition;
+    aDefinition.SetValue(aCentre);
+    aUsage->SetDefinition(aDefinition);
+  }
+  else
+  {
+    theModel->AddWithRefs(aCentre);
+  }
+  occ::handle<StepRepr_ShapeAspectDerivingRelationship> aSADR =
+    new StepRepr_ShapeAspectDerivingRelationship();
+  aSADR->Init(new TCollection_HAsciiString(),
+              false,
+              new TCollection_HAsciiString(),
+              aCentre,
+              theFrom);
+  theModel->AddWithRefs(aSADR);
+  return aCentre;
+}
+
 //! The members of theNode written: each leaf's shape aspect by theSA, a hole occurrence (an 'H'
 //! member) the one written on its faces (theHoles, by entriesKey) or, none written, its
-//! faces', a composite member's composite
+//! faces', a composite member's composite, a centre of symmetry ('S') the one derived from its
+//! first member
 std::vector<occ::handle<StepRepr_ShapeAspect>> writeAspectMembers(
   const occ::handle<Interface_InterfaceModel>&                          theModel,
   const AspectNode&                                                     theNode,
-  const std::function<occ::handle<StepRepr_ShapeAspect>(const std::string&)>& theSA,
+  const std::function<occ::handle<StepRepr_ShapeAspect>(const std::vector<std::string>&)>&
+    theSA,
   const std::map<std::string, occ::handle<StepRepr_ShapeAspect>>&       theHoles,
   const bool                                                            theIsDescribed)
 {
@@ -3765,9 +3868,30 @@ std::vector<occ::handle<StepRepr_ShapeAspect>> writeAspectMembers(
       {
         for (const std::string& anEntry : anEntries)
         {
-          anAdd(theSA(anEntry));
+          anAdd(theSA({anEntry}));
         }
       }
+    }
+    else if (aMember.Kind == 'S')
+    {
+      if (aMember.Members.empty())
+      {
+        continue;
+      }
+      const AspectNode&                 aFrom   = aMember.Members.front();
+      occ::handle<StepRepr_ShapeAspect> aFromSA =
+        aFrom.Kind != 0 ? writeAspectNode(theModel, aFrom, theSA, theHoles, theIsDescribed)
+                        : theSA(aFrom.Entries);
+      if (aFromSA.IsNull())
+      {
+        continue;
+      }
+      occ::handle<StepRepr_ShapeAspect> anAxis;
+      if (aMember.Members.size() > 1 && aMember.Members[1].Kind == 0)
+      {
+        anAxis = theSA(aMember.Members[1].Entries);
+      }
+      anAdd(writeCentre(theModel, aMember, aFromSA, anAxis));
     }
     else if (aMember.Kind != 0)
     {
@@ -3775,10 +3899,7 @@ std::vector<occ::handle<StepRepr_ShapeAspect>> writeAspectMembers(
     }
     else
     {
-      for (const std::string& anEntry : aMember.Entries)
-      {
-        anAdd(theSA(anEntry));
-      }
+      anAdd(theSA(aMember.Entries));
     }
   }
   return aMembers;
@@ -3789,7 +3910,8 @@ std::vector<occ::handle<StepRepr_ShapeAspect>> writeAspectMembers(
 occ::handle<StepRepr_ShapeAspect> writeAspectNode(
   const occ::handle<Interface_InterfaceModel>&                          theModel,
   const AspectNode&                                                     theNode,
-  const std::function<occ::handle<StepRepr_ShapeAspect>(const std::string&)>& theSA,
+  const std::function<occ::handle<StepRepr_ShapeAspect>(const std::vector<std::string>&)>&
+    theSA,
   const std::map<std::string, occ::handle<StepRepr_ShapeAspect>>&       theHoles,
   const bool                                                            theIsDescribed)
 {
@@ -3828,6 +3950,46 @@ occ::handle<StepRepr_ShapeAspect> writeAspectNode(
 } // namespace
 
 //=======================================================================
+// function : leafShapeAspect
+// purpose  : the one shape aspect of the shapes theShapeLs, theWriteSA writing the first's: of
+//            the items of the others too (writeShapeAspect writes one shape's)
+//=======================================================================
+static occ::handle<StepRepr_ShapeAspect> leafShapeAspect(
+  const occ::handle<Interface_InterfaceModel>&                               theModel,
+  const occ::handle<Transfer_FinderProcess>&                                 theFP,
+  const NCollection_Sequence<TDF_Label>&                                     theShapeLs,
+  const std::function<occ::handle<StepRepr_ShapeAspect>(const TDF_Label&)>& theWriteSA)
+{
+  if (theShapeLs.IsEmpty())
+  {
+    return nullptr;
+  }
+  const occ::handle<StepRepr_ShapeAspect> anSA = theWriteSA(theShapeLs.First());
+  if (anSA.IsNull() || theShapeLs.Length() == 1)
+  {
+    return anSA;
+  }
+  NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> anItems;
+  for (int i = 2; i <= theShapeLs.Length(); ++i)
+  {
+    TopLoc_Location                                       aLoc;
+    NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+    FindEntities(theFP, XCAFDoc_ShapeTool::GetShape(theShapeLs.Value(i)), aLoc, aSeqRI);
+    for (const occ::handle<Standard_Transient>& anEnt : aSeqRI)
+    {
+      const occ::handle<StepRepr_RepresentationItem> anItem =
+        occ::down_cast<StepRepr_RepresentationItem>(anEnt);
+      if (!anItem.IsNull())
+      {
+        anItems.Append(anItem);
+      }
+    }
+  }
+  widenUsage(theModel, anSA, anItems);
+  return anSA;
+}
+
+//=======================================================================
 // function : writeComposite
 // purpose  : the shape aspect of a GD&T's several shapes theShapeLs, theWriteSA writing the
 //            shape aspect of one (null, none): composite as theStructure groups them
@@ -3838,6 +4000,7 @@ occ::handle<StepRepr_ShapeAspect> writeAspectNode(
 //=======================================================================
 static occ::handle<StepRepr_ShapeAspect> writeComposite(
   const occ::handle<Interface_InterfaceModel>&                               theModel,
+  const occ::handle<Transfer_FinderProcess>&                                 theFP,
   const NCollection_Sequence<TDF_Label>&                                     theShapeLs,
   const std::function<occ::handle<StepRepr_ShapeAspect>(const TDF_Label&)>& theWriteSA,
   const std::map<std::string, occ::handle<StepRepr_ShapeAspect>>&           theHoles,
@@ -3859,14 +4022,36 @@ static occ::handle<StepRepr_ShapeAspect> writeComposite(
   size_t                     aPos  = aspectStart(aText);
   std::map<std::string, int> aUses;
   if (!theIsAllAround && !aText.empty() && aspectNode(aText, aPos, aRoot) && aPos == aText.size()
-      && aRoot.Kind != 'D' && aRoot.Kind != 'F' && aspectCovers(aRoot, aLabelOf, aUses)
+      && std::strchr("DFWS", aRoot.Kind) == nullptr && aspectCovers(aRoot, aLabelOf, aUses)
       && aUses.size() == aLabelOf.size())
   {
-    // Each shape's shape aspect written when a leaf needs it: not one a hole occurrence is
+    // Each leaf's shape aspect written when it is needed: not one a hole occurrence is. A
+    // leaf not of the PMI's shapes (a centre of symmetry's axis) by its label in the document
     const occ::handle<StepRepr_ShapeAspect> aResult = writeAspectNode(
       theModel,
       aRoot,
-      [&](const std::string& theEntry) { return theWriteSA(aLabelOf.at(theEntry)); },
+      [&](const std::vector<std::string>& theEntries) -> occ::handle<StepRepr_ShapeAspect> {
+        NCollection_Sequence<TDF_Label> aLeafLs;
+        for (const std::string& anEntry : theEntries)
+        {
+          const auto anIt = aLabelOf.find(anEntry);
+          TDF_Label  aLabel;
+          if (anIt != aLabelOf.end())
+          {
+            aLabel = anIt->second;
+          }
+          else
+          {
+            TDF_Tool::Label(theShapeLs.First().Data(), anEntry.c_str(), aLabel);
+          }
+          if (aLabel.IsNull())
+          {
+            return nullptr;
+          }
+          aLeafLs.Append(aLabel);
+        }
+        return leafShapeAspect(theModel, theFP, aLeafLs, theWriteSA);
+      },
       theHoles,
       theIsDescribed);
     theIsStructured = !aResult.IsNull();
@@ -3988,7 +4173,7 @@ static occ::handle<StepRepr_ShapeAspect> datumFeatureOf(
   size_t            aPos  = aspectStart(aText);
   AspectNode        aRoot;
   if (!aspectNode(aText, aPos, aRoot) || aPos != aText.size()
-      || (aRoot.Kind != 'D' && aRoot.Kind != 'F'))
+      || std::strchr("DFW", aRoot.Kind) == nullptr)
   {
     return nullptr;
   }
@@ -4026,6 +4211,67 @@ static occ::handle<StepRepr_ShapeAspect> datumFeatureOf(
     aFeature->SetDescription(new TCollection_HAsciiString(aRoot.Description.c_str()));
   }
   return aFeature;
+}
+
+//=======================================================================
+// function : centreOfFeature
+// purpose  : the centre of symmetry a GD&T is on itself, derived from a datum's feature (its
+//            structure an 'S' node of a 'D', 'F' or 'W' one: NIST STC-07's perpendicularity of
+//            the axis of datum B's hole), its axis written by theWriteSA; null if it is on none,
+//            or no feature was written for the datum on those shapes
+//=======================================================================
+static occ::handle<StepRepr_ShapeAspect> centreOfFeature(
+  const occ::handle<Interface_InterfaceModel>&                               theModel,
+  const occ::handle<Transfer_FinderProcess>&                                 theFP,
+  const std::map<std::string, GDTPresentationModel::DatumFeature>&           theWritten,
+  const TDF_Label&                                                           theGDTL,
+  const NCollection_Sequence<TDF_Label>&                                     theShapeLs,
+  const std::function<occ::handle<StepRepr_ShapeAspect>(const TDF_Label&)>& theWriteSA)
+{
+  TCollection_AsciiString aStructure;
+  if (theShapeLs.IsEmpty() || !XCAFDoc_DimTolTool::GetAspectStructure(theGDTL, false, aStructure))
+  {
+    return nullptr;
+  }
+  const std::string aText = aStructure.ToCString();
+  size_t            aPos  = aspectStart(aText);
+  AspectNode        aRoot;
+  if (!aspectNode(aText, aPos, aRoot) || aPos != aText.size() || aRoot.Kind != 'S'
+      || aRoot.Members.empty() || std::strchr("DFW", aRoot.Members.front().Kind) == nullptr)
+  {
+    return nullptr;
+  }
+  std::map<std::string, int> anOf, aUses;
+  for (const TDF_Label& aShapeL : theShapeLs)
+  {
+    TCollection_AsciiString anEntry;
+    TDF_Tool::Entry(aShapeL, anEntry);
+    anOf[anEntry.ToCString()] = 0;
+  }
+  std::vector<std::string> aFromEntries;
+  aspectEntries(aRoot.Members.front(), aFromEntries);
+  const auto aFeature = theWritten.find(entriesKey(aFromEntries));
+  if (!aspectCovers(aRoot, anOf, aUses) || aUses.size() != anOf.size()
+      || aFeature == theWritten.end())
+  {
+    return nullptr;
+  }
+  occ::handle<StepRepr_ShapeAspect> anAxis;
+  if (aRoot.Members.size() > 1 && aRoot.Members[1].Kind == 0)
+  {
+    NCollection_Sequence<TDF_Label> anAxisLs;
+    for (const std::string& anEntry : aRoot.Members[1].Entries)
+    {
+      TDF_Label aLabel;
+      TDF_Tool::Label(theShapeLs.First().Data(), anEntry.c_str(), aLabel);
+      if (!aLabel.IsNull())
+      {
+        anAxisLs.Append(aLabel);
+      }
+    }
+    anAxis = leafShapeAspect(theModel, theFP, anAxisLs, theWriteSA);
+  }
+  return writeCentre(theModel, aRoot, aFeature->second.Feature, anAxis);
 }
 
 //=======================================================================
@@ -4857,7 +5103,7 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
       const std::string aText = aStructure.ToCString();
       size_t            aPos  = aspectStart(aText);
       isNamed = aspectNode(aText, aPos, aFeatureNode) && aPos == aText.size()
-                && (aFeatureNode.Kind == 'D' || aFeatureNode.Kind == 'F');
+                && std::strchr("DFW", aFeatureNode.Kind) != nullptr;
       std::map<std::string, int> anOf, aUses;
       for (const FeatureShape& aFeatureShape : aShapes)
       {
@@ -4867,7 +5113,7 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
       }
       isGrouped = isNamed && !aShapes.empty() && aspectCovers(aFeatureNode, anOf, aUses)
                   && aUses.size() == anOf.size()
-                  && (aFeatureNode.Kind == 'F' || aFeatureNode.Members.size() > 1
+                  && (aFeatureNode.Kind != 'D' || aFeatureNode.Members.size() > 1
                       || aFeatureNode.Members.front().Kind != 0);
     }
   }
@@ -4877,7 +5123,43 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
     new TCollection_HAsciiString(isNamed ? aFeatureNode.Description.c_str() : "");
   occ::handle<StepRepr_ShapeAspect> aGroupedDF;
   NCollection_Sequence<TDF_Label>   aGroupedLs;
-  if (isGrouped)
+  if (isGrouped && aFeatureNode.Kind == 'W')
+  {
+    // A size that is its own datum feature (NIST STC-07's holes, datums B and C): one entity of
+    // the hole's faces, the size written on it is (writeDimensions)
+    NCollection_Sequence<TDF_Label> aLeafLs;
+    for (const FeatureShape& aFeatureShape : aShapes)
+    {
+      aLeafLs.Append(aFeatureShape.Label);
+      aGroupedLs.Append(aFeatureShape.Label);
+    }
+    const occ::handle<StepRepr_ShapeAspect> anSA =
+      leafShapeAspect(aModel, aFP, aLeafLs, [&](const TDF_Label& theShapeL) {
+        occ::handle<StepAP242_GeometricItemSpecificUsage> aLeafGISU;
+        occ::handle<StepRepr_RepresentationContext>       aContext = aShapes.front().Context;
+        return writeShapeAspect(theWS,
+                                theDatumL,
+                                XCAFDoc_ShapeTool::GetShape(theShapeL),
+                                aContext,
+                                aLeafGISU);
+      });
+    const occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aUsage =
+      usageOf(aModel, anSA);
+    if (!aUsage.IsNull())
+    {
+      occ::handle<StepShape_DimensionalSizeWithDatumFeature> aSizeDF =
+        new StepShape_DimensionalSizeWithDatumFeature();
+      aSizeDF->Init(aFeatureName, aFeatureDescription, aPDS, StepData_LTrue);
+      // Named by its size, when that is written (no size, no name)
+      aSizeDF->SetSizeName(new TCollection_HAsciiString());
+      aModel->ReplaceEntity(aModel->Number(anSA), aSizeDF);
+      StepAP242_ItemIdentifiedRepresentationUsageDefinition aDefinition;
+      aDefinition.SetValue(aSizeDF);
+      aUsage->SetDefinition(aDefinition);
+      aGroupedDF = aSizeDF;
+    }
+  }
+  else if (isGrouped)
   {
     std::map<std::string, const FeatureShape*> aShapeOf;
     for (const FeatureShape& aFeatureShape : aShapes)
@@ -4890,11 +5172,25 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
     const std::vector<occ::handle<StepRepr_ShapeAspect>> aMembers = writeAspectMembers(
       aModel,
       aFeatureNode,
-      [&](const std::string& theEntry) -> occ::handle<StepRepr_ShapeAspect> {
-        const FeatureShape*                               aFeatureShape = aShapeOf.at(theEntry);
-        occ::handle<StepAP242_GeometricItemSpecificUsage> aLeafGISU;
-        occ::handle<StepRepr_RepresentationContext>       aContext = aFeatureShape->Context;
-        return writeShapeAspect(theWS, theDatumL, aFeatureShape->Shape, aContext, aLeafGISU);
+      [&](const std::vector<std::string>& theEntries) -> occ::handle<StepRepr_ShapeAspect> {
+        NCollection_Sequence<TDF_Label> aLeafLs;
+        for (const std::string& anEntry : theEntries)
+        {
+          const auto anIt = aShapeOf.find(anEntry);
+          if (anIt == aShapeOf.end())
+          {
+            return nullptr;
+          }
+          aLeafLs.Append(anIt->second->Label);
+        }
+        return leafShapeAspect(aModel, aFP, aLeafLs, [&](const TDF_Label& theShapeL) {
+          TCollection_AsciiString anEntry;
+          TDF_Tool::Entry(theShapeL, anEntry);
+          const FeatureShape* aFeatureShape = aShapeOf.at(anEntry.ToCString());
+          occ::handle<StepAP242_GeometricItemSpecificUsage> aLeafGISU;
+          occ::handle<StepRepr_RepresentationContext>       aContext = aFeatureShape->Context;
+          return writeShapeAspect(theWS, theDatumL, aFeatureShape->Shape, aContext, aLeafGISU);
+        });
       },
       gdtState(myGDTPresentationDM).HoleOccurrences,
       false);
@@ -5158,7 +5454,12 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
     aModel->AddWithRefs(aSAR);
   }
 
-  // Annotation plane and Presentation
+  // Annotation plane and Presentation: of the datum feature -- or, a size that is its own datum
+  // feature, of the datum (NIST STC-07's datums B and C: the feature's graphic is the size's)
+  const occ::handle<Standard_Transient> aPresented =
+    aSA->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature))
+      ? occ::handle<Standard_Transient>(aDatum)
+      : occ::handle<Standard_Transient>(aSA);
   writePresentation(theWS,
                     theDatumL,
                     anObject->GetPresentation(),
@@ -5167,13 +5468,16 @@ occ::handle<StepDimTol_Datum> STEPCAFControl_Writer::writeDatumAP242(
                     anObject->HasPlane(),
                     anObject->GetPlane(),
                     anObject->GetPointTextAttach(),
-                    aSA,
+                    aPresented,
                     keptOr(anObject->GetPresentationType(),
                            anObject->IsDatumTarget() ? "datum target" : "datum"),
                     // The geometry a target is on: its feature's shape aspects, which the
-                    // faces are of, not the target, which has none
+                    // faces are of, not the target, which has none. A size that is its own
+                    // datum feature's: the size's graphic's (a link of the datum's to it reads
+                    // as the size's graphic)
                     anObject->IsDatumTarget() && aSASeq.Length() > 0 ? aSASeq
-                                                                     : shapeAspects(aSA),
+                    : aPresented == aSA ? shapeAspects(aSA)
+                                        : NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>(),
                     theLocalFactors);
 
   return aDatum;
@@ -6139,6 +6443,23 @@ occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomToler
   {
     aMainSA = aDatumFeature;
   }
+  else if (!isAllAround
+           && !(aMainSA = centreOfFeature(
+                  aModel,
+                  theWS->TransferWriter()->FinderProcess(),
+                  gdtState(myGDTPresentationDM).DatumFeatures,
+                  theGeomTolL,
+                  theShapeSeqL,
+                  [&](const TDF_Label& theShapeL) {
+                    return writeShapeAspect(theWS,
+                                            theGeomTolL,
+                                            XCAFDoc_ShapeTool::GetShape(theShapeL),
+                                            dummyRC,
+                                            dummyGISU);
+                  }))
+                 .IsNull())
+  {
+  }
   else if (theShapeSeqL.Length() == 1 && !isAllAround)
   {
     TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(theShapeSeqL.Value(1));
@@ -6160,6 +6481,7 @@ occ::handle<StepDimTol_GeometricTolerance> STEPCAFControl_Writer::writeGeomToler
       bool isStructured = false;
       aMainSA           = writeComposite(
         aModel,
+        theWS->TransferWriter()->FinderProcess(),
         theShapeSeqL,
         [&](const TDF_Label& theShapeL) {
           return writeShapeAspect(theWS,
@@ -7831,6 +8153,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
       {
         bool isStructured = false;
         aFirstSA          = writeComposite(aModel,
+                                  theWS->TransferWriter()->FinderProcess(),
                                   aFirstShapeL,
                                   aDimensionSA,
                                   gdtState(myGDTPresentationDM).HoleOccurrences,
@@ -7864,6 +8187,7 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
       {
         bool isStructured = false;
         aSecondSA         = writeComposite(aModel,
+                                   theWS->TransferWriter()->FinderProcess(),
                                    aSecondShapeL,
                                    aDimensionSA,
                                    gdtState(myGDTPresentationDM).HoleOccurrences,
@@ -7974,10 +8298,21 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     }
     else if (XCAFDimTolObjects_DimensionObject::IsDimensionalSize(aDimType))
     {
-      // Dimensional_Size
-      occ::handle<StepShape_DimensionalSize> aDim = new StepShape_DimensionalSize();
-      aDim->Init(aFirstSA, STEPCAFControl_GDTProperty::GetDimTypeName(aDimType));
-      aDimension.SetValue(aDim);
+      // Dimensional_Size -- or the datum feature it is the size of, itself (NIST STC-07's
+      // holes, datums B and C: written so for the datum)
+      occ::handle<StepShape_DimensionalSizeWithDatumFeature> aSizeDF =
+        occ::down_cast<StepShape_DimensionalSizeWithDatumFeature>(aFirstSA);
+      if (!aSizeDF.IsNull())
+      {
+        aSizeDF->SetSizeName(STEPCAFControl_GDTProperty::GetDimTypeName(aDimType));
+        aDimension.SetValue(aSizeDF);
+      }
+      else
+      {
+        occ::handle<StepShape_DimensionalSize> aDim = new StepShape_DimensionalSize();
+        aDim->Init(aFirstSA, STEPCAFControl_GDTProperty::GetDimTypeName(aDimType));
+        aDimension.SetValue(aDim);
+      }
     }
     else if (aDimType == XCAFDimTolObjects_DimensionType_Size_Angular)
     {

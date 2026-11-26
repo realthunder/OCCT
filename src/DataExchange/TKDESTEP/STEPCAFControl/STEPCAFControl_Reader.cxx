@@ -15,6 +15,8 @@
 
 #include <STEPCAFControl_Reader.hxx>
 
+#include <functional>
+
 #include <BRep_Builder.hxx>
 #include <Geom_Axis2Placement.hxx>
 #include <Geom_CartesianPoint.hxx>
@@ -136,6 +138,7 @@
 #include <StepShape_AngularLocation.hxx>
 #include <StepShape_ClosedShell.hxx>
 #include <StepShape_ConnectedFaceSet.hxx>
+#include <StepRepr_CentreOfSymmetry.hxx>
 #include <StepRepr_CompGroupShAspAndCompShAspAndDatumFeatAndShAsp.hxx>
 #include <StepRepr_CompShAspAndDatumFeatAndShAsp.hxx>
 #include <StepShape_DimensionalCharacteristicRepresentation.hxx>
@@ -4408,11 +4411,69 @@ static bool aspectStructure(
   const NCollection_DataMap<occ::handle<Standard_Transient>, NCollection_Sequence<TDF_Label>>&
                            theItemLabels,
   TCollection_AsciiString& theOut,
-  const bool               theIsTop = true)
+  const bool               theIsTop = true,
+  const std::function<TCollection_AsciiString(const occ::handle<StepRepr_ShapeAspect>&)>&
+    theAxisOf = {})
 {
   if (theSA.IsNull())
   {
     return false;
+  }
+  if (theSA->IsKind(STANDARD_TYPE(StepRepr_CentreOfSymmetry)))
+  {
+    // A centre of symmetry (NIST STC-07's axes of its holes): what it is derived from, then its
+    // own axis, of the supplemental geometry. The PMI's own may be derived from a datum's
+    // feature (STC-07's perpendicularity of the axis of datum B's hole)
+    occ::handle<StepRepr_ShapeAspect> aFrom;
+    for (Interface_EntityIterator aDerived = theGraph.Sharings(theSA);
+         aDerived.More() && aFrom.IsNull();
+         aDerived.Next())
+    {
+      occ::handle<StepRepr_ShapeAspectDerivingRelationship> aSADR =
+        occ::down_cast<StepRepr_ShapeAspectDerivingRelationship>(aDerived.Value());
+      if (!aSADR.IsNull() && aSADR->RelatingShapeAspect() == theSA)
+      {
+        aFrom = aSADR->RelatedShapeAspect();
+      }
+    }
+    const bool isFeature =
+      !aFrom.IsNull()
+      && (aFrom->IsKind(STANDARD_TYPE(StepDimTol_DatumFeature))
+          || aFrom->IsKind(STANDARD_TYPE(StepRepr_CompShAspAndDatumFeatAndShAsp)));
+    TCollection_AsciiString aFromText;
+    if (aFrom.IsNull() || aFrom->IsKind(STANDARD_TYPE(StepRepr_DerivedShapeAspect))
+        || aFrom->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget)) || (isFeature && !theIsTop))
+    {
+      return false;
+    }
+    if (isFeature || aFrom->IsKind(STANDARD_TYPE(StepRepr_CompositeShapeAspect)))
+    {
+      if (!aspectStructure(aFrom,
+                           theGraph,
+                           theLeafItems,
+                           theItemLabels,
+                           aFromText,
+                           isFeature,
+                           theAxisOf))
+      {
+        return false;
+      }
+    }
+    else
+    {
+      aFromText = aspectEntries(aFrom, theLeafItems, theItemLabels);
+    }
+    if (aFromText.IsEmpty())
+    {
+      return false;
+    }
+    const TCollection_AsciiString anAxis = theAxisOf ? theAxisOf(theSA) : "";
+    theOut = TCollection_AsciiString("S{") + aspectText(theSA->Name()) + "|"
+             + aspectText(theSA->Description()) + "}(" + aFromText
+             + (anAxis.IsEmpty() ? TCollection_AsciiString()
+                                 : TCollection_AsciiString(",") + anAxis)
+             + ")";
+    return true;
   }
   // A datum feature of several shapes is a complex one: a composite (group) shape aspect too
   const bool isDatumFeature =
@@ -4449,7 +4510,26 @@ static bool aspectStructure(
     }
     if (aChild->IsKind(STANDARD_TYPE(StepRepr_CompositeShapeAspect)))
     {
-      if (!aspectStructure(aChild, theGraph, theLeafItems, theItemLabels, aMember, false))
+      if (!aspectStructure(aChild,
+                           theGraph,
+                           theLeafItems,
+                           theItemLabels,
+                           aMember,
+                           false,
+                           theAxisOf))
+      {
+        return false;
+      }
+    }
+    else if (aChild->IsKind(STANDARD_TYPE(StepRepr_CentreOfSymmetry)))
+    {
+      if (!aspectStructure(aChild,
+                           theGraph,
+                           theLeafItems,
+                           theItemLabels,
+                           aMember,
+                           false,
+                           theAxisOf))
       {
         return false;
       }
@@ -4493,7 +4573,8 @@ static bool aspectStructure(
     isDatumFeature
       ? (theSA->IsKind(STANDARD_TYPE(StepRepr_CompGroupShAspAndCompShAspAndDatumFeatAndShAsp))
            ? "F{"
-           : "D{")
+         : theSA->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature)) ? "W{"
+                                                                                    : "D{")
     : theSA->IsKind(STANDARD_TYPE(StepRepr_CompositeGroupShapeAspect)) ? "G{"
                                                                          : "C{";
   theOut += aspectText(theSA->Name());
@@ -4908,7 +4989,6 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
       const occ::handle<StepRepr_ShapeAspect>& aFeature = aRelatingSAs.Value(i);
       TCollection_AsciiString                  aStructure;
       if (!aFeature->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget))
-          && !aFeature->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature))
           && aspectStructure(aFeature, aGraph, aLeafItems, anItemLabels, aStructure))
       {
         XCAFDoc_DimTolTool::SetAspectStructure(
@@ -5869,8 +5949,29 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
     // the same one on one again
     const occ::handle<Interface_InterfaceModel>& aStructModel = theWS->Model();
     TCollection_AsciiString                      aStructure;
+    // A centre of symmetry's own axis: the labels of its usage's items
+    const auto anAxisOf = [&](const occ::handle<StepRepr_ShapeAspect>& theSA) {
+      TCollection_AsciiString anOut;
+      for (Interface_EntityIterator anIt = aGraph.Sharings(theSA); anIt.More(); anIt.Next())
+      {
+        const occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aUsage =
+          geometryUsage(anIt.Value());
+        for (int j = 1; !aUsage.IsNull() && j <= aUsage->NbIdentifiedItem(); ++j)
+        {
+          const TDF_Label aLabel = getShapeLabel(aUsage->IdentifiedItemValue(j), theWS, aSTool);
+          if (!aLabel.IsNull())
+          {
+            TCollection_AsciiString anEntry;
+            TDF_Tool::Entry(aLabel, anEntry);
+            anOut += (anOut.IsEmpty() ? "" : "+");
+            anOut += anEntry;
+          }
+        }
+      }
+      return anOut;
+    };
     if (aWholePDS.IsNull()
-        && aspectStructure(aTopSA1, aGraph, aLeafItems, anItemLabels, aStructure))
+        && aspectStructure(aTopSA1, aGraph, aLeafItems, anItemLabels, aStructure, true, anAxisOf))
     {
       XCAFDoc_DimTolTool::SetAspectStructure(
         aGDTL,
@@ -5878,7 +5979,7 @@ TDF_Label STEPCAFControl_Reader::createGDTObjectInXCAF(
         TCollection_AsciiString("@") + aStructModel->Number(aTopSA1) + aStructure);
     }
     aStructure.Clear();
-    if (aspectStructure(aTopSA2, aGraph, aLeafItems, anItemLabels, aStructure))
+    if (aspectStructure(aTopSA2, aGraph, aLeafItems, anItemLabels, aStructure, true, anAxisOf))
     {
       XCAFDoc_DimTolTool::SetAspectStructure(
         aGDTL,
