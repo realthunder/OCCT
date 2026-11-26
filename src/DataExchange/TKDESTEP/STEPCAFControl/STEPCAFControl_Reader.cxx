@@ -152,6 +152,7 @@
 #include <StepShape_EdgeLoop.hxx>
 #include <StepShape_GeometricCurveSet.hxx>
 #include <StepShape_GeometricSet.hxx>
+#include <StepGeom_TrimmedCurve.hxx>
 #include <StepData_UndefinedEntity.hxx>
 #include <StepDimTol_GeometricToleranceRelationship.hxx>
 #include <Interface_UndefinedContent.hxx>
@@ -7153,13 +7154,75 @@ static void readSupplementalGeometry(
           isHidden = isHidden || aListed(anIter.Value());
         }
       }
+      // A curve set hidden by its members' styles, each of them (NIST FTC-10's 'Axis.1' and
+      // 'Axis.2', the one line each has): a trimmed curve's style may be its basis curve's
+      if (const occ::handle<StepShape_GeometricSet> aSet =
+            occ::down_cast<StepShape_GeometricSet>(anItem);
+          !isHidden && !anItemL.IsNull() && !aSet.IsNull() && aSet->NbElements() > 0)
+      {
+        auto aStyledHidden = [&](const occ::handle<Standard_Transient>& theMember) {
+          for (Interface_EntityIterator anIter = aGraph.Sharings(theMember); anIter.More();
+               anIter.Next())
+          {
+            if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_StyledItem))
+                && aListed(anIter.Value()))
+            {
+              return true;
+            }
+          }
+          return false;
+        };
+        isHidden = true;
+        for (int i = 1; isHidden && i <= aSet->NbElements(); ++i)
+        {
+          const occ::handle<Standard_Transient> aMember = aSet->ElementsValue(i).Value();
+          const occ::handle<StepGeom_TrimmedCurve> aTrimmed =
+            occ::down_cast<StepGeom_TrimmedCurve>(aMember);
+          isHidden = !aMember.IsNull()
+                     && (aStyledHidden(aMember)
+                         || (!aTrimmed.IsNull() && aStyledHidden(aTrimmed->BasisCurve())));
+        }
+      }
       if (isHidden)
       {
         XCAFDoc_DimTolTool::SetPresentationHidden(anItemL, true);
       }
-      // The colour it is drawn in: its style's curve colour, else its surface's
-      for (Interface_EntityIterator aStyleIter = aGraph.Sharings(anItem);
-           !anItemL.IsNull() && aStyleIter.More();
+      // The colour it is drawn in: its style's curve colour, else its surface's; a curve set
+      // with no style of its own, its first member's (NIST FTC-10's 'Axis.1' and 'Axis.2' style
+      // their line, a trimmed curve its basis curve)
+      occ::handle<Standard_Transient> aStyledEnt = anItem;
+      if (const occ::handle<StepShape_GeometricSet> aSet =
+            occ::down_cast<StepShape_GeometricSet>(anItem);
+          !aSet.IsNull() && aSet->NbElements() > 0)
+      {
+        bool isStyled = false;
+        for (Interface_EntityIterator anIter = aGraph.Sharings(anItem); anIter.More();
+             anIter.Next())
+        {
+          isStyled = isStyled || anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_StyledItem));
+        }
+        if (!isStyled)
+        {
+          aStyledEnt = aSet->ElementsValue(1).Value();
+          if (const occ::handle<StepGeom_TrimmedCurve> aTrimmed =
+                occ::down_cast<StepGeom_TrimmedCurve>(aStyledEnt);
+              !aTrimmed.IsNull())
+          {
+            bool isOwn = false;
+            for (Interface_EntityIterator anIter = aGraph.Sharings(aTrimmed); anIter.More();
+                 anIter.Next())
+            {
+              isOwn = isOwn || anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_StyledItem));
+            }
+            if (!isOwn)
+            {
+              aStyledEnt = aTrimmed->BasisCurve();
+            }
+          }
+        }
+      }
+      for (Interface_EntityIterator aStyleIter = aGraph.Sharings(aStyledEnt);
+           !anItemL.IsNull() && !aStyledEnt.IsNull() && aStyleIter.More();
            aStyleIter.Next())
       {
         occ::handle<StepVisual_StyledItem> aStyled =

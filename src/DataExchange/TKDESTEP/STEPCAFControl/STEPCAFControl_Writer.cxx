@@ -7436,7 +7436,10 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       aWritten.Context = aPartRep->ContextOfItems();
       theState.SupplementalItems.Bind(anItemIter.Value(), aWritten);
       occ::handle<StepVisual_StyledItem> anItemStyle;
-      Quantity_Color                     aColor;
+      // Its members' styles, for a curve set: a curve set the file hides is hidden by them, as
+      // NIST FTC-10's 'Axis.1' and 'Axis.2' are (their one line each)
+      std::vector<occ::handle<StepVisual_StyledItem>> aMemberStyles;
+      Quantity_Color                                  aColor;
       if (XCAFDoc_DimTolTool::GetSupplementalColor(anItemIter.Value(), aColor))
       {
         // As NIST's: one style each. A surface's is its fill and its boundary in the curve's
@@ -7510,7 +7513,7 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           {
             aMember = aTrimmed->BasisCurve();
           }
-          aStyle(aMember, aCurvePSA);
+          aMemberStyles.push_back(aStyle(aMember, aCurvePSA));
         }
       }
       // On its layer, as the file had it; hidden by it, else by its style (NIST FTC-07 hides 13
@@ -7532,16 +7535,35 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
                      aLayered);
         aModel->AddWithRefs(aLayer);
       }
-      occ::handle<Standard_Transient> aHiding =
-        aLayer.IsNull() ? occ::handle<Standard_Transient>(anItemStyle)
-                        : occ::handle<Standard_Transient>(aLayer);
-      if (XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value()) && !aHiding.IsNull())
+      // Hidden by its layer, else by its members' styles (a curve set), else by its own
+      std::vector<occ::handle<Standard_Transient>> aHiding;
+      if (!aLayer.IsNull())
+      {
+        aHiding.push_back(aLayer);
+      }
+      else if (!aMemberStyles.empty()
+               && std::none_of(aMemberStyles.begin(),
+                               aMemberStyles.end(),
+                               [](const occ::handle<StepVisual_StyledItem>& theStyle) {
+                                 return theStyle.IsNull();
+                               }))
+      {
+        aHiding.assign(aMemberStyles.begin(), aMemberStyles.end());
+      }
+      else if (!anItemStyle.IsNull())
+      {
+        aHiding.push_back(anItemStyle);
+      }
+      if (XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value()) && !aHiding.empty())
       {
         occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
-          new NCollection_HArray1<StepVisual_InvisibleItem>(1, 1);
-        StepVisual_InvisibleItem anInvisibleItem;
-        anInvisibleItem.SetValue(aHiding);
-        anInvisible->SetValue(1, anInvisibleItem);
+          new NCollection_HArray1<StepVisual_InvisibleItem>(1, int(aHiding.size()));
+        for (size_t i = 0; i < aHiding.size(); ++i)
+        {
+          StepVisual_InvisibleItem anInvisibleItem;
+          anInvisibleItem.SetValue(aHiding[i]);
+          anInvisible->SetValue(int(i) + 1, anInvisibleItem);
+        }
         occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
         anInvisibility->Init(anInvisible);
         aModel->AddWithRefs(anInvisibility);
@@ -7956,6 +7978,33 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     aDGTLabels.Append(aaDGTLS);
   }
 
+  // The letters established by targets alone: targets of them, and no datum of them on a
+  // feature. A frame's citation of one (a label of no shape, no target) is no datum feature
+  // of its own: NIST relates such a datum to its targets only (CTC-02's A, B, C, K), and it
+  // was written an empty DATUM_FEATURE as well
+  NCollection_Map<TCollection_AsciiString> aTargeted, aFeatured;
+  for (NCollection_Sequence<TDF_Label>::Iterator aDGTIter(aDGTLabels); aDGTIter.More();
+       aDGTIter.Next())
+  {
+    occ::handle<XCAFDoc_Datum> aDatumAttr;
+    if (!aDGTIter.Value().FindAttribute(XCAFDoc_Datum::GetID(), aDatumAttr)
+        || aDatumAttr->GetObject().IsNull() || aDatumAttr->GetObject()->GetName().IsNull())
+    {
+      continue;
+    }
+    const occ::handle<XCAFDimTolObjects_DatumObject> anObject = aDatumAttr->GetObject();
+    NCollection_Sequence<TDF_Label>                  aShapeL, aNullSeq;
+    XCAFDoc_DimTolTool::GetRefShapeLabel(aDGTIter.Value(), aShapeL, aNullSeq);
+    if (anObject->IsDatumTarget())
+    {
+      aTargeted.Add(anObject->GetName()->String());
+    }
+    else if (!aShapeL.IsEmpty() || !anObject->GetPresentation().IsNull())
+    {
+      aFeatured.Add(anObject->GetName()->String());
+    }
+  }
+
   // Find all shapes with datums
   NCollection_Map<TCollection_AsciiString> aNameIdMap, aWrittenNameIds, aOfNoPart;
   for (NCollection_Sequence<TDF_Label>::Iterator aDGTIter(aDGTLabels); aDGTIter.More();
@@ -7968,6 +8017,11 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
     aDatumL.FindAttribute(XCAFDoc_Datum::GetID(), aDatumAttr);
     occ::handle<XCAFDimTolObjects_DatumObject> anObject   = aDatumAttr->GetObject();
     TCollection_AsciiString                    aDatumName = anObject->GetName()->String();
+    if (!anObject->IsDatumTarget() && aShapeL.IsEmpty() && anObject->GetPresentation().IsNull()
+        && aTargeted.Contains(aDatumName) && !aFeatured.Contains(aDatumName))
+    {
+      continue;
+    }
     TCollection_AsciiString                    aDatumTargetId =
       TCollection_AsciiString(anObject->GetDatumTargetNumber());
     // A letter is one part's: two parts written to one file may each have a datum A, each
