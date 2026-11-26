@@ -46,6 +46,19 @@ TopoDSToStep_MakeGeometricCurveSet::TopoDSToStep_MakeGeometricCurveSet(
   TopoDSToStep_Tool aTool(aMap, false, aStepModel->InternalParameters.WriteSurfaceCurMode);
   TopoDSToStep_WireframeBuilder wirefB(aShape, aTool, theLocalFactors);
   TopoDSToStep::AddResult(FP, aTool);
+  // Each curve found by its edge: its style, its layer (NIST styles and layers a sketch's
+  // trimmed curves one by one, in its one curve set)
+  for (NCollection_DataMap<TopoDS_Shape, occ::handle<Standard_Transient>, TopTools_ShapeMapHasher>::
+         Iterator anIter(wirefB.Curves());
+       anIter.More();
+       anIter.Next())
+  {
+    // Its edges' only: a vertex of an edge is no point of its own
+    if (anIter.Key().ShapeType() == TopAbs_EDGE)
+    {
+      TopoDSToStep::AddResult(FP, anIter.Key(), anIter.Value());
+    }
+  }
 
   occ::handle<StepShape_GeometricCurveSet> aGCSet = new StepShape_GeometricCurveSet;
   occ::handle<TCollection_HAsciiString>    empty  = new TCollection_HAsciiString("");

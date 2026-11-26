@@ -2756,7 +2756,8 @@ bool STEPCAFControl_Writer::writeLayers(const occ::handle<XSControl_WorkSession>
         }
         return;
       }
-      if (theShape.ShapeType() == TopAbs_COMPOUND)
+      // A compound, or a wire of a curve set (its curves are found each, not it): its members
+      if (theShape.ShapeType() == TopAbs_COMPOUND || theShape.ShapeType() == TopAbs_WIRE)
       {
         for (TopoDS_Iterator anIter(theShape); anIter.More(); anIter.Next())
         {

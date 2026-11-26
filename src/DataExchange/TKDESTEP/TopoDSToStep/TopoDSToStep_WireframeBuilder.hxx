@@ -83,7 +83,16 @@ public:
     occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>&                         L,
     const StepData_Factors& theLocalFactors = StepData_Factors()) const;
 
+  //! The curve made of each edge (forward), for its edge to find it
+  const NCollection_DataMap<TopoDS_Shape, occ::handle<Standard_Transient>, TopTools_ShapeMapHasher>&
+    Curves() const
+  {
+    return myCurves;
+  }
+
 private:
+  NCollection_DataMap<TopoDS_Shape, occ::handle<Standard_Transient>, TopTools_ShapeMapHasher>
+                                                                      myCurves;
   occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>> myResult;
   TopoDSToStep_BuilderError                                           myError;
 };

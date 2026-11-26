@@ -44,6 +44,12 @@
 #include <STEPControl_StepModelType.hxx>
 #include <StepData_StepModel.hxx>
 #include <StepGeom_Axis2Placement3d.hxx>
+#include <StepGeom_CompositeCurve.hxx>
+#include <StepGeom_CompositeCurveSegment.hxx>
+#include <StepGeom_Curve.hxx>
+#include <TopoDSToStep.hxx>
+#include <TopoDSToStep_Tool.hxx>
+#include <TopoDSToStep_WireframeBuilder.hxx>
 #include <StepGeom_CartesianTransformationOperator3d.hxx>
 #include <StepGeom_GeomRepContextAndGlobUnitAssCtxAndGlobUncertaintyAssCtx.hxx>
 #include <StepGeom_Point.hxx>
@@ -88,6 +94,8 @@
 #include <TopoDSToStep_Tool.hxx>
 #include <NCollection_List.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+#include <NCollection_Map.hxx>
+#include <functional>
 #include <NCollection_IndexedDataMap.hxx>
 #include <Transfer_Binder.hxx>
 #include <Transfer_Finder.hxx>
@@ -743,6 +751,106 @@ bool STEPControl_ActorWrite::IsAssembly(const occ::handle<StepData_StepModel>& t
 }
 
 // PTV 16.09.2002 added for transferring vertices.
+//! A compound of curves as one geometric curve set: a member each of its wires (a composite
+//! curve of its edges' trimmed curves) and of its edges (a trimmed curve), through nested
+//! compounds; each bound to its shape, and each edge of a wire to its curve. Null when it
+//! has none
+static occ::handle<StepShape_GeometricCurveSet> curveSetOf(
+  const TopoDS_Shape&                        theShape,
+  const occ::handle<Transfer_FinderProcess>& theFP,
+  const StepData_Factors&                    theLocalFactors)
+{
+  NCollection_Sequence<occ::handle<StepGeom_Curve>> aMembers;
+  std::function<void(const TopoDS_Shape&)>          anAdd = [&](const TopoDS_Shape& theParent) {
+    for (TopoDS_Iterator anIter(theParent); anIter.More(); anIter.Next())
+    {
+      const TopoDS_Shape& aChild = anIter.Value();
+      if (aChild.ShapeType() == TopAbs_COMPOUND)
+      {
+        anAdd(aChild);
+        continue;
+      }
+      if (aChild.ShapeType() != TopAbs_EDGE && aChild.ShapeType() != TopAbs_WIRE)
+      {
+        continue;
+      }
+      NCollection_DataMap<TopoDS_Shape, occ::handle<Standard_Transient>, TopTools_ShapeMapHasher>
+                        aMap;
+      TopoDSToStep_Tool aTool(aMap, false, 0);
+      TopoDSToStep_WireframeBuilder aBuilder(aChild, aTool, theLocalFactors);
+      if (!aBuilder.IsDone() || aBuilder.Value().IsNull() || aBuilder.Value()->IsEmpty())
+      {
+        continue;
+      }
+      for (NCollection_DataMap<TopoDS_Shape,
+                               occ::handle<Standard_Transient>,
+                               TopTools_ShapeMapHasher>::Iterator aCurveIter(aBuilder.Curves());
+           aCurveIter.More();
+           aCurveIter.Next())
+      {
+        if (aCurveIter.Key().ShapeType() == TopAbs_EDGE)
+        {
+          TopoDSToStep::AddResult(theFP, aCurveIter.Key(), aCurveIter.Value());
+        }
+      }
+      const occ::handle<NCollection_HSequence<occ::handle<Standard_Transient>>>& aCurves =
+        aBuilder.Value();
+      if (aChild.ShapeType() == TopAbs_EDGE || aCurves->Length() == 1)
+      {
+        occ::handle<StepGeom_Curve> aCurve = occ::down_cast<StepGeom_Curve>(aCurves->Value(1));
+        if (!aCurve.IsNull())
+        {
+          aMembers.Append(aCurve);
+          if (aChild.ShapeType() == TopAbs_WIRE)
+          {
+            TopoDSToStep::AddResult(theFP, aChild, aCurve);
+          }
+        }
+        continue;
+      }
+      occ::handle<NCollection_HArray1<occ::handle<StepGeom_CompositeCurveSegment>>> aSegments =
+        new NCollection_HArray1<occ::handle<StepGeom_CompositeCurveSegment>>(1,
+                                                                             aCurves->Length());
+      int aNbSegments = 0;
+      for (int i = 1; i <= aCurves->Length(); ++i)
+      {
+        occ::handle<StepGeom_Curve> aCurve = occ::down_cast<StepGeom_Curve>(aCurves->Value(i));
+        if (aCurve.IsNull())
+        {
+          continue;
+        }
+        occ::handle<StepGeom_CompositeCurveSegment> aSegment = new StepGeom_CompositeCurveSegment;
+        aSegment->Init(StepGeom_tcContinuous, true, aCurve);
+        aSegments->SetValue(++aNbSegments, aSegment);
+      }
+      if (aNbSegments != aCurves->Length())
+      {
+        continue;
+      }
+      occ::handle<StepGeom_CompositeCurve> aComposite = new StepGeom_CompositeCurve;
+      aComposite->Init(new TCollection_HAsciiString(""), aSegments, StepData_LFalse);
+      TopoDSToStep::AddResult(theFP, aChild, aComposite);
+      aMembers.Append(aComposite);
+    }
+  };
+  anAdd(theShape);
+  if (aMembers.IsEmpty())
+  {
+    return nullptr;
+  }
+  occ::handle<NCollection_HArray1<StepShape_GeometricSetSelect>> anElements =
+    new NCollection_HArray1<StepShape_GeometricSetSelect>(1, aMembers.Length());
+  for (int i = 1; i <= aMembers.Length(); ++i)
+  {
+    StepShape_GeometricSetSelect aSelect;
+    aSelect.SetValue(aMembers.Value(i));
+    anElements->SetValue(i, aSelect);
+  }
+  occ::handle<StepShape_GeometricCurveSet> aSet = new StepShape_GeometricCurveSet;
+  aSet->Init(new TCollection_HAsciiString(""), anElements);
+  return aSet;
+}
+
 static bool transferVertex(const occ::handle<Transfer_FinderProcess>&                      FP,
                            occ::handle<NCollection_HArray1<StepShape_GeometricSetSelect>>& aGSS,
                            const TopoDS_Shape&                                             aShVrtx,
@@ -1063,14 +1171,67 @@ occ::handle<Transfer_Binder> STEPControl_ActorWrite::TransferShape(
     }
     if (mymode == STEPControl_AsIs)
     {
+      // A compound of curves alone, no face in it (a sketch: NIST FTC-10's 'Sketch.1'): one
+      // curve set of them, as it is one shape -- not a curve set of each of its curves. Its
+      // curves are found each by its edge all the same (TopoDSToStep_MakeGeometricCurveSet)
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aInCurveSet;
+      std::function<void(const TopoDS_Shape&)> aCurveSets = [&](const TopoDS_Shape& theParent) {
+        for (TopoDS_Iterator anIter(theParent); anIter.More(); anIter.Next())
+        {
+          const TopoDS_Shape& aChild = anIter.Value();
+          if (aChild.ShapeType() != TopAbs_COMPOUND)
+          {
+            continue;
+          }
+          if (TopExp_Explorer(aChild, TopAbs_FACE).More())
+          {
+            aCurveSets(aChild);
+            continue;
+          }
+          if (!TopExp_Explorer(aChild, TopAbs_EDGE).More())
+          {
+            continue;
+          }
+          // A compound of compounds only groups them: each of its own a set (NIST STC-09's
+          // hidden curve sets, several in one object)
+          bool hasCurve = false;
+          for (TopoDS_Iterator aMemberIter(aChild); aMemberIter.More() && !hasCurve;
+               aMemberIter.Next())
+          {
+            hasCurve = aMemberIter.Value().ShapeType() == TopAbs_EDGE
+                       || aMemberIter.Value().ShapeType() == TopAbs_WIRE;
+          }
+          if (!hasCurve)
+          {
+            aCurveSets(aChild);
+            continue;
+          }
+          for (TopExp_Explorer anEdgeExp(aChild, TopAbs_EDGE); anEdgeExp.More(); anEdgeExp.Next())
+          {
+            aInCurveSet.Add(anEdgeExp.Current());
+          }
+          for (TopExp_Explorer aWireExp(aChild, TopAbs_WIRE); aWireExp.More(); aWireExp.Next())
+          {
+            aInCurveSet.Add(aWireExp.Current());
+          }
+          RepItemSeq->Append(aChild);
+        }
+      };
+      aCurveSets(theShape);
       TopExp_Explorer WireExp, EdgeExp;
       for (WireExp.Init(theShape, TopAbs_WIRE, TopAbs_FACE); WireExp.More(); WireExp.Next())
       {
-        RepItemSeq->Append(TopoDS::Wire(WireExp.Current()));
+        if (!aInCurveSet.Contains(WireExp.Current()))
+        {
+          RepItemSeq->Append(TopoDS::Wire(WireExp.Current()));
+        }
       }
       for (EdgeExp.Init(theShape, TopAbs_EDGE, TopAbs_WIRE); EdgeExp.More(); EdgeExp.Next())
       {
-        RepItemSeq->Append(TopoDS::Edge(EdgeExp.Current()));
+        if (!aInCurveSet.Contains(EdgeExp.Current()))
+        {
+          RepItemSeq->Append(TopoDS::Edge(EdgeExp.Current()));
+        }
       }
       // A point of its own in a compound of other shapes too (NIST CTC-05's and STC-06's
       // points beside their curves and solid): one set of them -- else not written at all
@@ -1383,6 +1544,16 @@ occ::handle<Transfer_Binder> STEPControl_ActorWrite::TransferShape(
         break;
       }
       case STEPControl_GeometricCurveSet: {
+        // A compound of curves (a sketch) as NIST writes one: its wires composite curves,
+        // its edges trimmed curves, each found by its shape -- styled, hidden, layered each
+        if (mymode == STEPControl_AsIs && aShape.ShapeType() == TopAbs_COMPOUND)
+        {
+          item = curveSetOf(aShape, FP, theLocalFactors);
+          if (!item.IsNull())
+          {
+            break;
+          }
+        }
         TopoDSToStep_MakeGeometricCurveSet MkGeometricCurveSet(aShape, FP, theLocalFactors);
         MkGeometricCurveSet.Tolerance() = Tol;
         if (MkGeometricCurveSet.IsDone())
