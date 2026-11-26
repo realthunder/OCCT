@@ -5499,16 +5499,26 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     {
       const double myOld;
 
-      TolConfScope()
-          : myOld(BRepOffset_MakeLoops_TolConf(100. * Precision::Confusion()))
+      explicit TolConfScope(const double theTolConf)
+          : myOld(BRepOffset_MakeLoops_TolConf(theTolConf))
       {
       }
 
       ~TolConfScope() { BRepOffset_MakeLoops_TolConf(myOld); }
     };
+    // (and, refused so too, at Precision::Confusion(): within 1e-5 of the
+    // radius the two vertices are closer than the first distance. The first
+    // stays, for what it made stays as it was made)
+    for (const double aTolConf : {100. * Precision::Confusion(), Precision::Confusion()})
     {
-      const TolConfScope aScope;
-      anAskAgain(isInterAsked, aJoinAsked);
+      {
+        const TolConfScope aScope(aTolConf);
+        anAskAgain(isInterAsked, aJoinAsked);
+      }
+      if (myDone)
+      {
+        break;
+      }
     }
     if (!(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()))
     {
