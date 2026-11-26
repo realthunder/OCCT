@@ -17,6 +17,7 @@
 
 #include <Standard_Type.hxx>
 #include <TCollection_ExtendedString.hxx>
+#include <TDataStd_AsciiString.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDataStd_UAttribute.hxx>
 #include <TDF_Attribute.hxx>
@@ -563,5 +564,96 @@ void XCAFDoc_LayerTool::DumpJson(Standard_OStream& theOStream, int theDepth) con
     TCollection_AsciiString aLayerLabel;
     TDF_Tool::Entry(aLayerLabelIt.Value(), aLayerLabel);
     OCCT_DUMP_FIELD_VALUE_STRING(theOStream, aLayerLabel)
+  }
+}
+
+//=================================================================================================
+// Item layers: one line each, "ordinal<TAB>hidden<TAB>name<TAB>description"
+
+void XCAFDoc_LayerTool::AddItemLayer(const TDF_Label& theItemL, const ItemLayer& theLayer)
+{
+  if (theItemL.IsNull())
+  {
+    return;
+  }
+  NCollection_Sequence<ItemLayer> aLayers;
+  GetItemLayers(theItemL, aLayers);
+  for (NCollection_Sequence<ItemLayer>::Iterator anIter(aLayers); anIter.More(); anIter.Next())
+  {
+    if (anIter.Value().Ordinal == theLayer.Ordinal)
+    {
+      return;
+    }
+  }
+  occ::handle<TDataStd_AsciiString> anOld;
+  TCollection_AsciiString           aValue;
+  if (theItemL.FindAttribute(XCAFDoc::ItemLayersGUID(), anOld))
+  {
+    aValue = anOld->Get();
+    aValue += "\n";
+  }
+  aValue += TCollection_AsciiString(theLayer.Ordinal);
+  aValue += theLayer.Hidden ? "\t1\t" : "\t0\t";
+  aValue += theLayer.Name;
+  aValue += "\t";
+  aValue += theLayer.Description;
+  TDataStd_AsciiString::Set(theItemL, XCAFDoc::ItemLayersGUID(), aValue);
+}
+
+//=================================================================================================
+
+bool XCAFDoc_LayerTool::GetItemLayers(const TDF_Label&                  theItemL,
+                                      NCollection_Sequence<ItemLayer>& theLayers)
+{
+  theLayers.Clear();
+  occ::handle<TDataStd_AsciiString> aValue;
+  if (theItemL.IsNull() || !theItemL.FindAttribute(XCAFDoc::ItemLayersGUID(), aValue))
+  {
+    return false;
+  }
+  const TCollection_AsciiString& aText = aValue->Get();
+  for (int aLine = 1;; ++aLine)
+  {
+    TCollection_AsciiString anEntry = aText.Token("\n", aLine);
+    if (anEntry.IsEmpty())
+    {
+      break;
+    }
+    // Fields by position: an empty name or description is a field still
+    TCollection_AsciiString aFields[4];
+    int                     aField = 0;
+    for (int i = 1; i <= anEntry.Length(); ++i)
+    {
+      const char aChar = anEntry.Value(i);
+      if (aChar == '\t' && aField < 3)
+      {
+        ++aField;
+      }
+      else
+      {
+        aFields[aField] += aChar;
+      }
+    }
+    if (!aFields[0].IsIntegerValue())
+    {
+      continue;
+    }
+    ItemLayer aLayer;
+    aLayer.Ordinal     = aFields[0].IntegerValue();
+    aLayer.Hidden      = aFields[1] == "1";
+    aLayer.Name        = aFields[2];
+    aLayer.Description = aFields[3];
+    theLayers.Append(aLayer);
+  }
+  return !theLayers.IsEmpty();
+}
+
+//=================================================================================================
+
+void XCAFDoc_LayerTool::RemoveItemLayers(const TDF_Label& theItemL)
+{
+  if (!theItemL.IsNull())
+  {
+    theItemL.ForgetAttribute(XCAFDoc::ItemLayersGUID());
   }
 }

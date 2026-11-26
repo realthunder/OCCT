@@ -80,6 +80,7 @@ void TopoDSToStep_WireframeBuilder::Init(const TopoDS_Shape& aShape,
     aPmsMap;
   done     = GetTrimmedCurveFromShape(aShape, aPmsMap, itemList, theLocalFactors);
   myResult = itemList;
+  myCurves = aPmsMap;
 }
 
 //=================================================================================================

@@ -22,6 +22,7 @@
 #include <TDataStd_GenericEmpty.hxx>
 #include <TDF_Label.hxx>
 #include <NCollection_Sequence.hxx>
+#include <TCollection_AsciiString.hxx>
 #include <TCollection_ExtendedString.hxx>
 #include <NCollection_HSequence.hxx>
 class XCAFDoc_ShapeTool;
@@ -144,6 +145,27 @@ public:
   //! Return sequanese of shape labels that assigned with layers to <ShLabels>.
   Standard_EXPORT static void GetShapesOfLayer(const TDF_Label&                 theLayerL,
                                                NCollection_Sequence<TDF_Label>& theShLabels);
+
+  //! One layer an item of a shape is on, as the file has it (XCAFDoc::ItemLayersGUID)
+  struct ItemLayer
+  {
+    int                     Ordinal = 0;    //!< which layer of the file: two are one if equal
+    TCollection_AsciiString Name;           //!< its name, maybe shared with another layer
+    TCollection_AsciiString Description;    //!< its description
+    bool                    Hidden = false; //!< the file hides what it holds
+  };
+
+  //! Adds a layer to those item <theItemL> (a shape's label, or a sub-shape's) is on: one
+  //! per ordinal, written again as one presentation layer assignment each by
+  //! STEPCAFControl_Writer. Neither name nor description holds a tab or a line break
+  Standard_EXPORT static void AddItemLayer(const TDF_Label& theItemL, const ItemLayer& theLayer);
+
+  //! The layers item <theItemL> is on, as AddItemLayer() put them; FALSE when none
+  Standard_EXPORT static bool GetItemLayers(const TDF_Label&                  theItemL,
+                                            NCollection_Sequence<ItemLayer>& theLayers);
+
+  //! Takes item <theItemL> off every layer AddItemLayer() put it on
+  Standard_EXPORT static void RemoveItemLayers(const TDF_Label& theItemL);
 
   //! Return TRUE if layer is visible, FALSE if invisible.
   Standard_EXPORT bool IsVisible(const TDF_Label& layerL) const;
