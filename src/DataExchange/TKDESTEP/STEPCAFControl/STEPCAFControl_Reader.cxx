@@ -2828,13 +2828,27 @@ bool STEPCAFControl_Reader::ReadLayers(const occ::handle<XSControl_WorkSession>&
       TDF_Label shL;
       if (!STool->Search(S, shL, true, true, true))
       {
-        continue;
+        // A member of a shape with no label of its own (NIST STC-06's trimmed curves, each
+        // a layer of its own beside its curve set's): one made
+        const TDF_Label aMainL = STool->FindMainShape(S);
+        if (aMainL.IsNull() || !STool->AddSubShape(aMainL, S, shL))
+        {
+          continue;
+        }
       }
       if (aLayerLabel.IsNull())
       {
         aLayerLabel = LTool->AddLayer(aLayerName, isVisible);
       }
       LTool->SetLayer(shL, aLayerLabel);
+      // The layer as the file has it, on the item: XCAF's layer of the name is every layer
+      // of it, shown if any is (NIST STC-06's layer '1': a hidden one and a shown one)
+      XCAFDoc_LayerTool::ItemLayer anItemLayer;
+      anItemLayer.Ordinal     = i;
+      anItemLayer.Name        = hName.IsNull() ? TCollection_AsciiString() : hName->String();
+      anItemLayer.Description = descr.IsNull() ? TCollection_AsciiString() : descr->String();
+      anItemLayer.Hidden      = !isVisible;
+      XCAFDoc_LayerTool::AddItemLayer(shL, anItemLayer);
     }
 
     if (!aLayerLabel.IsNull())

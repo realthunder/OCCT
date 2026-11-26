@@ -1177,6 +1177,53 @@ bool XCAFDoc_DimTolTool::GetSupplementalLayer(const TDF_Label&         theItemL,
 
 //=================================================================================================
 
+TDF_Label XCAFDoc_DimTolTool::SupplementalMember(const TDF_Label&    theItemL,
+                                                const TopoDS_Shape& theMember,
+                                                const bool          theCreate)
+{
+  if (!IsSupplementalItem(theItemL) || theMember.IsNull())
+  {
+    return TDF_Label();
+  }
+  for (TDF_ChildIterator anIter(theItemL); anIter.More(); anIter.Next())
+  {
+    const TopoDS_Shape aShape = XCAFDoc_ShapeTool::GetShape(anIter.Value());
+    if (!aShape.IsNull() && aShape.IsPartner(theMember))
+    {
+      return anIter.Value();
+    }
+  }
+  if (!theCreate)
+  {
+    return TDF_Label();
+  }
+  TDF_Label       aMemberL = theItemL.NewChild();
+  TNaming_Builder aBuilder(aMemberL);
+  aBuilder.Generated(theMember);
+  return aMemberL;
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::GetSupplementalMembers(const TDF_Label&                 theItemL,
+                                                NCollection_Sequence<TDF_Label>& theMembers)
+{
+  theMembers.Clear();
+  if (!IsSupplementalItem(theItemL))
+  {
+    return;
+  }
+  for (TDF_ChildIterator anIter(theItemL); anIter.More(); anIter.Next())
+  {
+    if (!XCAFDoc_ShapeTool::GetShape(anIter.Value()).IsNull())
+    {
+      theMembers.Append(anIter.Value());
+    }
+  }
+}
+
+//=================================================================================================
+
 void XCAFDoc_DimTolTool::SetViewSupplemental(const TDF_Label&                       theViewL,
                                              const NCollection_Sequence<TDF_Label>& theItems)
 {

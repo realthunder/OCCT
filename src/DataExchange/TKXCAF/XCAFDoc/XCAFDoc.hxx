@@ -108,6 +108,12 @@ public:
   //! presentation_layer_assignment of it, its name and description)
   Standard_EXPORT static const Standard_GUID& SupplementalLayerGUID();
 
+  //! Return GUID of the layers an item of a shape is on, each one as the file has it (STEP: a
+  //! presentation_layer_assignment listing it -- its entity number, name, description, and
+  //! whether an invisibility lists it): unlike XCAFDoc_LayerTool's layers, two layers of one
+  //! name stay two (NIST STC-06's layer '1' is a hidden one and a shown one)
+  Standard_EXPORT static const Standard_GUID& ItemLayersGUID();
+
   //! Return GUID of the list of the documents a part's GD&T cites (STEP: the applied document
   //! references of the additional context of its product definition -- the standards it follows,
   //! NIST FTC-10's 'ASME Y14.41-2003'), one string each of its fields, as

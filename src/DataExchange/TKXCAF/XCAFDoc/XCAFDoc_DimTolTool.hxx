@@ -381,6 +381,19 @@ public:
                                                    TCollection_AsciiString& theName,
                                                    TCollection_AsciiString& theDescription);
 
+  //! A member of supplemental item <theItemL> -- a curve or a point of its curve set, by its
+  //! shape <theMember> -- as a label of its own, for what the file gives it alone: the layers
+  //! it is on (XCAFDoc_LayerTool::AddItemLayer; NIST STC-06's trimmed curves). Found by its
+  //! shape (same TShape), else made when <theCreate>; null when neither
+  Standard_EXPORT static TDF_Label SupplementalMember(const TDF_Label&    theItemL,
+                                                      const TopoDS_Shape& theMember,
+                                                      const bool          theCreate = true);
+
+  //! The member labels of supplemental item <theItemL> (SupplementalMember()), each with
+  //! its shape
+  Standard_EXPORT static void GetSupplementalMembers(const TDF_Label&                 theItemL,
+                                                     NCollection_Sequence<TDF_Label>& theMembers);
+
   //! Says the presentation of the GD&T theGDTL is shown or not (STEP: its graphic listed by an
   //! INVISIBILITY -- NIST STC-08 hides 29, STC-09 75).
   Standard_EXPORT static void SetPresentationHidden(const TDF_Label& theGDTL, const bool theHidden);

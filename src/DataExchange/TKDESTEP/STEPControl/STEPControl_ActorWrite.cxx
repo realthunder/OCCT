@@ -771,6 +771,15 @@ static bool transferVertex(const occ::handle<Transfer_FinderProcess>&           
   select.SetValue(aVP->VertexGeometry());
   // add current result
   aGSS->SetValue(theNum, select);
+  // The vertex is its point: found so by what a vertex is asked of, its style, its layer
+  // (NIST STC-06's and CTC-05's points, each a layer of its own; STC-09 -e3's points hidden)
+  occ::handle<TransferBRep_ShapeMapper> aMapper = TransferBRep::ShapeMapper(FP, aShVrtx);
+  if (FP->Find(aMapper).IsNull())
+  {
+    occ::handle<Transfer_SimpleBinderOfTransient> aBinder = new Transfer_SimpleBinderOfTransient;
+    aBinder->SetResult(aVP->VertexGeometry());
+    FP->Bind(aMapper, aBinder);
+  }
   IsDone = true;
   return IsDone;
 }
@@ -1062,6 +1071,23 @@ occ::handle<Transfer_Binder> STEPControl_ActorWrite::TransferShape(
       for (EdgeExp.Init(theShape, TopAbs_EDGE, TopAbs_WIRE); EdgeExp.More(); EdgeExp.Next())
       {
         RepItemSeq->Append(TopoDS::Edge(EdgeExp.Current()));
+      }
+      // A point of its own in a compound of other shapes too (NIST CTC-05's and STC-06's
+      // points beside their curves and solid): one set of them -- else not written at all
+      TopoDS_Compound aSoloVertices;
+      BRep_Builder    aVertexBuilder;
+      aVertexBuilder.MakeCompound(aSoloVertices);
+      bool            hasSoloVertex = false;
+      TopExp_Explorer VertexExp;
+      for (VertexExp.Init(theShape, TopAbs_VERTEX, TopAbs_EDGE); VertexExp.More();
+           VertexExp.Next())
+      {
+        aVertexBuilder.Add(aSoloVertices, VertexExp.Current());
+        hasSoloVertex = true;
+      }
+      if (hasSoloVertex)
+      {
+        RepItemSeq->Append(aSoloVertices);
       }
     }
   }

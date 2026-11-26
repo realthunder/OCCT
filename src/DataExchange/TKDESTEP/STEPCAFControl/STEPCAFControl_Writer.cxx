@@ -2624,6 +2624,11 @@ bool STEPCAFControl_Writer::writeLayers(const occ::handle<XSControl_WorkSession>
       {
         continue;
       }
+      // On its layers as the file had them: written below, each as it was
+      if (aShLabel.IsAttribute(XCAFDoc::ItemLayersGUID()))
+      {
+        continue;
+      }
       // check that the shape is one of (uub)labels written during current transfer
       bool anIsWritten = false;
       for (NCollection_Sequence<TDF_Label>::Iterator aLabelIter(theLabels); aLabelIter.More();
@@ -2702,6 +2707,132 @@ bool STEPCAFControl_Writer::writeLayers(const occ::handle<XSControl_WorkSession>
       occ::handle<StepVisual_Invisibility> aInvsblt = new StepVisual_Invisibility();
       aInvsblt->Init(aHInvsblItm);
       aModel->AddWithRefs(aInvsblt);
+    }
+  }
+
+  // The layers items are on as the file had them (XCAFDoc_LayerTool::AddItemLayer): one
+  // assignment each, by the ordinal read, its own name, description and visibility -- two
+  // layers of one name stay two (NIST STC-06's layer '1', a hidden one and a shown one)
+  struct ItemLayerWritten
+  {
+    XCAFDoc_LayerTool::ItemLayer                          Layer;
+    NCollection_Sequence<occ::handle<Standard_Transient>> Items;
+  };
+  std::map<int, ItemLayerWritten> anItemLayers;
+  NCollection_Map<TDF_Label>      aVisited;
+  auto anItemLayersOf = [&](const TDF_Label& theL) {
+    if (!aVisited.Add(theL) || !theL.IsAttribute(XCAFDoc::ItemLayersGUID())
+        || XCAFDoc_ShapeTool::IsAssembly(theL) || XCAFDoc_ShapeTool::IsReference(theL))
+    {
+      return;
+    }
+    NCollection_Sequence<XCAFDoc_LayerTool::ItemLayer> aLayers;
+    if (!XCAFDoc_LayerTool::GetItemLayers(theL, aLayers))
+    {
+      return;
+    }
+    // Its entities: a compound is none of its own (the writer binds its members: colours
+    // are found so too), its members' then; an edge or a point written as a curve set of
+    // it alone, the curve or point in it (NIST STC-06 layers its trimmed curves so)
+    NCollection_Sequence<occ::handle<Standard_Transient>> aSeqRI;
+    std::function<void(const TopoDS_Shape&)> anEntitiesOf = [&](const TopoDS_Shape& theShape) {
+      TopLoc_Location                                       aLoc;
+      NCollection_Sequence<occ::handle<Standard_Transient>> aFound;
+      if (FindEntities(aFP, theShape, aLoc, aFound) > 0)
+      {
+        for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator aFoundIter(aFound);
+             aFoundIter.More();
+             aFoundIter.Next())
+        {
+          occ::handle<Standard_Transient>      anItem = aFoundIter.Value();
+          occ::handle<StepShape_GeometricSet> aSet   = occ::down_cast<StepShape_GeometricSet>(anItem);
+          if ((theShape.ShapeType() == TopAbs_EDGE || theShape.ShapeType() == TopAbs_VERTEX)
+              && !aSet.IsNull() && aSet->NbElements() == 1
+              && !aSet->ElementsValue(1).Value().IsNull())
+          {
+            anItem = aSet->ElementsValue(1).Value();
+          }
+          aSeqRI.Append(anItem);
+        }
+        return;
+      }
+      if (theShape.ShapeType() == TopAbs_COMPOUND)
+      {
+        for (TopoDS_Iterator anIter(theShape); anIter.More(); anIter.Next())
+        {
+          anEntitiesOf(anIter.Value());
+        }
+      }
+    };
+    anEntitiesOf(XCAFDoc_ShapeTool::GetShape(theL));
+    if (aSeqRI.IsEmpty())
+    {
+      return;
+    }
+    for (NCollection_Sequence<XCAFDoc_LayerTool::ItemLayer>::Iterator anIter(aLayers);
+         anIter.More();
+         anIter.Next())
+    {
+      ItemLayerWritten& aWritten = anItemLayers[anIter.Value().Ordinal];
+      aWritten.Layer             = anIter.Value();
+      aWritten.Items.Append(aSeqRI);
+    }
+  };
+  for (NCollection_Sequence<TDF_Label>::Iterator aLabelIter(theLabels); aLabelIter.More();
+       aLabelIter.Next())
+  {
+    anItemLayersOf(aLabelIter.Value());
+    for (TDF_ChildIterator aChildIter(aLabelIter.Value(), true); aChildIter.More();
+         aChildIter.Next())
+    {
+      anItemLayersOf(aChildIter.Value());
+    }
+  }
+  for (std::map<int, ItemLayerWritten>::iterator anIter = anItemLayers.begin();
+       anIter != anItemLayers.end();
+       ++anIter)
+  {
+    const ItemLayerWritten& aWritten = anIter->second;
+    // Each item once
+    NCollection_Map<occ::handle<Standard_Transient>> aSeen;
+    NCollection_Sequence<occ::handle<Standard_Transient>> anItems;
+    for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator anItemIter(
+           aWritten.Items);
+         anItemIter.More();
+         anItemIter.Next())
+    {
+      if (aSeen.Add(anItemIter.Value()))
+      {
+        anItems.Append(anItemIter.Value());
+      }
+    }
+    occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
+      new NCollection_HArray1<StepVisual_LayeredItem>(1, anItems.Length());
+    int j = 1;
+    for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator anItemIter(anItems);
+         anItemIter.More();
+         anItemIter.Next())
+    {
+      StepVisual_LayeredItem aLI;
+      aLI.SetValue(anItemIter.Value());
+      aLayered->SetValue(j++, aLI);
+    }
+    occ::handle<StepVisual_PresentationLayerAssignment> aLayer =
+      new StepVisual_PresentationLayerAssignment;
+    aLayer->Init(new TCollection_HAsciiString(aWritten.Layer.Name),
+                 new TCollection_HAsciiString(aWritten.Layer.Description),
+                 aLayered);
+    aModel->AddWithRefs(aLayer);
+    if (aWritten.Layer.Hidden)
+    {
+      occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
+        new NCollection_HArray1<StepVisual_InvisibleItem>(1, 1);
+      StepVisual_InvisibleItem anInvisibleItem;
+      anInvisibleItem.SetValue(aLayer);
+      anInvisible->SetValue(1, anInvisibleItem);
+      occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
+      anInvisibility->Init(anInvisible);
+      aModel->AddWithRefs(anInvisibility);
     }
   }
   return true;
@@ -7256,6 +7387,11 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
                                       const StepData_Factors&                   theLocalFactors)
 {
   const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
+  // The layers members of curve sets are on alone, by the ordinal read: written after the
+  // items, one assignment a layer
+  std::map<int,
+           std::pair<XCAFDoc_LayerTool::ItemLayer, std::vector<occ::handle<Standard_Transient>>>>
+    aMemberLayersWritten;
   const occ::handle<Transfer_FinderProcess>&   aFP    = theWS->TransferWriter()->FinderProcess();
   NCollection_Sequence<TDF_Label>              aGroups;
   theDGTTool->GetSupplementalGeometry(aGroups);
@@ -7354,6 +7490,8 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
         continue;
       }
       occ::handle<StepRepr_RepresentationItem> anItem;
+      // A curve set's members, by the shapes they are of: for the layers each is on alone
+      std::map<const TopoDS_TShape*, occ::handle<Standard_Transient>> aMemberOf;
       try
       {
         OCC_CATCH_SIGNALS
@@ -7380,10 +7518,12 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           BRep_Builder                                       aBuilder;
           TopoDS_Compound                                    anEdges;
           aBuilder.MakeCompound(anEdges);
-          bool hasEdges = false;
+          bool                                hasEdges = false;
+          std::vector<const TopoDS_TShape*> anEdgeOrder;
           for (TopExp_Explorer anExp(aShape, TopAbs_EDGE); anExp.More(); anExp.Next())
           {
             aBuilder.Add(anEdges, anExp.Current());
+            anEdgeOrder.push_back(anExp.Current().TShape().get());
             hasEdges = true;
           }
           if (hasEdges)
@@ -7391,9 +7531,15 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
             TopoDSToStep_MakeGeometricCurveSet aMaker(anEdges, aFP, theLocalFactors);
             if (aMaker.IsDone())
             {
+              // Each curve of an edge, in their order, when none is left out
+              const bool isEach = aMaker.Value()->NbElements() == int(anEdgeOrder.size());
               for (int i = 1; i <= aMaker.Value()->NbElements(); ++i)
               {
                 anElements.Append(aMaker.Value()->ElementsValue(i));
+                if (isEach)
+                {
+                  aMemberOf[anEdgeOrder[size_t(i - 1)]] = aMaker.Value()->ElementsValue(i).Value();
+                }
               }
             }
           }
@@ -7405,6 +7551,7 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
             StepShape_GeometricSetSelect  aSelect;
             aSelect.SetValue(aMaker.Value());
             anElements.Append(aSelect);
+            aMemberOf[anExp.Current().TShape().get()] = aMaker.Value();
           }
           if (!anElements.IsEmpty())
           {
@@ -7535,6 +7682,31 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
                      aLayered);
         aModel->AddWithRefs(aLayer);
       }
+      // Its members on layers of their own, as the file had them (NIST STC-06's trimmed
+      // curves, each its layer): written below, one assignment a layer
+      NCollection_Sequence<TDF_Label> aMemberLs;
+      XCAFDoc_DimTolTool::GetSupplementalMembers(anItemIter.Value(), aMemberLs);
+      for (NCollection_Sequence<TDF_Label>::Iterator aMemberIter(aMemberLs); aMemberIter.More();
+           aMemberIter.Next())
+      {
+        const TopoDS_Shape aMemberShape = XCAFDoc_ShapeTool::GetShape(aMemberIter.Value());
+        auto               aFound       = aMemberOf.find(aMemberShape.TShape().get());
+        NCollection_Sequence<XCAFDoc_LayerTool::ItemLayer> aMemberLayers;
+        if (aFound == aMemberOf.end() || aFound->second.IsNull()
+            || !XCAFDoc_LayerTool::GetItemLayers(aMemberIter.Value(), aMemberLayers))
+        {
+          continue;
+        }
+        for (NCollection_Sequence<XCAFDoc_LayerTool::ItemLayer>::Iterator aLayerIter(
+               aMemberLayers);
+             aLayerIter.More();
+             aLayerIter.Next())
+        {
+          auto& aWritten = aMemberLayersWritten[aLayerIter.Value().Ordinal];
+          aWritten.first = aLayerIter.Value();
+          aWritten.second.push_back(aFound->second);
+        }
+      }
       // Hidden by its layer, else by its members' styles (a curve set), else by its own
       std::vector<occ::handle<Standard_Transient>> aHiding;
       if (!aLayer.IsNull())
@@ -7604,6 +7776,36 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
         new Transfer_SimpleBinderOfTransient();
       aBinder->SetResult(aSet.first);
       aFP->Bind(TransferBRep::ShapeMapper(aFP, aSet.second), aBinder);
+    }
+  }
+  for (const auto& aMemberLayer : aMemberLayersWritten)
+  {
+    const XCAFDoc_LayerTool::ItemLayer& aLayerRead = aMemberLayer.second.first;
+    const auto&                         anItems    = aMemberLayer.second.second;
+    occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
+      new NCollection_HArray1<StepVisual_LayeredItem>(1, int(anItems.size()));
+    for (size_t i = 0; i < anItems.size(); ++i)
+    {
+      StepVisual_LayeredItem aLayeredItem;
+      aLayeredItem.SetValue(anItems[i]);
+      aLayered->SetValue(int(i) + 1, aLayeredItem);
+    }
+    occ::handle<StepVisual_PresentationLayerAssignment> aLayer =
+      new StepVisual_PresentationLayerAssignment();
+    aLayer->Init(new TCollection_HAsciiString(aLayerRead.Name),
+                 new TCollection_HAsciiString(aLayerRead.Description),
+                 aLayered);
+    aModel->AddWithRefs(aLayer);
+    if (aLayerRead.Hidden)
+    {
+      occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
+        new NCollection_HArray1<StepVisual_InvisibleItem>(1, 1);
+      StepVisual_InvisibleItem anInvisibleItem;
+      anInvisibleItem.SetValue(aLayer);
+      anInvisible->SetValue(1, anInvisibleItem);
+      occ::handle<StepVisual_Invisibility> anInvisibility = new StepVisual_Invisibility();
+      anInvisibility->Init(anInvisible);
+      aModel->AddWithRefs(anInvisibility);
     }
   }
   if (aStyles.NbStyles() > 0 && !aStyleContext.IsNull())
