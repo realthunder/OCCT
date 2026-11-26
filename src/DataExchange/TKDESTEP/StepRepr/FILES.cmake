@@ -11,6 +11,8 @@ set(OCCT_StepRepr_FILES
   StepRepr_AssemblyComponentUsage.hxx
   StepRepr_AssemblyComponentUsageSubstitute.cxx
   StepRepr_AssemblyComponentUsageSubstitute.hxx
+  StepRepr_BasicRoundHoleOccurrence.cxx
+  StepRepr_BasicRoundHoleOccurrence.hxx
   StepRepr_BetweenShapeAspect.cxx
   StepRepr_BetweenShapeAspect.hxx
   StepRepr_BooleanRepresentationItem.cxx

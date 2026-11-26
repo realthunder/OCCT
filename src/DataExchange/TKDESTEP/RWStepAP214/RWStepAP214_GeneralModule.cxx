@@ -1158,6 +1158,7 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_GeneralModule, StepData_GeneralModule)
 #include "../RWStepAP242/RWStepAP242_RWDraughtingModelItemAssociationWithPlaceholder.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDefUnit.pxx"
 #include "../RWStepShape/RWStepShape_RWDimensionalSizeWithDatumFeature.pxx"
+#include "../RWStepRepr/RWStepRepr_RWBasicRoundHoleOccurrence.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.pxx"
 #include "../RWStepDimTol/RWStepDimTol_RWGeoTolAndGeoTolWthMaxTol.pxx"
 #include "../RWStepVisual/RWStepVisual_RWAnnotationCurveOccurrence.pxx"
@@ -1209,6 +1210,7 @@ IMPLEMENT_STANDARD_RTTIEXT(RWStepAP214_GeneralModule, StepData_GeneralModule)
 #include <StepAP242_DraughtingModelItemAssociationWithPlaceholder.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDefUnit.hxx>
 #include <StepShape_DimensionalSizeWithDatumFeature.hxx>
+#include <StepRepr_BasicRoundHoleOccurrence.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthDatRefAndGeoTolWthMaxTol.hxx>
 #include <StepDimTol_GeoTolAndGeoTolWthMaxTol.hxx>
 #include <StepVisual_AnnotationPlane.hxx>
@@ -5324,6 +5326,12 @@ void RWStepAP214_GeneralModule::FillSharedCase(const int                        
       aTool.Share(anEnt, iter);
     }
     break;
+    case 830: {
+      DeclareAndCast(StepRepr_BasicRoundHoleOccurrence, anEnt, ent);
+      RWStepRepr_RWBasicRoundHoleOccurrence aTool;
+      aTool.Share(anEnt, iter);
+    }
+    break;
     default:
       break;
   }
@@ -7644,6 +7652,9 @@ bool RWStepAP214_GeneralModule::NewVoid(const int CN, occ::handle<Standard_Trans
     case 829:
       ent = new StepShape_DimensionalSizeWithDatumFeature;
       break;
+    case 830:
+      ent = new StepRepr_BasicRoundHoleOccurrence;
+      break;
     default:
       return false;
   }
@@ -8364,6 +8375,7 @@ int RWStepAP214_GeneralModule::CategoryNumber(const int CN,
     case 704:
     case 827:
     case 829:
+    case 830:
       return catdr;
     case 705:
     case 706:
