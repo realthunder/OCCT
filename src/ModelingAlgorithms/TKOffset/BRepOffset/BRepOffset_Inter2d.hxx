@@ -171,4 +171,10 @@ public:
                                          const double       theOffset);
 };
 
+//! (realthunder) Whether this thread's intersections of two edges on a face
+//! take a crossing for one at an edge's end by its distance from that end,
+//! and not by its parameter alone (see EdgeInter), <theIsOn> from now on.
+//! Returns what it replaces.
+Standard_EXPORT bool BRepOffset_Inter2d_EndsByDistance(const bool theIsOn);
+
 #endif // _BRepOffset_Inter2d_HeaderFile
