@@ -5729,9 +5729,11 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     }
     return false;
   };
+  // (the validity last: looked at for every answer, it cost the bench 4
+  // percent)
   if (isManifoldAsked && aJoinAsked == GeomAbs_Arc && !aRemovedAsked.IsEmpty()
-      && !(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()) && aHasFarRoundAtACap()
-      && (myDone || aHasNeighbourBeyondACap()))
+      && aHasFarRoundAtACap() && (myDone || aHasNeighbourBeyondACap())
+      && !(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()))
   {
     const bool             wasMade   = myDone;
     const BRepOffset_Error aWasError = myError;
