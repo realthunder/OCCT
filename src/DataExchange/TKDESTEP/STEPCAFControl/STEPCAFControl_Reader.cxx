@@ -1463,6 +1463,14 @@ bool STEPCAFControl_Reader::Transfer(
     ReadViews(reader.WS(), doc, aLocalFactors);
   }
 
+  // keep which validation properties other than geometric ones the file has (once the GD&T
+  // is read): the writer writes them again
+  if (aReadAll && GetPropsMode())
+  {
+    TransferPass aPass("validation items");
+    ReadValidationItems(reader.WS(), doc, PDFileMap);
+  }
+
   // read metadata
   if (aReadAll && GetMetaMode())
   {
@@ -2746,6 +2754,199 @@ bool STEPCAFControl_Reader::ReadValProps(
       {
         XCAFDoc_Centroid::Set(L, pos);
       }
+    }
+  }
+  return true;
+}
+
+//=================================================================================================
+
+namespace
+{
+//! Whether a property definition is a validation property the writer is to write again: any but
+//! a geometric one (ReadValProps reads those), theName its name, in lower case with spaces
+bool isValidationKept(const occ::handle<StepRepr_PropertyDefinition>& thePD,
+                      TCollection_AsciiString&                        theName)
+{
+  if (thePD.IsNull() || thePD->Name().IsNull())
+  {
+    return false;
+  }
+  theName = thePD->Name()->String();
+  theName.ChangeAll('_', ' ', false);
+  theName.LowerCase();
+  return theName.Search("validation property") > 0 && theName != "geometric validation property";
+}
+
+//! Keep the names of a validation property's items on theL (XCAFDoc::ValidationItemsGUID): what
+//! it is of ('' the label itself, 'presentation' its GD&T's graphic, 'datum' a datum feature's
+//! datum), its name, its items' names
+void keepValidation(const Interface_Graph&                          theGraph,
+                    const occ::handle<StepRepr_PropertyDefinition>& thePD,
+                    const TCollection_AsciiString&                  theName,
+                    const char* const                               theOf,
+                    const TDF_Label&                                theL)
+{
+  TCollection_AsciiString aGroup(theOf);
+  aGroup += "|";
+  aGroup += theName;
+  bool hasItems = false;
+  for (Interface_EntityIterator anIter = theGraph.Sharings(thePD); anIter.More(); anIter.Next())
+  {
+    occ::handle<StepRepr_PropertyDefinitionRepresentation> aPDR =
+      occ::down_cast<StepRepr_PropertyDefinitionRepresentation>(anIter.Value());
+    if (aPDR.IsNull() || aPDR->UsedRepresentation().IsNull()
+        || aPDR->UsedRepresentation()->Items().IsNull())
+    {
+      continue;
+    }
+    const occ::handle<StepRepr_Representation>& aRep = aPDR->UsedRepresentation();
+    for (int i = 1; i <= aRep->NbItems(); ++i)
+    {
+      const occ::handle<StepRepr_RepresentationItem>& anItem = aRep->ItemsValue(i);
+      if (anItem.IsNull() || anItem->Name().IsNull())
+      {
+        continue;
+      }
+      aGroup += "|";
+      aGroup += anItem->Name()->String();
+      hasItems = true;
+    }
+  }
+  if (!hasItems)
+  {
+    return;
+  }
+  occ::handle<TDataStd_ExtStringList> aList;
+  if (!theL.FindAttribute(XCAFDoc::ValidationItemsGUID(), aList))
+  {
+    aList = TDataStd_ExtStringList::Set(theL, XCAFDoc::ValidationItemsGUID());
+  }
+  aList->Append(TCollection_ExtendedString(aGroup));
+}
+
+//! Keep the validation properties of theEnt on theL
+void keepValidationOf(const Interface_Graph&                 theGraph,
+                      const occ::handle<Standard_Transient>& theEnt,
+                      const TDF_Label&                       theL)
+{
+  if (theEnt.IsNull())
+  {
+    return;
+  }
+  for (Interface_EntityIterator anIter = theGraph.Sharings(theEnt); anIter.More(); anIter.Next())
+  {
+    occ::handle<StepRepr_PropertyDefinition> aPD =
+      occ::down_cast<StepRepr_PropertyDefinition>(anIter.Value());
+    TCollection_AsciiString aName;
+    if (isValidationKept(aPD, aName) && aPD->Definition().Value() == theEnt)
+    {
+      keepValidation(theGraph, aPD, aName, "", theL);
+    }
+  }
+}
+
+//! The entity an undefined entity of theType refers to by its parameter theNum, or null
+occ::handle<Standard_Transient> undefinedParam(const occ::handle<Standard_Transient>& theEnt,
+                                               const char* const                      theType,
+                                               const int                              theNum)
+{
+  occ::handle<StepData_UndefinedEntity> anUndef =
+    occ::down_cast<StepData_UndefinedEntity>(theEnt);
+  if (anUndef.IsNull() || anUndef->StepType() == nullptr
+      || strcmp(anUndef->StepType(), theType) != 0)
+  {
+    return nullptr;
+  }
+  const occ::handle<Interface_UndefinedContent> aContent = anUndef->UndefinedContent();
+  if (aContent.IsNull() || aContent->NbParams() < theNum || !aContent->IsParamEntity(theNum))
+  {
+    return nullptr;
+  }
+  return aContent->ParamEntity(theNum);
+}
+} // namespace
+
+//=================================================================================================
+
+bool STEPCAFControl_Reader::ReadValidationItems(
+  const occ::handle<XSControl_WorkSession>&                          theWS,
+  const occ::handle<TDocStd_Document>&                               theDoc,
+  const NCollection_DataMap<occ::handle<StepBasic_ProductDefinition>,
+                            occ::handle<STEPCAFControl_ExternFile>>& thePDFileMap) const
+{
+  const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
+  occ::handle<XCAFDoc_ShapeTool> aSTool = XCAFDoc_DocumentTool::ShapeTool(theDoc->Main());
+  if (aModel.IsNull() || aSTool.IsNull())
+  {
+    return false;
+  }
+  const Interface_Graph&        aGraph = theWS->TransferReader()->TransientProcess()->Graph();
+  STEPConstruct_ValidationProps aProps(theWS);
+  for (int i = 1; i <= aModel->NbEntities(); ++i)
+  {
+    occ::handle<StepRepr_PropertyDefinition> aPD =
+      occ::down_cast<StepRepr_PropertyDefinition>(aModel->Value(i));
+    TCollection_AsciiString aName;
+    if (!isValidationKept(aPD, aName))
+    {
+      continue;
+    }
+    occ::handle<Standard_Transient> aDef = aPD->Definition().Value();
+    // A product's (its attribute validation property, of its definition) or a part's (its pmi
+    // validation property, of its shape)
+    if (occ::handle<StepRepr_ProductDefinitionShape> aPDS =
+          occ::down_cast<StepRepr_ProductDefinitionShape>(aDef))
+    {
+      aDef = aPDS->Definition().ProductDefinition();
+    }
+    if (occ::handle<StepBasic_ProductDefinition> aProdDef =
+          occ::down_cast<StepBasic_ProductDefinition>(aDef))
+    {
+      const TDF_Label aL = GetLabelFromPD(aProdDef, aSTool, aProps, thePDFileMap, myMap);
+      if (!aL.IsNull())
+      {
+        keepValidation(aGraph, aPD, aName, "", aL);
+      }
+      continue;
+    }
+    // A PMI's graphic: a characterized item within representation of its callout -- kept on
+    // the PMI it presents, else (a graphic of nothing, NIST CTC-05's notes) its own
+    TDF_Label                             aL;
+    const char*                           anOf = "";
+    const occ::handle<Standard_Transient> aCallout =
+      undefinedParam(aDef, "CHARACTERIZED_ITEM_WITHIN_REPRESENTATION", 3);
+    if (!aCallout.IsNull())
+    {
+      anOf = "presentation";
+      for (Interface_EntityIterator anIter = aGraph.Sharings(aCallout);
+           aL.IsNull() && anIter.More();
+           anIter.Next())
+      {
+        occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
+          occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+        if (!aDMIA.IsNull())
+        {
+          myGDTMap.Find(aDMIA->Definition().Value(), aL);
+        }
+      }
+      if (aL.IsNull())
+      {
+        myGDTMap.Find(aCallout, aL);
+      }
+    }
+    else if (!aDef.IsNull())
+    {
+      myGDTMap.Find(aDef, aL);
+      // A datum's, of the datum itself rather than its feature (NIST CTC-03's)
+      if (aDef->IsKind(STANDARD_TYPE(StepDimTol_Datum)))
+      {
+        anOf = "datum";
+      }
+    }
+    if (!aL.IsNull())
+    {
+      keepValidation(aGraph, aPD, aName, anOf, aL);
     }
   }
   return true;
@@ -9065,6 +9266,23 @@ bool STEPCAFControl_Reader::ReadViews(const occ::handle<XSControl_WorkSession>& 
     aView->SetObject(anObj);
     aViewTool->SetView(aShapes, aGDTs, aClippingPlanes, aViewL);
     XCAFDoc_DimTolTool::SetViewSupplemental(aViewL, aSupplementals);
+    // Its validation properties (NIST CTC-03's 'number of annotations'), of its model geometric
+    // view or of its draughting model, kept for the writer as a GD&T's are
+    if (GetPropsMode())
+    {
+      keepValidationOf(aGraph, aDModel, aViewL);
+      for (Interface_EntityIterator aViewIter = aGraph.Sharings(aCameraModel); aViewIter.More();
+           aViewIter.Next())
+      {
+        occ::handle<StepData_UndefinedEntity> anUndef =
+          occ::down_cast<StepData_UndefinedEntity>(aViewIter.Value());
+        if (!anUndef.IsNull() && anUndef->StepType() != nullptr
+            && strcmp(anUndef->StepType(), "MODEL_GEOMETRIC_VIEW") == 0)
+        {
+          keepValidationOf(aGraph, anUndef, aViewL);
+        }
+      }
+    }
     aViewTool->Lock(aViewL);
   }
   return true;

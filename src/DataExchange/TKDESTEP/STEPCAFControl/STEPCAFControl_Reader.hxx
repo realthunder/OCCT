@@ -424,6 +424,17 @@ protected:
                               occ::handle<STEPCAFControl_ExternFile>>& PDFileMap,
     const StepData_Factors& theLocalFactors = StepData_Factors()) const;
 
+  //! Keeps which validation properties other than geometric ones the STEP model gives its
+  //! products and its GD&T -- each product's attribute and pmi validation properties, each
+  //! PMI's and its graphic's pmi validation properties -- on their labels, their names and
+  //! their items' names (XCAFDoc::ValidationItemsGUID): what STEPCAFControl_Writer writes
+  //! again, computed of what it writes. A view's are kept by ReadViews
+  Standard_EXPORT bool ReadValidationItems(
+    const occ::handle<XSControl_WorkSession>&                          WS,
+    const occ::handle<TDocStd_Document>&                               doc,
+    const NCollection_DataMap<occ::handle<StepBasic_ProductDefinition>,
+                              occ::handle<STEPCAFControl_ExternFile>>& PDFileMap) const;
+
   //! Reads metadata assigned to shapes in the STEP model and
   //! assigns them to corresponding labels in the DECAF document
   Standard_EXPORT bool ReadMetadata(

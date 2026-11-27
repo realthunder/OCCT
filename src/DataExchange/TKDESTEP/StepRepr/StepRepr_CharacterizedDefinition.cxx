@@ -20,10 +20,14 @@
 #include <StepBasic_DocumentFile.hxx>
 #include <StepBasic_ProductDefinition.hxx>
 #include <StepBasic_ProductDefinitionRelationship.hxx>
+#include <StepData_UndefinedEntity.hxx>
+#include <StepDimTol_GeometricTolerance.hxx>
 #include <StepRepr_CharacterizedDefinition.hxx>
 #include <StepRepr_ProductDefinitionShape.hxx>
+#include <StepRepr_Representation.hxx>
 #include <StepRepr_ShapeAspect.hxx>
 #include <StepRepr_ShapeAspectRelationship.hxx>
+#include <StepShape_DimensionalSize.hxx>
 
 //=================================================================================================
 
@@ -64,6 +68,26 @@ int StepRepr_CharacterizedDefinition::CaseNum(const occ::handle<Standard_Transie
   if (ent->IsKind(STANDARD_TYPE(StepBasic_DocumentFile)))
   {
     return 7;
+  }
+  // AP242's characterized items and representations: what a pmi validation property is of
+  // (NIST CTC-03's sizes, tolerances, saved views' draughting models)
+  if (ent->IsKind(STANDARD_TYPE(StepShape_DimensionalSize)))
+  {
+    return 8;
+  }
+  if (ent->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)))
+  {
+    return 9;
+  }
+  if (ent->IsKind(STANDARD_TYPE(StepRepr_Representation)))
+  {
+    return 10;
+  }
+  // One of AP242 this schema has no type of (a characterized_item_within_representation of
+  // a PMI's graphic, a model_geometric_view)
+  if (ent->IsKind(STANDARD_TYPE(StepData_UndefinedEntity)))
+  {
+    return 11;
   }
   return 0;
 }

@@ -280,6 +280,14 @@ const Standard_GUID& XCAFDoc::AttributeMeasuresGUID()
 
 //=================================================================================================
 
+const Standard_GUID& XCAFDoc::ValidationItemsGUID()
+{
+  static const Standard_GUID ID("a25ffb71-6562-4237-9d6c-ce580978fe40");
+  return ID;
+}
+
+//=================================================================================================
+
 const Standard_GUID& XCAFDoc::LayerRefGUID()
 {
   static const Standard_GUID ID("efd212e8-6dfd-11d4-b9c8-0060b0ee281b");
@@ -815,4 +823,11 @@ const Standard_GUID& XCAFDoc_CitedDocumentsGUID()
 const Standard_GUID& XCAFDoc_AttributeMeasuresGUID()
 {
   return XCAFDoc::AttributeMeasuresGUID();
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc_ValidationItemsGUID()
+{
+  return XCAFDoc::ValidationItemsGUID();
 }

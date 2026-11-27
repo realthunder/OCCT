@@ -151,6 +151,15 @@ public:
   //! attribute's measure_representation_item, the real in the document's length unit)
   Standard_EXPORT static const Standard_GUID& AttributeMeasuresGUID();
 
+  //! Return GUID of the list of the validation properties a label was read with, other than
+  //! its geometric ones (STEP: an attribute validation property of a product, the counts of
+  //! its user defined attributes; a pmi validation property of a part, a PMI, its graphic, a
+  //! view; a tessellated validation property), one string each: what it is of ('' itself,
+  //! 'presentation' a GD&T's graphic), its name and the names of its items, '|'-separated,
+  //! as STEPCAFControl_Reader keeps them -- what the writer writes again, computed of what it
+  //! writes
+  Standard_EXPORT static const Standard_GUID& ValidationItemsGUID();
+
   Standard_EXPORT static const Standard_GUID& LayerRefGUID();
 
   Standard_EXPORT static const Standard_GUID& MaterialRefGUID();
@@ -197,10 +206,13 @@ public:
     const occ::handle<TDF_Attribute>& theAtt);
 };
 
-//! CitedDocumentsGUID and AttributeMeasuresGUID as C functions, for a client to look up by
-//! name at run time and do without where the library is upstream's, which has neither.
+//! CitedDocumentsGUID, AttributeMeasuresGUID and ValidationItemsGUID as C functions, for a
+//! client to look up by name at run time and do without where the library is upstream's,
+//! which has none of them.
 extern "C" Standard_EXPORT const Standard_GUID& XCAFDoc_CitedDocumentsGUID();
 
 extern "C" Standard_EXPORT const Standard_GUID& XCAFDoc_AttributeMeasuresGUID();
+
+extern "C" Standard_EXPORT const Standard_GUID& XCAFDoc_ValidationItemsGUID();
 
 #endif // _XCAFDoc_HeaderFile
