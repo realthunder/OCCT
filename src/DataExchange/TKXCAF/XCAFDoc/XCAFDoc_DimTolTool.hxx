@@ -256,13 +256,21 @@ public:
   //! (NIST STC-07: a dimension drawn as 'Oriented Linear Dimension.1' has the
   //! placeholder 'Oriented Linear Dimension.5'); empty, it is named as the graphic.
   //! Written to STEP it is given one, where its text is. An empty kind removes it.
-  //! theShared says it is the placeholder of another PMI written before it, of its kind, name
-  //! and place (NIST STC-06: a hole callout's one placeholder, its diameter's and its depth's):
-  //! written, it is linked to that one, not given one of its own.
+  //! Not another's (theShared false, below): the signature binaries built before theShared
+  //! link, kept so that they load.
+  Standard_EXPORT static void SetPlaceholder(const TDF_Label&               theGDTL,
+                                             const TCollection_AsciiString& theKind,
+                                             const TCollection_AsciiString& theName);
+
+  //! As above; theShared says it is the placeholder of another PMI written before it, of its
+  //! kind, name and place (NIST STC-06: a hole callout's one placeholder, its diameter's and
+  //! its depth's): written, it is linked to that one, not given one of its own. A new
+  //! parameter is a new overload, never a changed signature: an exported function keeps the
+  //! symbol a binary links.
   Standard_EXPORT static void SetPlaceholder(const TDF_Label&               theGDTL,
                                              const TCollection_AsciiString& theKind,
                                              const TCollection_AsciiString& theName,
-                                             const bool                     theShared = false);
+                                             const bool                     theShared);
 
   //! The kind and name of the placeholder theGDTL has; false when it has none.
   Standard_EXPORT static bool GetPlaceholder(const TDF_Label&         theGDTL,
@@ -376,10 +384,25 @@ public:
                                                    const TCollection_AsciiString& theName,
                                                    const TCollection_AsciiString& theDescription);
 
+  //! As above, the layer being the assignment numbered theOrdinal in the file read (0: none
+  //! known): an assignment listing items of the part and of its supplemental geometry both
+  //! (NIST STC-09 -e4's one of 6 curve sets and 11 planes) is written one again, with the
+  //! part's item layers of that ordinal (XCAFDoc_LayerTool::AddItemLayer)
+  Standard_EXPORT static void SetSupplementalLayer(const TDF_Label&               theItemL,
+                                                   const TCollection_AsciiString& theName,
+                                                   const TCollection_AsciiString& theDescription,
+                                                   const int                      theOrdinal);
+
   //! The layer of the item theItemL, its name and description; false when it is on none.
   Standard_EXPORT static bool GetSupplementalLayer(const TDF_Label&         theItemL,
                                                    TCollection_AsciiString& theName,
                                                    TCollection_AsciiString& theDescription);
+
+  //! As above, and the ordinal of its assignment in the file read (0 when none is known).
+  Standard_EXPORT static bool GetSupplementalLayer(const TDF_Label&         theItemL,
+                                                   TCollection_AsciiString& theName,
+                                                   TCollection_AsciiString& theDescription,
+                                                   int&                     theOrdinal);
 
   //! A member of supplemental item <theItemL> -- a curve or a point of its curve set, by its
   //! shape <theMember> -- as a label of its own, for what the file gives it alone: the layers
@@ -517,5 +540,12 @@ public:
 private:
   occ::handle<XCAFDoc_ShapeTool> myShapeTool;
 };
+
+//! The version of this fork's GD&T extensions of XCAF (supplemental geometry, placeholders,
+//! holes, UUIDs, item layers, ...), as a C function for a client to look up by name at run
+//! time: none where the library is upstream's. A client calling those by their C++ names (a
+//! PMI module) loads only where it finds this, and asks for the version it was built for.
+//! 1: as of 2026-11-27.
+extern "C" Standard_EXPORT int XCAFDoc_DimTolTool_PMI();
 
 #endif // _XCAFDoc_DimTolTool_HeaderFile

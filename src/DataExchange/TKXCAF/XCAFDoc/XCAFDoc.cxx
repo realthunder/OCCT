@@ -802,3 +802,17 @@ TCollection_AsciiString XCAFDoc::AttributeInfo(const occ::handle<TDF_Attribute>&
   }
   return anInfo;
 }
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc_CitedDocumentsGUID()
+{
+  return XCAFDoc::CitedDocumentsGUID();
+}
+
+//=================================================================================================
+
+const Standard_GUID& XCAFDoc_AttributeMeasuresGUID()
+{
+  return XCAFDoc::AttributeMeasuresGUID();
+}

@@ -405,6 +405,16 @@ public:
   //! The semantic entity each GD&T label was written as (its tolerance, dimension, datum
   //! feature): what its UUID identifies
   NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>> Semantics;
+  //! The layer assignments written as the file had them, by the ordinal read (the part's item
+  //! layers, XCAFDoc_LayerTool::AddItemLayer; supplemental items', GetSupplementalLayer), and
+  //! whether an invisibility lists it: an item of supplemental geometry on one of the part's
+  //! (NIST STC-09 -e4's one of 6 curve sets and 11 planes) joins it, as in the file
+  struct ItemLayer
+  {
+    occ::handle<StepVisual_PresentationLayerAssignment> Assignment;
+    bool                                                Hidden = false;
+  };
+  std::map<int, ItemLayer> ItemLayers;
 };
 
 //! An entity's UUID (XCAFDoc_DimTolTool::SetUUID): a uuid_attribute of it, of the type the
@@ -2567,6 +2577,98 @@ bool STEPCAFControl_Writer::writeValProps(const occ::handle<XSControl_WorkSessio
 
 //=================================================================================================
 
+namespace
+{
+//! The geometric sets of two members or more written, by each of their members
+using SetsOfMembers =
+  std::map<const Standard_Transient*, std::vector<occ::handle<StepShape_GeometricSet>>>;
+
+SetsOfMembers setsOfMembers(const occ::handle<Interface_InterfaceModel>& theModel)
+{
+  SetsOfMembers aSets;
+  for (int i = 1; i <= theModel->NbEntities(); ++i)
+  {
+    occ::handle<StepShape_GeometricSet> aSet =
+      occ::down_cast<StepShape_GeometricSet>(theModel->Value(i));
+    if (aSet.IsNull() || aSet->NbElements() < 2)
+    {
+      continue;
+    }
+    for (int j = 1; j <= aSet->NbElements(); ++j)
+    {
+      const occ::handle<Standard_Transient> aMember = aSet->ElementsValue(j).Value();
+      if (!aMember.IsNull())
+      {
+        aSets[aMember.get()].push_back(aSet);
+      }
+    }
+  }
+  return aSets;
+}
+
+//! The items of a layer, each once, and every member of a set there the set instead: a set
+//! with no label of its own (a part's own curves or points, NIST CTC-04's 'Sketch.3'; a
+//! supplemental curve set) has its layer read onto each of its members, and the file layers
+//! the set. No NIST file layers every member of a set of two or more one by one
+NCollection_Sequence<occ::handle<Standard_Transient>> layeredItems(
+  const SetsOfMembers&                                         theSets,
+  const NCollection_Sequence<occ::handle<Standard_Transient>>& theItems)
+{
+  NCollection_Map<occ::handle<Standard_Transient>> anIn;
+  for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator anIter(theItems);
+       anIter.More();
+       anIter.Next())
+  {
+    anIn.Add(anIter.Value());
+  }
+  NCollection_Map<occ::handle<Standard_Transient>>      aTaken;
+  NCollection_Sequence<occ::handle<Standard_Transient>> aResult;
+  for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator anIter(theItems);
+       anIter.More();
+       anIter.Next())
+  {
+    const occ::handle<Standard_Transient>& anItem = anIter.Value();
+    if (aTaken.Contains(anItem))
+    {
+      continue;
+    }
+    occ::handle<StepShape_GeometricSet> aWhole;
+    const auto                          aFound = theSets.find(anItem.get());
+    for (size_t i = 0; aFound != theSets.end() && aWhole.IsNull() && i < aFound->second.size();
+         ++i)
+    {
+      const occ::handle<StepShape_GeometricSet>& aSet  = aFound->second[i];
+      bool                                       isAll = true;
+      for (int j = 1; j <= aSet->NbElements() && isAll; ++j)
+      {
+        isAll = anIn.Contains(aSet->ElementsValue(j).Value());
+      }
+      if (isAll)
+      {
+        aWhole = aSet;
+      }
+    }
+    if (aWhole.IsNull())
+    {
+      aTaken.Add(anItem);
+      aResult.Append(anItem);
+      continue;
+    }
+    for (int j = 1; j <= aWhole->NbElements(); ++j)
+    {
+      aTaken.Add(aWhole->ElementsValue(j).Value());
+    }
+    if (aTaken.Add(aWhole))
+    {
+      aResult.Append(aWhole);
+    }
+  }
+  return aResult;
+}
+} // namespace
+
+//=================================================================================================
+
 bool STEPCAFControl_Writer::writeLayers(const occ::handle<XSControl_WorkSession>& theWS,
                                         const NCollection_Sequence<TDF_Label>&    theLabels) const
 {
@@ -2770,13 +2872,21 @@ bool STEPCAFControl_Writer::writeLayers(const occ::handle<XSControl_WorkSession>
     {
       return;
     }
+    // Each layer its items: Append(sequence) would move them, leaving none for the next layer
+    // (a member of a set on a layer of its own and on its set's: NIST CTC-04's composite
+    // curves)
     for (NCollection_Sequence<XCAFDoc_LayerTool::ItemLayer>::Iterator anIter(aLayers);
          anIter.More();
          anIter.Next())
     {
       ItemLayerWritten& aWritten = anItemLayers[anIter.Value().Ordinal];
       aWritten.Layer             = anIter.Value();
-      aWritten.Items.Append(aSeqRI);
+      for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator anRIIter(aSeqRI);
+           anRIIter.More();
+           anRIIter.Next())
+      {
+        aWritten.Items.Append(anRIIter.Value());
+      }
     }
   };
   for (NCollection_Sequence<TDF_Label>::Iterator aLabelIter(theLabels); aLabelIter.More();
@@ -2789,24 +2899,15 @@ bool STEPCAFControl_Writer::writeLayers(const occ::handle<XSControl_WorkSession>
       anItemLayersOf(aChildIter.Value());
     }
   }
+  const SetsOfMembers aSetsOfMembers =
+    anItemLayers.empty() ? SetsOfMembers() : setsOfMembers(aModel);
   for (std::map<int, ItemLayerWritten>::iterator anIter = anItemLayers.begin();
        anIter != anItemLayers.end();
        ++anIter)
   {
-    const ItemLayerWritten& aWritten = anIter->second;
-    // Each item once
-    NCollection_Map<occ::handle<Standard_Transient>> aSeen;
-    NCollection_Sequence<occ::handle<Standard_Transient>> anItems;
-    for (NCollection_Sequence<occ::handle<Standard_Transient>>::Iterator anItemIter(
-           aWritten.Items);
-         anItemIter.More();
-         anItemIter.Next())
-    {
-      if (aSeen.Add(anItemIter.Value()))
-      {
-        anItems.Append(anItemIter.Value());
-      }
-    }
+    const ItemLayerWritten&                               aWritten = anIter->second;
+    NCollection_Sequence<occ::handle<Standard_Transient>> anItems =
+      layeredItems(aSetsOfMembers, aWritten.Items);
     occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
       new NCollection_HArray1<StepVisual_LayeredItem>(1, anItems.Length());
     int j = 1;
@@ -2824,6 +2925,10 @@ bool STEPCAFControl_Writer::writeLayers(const occ::handle<XSControl_WorkSession>
                  new TCollection_HAsciiString(aWritten.Layer.Description),
                  aLayered);
     aModel->AddWithRefs(aLayer);
+    GDTPresentationModel::ItemLayer& aKept =
+      gdtState(myGDTPresentationDM).ItemLayers[anIter->first];
+    aKept.Assignment = aLayer;
+    aKept.Hidden     = aWritten.Layer.Hidden;
     if (aWritten.Layer.Hidden)
     {
       occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
@@ -7393,6 +7498,8 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
   std::map<int,
            std::pair<XCAFDoc_LayerTool::ItemLayer, std::vector<occ::handle<Standard_Transient>>>>
     aMemberLayersWritten;
+  // The layer each item is on, written with it: by its entity
+  std::map<const Standard_Transient*, XCAFDoc_LayerTool::ItemLayer> anItemLayersWritten;
   const occ::handle<Transfer_FinderProcess>&   aFP    = theWS->TransferWriter()->FinderProcess();
   NCollection_Sequence<TDF_Label>              aGroups;
   theDGTTool->GetSupplementalGeometry(aGroups);
@@ -7667,21 +7774,71 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       // On its layer, as the file had it; hidden by it, else by its style (NIST FTC-07 hides 13
       // items by their layer)
       TCollection_AsciiString aLayerName, aLayerDescription;
+      int                     aLayerOrdinal = 0;
       occ::handle<StepVisual_PresentationLayerAssignment> aLayer;
+      // The assignment of the file it is on, written already (of the part's items, or of
+      // another supplemental item): it joins it, hidden by it when that one is hidden
+      GDTPresentationModel::ItemLayer* aShared = nullptr;
+      const bool isHidden = XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value());
       if (XCAFDoc_DimTolTool::GetSupplementalLayer(anItemIter.Value(),
                                                    aLayerName,
-                                                   aLayerDescription))
+                                                   aLayerDescription,
+                                                   aLayerOrdinal))
       {
-        occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
-          new NCollection_HArray1<StepVisual_LayeredItem>(1, 1);
-        StepVisual_LayeredItem aLayeredItem;
-        aLayeredItem.SetValue(anItem);
-        aLayered->SetValue(1, aLayeredItem);
-        aLayer = new StepVisual_PresentationLayerAssignment();
-        aLayer->Init(new TCollection_HAsciiString(aLayerName),
-                     new TCollection_HAsciiString(aLayerDescription),
-                     aLayered);
-        aModel->AddWithRefs(aLayer);
+        const auto aKept = aLayerOrdinal > 0 ? theState.ItemLayers.find(aLayerOrdinal)
+                                             : theState.ItemLayers.end();
+        if (aKept != theState.ItemLayers.end() && !aKept->second.Assignment.IsNull()
+            && aKept->second.Assignment->Name()->String() == aLayerName
+            && aKept->second.Assignment->Description()->String() == aLayerDescription)
+        {
+          aShared = &aKept->second;
+          aLayer  = aShared->Assignment;
+          const occ::handle<NCollection_HArray1<StepVisual_LayeredItem>>& anOld =
+            aLayer->AssignedItems();
+          bool isListed = false;
+          for (int i = 1; !anOld.IsNull() && i <= anOld->Length() && !isListed; ++i)
+          {
+            isListed = anOld->Value(i).Value() == anItem;
+          }
+          if (!isListed)
+          {
+            const int aNb = anOld.IsNull() ? 0 : anOld->Length();
+            occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
+              new NCollection_HArray1<StepVisual_LayeredItem>(1, aNb + 1);
+            for (int i = 1; i <= aNb; ++i)
+            {
+              aLayered->SetValue(i, anOld->Value(i));
+            }
+            StepVisual_LayeredItem aLayeredItem;
+            aLayeredItem.SetValue(anItem);
+            aLayered->SetValue(aNb + 1, aLayeredItem);
+            aLayer->SetAssignedItems(aLayered);
+          }
+        }
+        else
+        {
+          occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
+            new NCollection_HArray1<StepVisual_LayeredItem>(1, 1);
+          StepVisual_LayeredItem aLayeredItem;
+          aLayeredItem.SetValue(anItem);
+          aLayered->SetValue(1, aLayeredItem);
+          aLayer = new StepVisual_PresentationLayerAssignment();
+          aLayer->Init(new TCollection_HAsciiString(aLayerName),
+                       new TCollection_HAsciiString(aLayerDescription),
+                       aLayered);
+          aModel->AddWithRefs(aLayer);
+          if (aLayerOrdinal > 0)
+          {
+            // Hidden below when the item is: the next one of the ordinal joins it so
+            GDTPresentationModel::ItemLayer& aNew = theState.ItemLayers[aLayerOrdinal];
+            aNew.Assignment                       = aLayer;
+            aNew.Hidden                           = isHidden;
+          }
+        }
+        XCAFDoc_LayerTool::ItemLayer& aWrittenLayer = anItemLayersWritten[anItem.get()];
+        aWrittenLayer.Name                          = aLayerName;
+        aWrittenLayer.Description                   = aLayerDescription;
+        aWrittenLayer.Hidden                        = isHidden;
       }
       // Its members on layers of their own, as the file had them (NIST STC-06's trimmed
       // curves, each its layer): written below, one assignment a layer
@@ -7708,11 +7865,15 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           aWritten.second.push_back(aFound->second);
         }
       }
-      // Hidden by its layer, else by its members' styles (a curve set), else by its own
+      // Hidden by its layer, else by its members' styles (a curve set), else by its own. By a
+      // layer it shares when that one is hidden, which an invisibility lists already; a shown
+      // one it shares hides none of it
       std::vector<occ::handle<Standard_Transient>> aHiding;
-      if (!aLayer.IsNull())
+      bool                                         isHiddenAlready = false;
+      if (!aLayer.IsNull() && (aShared == nullptr || aShared->Hidden))
       {
         aHiding.push_back(aLayer);
+        isHiddenAlready = aShared != nullptr;
       }
       else if (!aMemberStyles.empty()
                && std::none_of(aMemberStyles.begin(),
@@ -7727,7 +7888,7 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       {
         aHiding.push_back(anItemStyle);
       }
-      if (XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value()) && !aHiding.empty())
+      if (isHidden && !aHiding.empty() && !isHiddenAlready)
       {
         occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
           new NCollection_HArray1<StepVisual_InvisibleItem>(1, int(aHiding.size()));
@@ -7779,17 +7940,37 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       aFP->Bind(TransferBRep::ShapeMapper(aFP, aSet.second), aBinder);
     }
   }
+  const SetsOfMembers aSetsOfMembers =
+    aMemberLayersWritten.empty() ? SetsOfMembers() : setsOfMembers(aModel);
   for (const auto& aMemberLayer : aMemberLayersWritten)
   {
-    const XCAFDoc_LayerTool::ItemLayer& aLayerRead = aMemberLayer.second.first;
-    const auto&                         anItems    = aMemberLayer.second.second;
+    const XCAFDoc_LayerTool::ItemLayer&                   aLayerRead = aMemberLayer.second.first;
+    NCollection_Sequence<occ::handle<Standard_Transient>> aMembers;
+    for (const occ::handle<Standard_Transient>& aMember : aMemberLayer.second.second)
+    {
+      aMembers.Append(aMember);
+    }
+    const NCollection_Sequence<occ::handle<Standard_Transient>> anItems =
+      layeredItems(aSetsOfMembers, aMembers);
+    // The layer of a set read onto its members, the set's own written with it already (NIST
+    // CTC-04's 'ThreadCylinder.1'): not again
+    if (anItems.Length() == 1)
+    {
+      const auto aWritten = anItemLayersWritten.find(anItems.First().get());
+      if (aWritten != anItemLayersWritten.end() && aWritten->second.Name == aLayerRead.Name
+          && aWritten->second.Description == aLayerRead.Description
+          && aWritten->second.Hidden == aLayerRead.Hidden)
+      {
+        continue;
+      }
+    }
     occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
-      new NCollection_HArray1<StepVisual_LayeredItem>(1, int(anItems.size()));
-    for (size_t i = 0; i < anItems.size(); ++i)
+      new NCollection_HArray1<StepVisual_LayeredItem>(1, anItems.Length());
+    for (int i = 1; i <= anItems.Length(); ++i)
     {
       StepVisual_LayeredItem aLayeredItem;
-      aLayeredItem.SetValue(anItems[i]);
-      aLayered->SetValue(int(i) + 1, aLayeredItem);
+      aLayeredItem.SetValue(anItems.Value(i));
+      aLayered->SetValue(i, aLayeredItem);
     }
     occ::handle<StepVisual_PresentationLayerAssignment> aLayer =
       new StepVisual_PresentationLayerAssignment();
@@ -9428,4 +9609,12 @@ bool STEPCAFControl_Writer::writeMaterials(const occ::handle<XSControl_WorkSessi
   }
 
   return true;
+}
+
+//=================================================================================================
+
+void STEPCAFControl_Writer_SetGDTPresentationColor(STEPCAFControl_Writer& theWriter,
+                                                   const Quantity_Color&  theColor)
+{
+  theWriter.SetGDTPresentationColor(theColor);
 }

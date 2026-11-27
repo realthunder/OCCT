@@ -7158,9 +7158,12 @@ static void readSupplementalGeometry(
         if (occ::handle<StepVisual_PresentationLayerAssignment> aLayer =
               occ::down_cast<StepVisual_PresentationLayerAssignment>(anIter.Value()))
         {
+          // By its entity number too, as the part's item layers are (ReadLayers): one
+          // assignment of both (NIST STC-09 -e4's) is written one again
           XCAFDoc_DimTolTool::SetSupplementalLayer(anItemL,
                                                    aNameOf(aLayer->Name()),
-                                                   aNameOf(aLayer->Description()));
+                                                   aNameOf(aLayer->Description()),
+                                                   aGraph.Model()->Number(aLayer));
           isHidden = isHidden || aListed(aLayer);
         }
         else if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_StyledItem)))

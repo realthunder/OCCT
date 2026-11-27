@@ -1147,11 +1147,27 @@ void XCAFDoc_DimTolTool::SetSupplementalLayer(const TDF_Label&               the
                                               const TCollection_AsciiString& theName,
                                               const TCollection_AsciiString& theDescription)
 {
+  SetSupplementalLayer(theItemL, theName, theDescription, 0);
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::SetSupplementalLayer(const TDF_Label&               theItemL,
+                                              const TCollection_AsciiString& theName,
+                                              const TCollection_AsciiString& theDescription,
+                                              const int                      theOrdinal)
+{
   if (IsSupplementalItem(theItemL))
   {
-    TDataStd_AsciiString::Set(theItemL,
-                              XCAFDoc::SupplementalLayerGUID(),
-                              theName + "\n" + theDescription);
+    // Its name, description and, when there is one, ordinal: a line each (a STEP string holds
+    // no line break of its own)
+    TCollection_AsciiString aValue = theName + "\n" + theDescription;
+    if (theOrdinal > 0)
+    {
+      aValue += "\n";
+      aValue += TCollection_AsciiString(theOrdinal);
+    }
+    TDataStd_AsciiString::Set(theItemL, XCAFDoc::SupplementalLayerGUID(), aValue);
   }
 }
 
@@ -1161,6 +1177,18 @@ bool XCAFDoc_DimTolTool::GetSupplementalLayer(const TDF_Label&         theItemL,
                                               TCollection_AsciiString& theName,
                                               TCollection_AsciiString& theDescription)
 {
+  int anOrdinal = 0;
+  return GetSupplementalLayer(theItemL, theName, theDescription, anOrdinal);
+}
+
+//=================================================================================================
+
+bool XCAFDoc_DimTolTool::GetSupplementalLayer(const TDF_Label&         theItemL,
+                                              TCollection_AsciiString& theName,
+                                              TCollection_AsciiString& theDescription,
+                                              int&                     theOrdinal)
+{
+  theOrdinal = 0;
   occ::handle<TDataStd_AsciiString> aLayer;
   if (!IsSupplementalItem(theItemL)
       || !theItemL.FindAttribute(XCAFDoc::SupplementalLayerGUID(), aLayer))
@@ -1169,9 +1197,23 @@ bool XCAFDoc_DimTolTool::GetSupplementalLayer(const TDF_Label&         theItemL,
   }
   const TCollection_AsciiString& aValue = aLayer->Get();
   const int                      aCut   = aValue.Search("\n");
-  theName        = aCut > 0 ? aValue.SubString(1, aCut - 1) : aValue;
-  theDescription = aCut > 0 && aCut < aValue.Length() ? aValue.SubString(aCut + 1, aValue.Length())
-                                                      : TCollection_AsciiString();
+  theName = aCut > 0 ? aValue.SubString(1, aCut - 1) : aValue;
+  TCollection_AsciiString aRest = aCut > 0 && aCut < aValue.Length()
+                                    ? aValue.SubString(aCut + 1, aValue.Length())
+                                    : TCollection_AsciiString();
+  const int               aSecond = aRest.Search("\n");
+  if (aSecond > 0)
+  {
+    const TCollection_AsciiString anOrdinal = aSecond < aRest.Length()
+                                                ? aRest.SubString(aSecond + 1, aRest.Length())
+                                                : TCollection_AsciiString();
+    if (anOrdinal.IsIntegerValue())
+    {
+      theOrdinal = anOrdinal.IntegerValue();
+    }
+    aRest = aSecond > 1 ? aRest.SubString(1, aSecond - 1) : TCollection_AsciiString();
+  }
+  theDescription = aRest;
   return true;
 }
 
@@ -1610,6 +1652,15 @@ bool XCAFDoc_DimTolTool::GetPresentedWith(const TDF_Label& theGDTL, TDF_Label& t
 
 void XCAFDoc_DimTolTool::SetPlaceholder(const TDF_Label&               theGDTL,
                                         const TCollection_AsciiString& theKind,
+                                        const TCollection_AsciiString& theName)
+{
+  SetPlaceholder(theGDTL, theKind, theName, false);
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::SetPlaceholder(const TDF_Label&               theGDTL,
+                                        const TCollection_AsciiString& theKind,
                                         const TCollection_AsciiString& theName,
                                         const bool                     theShared)
 {
@@ -1974,4 +2025,11 @@ void XCAFDoc_DimTolTool::DumpJson(Standard_OStream& theOStream, int theDepth) co
     TDF_Tool::Entry(aDatumLabelIt.Value(), aDatumLabel);
     OCCT_DUMP_FIELD_VALUE_STRING(theOStream, aDatumLabel)
   }
+}
+
+//=================================================================================================
+
+int XCAFDoc_DimTolTool_PMI()
+{
+  return 1;
 }
