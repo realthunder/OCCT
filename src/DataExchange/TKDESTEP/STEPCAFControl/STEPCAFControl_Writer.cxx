@@ -405,6 +405,16 @@ public:
   //! The semantic entity each GD&T label was written as (its tolerance, dimension, datum
   //! feature): what its UUID identifies
   NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>> Semantics;
+  //! The layer assignments written as the file had them, by the ordinal read (the part's item
+  //! layers, XCAFDoc_LayerTool::AddItemLayer; supplemental items', GetSupplementalLayer), and
+  //! whether an invisibility lists it: an item of supplemental geometry on one of the part's
+  //! (NIST STC-09 -e4's one of 6 curve sets and 11 planes) joins it, as in the file
+  struct ItemLayer
+  {
+    occ::handle<StepVisual_PresentationLayerAssignment> Assignment;
+    bool                                                Hidden = false;
+  };
+  std::map<int, ItemLayer> ItemLayers;
 };
 
 //! An entity's UUID (XCAFDoc_DimTolTool::SetUUID): a uuid_attribute of it, of the type the
@@ -2915,6 +2925,10 @@ bool STEPCAFControl_Writer::writeLayers(const occ::handle<XSControl_WorkSession>
                  new TCollection_HAsciiString(aWritten.Layer.Description),
                  aLayered);
     aModel->AddWithRefs(aLayer);
+    GDTPresentationModel::ItemLayer& aKept =
+      gdtState(myGDTPresentationDM).ItemLayers[anIter->first];
+    aKept.Assignment = aLayer;
+    aKept.Hidden     = aWritten.Layer.Hidden;
     if (aWritten.Layer.Hidden)
     {
       occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
@@ -7760,25 +7774,71 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       // On its layer, as the file had it; hidden by it, else by its style (NIST FTC-07 hides 13
       // items by their layer)
       TCollection_AsciiString aLayerName, aLayerDescription;
+      int                     aLayerOrdinal = 0;
       occ::handle<StepVisual_PresentationLayerAssignment> aLayer;
+      // The assignment of the file it is on, written already (of the part's items, or of
+      // another supplemental item): it joins it, hidden by it when that one is hidden
+      GDTPresentationModel::ItemLayer* aShared = nullptr;
+      const bool isHidden = XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value());
       if (XCAFDoc_DimTolTool::GetSupplementalLayer(anItemIter.Value(),
                                                    aLayerName,
-                                                   aLayerDescription))
+                                                   aLayerDescription,
+                                                   aLayerOrdinal))
       {
-        occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
-          new NCollection_HArray1<StepVisual_LayeredItem>(1, 1);
-        StepVisual_LayeredItem aLayeredItem;
-        aLayeredItem.SetValue(anItem);
-        aLayered->SetValue(1, aLayeredItem);
-        aLayer = new StepVisual_PresentationLayerAssignment();
-        aLayer->Init(new TCollection_HAsciiString(aLayerName),
-                     new TCollection_HAsciiString(aLayerDescription),
-                     aLayered);
-        aModel->AddWithRefs(aLayer);
+        const auto aKept = aLayerOrdinal > 0 ? theState.ItemLayers.find(aLayerOrdinal)
+                                             : theState.ItemLayers.end();
+        if (aKept != theState.ItemLayers.end() && !aKept->second.Assignment.IsNull()
+            && aKept->second.Assignment->Name()->String() == aLayerName
+            && aKept->second.Assignment->Description()->String() == aLayerDescription)
+        {
+          aShared = &aKept->second;
+          aLayer  = aShared->Assignment;
+          const occ::handle<NCollection_HArray1<StepVisual_LayeredItem>>& anOld =
+            aLayer->AssignedItems();
+          bool isListed = false;
+          for (int i = 1; !anOld.IsNull() && i <= anOld->Length() && !isListed; ++i)
+          {
+            isListed = anOld->Value(i).Value() == anItem;
+          }
+          if (!isListed)
+          {
+            const int aNb = anOld.IsNull() ? 0 : anOld->Length();
+            occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
+              new NCollection_HArray1<StepVisual_LayeredItem>(1, aNb + 1);
+            for (int i = 1; i <= aNb; ++i)
+            {
+              aLayered->SetValue(i, anOld->Value(i));
+            }
+            StepVisual_LayeredItem aLayeredItem;
+            aLayeredItem.SetValue(anItem);
+            aLayered->SetValue(aNb + 1, aLayeredItem);
+            aLayer->SetAssignedItems(aLayered);
+          }
+        }
+        else
+        {
+          occ::handle<NCollection_HArray1<StepVisual_LayeredItem>> aLayered =
+            new NCollection_HArray1<StepVisual_LayeredItem>(1, 1);
+          StepVisual_LayeredItem aLayeredItem;
+          aLayeredItem.SetValue(anItem);
+          aLayered->SetValue(1, aLayeredItem);
+          aLayer = new StepVisual_PresentationLayerAssignment();
+          aLayer->Init(new TCollection_HAsciiString(aLayerName),
+                       new TCollection_HAsciiString(aLayerDescription),
+                       aLayered);
+          aModel->AddWithRefs(aLayer);
+          if (aLayerOrdinal > 0)
+          {
+            // Hidden below when the item is: the next one of the ordinal joins it so
+            GDTPresentationModel::ItemLayer& aNew = theState.ItemLayers[aLayerOrdinal];
+            aNew.Assignment                       = aLayer;
+            aNew.Hidden                           = isHidden;
+          }
+        }
         XCAFDoc_LayerTool::ItemLayer& aWrittenLayer = anItemLayersWritten[anItem.get()];
         aWrittenLayer.Name                          = aLayerName;
         aWrittenLayer.Description                   = aLayerDescription;
-        aWrittenLayer.Hidden = XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value());
+        aWrittenLayer.Hidden                        = isHidden;
       }
       // Its members on layers of their own, as the file had them (NIST STC-06's trimmed
       // curves, each its layer): written below, one assignment a layer
@@ -7805,11 +7865,15 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
           aWritten.second.push_back(aFound->second);
         }
       }
-      // Hidden by its layer, else by its members' styles (a curve set), else by its own
+      // Hidden by its layer, else by its members' styles (a curve set), else by its own. By a
+      // layer it shares when that one is hidden, which an invisibility lists already; a shown
+      // one it shares hides none of it
       std::vector<occ::handle<Standard_Transient>> aHiding;
-      if (!aLayer.IsNull())
+      bool                                         isHiddenAlready = false;
+      if (!aLayer.IsNull() && (aShared == nullptr || aShared->Hidden))
       {
         aHiding.push_back(aLayer);
+        isHiddenAlready = aShared != nullptr;
       }
       else if (!aMemberStyles.empty()
                && std::none_of(aMemberStyles.begin(),
@@ -7824,7 +7888,7 @@ static void writeSupplementalGeometry(const occ::handle<XSControl_WorkSession>& 
       {
         aHiding.push_back(anItemStyle);
       }
-      if (XCAFDoc_DimTolTool::IsPresentationHidden(anItemIter.Value()) && !aHiding.empty())
+      if (isHidden && !aHiding.empty() && !isHiddenAlready)
       {
         occ::handle<NCollection_HArray1<StepVisual_InvisibleItem>> anInvisible =
           new NCollection_HArray1<StepVisual_InvisibleItem>(1, int(aHiding.size()));

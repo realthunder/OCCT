@@ -384,10 +384,25 @@ public:
                                                    const TCollection_AsciiString& theName,
                                                    const TCollection_AsciiString& theDescription);
 
+  //! As above, the layer being the assignment numbered theOrdinal in the file read (0: none
+  //! known): an assignment listing items of the part and of its supplemental geometry both
+  //! (NIST STC-09 -e4's one of 6 curve sets and 11 planes) is written one again, with the
+  //! part's item layers of that ordinal (XCAFDoc_LayerTool::AddItemLayer)
+  Standard_EXPORT static void SetSupplementalLayer(const TDF_Label&               theItemL,
+                                                   const TCollection_AsciiString& theName,
+                                                   const TCollection_AsciiString& theDescription,
+                                                   const int                      theOrdinal);
+
   //! The layer of the item theItemL, its name and description; false when it is on none.
   Standard_EXPORT static bool GetSupplementalLayer(const TDF_Label&         theItemL,
                                                    TCollection_AsciiString& theName,
                                                    TCollection_AsciiString& theDescription);
+
+  //! As above, and the ordinal of its assignment in the file read (0 when none is known).
+  Standard_EXPORT static bool GetSupplementalLayer(const TDF_Label&         theItemL,
+                                                   TCollection_AsciiString& theName,
+                                                   TCollection_AsciiString& theDescription,
+                                                   int&                     theOrdinal);
 
   //! A member of supplemental item <theItemL> -- a curve or a point of its curve set, by its
   //! shape <theMember> -- as a label of its own, for what the file gives it alone: the layers
