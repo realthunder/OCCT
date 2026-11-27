@@ -67,6 +67,13 @@
 #include <STEPCAFControl_GDTProperty.hxx>
 #include <STEPConstruct_Styles.hxx>
 #include <STEPConstruct_ValidationProps.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
+#include <NCollection_IndexedMap.hxx>
+#include <StepDimTol_DatumTarget.hxx>
+#include <StepDimTol_GeometricTolerance.hxx>
+#include <TDataStd_NamedData.hxx>
+#include <TopExp.hxx>
 #include <STEPControl_StepModelType.hxx>
 #include <StepData_Factors.hxx>
 #include <StepData_Logical.hxx>
@@ -415,6 +422,16 @@ public:
     bool                                                Hidden = false;
   };
   std::map<int, ItemLayer> ItemLayers;
+  //! The views written, by their labels: the model geometric view of each (what its validation
+  //! properties are of; none in a file of AP242's first edition) and the callouts it lists
+  struct ViewWritten
+  {
+    occ::handle<Standard_Transient> View;
+    int                             Annotations = 0;
+  };
+  NCollection_DataMap<TDF_Label, ViewWritten> Views;
+  //! The datum written of each datum label (Semantics has its feature)
+  NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>> Datums;
 };
 
 //! An entity's UUID (XCAFDoc_DimTolTool::SetUUID): a uuid_attribute of it, of the type the
@@ -1085,6 +1102,17 @@ bool STEPCAFControl_Writer::transfer(STEPControl_Writer&                    theW
   if (GetMetadataMode())
   {
     writeMetadata(theWriter.WS(), aSubLabels);
+  }
+
+  // the products' attribute validation properties, the ones the file they were read from had:
+  // the counts of the attributes written
+  if (GetPropsMode())
+  {
+    for (NCollection_Sequence<TDF_Label>::Iterator aLabelIter(aSubLabels); aLabelIter.More();
+         aLabelIter.Next())
+    {
+      writeAttributeValidation(theWriter.WS(), aLabelIter.Value());
+    }
   }
 
   // refresh graph
@@ -8297,6 +8325,688 @@ static void writeHoles(const occ::handle<XSControl_WorkSession>& theWS,
 
 //=================================================================================================
 
+namespace
+{
+//! The validation properties a label was read with other than geometric ones
+//! (XCAFDoc::ValidationItemsGUID), each what it is of, its name and its items' names
+struct ValidationGroup
+{
+  TCollection_AsciiString                       Of;
+  TCollection_AsciiString                       Name;
+  NCollection_Sequence<TCollection_AsciiString> Items;
+};
+
+NCollection_Sequence<ValidationGroup> validationGroups(const TDF_Label& theL)
+{
+  NCollection_Sequence<ValidationGroup> aGroups;
+  occ::handle<TDataStd_ExtStringList>   aList;
+  if (theL.IsNull() || !theL.FindAttribute(XCAFDoc::ValidationItemsGUID(), aList))
+  {
+    return aGroups;
+  }
+  for (NCollection_List<TCollection_ExtendedString>::Iterator anIter(aList->List()); anIter.More();
+       anIter.Next())
+  {
+    const TCollection_AsciiString aText(anIter.Value(), '?');
+    ValidationGroup               aGroup;
+    int                           aField = 0;
+    for (int aStart = 1; aStart <= aText.Length() + 1;)
+    {
+      int anEnd = aStart;
+      while (anEnd <= aText.Length() && aText.Value(anEnd) != '|')
+      {
+        ++anEnd;
+      }
+      const TCollection_AsciiString aPart =
+        anEnd > aStart ? aText.SubString(aStart, anEnd - 1) : TCollection_AsciiString();
+      if (aField == 0)
+      {
+        aGroup.Of = aPart;
+      }
+      else if (aField == 1)
+      {
+        aGroup.Name = aPart;
+      }
+      else if (!aPart.IsEmpty())
+      {
+        aGroup.Items.Append(aPart);
+      }
+      ++aField;
+      aStart = anEnd + 1;
+    }
+    if (!aGroup.Name.IsEmpty())
+    {
+      aGroups.Append(aGroup);
+    }
+  }
+  return aGroups;
+}
+
+//! A property definition of theTarget named theName, represented by theItems in theRC -- as the
+//! CAx-IF recommended practices write a validation property. Nothing if there is no item or
+//! theTarget is not one a characterized definition takes
+void writeValidationProperty(
+  const occ::handle<Interface_InterfaceModel>&                          theModel,
+  const TCollection_AsciiString&                                        theName,
+  const occ::handle<Standard_Transient>&                                theTarget,
+  const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>& theItems,
+  const occ::handle<StepRepr_RepresentationContext>&                    theRC)
+{
+  StepRepr_CharacterizedDefinition aDefinition;
+  if (theItems.IsEmpty() || theRC.IsNull() || theTarget.IsNull()
+      || !aDefinition.Matches(theTarget))
+  {
+    return;
+  }
+  aDefinition.SetValue(theTarget);
+  occ::handle<StepRepr_PropertyDefinition> aPD = new StepRepr_PropertyDefinition();
+  aPD->Init(new TCollection_HAsciiString(theName),
+            true,
+            new TCollection_HAsciiString(""),
+            aDefinition);
+  occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anItems =
+    new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, theItems.Length());
+  for (int i = 1; i <= theItems.Length(); ++i)
+  {
+    anItems->SetValue(i, theItems.Value(i));
+  }
+  occ::handle<StepRepr_Representation> aRep = new StepRepr_Representation();
+  aRep->Init(new TCollection_HAsciiString(""), anItems, theRC);
+  StepRepr_RepresentedDefinition aRepresented;
+  aRepresented.SetValue(aPD);
+  occ::handle<StepRepr_PropertyDefinitionRepresentation> aPDR =
+    new StepRepr_PropertyDefinitionRepresentation();
+  aPDR->Init(aRepresented, aRep);
+  theModel->AddWithRefs(aPDR);
+}
+
+occ::handle<StepRepr_RepresentationItem> integerItem(const TCollection_AsciiString& theName,
+                                                     const int                      theValue)
+{
+  occ::handle<StepRepr_IntegerRepresentationItem> anItem = new StepRepr_IntegerRepresentationItem();
+  anItem->Init(new TCollection_HAsciiString(theName), theValue);
+  return anItem;
+}
+
+//! A length (theExponent 1) or an area (2) in the length unit of theRC
+occ::handle<StepRepr_RepresentationItem> measureItem(
+  const TCollection_AsciiString&                     theName,
+  const double                                       theValue,
+  const int                                          theExponent,
+  const occ::handle<StepRepr_RepresentationContext>& theRC)
+{
+  StepBasic_Unit aUnit = GetUnit(theRC, false);
+  occ::handle<StepBasic_MeasureValueMember> aValue = new StepBasic_MeasureValueMember();
+  aValue->SetReal(theValue);
+  if (theExponent == 2)
+  {
+    aValue->SetName("AREA_MEASURE");
+    occ::handle<StepBasic_DerivedUnitElement> anElement = new StepBasic_DerivedUnitElement();
+    anElement->Init(aUnit.NamedUnit(), 2.);
+    occ::handle<NCollection_HArray1<occ::handle<StepBasic_DerivedUnitElement>>> anElements =
+      new NCollection_HArray1<occ::handle<StepBasic_DerivedUnitElement>>(1, 1);
+    anElements->SetValue(1, anElement);
+    occ::handle<StepBasic_DerivedUnit> aDerived = new StepBasic_DerivedUnit();
+    aDerived->Init(anElements);
+    aUnit = StepBasic_Unit();
+    aUnit.SetValue(aDerived);
+  }
+  else
+  {
+    aValue->SetName("LENGTH_MEASURE");
+  }
+  occ::handle<StepRepr_MeasureRepresentationItem> anItem = new StepRepr_MeasureRepresentationItem();
+  anItem->Init(new TCollection_HAsciiString(theName), aValue, aUnit);
+  return anItem;
+}
+
+//! The area of the faces a GD&T is on and the length of its edges (each edge a shape of its
+//! own, not a face's), in the document's unit; a datum target's, of the target itself
+void affected(const TDF_Label& theL, double& theArea, double& theLength)
+{
+  theArea = theLength = 0.;
+  NCollection_Sequence<TopoDS_Shape> aShapes;
+  occ::handle<XCAFDoc_Datum>         aDatum;
+  if (theL.FindAttribute(XCAFDoc_Datum::GetID(), aDatum) && !aDatum->GetObject().IsNull()
+      && aDatum->GetObject()->IsDatumTarget()
+      && aDatum->GetObject()->GetDatumTargetType() != XCAFDimTolObjects_DatumTargetType_Area)
+  {
+    // A target of a size: the line, the rectangle, the circle it is (its length the circle's
+    // diameter); a point nothing
+    const occ::handle<XCAFDimTolObjects_DatumObject>& anObj = aDatum->GetObject();
+    const double aLength = anObj->GetDatumTargetLength();
+    switch (anObj->GetDatumTargetType())
+    {
+      case XCAFDimTolObjects_DatumTargetType_Line:
+        theLength = aLength;
+        break;
+      case XCAFDimTolObjects_DatumTargetType_Rectangle:
+        theArea = aLength * anObj->GetDatumTargetWidth();
+        break;
+      case XCAFDimTolObjects_DatumTargetType_Circle:
+        theArea = M_PI * aLength * aLength / 4.;
+        break;
+      case XCAFDimTolObjects_DatumTargetType_CircularCurve:
+        theLength = M_PI * aLength;
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+  else
+  {
+    NCollection_Sequence<TDF_Label> aFirst, aSecond;
+    XCAFDoc_DimTolTool::GetRefShapeLabel(theL, aFirst, aSecond);
+    aFirst.Append(aSecond);
+    for (NCollection_Sequence<TDF_Label>::Iterator anIter(aFirst); anIter.More(); anIter.Next())
+    {
+      aShapes.Append(XCAFDoc_ShapeTool::GetShape(anIter.Value()));
+    }
+  }
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aFaces, anEdges;
+  for (NCollection_Sequence<TopoDS_Shape>::Iterator anIter(aShapes); anIter.More(); anIter.Next())
+  {
+    const TopoDS_Shape& aShape = anIter.Value();
+    if (aShape.IsNull())
+    {
+      continue;
+    }
+    if (TopExp_Explorer(aShape, TopAbs_FACE).More())
+    {
+      TopExp::MapShapes(aShape, TopAbs_FACE, aFaces);
+    }
+    else
+    {
+      TopExp::MapShapes(aShape, TopAbs_EDGE, anEdges);
+    }
+  }
+  for (int i = 1; i <= aFaces.Extent(); ++i)
+  {
+    GProp_GProps aProps;
+    BRepGProp::SurfaceProperties(aFaces(i), aProps);
+    theArea += aProps.Mass();
+  }
+  for (int i = 1; i <= anEdges.Extent(); ++i)
+  {
+    GProp_GProps aProps;
+    BRepGProp::LinearProperties(anEdges(i), aProps);
+    theLength += aProps.Mass();
+  }
+}
+
+//! The datums a tolerance cites, as NIST's validation properties give them: 'A,B,C' in the
+//! order of its frame, a common datum 'H-J'; 'none'
+TCollection_AsciiString datumReferences(const TDF_Label& theL)
+{
+  NCollection_Sequence<TDF_Label> aDatumLs;
+  XCAFDoc_DimTolTool::GetDatumWithObjectOfTolerLabels(theL, aDatumLs);
+  std::map<int, TCollection_AsciiString> aByPosition;
+  for (NCollection_Sequence<TDF_Label>::Iterator anIter(aDatumLs); anIter.More(); anIter.Next())
+  {
+    occ::handle<XCAFDoc_Datum> aDatum;
+    if (!anIter.Value().FindAttribute(XCAFDoc_Datum::GetID(), aDatum)
+        || aDatum->GetObject().IsNull() || aDatum->GetObject()->GetName().IsNull())
+    {
+      continue;
+    }
+    TCollection_AsciiString& aText = aByPosition[aDatum->GetObject()->GetPosition()];
+    if (!aText.IsEmpty())
+    {
+      aText += "-";
+    }
+    aText += aDatum->GetObject()->GetName()->String();
+  }
+  TCollection_AsciiString aResult;
+  for (const auto& aPos : aByPosition)
+  {
+    if (!aResult.IsEmpty())
+    {
+      aResult += ",";
+    }
+    aResult += aPos.second;
+  }
+  return aResult.IsEmpty() ? TCollection_AsciiString("none") : aResult;
+}
+
+//! The draughting callouts written of a GD&T label
+int calloutsOf(const GDTPresentationModel& theState, const TDF_Label& theL)
+{
+  int aCount = 0;
+  if (const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>* anItems =
+        theState.Items.Seek(theL))
+  {
+    for (const auto& anItem : *anItems)
+    {
+      if (anItem->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+      {
+        ++aCount;
+      }
+    }
+  }
+  return aCount;
+}
+
+//! A characterized item within representation of a PMI's callout in its draughting model: what
+//! the validation properties of its graphic are of. No class is for it: an entity of its four
+//! parameters, named as the callout
+occ::handle<Standard_Transient> itemWithinRepresentation(
+  const occ::handle<StepRepr_RepresentationItem>& theCallout,
+  const occ::handle<StepRepr_Representation>&     theDM)
+{
+  TCollection_AsciiString aName = theCallout->Name().IsNull() ? TCollection_AsciiString()
+                                                              : theCallout->Name()->String();
+  TCollection_AsciiString aQuoted("'");
+  for (int i = 1; i <= aName.Length(); ++i)
+  {
+    const char aChar = aName.Value(i);
+    if (aChar == '\'' || aChar == '\\')
+    {
+      aQuoted += aChar;
+    }
+    aQuoted += aChar;
+  }
+  aQuoted += "'";
+  occ::handle<StepData_UndefinedEntity> anItem = new StepData_UndefinedEntity();
+  anItem->SetStepType("CHARACTERIZED_ITEM_WITHIN_REPRESENTATION");
+  occ::handle<Interface_UndefinedContent> aParams = anItem->UndefinedContent();
+  aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString(aQuoted));
+  aParams->AddLiteral(Interface_ParamText, new TCollection_HAsciiString("''"));
+  aParams->AddEntity(Interface_ParamIdent, theCallout);
+  aParams->AddEntity(Interface_ParamIdent, theDM);
+  return anItem;
+}
+} // namespace
+
+//=================================================================================================
+
+void STEPCAFControl_Writer::writeAttributeValidation(
+  const occ::handle<XSControl_WorkSession>& theWS,
+  const TDF_Label&                          theLabel) const
+{
+  if (theLabel.IsNull())
+  {
+    return;
+  }
+  for (int i = 1; theLabel.HasChild() && i <= theLabel.NbChildren(); ++i)
+  {
+    writeAttributeValidation(theWS, theLabel.FindChild(i));
+  }
+  NCollection_Sequence<ValidationGroup> aGroups;
+  for (const ValidationGroup& aGroup : validationGroups(theLabel))
+  {
+    if (aGroup.Of.IsEmpty() && aGroup.Name == "attribute validation property")
+    {
+      aGroups.Append(aGroup);
+    }
+  }
+  if (aGroups.IsEmpty() || !myLabels.IsBound(theLabel))
+  {
+    return;
+  }
+  const occ::handle<Transfer_FinderProcess>& aFP = theWS->TransferWriter()->FinderProcess();
+  occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
+  if (!aFP->FindTypedTransient(TransferBRep::ShapeMapper(aFP, myLabels.Find(theLabel)),
+                               STANDARD_TYPE(StepShape_ShapeDefinitionRepresentation),
+                               aSDR)
+      || aSDR->UsedRepresentation().IsNull() || aSDR->Definition().PropertyDefinition().IsNull())
+  {
+    return;
+  }
+  const occ::handle<StepBasic_ProductDefinition> aProdDef =
+    aSDR->Definition().PropertyDefinition()->Definition().ProductDefinition();
+  // The attributes written of it (writeMetadataForLabel's): its text, integer and real
+  // ones, those of the reals that are lengths; none of its elements'
+  int aTexts = 0, anIntegers = 0, aReals = 0, aMeasures = 0;
+  occ::handle<TDataStd_NamedData> aData;
+  if (GetMetadataMode() && theLabel.FindAttribute(TDataStd_NamedData::GetID(), aData))
+  {
+    aTexts     = aData->GetStringsContainer().Extent();
+    anIntegers = aData->GetIntegersContainer().Extent();
+    aReals     = aData->GetRealsContainer().Extent();
+    occ::handle<TDataStd_ExtStringList> aMeasureList;
+    if (theLabel.FindAttribute(XCAFDoc::AttributeMeasuresGUID(), aMeasureList))
+    {
+      for (NCollection_List<TCollection_ExtendedString>::Iterator anIter(aMeasureList->List());
+           anIter.More();)
+      {
+        const TCollection_ExtendedString aKey = anIter.Value();
+        anIter.Next();
+        if (!anIter.More())
+        {
+          break;
+        }
+        const TCollection_AsciiString aMeasure(anIter.Value(), '?');
+        if (aData->HasReal(aKey)
+            && (aMeasure == "LENGTH_MEASURE" || aMeasure == "POSITIVE_LENGTH_MEASURE"))
+        {
+          ++aMeasures;
+        }
+        anIter.Next();
+      }
+    }
+  }
+  const occ::handle<Interface_InterfaceModel>& aModel = theWS->Model();
+  for (const ValidationGroup& aGroup : aGroups)
+  {
+    NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> anItems;
+    for (const TCollection_AsciiString& aName : aGroup.Items)
+    {
+      int aCount = -1;
+      if (aName == "part user attributes")
+      {
+        aCount = aTexts + anIntegers + aReals;
+      }
+      else if (aName == "text user attributes")
+      {
+        aCount = aTexts;
+      }
+      else if (aName == "integer user attributes")
+      {
+        aCount = anIntegers;
+      }
+      else if (aName == "real user attributes")
+      {
+        aCount = aReals;
+      }
+      else if (aName == "measure value user attributes")
+      {
+        aCount = aMeasures;
+      }
+      else if (aName == "boolean user attributes" || aName == "edge user attributes"
+               || aName == "face user attributes" || aName == "geometric set user attributes"
+               || aName == "pmi user attributes")
+      {
+        aCount = 0;
+      }
+      if (aCount >= 0)
+      {
+        anItems.Append(integerItem(aName, aCount));
+      }
+    }
+    writeValidationProperty(aModel,
+                            aGroup.Name,
+                            aProdDef,
+                            anItems,
+                            aSDR->UsedRepresentation()->ContextOfItems());
+  }
+}
+
+//=================================================================================================
+
+void STEPCAFControl_Writer::writePMIValidation(
+  const occ::handle<XSControl_WorkSession>&          theWS,
+  const occ::handle<StepRepr_RepresentationContext>& theRC,
+  const StepData_Factors&                            theLocalFactors) const
+{
+  const occ::handle<Interface_InterfaceModel>& aModel  = theWS->Model();
+  const occ::handle<Transfer_FinderProcess>&   aFP     = theWS->TransferWriter()->FinderProcess();
+  const double                                 aFactor = theLocalFactors.LengthFactor();
+  GDTPresentationModel&                        aState  = gdtState(myGDTPresentationDM);
+
+  // What was written, for a part's counts: its dimensions, tolerances and views the entities in
+  // the model (a size that is its own datum feature a size too); its datums and targets the
+  // labels written as one (NIST counts a datum by its feature: CTC-02's 6, of 10 datum
+  // entities); its annotations the PMI's graphics, a placeholder's callout not one
+  int aLocations = 0, aSizes = 0, aTolerances = 0, aDatums = 0, aTargets = 0, aViews = 0;
+  NCollection_Map<occ::handle<Standard_Transient>> anUppers;
+  for (int i = 1; i <= aModel->NbEntities(); ++i)
+  {
+    const occ::handle<Standard_Transient>& anEnt = aModel->Value(i);
+    if (anEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalLocation)))
+    {
+      ++aLocations;
+    }
+    else if (anEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalSize))
+             || anEnt->IsKind(STANDARD_TYPE(StepShape_DimensionalSizeWithDatumFeature)))
+    {
+      ++aSizes;
+    }
+    else if (anEnt->IsKind(STANDARD_TYPE(StepDimTol_GeometricTolerance)))
+    {
+      ++aTolerances;
+    }
+    else if (anEnt->IsKind(STANDARD_TYPE(StepVisual_CameraModelD3)))
+    {
+      ++aViews;
+    }
+    else if (occ::handle<StepDimTol_GeometricToleranceRelationship> aRel =
+               occ::down_cast<StepDimTol_GeometricToleranceRelationship>(anEnt))
+    {
+      if (!aRel->Name().IsNull() && aRel->Name()->String() == "composite")
+      {
+        anUppers.Add(aRel->RelatingGeometricTolerance());
+      }
+    }
+  }
+  using SemanticMap = NCollection_DataMap<TDF_Label, occ::handle<Standard_Transient>>;
+  using ItemMap =
+    NCollection_DataMap<TDF_Label, NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>>;
+  for (SemanticMap::Iterator anIter(aState.Datums); anIter.More(); anIter.Next())
+  {
+    occ::handle<XCAFDoc_Datum> aDatum;
+    if (anIter.Key().FindAttribute(XCAFDoc_Datum::GetID(), aDatum) && !aDatum->GetObject().IsNull()
+        && aDatum->GetObject()->IsDatumTarget())
+    {
+      ++aTargets;
+    }
+    else
+    {
+      ++aDatums;
+    }
+  }
+  NCollection_Map<occ::handle<Standard_Transient>> aCallouts;
+  for (ItemMap::Iterator anIter(aState.Items); anIter.More(); anIter.Next())
+  {
+    for (const auto& anItem : anIter.Value())
+    {
+      if (anItem->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+      {
+        aCallouts.Add(anItem);
+      }
+    }
+  }
+  const int anAnnotations = aCallouts.Extent();
+  const int aSemantics    = aLocations + aSizes + aTolerances + aDatums + aTargets;
+
+  // A part's: its counts, of its shape
+  for (NCollection_DataMap<TDF_Label, TopoDS_Shape>::Iterator anIter(myLabels); anIter.More();
+       anIter.Next())
+  {
+    NCollection_Sequence<ValidationGroup> aGroups;
+    for (const ValidationGroup& aGroup : validationGroups(anIter.Key()))
+    {
+      if (aGroup.Of.IsEmpty() && aGroup.Name == "pmi validation property")
+      {
+        aGroups.Append(aGroup);
+      }
+    }
+    occ::handle<StepShape_ShapeDefinitionRepresentation> aSDR;
+    if (aGroups.IsEmpty()
+        || !aFP->FindTypedTransient(TransferBRep::ShapeMapper(aFP, anIter.Value()),
+                                    STANDARD_TYPE(StepShape_ShapeDefinitionRepresentation),
+                                    aSDR)
+        || aSDR->UsedRepresentation().IsNull())
+    {
+      continue;
+    }
+    for (const ValidationGroup& aGroup : aGroups)
+    {
+      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> anItems;
+      for (const TCollection_AsciiString& aName : aGroup.Items)
+      {
+        int aCount = -1;
+        if (aName == "number of annotations" || aName == "number of PMI presentation elements")
+        {
+          aCount = anAnnotations;
+        }
+        else if (aName == "number of views")
+        {
+          aCount = aViews;
+        }
+        else if (aName == "number of semantic pmi elements")
+        {
+          aCount = aSemantics;
+        }
+        else if (aName == "number of dimensional locations")
+        {
+          aCount = aLocations;
+        }
+        else if (aName == "number of dimensional sizes")
+        {
+          aCount = aSizes;
+        }
+        else if (aName == "number of geometric tolerances")
+        {
+          aCount = aTolerances;
+        }
+        else if (aName == "number of composite tolerances")
+        {
+          aCount = anUppers.Extent();
+        }
+        else if (aName == "number of datums" || aName == "number of datum features")
+        {
+          aCount = aDatums;
+        }
+        else if (aName == "number of datum targets")
+        {
+          aCount = aTargets;
+        }
+        if (aCount >= 0)
+        {
+          anItems.Append(integerItem(aName, aCount));
+        }
+      }
+      writeValidationProperty(aModel,
+                              aGroup.Name,
+                              aSDR->Definition().PropertyDefinition(),
+                              anItems,
+                              aSDR->UsedRepresentation()->ContextOfItems());
+    }
+  }
+
+  // A PMI's and its graphic's: how many graphics it has, the area and the length of what it is
+  // on, the datums it cites
+  NCollection_Map<TDF_Label> aGDTs;
+  for (SemanticMap::Iterator anIter(aState.Semantics); anIter.More(); anIter.Next())
+  {
+    aGDTs.Add(anIter.Key());
+  }
+  for (ItemMap::Iterator anIter(aState.Items); anIter.More(); anIter.Next())
+  {
+    aGDTs.Add(anIter.Key());
+  }
+  for (SemanticMap::Iterator anIter(aState.Datums); anIter.More(); anIter.Next())
+  {
+    aGDTs.Add(anIter.Key());
+  }
+  for (NCollection_Map<TDF_Label>::Iterator anIter(aGDTs); anIter.More(); anIter.Next())
+  {
+    const TDF_Label&                            aL      = anIter.Key();
+    const NCollection_Sequence<ValidationGroup> aGroups = validationGroups(aL);
+    if (aGroups.IsEmpty())
+    {
+      continue;
+    }
+    double anArea = 0., aLength = 0.;
+    affected(aL, anArea, aLength);
+    anArea /= aFactor * aFactor;
+    aLength /= aFactor;
+    const occ::handle<Standard_Transient>* aSemantic = aState.Semantics.Seek(aL);
+    occ::handle<StepRepr_RepresentationItem> aCallout;
+    if (const NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>>* anItemsOf =
+          aState.Items.Seek(aL))
+    {
+      for (const auto& anItem : *anItemsOf)
+      {
+        if (aCallout.IsNull() && anItem->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+        {
+          aCallout = anItem;
+        }
+      }
+    }
+    occ::handle<Standard_Transient> aWithin;
+    for (const ValidationGroup& aGroup : aGroups)
+    {
+      occ::handle<Standard_Transient> aTarget;
+      if (aGroup.Of == "presentation")
+      {
+        if (aWithin.IsNull() && !aCallout.IsNull())
+        {
+          aWithin = itemWithinRepresentation(aCallout, myGDTPresentationDM);
+        }
+        aTarget = aWithin;
+      }
+      else if (aGroup.Of.IsEmpty() && aSemantic != nullptr)
+      {
+        aTarget = *aSemantic;
+      }
+      else if (aGroup.Of == "datum")
+      {
+        aState.Datums.Find(aL, aTarget);
+      }
+      if (aTarget.IsNull())
+      {
+        continue;
+      }
+      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> anItems;
+      for (const TCollection_AsciiString& aName : aGroup.Items)
+      {
+        if (aName == "number of PMI presentation elements" && aGroup.Of != "presentation")
+        {
+          int       aCount = calloutsOf(aState, aL);
+          TDF_Label aHost;
+          if (aCount == 0
+              && (XCAFDoc_DimTolTool::GetPresentedWith(aL, aHost)
+                  || XCAFDoc_DimTolTool::GetCompositeUpper(aL, aHost)))
+          {
+            aCount = calloutsOf(aState, aHost);
+          }
+          anItems.Append(integerItem(aName, aCount));
+        }
+        else if (aName == "affected area" && anArea > 0.)
+        {
+          anItems.Append(measureItem(aName, anArea, 2, theRC));
+        }
+        else if (aName == "affected curve length" && aLength > 0.)
+        {
+          anItems.Append(measureItem(aName, aLength, 1, theRC));
+        }
+        else if (aName == "datum references" && aGroup.Of != "presentation"
+                 && aL.IsAttribute(XCAFDoc_GeomTolerance::GetID()))
+        {
+          occ::handle<StepRepr_DescriptiveRepresentationItem> anItem =
+            new StepRepr_DescriptiveRepresentationItem();
+          anItem->Init(new TCollection_HAsciiString(aName),
+                       new TCollection_HAsciiString(datumReferences(aL)));
+          anItems.Append(anItem);
+        }
+      }
+      writeValidationProperty(aModel, aGroup.Name, aTarget, anItems, theRC);
+    }
+  }
+
+  // A view's: the annotations it shows, of its model geometric view
+  using ViewMap = NCollection_DataMap<TDF_Label, GDTPresentationModel::ViewWritten>;
+  for (ViewMap::Iterator anIter(aState.Views); anIter.More(); anIter.Next())
+  {
+    for (const ValidationGroup& aGroup : validationGroups(anIter.Key()))
+    {
+      NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> anItems;
+      for (const TCollection_AsciiString& aName : aGroup.Items)
+      {
+        if (aName == "number of annotations")
+        {
+          anItems.Append(integerItem(aName, anIter.Value().Annotations));
+        }
+      }
+      writeValidationProperty(aModel, aGroup.Name, anIter.Value().View, anItems, theRC);
+    }
+  }
+}
+
+//=================================================================================================
+
 bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSession>& theWS,
                                            const NCollection_Sequence<TDF_Label>&    theLabels,
                                            const StepData_Factors& theLocalFactors)
@@ -8448,6 +9158,10 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
                       theLocalFactors);
     // Add created Datum into Map: as its part's, and as the letter's when it is the first
     aDatumMap.Bind(aDatumKey, aDatum);
+    if (!aDatum.IsNull() && !gdtState(myGDTPresentationDM).Datums.IsBound(aDatumL))
+    {
+      gdtState(myGDTPresentationDM).Datums.Bind(aDatumL, aDatum);
+    }
     if (!aDatumMap.IsBound(aDatumName))
     {
       aDatumMap.Bind(aDatumName, aDatum);
@@ -9088,6 +9802,12 @@ bool STEPCAFControl_Writer::writeDGTsAP242(const occ::handle<XSControl_WorkSessi
   }
 
   writeViews(theWS, aRC, theLocalFactors);
+  // Their validation properties, the ones the file they were read from had, computed of what
+  // was written
+  if (GetPropsMode())
+  {
+    writePMIValidation(theWS, aRC, theLocalFactors);
+  }
   return true;
 }
 
@@ -9361,6 +10081,16 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
         aParams->AddEntity(Interface_ParamIdent, aCamera);
         aParams->AddEntity(Interface_ParamIdent, aModelOfView);
         aModel->AddWithRefs(aView);
+        GDTPresentationModel::ViewWritten aWritten;
+        aWritten.View = aView;
+        for (int i = 0; i < anItems.Length(); ++i)
+        {
+          if (anItems.Value(i)->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+          {
+            ++aWritten.Annotations;
+          }
+        }
+        gdtState(myGDTPresentationDM).Views.Bind(aViewL, aWritten);
       }
       // Related to the draughting model of all the GD&T's presentations
       if (myGDTAnnotations.Length() > 0)

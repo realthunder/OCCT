@@ -369,6 +369,17 @@ protected:
                      const NCollection_Sequence<TDF_Label>&    theLabels,
                      const char* const                         theIsMulti) const;
 
+  //! Write the attribute validation properties a label and its children were read with
+  //! (XCAFDoc::ValidationItemsGUID): the counts of the attributes written of each
+  void writeAttributeValidation(const occ::handle<XSControl_WorkSession>& theWS,
+                                const TDF_Label&                          theLabel) const;
+
+  //! Write the pmi validation properties the GD&T, its graphics, the views and the parts were
+  //! read with (XCAFDoc::ValidationItemsGUID), computed of what was written
+  void writePMIValidation(const occ::handle<XSControl_WorkSession>&          theWS,
+                          const occ::handle<StepRepr_RepresentationContext>& theRC,
+                          const StepData_Factors&                            theLocalFactors) const;
+
   //! Write layers assigned to specified labels, to STEP model
   bool writeLayers(const occ::handle<XSControl_WorkSession>& theWS,
                    const NCollection_Sequence<TDF_Label>&    theLabels) const;

@@ -48,6 +48,10 @@ public:
   //! 5 -> ShapeAspect from StepRepr
   //! 6 -> ShapeAspectRelationship from StepRepr
   //! 7 -> DocumentFile from StepBasic
+  //! 8 -> DimensionalSize from StepShape
+  //! 9 -> GeometricTolerance from StepDimTol
+  //! 10 -> Representation from StepRepr (a characterized representation)
+  //! 11 -> UndefinedEntity from StepData (an AP242 characterized item of no type here)
   //! 0 else
   Standard_EXPORT int CaseNum(const occ::handle<Standard_Transient>& ent) const override;
 
