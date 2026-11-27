@@ -107,6 +107,7 @@
 #include <GeomConvert.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <Extrema_ExtPC.hxx>
+#include <Extrema_ExtPElS.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomFill_Generator.hxx>
 #include <GeomLib.hxx>
@@ -4513,6 +4514,12 @@ static thread_local bool theHasTangentCapEdge = false;
 //! at any other edge.
 static thread_local bool theIsCapTangentFlush = false;
 
+//! Set for a thick solid asked again after an answer that is not valid
+//! (MakeThickSolid): the tubes and spheres round the edges and vertices of
+//! a removed face's neighbours that are not on the removed face are cut by
+//! its surface too.
+static thread_local bool theIsCuttingFarRounds = false;
+
 //! A solid that is valid and passes through itself nowhere. BRepCheck looks
 //! at each face and at the shell's edges, two faces a side each: a skin whose
 //! pockets were closed over, each a box of its own inside it, lid on lid with
@@ -5524,6 +5531,135 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     {
       myDone  = false;
       myError = BRepOffset_UnknownError;
+    }
+  }
+  // An answer that is not valid is asked again with the tubes and spheres
+  // of the removed faces' neighbours, those not on a removed face, cut by
+  // the removed faces' surfaces (theIsCuttingFarRounds), and with the
+  // crossings of two edges at an end taken by distance (the sections' ends
+  // on the arcs between those tubes and spheres); not valid so too, it is
+  // made again as it was.
+  // The validity is looked at only where a tube or sphere can reach a removed
+  // face's surface at all: a point of an edge with no vertex on that face
+  // (ends and three points between), or a vertex not on it, within the
+  // thickness of the surface; a surface that is no plane, cylinder, cone,
+  // sphere or torus counts as reached.
+  auto aHasFarRoundAtACap = [&]() {
+    double aReach = std::abs(anOffsetAsked);
+    for (NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>::Iterator itO(
+           aFaceOffsetsAsked);
+         itO.More();
+         itO.Next())
+    {
+      aReach = std::max(aReach, std::abs(itO.Value()));
+    }
+    aReach += 10. * myTol;
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEdges;
+    TopExp::MapShapes(aShapeAsked, TopAbs_EDGE, anEdges);
+    for (int i = 1; i <= aRemovedAsked.Extent(); ++i)
+    {
+      const TopoDS_Face&  aCF = TopoDS::Face(aRemovedAsked(i));
+      GeomAdaptor_Surface aGAS(BRep_Tool::Surface(aCF));
+      NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anOwn;
+      TopExp::MapShapes(aCF, TopAbs_VERTEX, anOwn);
+      for (int j = 1; j <= anEdges.Extent(); ++j)
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(anEdges(j));
+        if (BRep_Tool::Degenerated(anE))
+        {
+          continue;
+        }
+        TopoDS_Vertex aV1, aV2;
+        TopExp::Vertices(anE, aV1, aV2);
+        const bool isOn1 = !aV1.IsNull() && anOwn.Contains(aV1);
+        const bool isOn2 = !aV2.IsNull() && anOwn.Contains(aV2);
+        if (isOn1 && isOn2)
+        {
+          continue;
+        }
+        BRepAdaptor_Curve aBAC(anE);
+        if (Precision::IsInfinite(aBAC.FirstParameter())
+            || Precision::IsInfinite(aBAC.LastParameter()))
+        {
+          return true;
+        }
+        for (int k = 0; k <= 4; ++k)
+        {
+          gp_Pnt aP;
+          if (isOn1 || isOn2)
+          {
+            // the edge ends on the removed face: its far vertex alone
+            if (k > 0 || (isOn1 ? aV2 : aV1).IsNull())
+            {
+              break;
+            }
+            aP = BRep_Tool::Pnt(isOn1 ? aV2 : aV1);
+          }
+          else
+          {
+            aP = aBAC.Value(aBAC.FirstParameter()
+                            + (aBAC.LastParameter() - aBAC.FirstParameter()) * k / 4.);
+          }
+          Extrema_ExtPElS anExt;
+          switch (aGAS.GetType())
+          {
+            case GeomAbs_Plane:
+              anExt.Perform(aP, aGAS.Plane(), Precision::Confusion());
+              break;
+            case GeomAbs_Cylinder:
+              anExt.Perform(aP, aGAS.Cylinder(), Precision::Confusion());
+              break;
+            case GeomAbs_Cone:
+              anExt.Perform(aP, aGAS.Cone(), Precision::Confusion());
+              break;
+            case GeomAbs_Sphere:
+              anExt.Perform(aP, aGAS.Sphere(), Precision::Confusion());
+              break;
+            case GeomAbs_Torus:
+              anExt.Perform(aP, aGAS.Torus(), Precision::Confusion());
+              break;
+            default:
+              return true;
+          }
+          if (!anExt.IsDone() || anExt.NbExt() == 0)
+          {
+            return true;
+          }
+          for (int m = 1; m <= anExt.NbExt(); ++m)
+          {
+            if (anExt.SquareDistance(m) <= aReach * aReach)
+            {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  };
+  if (isManifoldAsked && myDone && aJoinAsked == GeomAbs_Arc && !aRemovedAsked.IsEmpty()
+      && aHasFarRoundAtACap() && !BRepCheck_Analyzer(myOffsetShape).IsValid())
+  {
+    {
+      struct FarRoundsScope
+      {
+        FarRoundsScope()
+        {
+          theIsCuttingFarRounds = true;
+          BRepOffset_Inter2d_EndsByDistance(true);
+        }
+
+        ~FarRoundsScope()
+        {
+          theIsCuttingFarRounds = false;
+          BRepOffset_Inter2d_EndsByDistance(false);
+        }
+      } aScope;
+      anAskAgain(isInterAsked, aJoinAsked);
+    }
+    if (!(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()))
+    {
+      anAskAgain(isInterAsked, aJoinAsked);
     }
   }
   if (isManifoldAsked && myDone && HasEdgeOnMoreThanTwoFaces(myOffsetShape))
@@ -11429,6 +11565,140 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
       {
         myError = BRepOffset_UnknownError;
         return;
+      }
+    }
+    // A removed face is cut by the offsets of its neighbours and by the
+    // tubes that end on it. The tube round an edge of a neighbour that does
+    // not reach the removed face, and the sphere round a vertex of a
+    // neighbour that is not on it, are no neighbours of it, and were left
+    // whole where they pass its surface: a box with its top's edges
+    // chamfered 1 down and 3 across, the top removed outward by more than
+    // 1.027 -- the spheres round the chamfers' lower corners, at 9, rise
+    // above the top's plane at 10, where the tube between two chamfers
+    // ends on them. The tube's face kept the whole of its end and the whole
+    // of its section with the plane, which cross each other twice: invalid
+    // from 1.03 to 1.05. From fix level 5 such a tube or sphere is cut by
+    // the removed face's surface, and the section
+    // kept where it lies on the offset of the shape -- at the thickness
+    // from it, as the rim's outer border does. Only for an answer that was
+    // not valid, asked again (theIsCuttingFarRounds): such a section is no
+    // border of the rim wherever the surface carried on meets the offset
+    // (#613's cylinder under a cone 1.5 deg off it, removed 1 outward: the
+    // cylinder carried on runs within the cone's wall to a tube round the
+    // cone's far edge, 30 above the removed face; cut there, refused).
+    if (BRepOffset_FixLevel() >= 5 && theIsCuttingFarRounds)
+    {
+      const double aT     = std::abs(myOffset);
+      const double aSlack = std::max(1.e-3 * aT, 10. * myTol);
+      // <theE> out of the descendants of <theF>
+      auto aForget = [&](const TopoDS_Shape& theF, const TopoDS_Shape& theE) {
+        NCollection_List<TopoDS_Shape>& aLD = myAsDes->ChangeDescendant(theF);
+        for (NCollection_List<TopoDS_Shape>::Iterator itD(aLD); itD.More();)
+        {
+          if (itD.Value().IsSame(theE))
+          {
+            aLD.Remove(itD);
+          }
+          else
+          {
+            itD.Next();
+          }
+        }
+      };
+      // whether five points of <theE> are at the thickness from the shape
+      auto isOnTheOffset = [&](const TopoDS_Edge& theE) {
+        BRepAdaptor_Curve aBAC(theE);
+        if (Precision::IsInfinite(aBAC.FirstParameter())
+            || Precision::IsInfinite(aBAC.LastParameter()))
+        {
+          return false;
+        }
+        for (int k = 0; k < 5; ++k)
+        {
+          const gp_Pnt aP = aBAC.Value(
+            aBAC.FirstParameter()
+            + (aBAC.LastParameter() - aBAC.FirstParameter()) * (k + 0.5) / 5.);
+          BRepExtrema_DistShapeShape aDSS(BRepBuilderAPI_MakeVertex(aP).Vertex(), myFaceComp);
+          if (!(aDSS.IsDone() && aDSS.NbSolution() > 0 && std::abs(aDSS.Value() - aT) < aSlack))
+          {
+            return false;
+          }
+        }
+        return true;
+      };
+      for (int i = 1; i <= myFaces.Extent(); ++i)
+      {
+        const TopoDS_Face& aCF = TopoDS::Face(myFaces(i));
+        // the removed face's edges and vertices, and the faces across them
+        NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aBeside, aSeen;
+        NCollection_List<TopoDS_Shape>                         aNeighbours;
+        for (TopExp_Explorer anExpE(aCF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+        {
+          aBeside.Add(anExpE.Current());
+          if (!myAnalyse.HasAncestor(anExpE.Current()))
+          {
+            continue;
+          }
+          for (NCollection_List<TopoDS_Shape>::Iterator itA(myAnalyse.Ancestors(anExpE.Current()));
+               itA.More();
+               itA.Next())
+          {
+            if (aBeside.Add(itA.Value()) && !myFaces.Contains(itA.Value()))
+            {
+              aNeighbours.Append(itA.Value());
+            }
+          }
+        }
+        for (TopExp_Explorer anExpV(aCF, TopAbs_VERTEX); anExpV.More(); anExpV.Next())
+        {
+          aBeside.Add(anExpV.Current());
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itN(aNeighbours); itN.More(); itN.Next())
+        {
+          for (int aType = 0; aType < 2; ++aType)
+          {
+            for (TopExp_Explorer anExpS(itN.Value(), aType == 0 ? TopAbs_EDGE : TopAbs_VERTEX);
+                 anExpS.More();
+                 anExpS.Next())
+            {
+              const TopoDS_Shape& aSub = anExpS.Current();
+              if (aBeside.Contains(aSub) || !aSeen.Add(aSub) || !myInitOffsetFace.HasImage(aSub))
+              {
+                continue;
+              }
+              if (aType == 0)
+              {
+                // a tube with an end on the removed face is cut by it already
+                bool isTouching = false;
+                for (TopoDS_Iterator anItV(aSub); anItV.More(); anItV.Next())
+                {
+                  isTouching = isTouching || aBeside.Contains(anItV.Value());
+                }
+                if (isTouching)
+                {
+                  continue;
+                }
+              }
+              const TopoDS_Shape& anImg = myInitOffsetFace.Image(aSub).First();
+              if (anImg.ShapeType() != TopAbs_FACE)
+              {
+                continue;
+              }
+              const TopoDS_Face& anOF = TopoDS::Face(anImg);
+              const int aNbBefore = NewEdges.Extent();
+              Inter.ContextInter(aCF, anOF);
+              for (int k = aNbBefore + 1; k <= NewEdges.Extent(); ++k)
+              {
+                const TopoDS_Edge aSection = TopoDS::Edge(NewEdges(k));
+                if (!isOnTheOffset(aSection))
+                {
+                  aForget(aCF, aSection);
+                  aForget(anOF, aSection);
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -84,6 +84,17 @@
 
 #include <cstdio>
 
+// Whether a crossing of two edges is one at an edge's end by its distance
+// from that end too (BRepOffset_Inter2d_EndsByDistance).
+static thread_local bool theIsEndsByDistance = false;
+
+bool BRepOffset_Inter2d_EndsByDistance(const bool theIsOn)
+{
+  const bool anOld    = theIsEndsByDistance;
+  theIsEndsByDistance = theIsOn;
+  return anOld;
+}
+
 //=================================================================================================
 
 static TopoDS_Vertex CommonVertex(TopoDS_Edge& E1, TopoDS_Edge& E2)
@@ -587,10 +598,33 @@ static void EdgeInter(
       }
       double ParamsOnE1 = NearRange(GAC1, f[1], l[1], Inter2d.Point(i).ParamOnFirst());
       double ParamsOnE2 = NearRange(GAC2, f[2], l[2], Inter2d.Point(i).ParamOnSecond());
-      if (std::abs(ParamsOnE1 - f[1]) <= Precision::Confusion()
-          || std::abs(ParamsOnE1 - l[1]) <= Precision::Confusion()
-          || std::abs(ParamsOnE2 - f[2]) <= Precision::Confusion()
-          || std::abs(ParamsOnE2 - l[2]) <= Precision::Confusion())
+      bool isAtAnEnd = std::abs(ParamsOnE1 - f[1]) <= Precision::Confusion()
+                       || std::abs(ParamsOnE1 - l[1]) <= Precision::Confusion()
+                       || std::abs(ParamsOnE2 - f[2]) <= Precision::Confusion()
+                       || std::abs(ParamsOnE2 - l[2]) <= Precision::Confusion();
+      // By parameter a crossing a hair from an end is none at an end, and
+      // is dropped for one that is: the section of a removed face's plane
+      // with a sphere round a neighbour's vertex ends on the arc between
+      // the sphere and a tube at both its ends, the crossing found there
+      // 1.4e-7 from the one end (5e-7 in parameter), and 0 from the other,
+      // and the first was dropped. By distance too, where asked
+      // (BRepOffset_Inter2d_EndsByDistance).
+      if (!isAtAnEnd && !WithDegen && theIsEndsByDistance)
+      {
+        const double aTolEnd = 10. * Precision::Confusion();
+        for (int iE = 1; iE <= 2 && !isAtAnEnd; ++iE)
+        {
+          const BRepAdaptor_Curve& aC = iE == 1 ? CE1 : CE2;
+          for (const double aT : {f[iE], l[iE]})
+          {
+            if (!Precision::IsInfinite(aT) && aC.Value(aT).Distance(P3d) <= aTolEnd)
+            {
+              isAtAnEnd = true;
+            }
+          }
+        }
+      }
+      if (isAtAnEnd)
       {
         if (!InterEndpoint)
         {
@@ -634,7 +668,9 @@ static void EdgeInter(
           for (int k = 1; k <= ResPoints.Length() && !isIn; ++k)
           {
             isIn = std::abs((iE == 1 ? ResParamsOnE1(k) : ResParamsOnE2(k)) - aTV)
-                   <= Precision::Confusion();
+                   <= Precision::Confusion()
+                   || (theIsEndsByDistance
+                       && ResPoints(k).Distance(BRep_Tool::Pnt(aV)) <= 10. * Precision::Confusion());
           }
           if (isIn)
           {
@@ -695,7 +731,12 @@ static void EdgeInter(
             // Not where the two touch to within the intersection's own
             // tolerance: there it found nothing on purpose (a sphere's pole
             // on a meridian's line), and a vertex put there broke the wire.
-            if (anExt.SquareDistance(k) > aTol * aTol || anExt.SquareDistance(k) <= TolDub * TolDub
+            // (But with a crossing at an end found, where ends are taken
+            // by distance: the other end of that section on the arc, which
+            // the intersection missed at 1.03.)
+            const bool isOtherEndCrossing = InterEndpoint && theIsEndsByDistance;
+            if (anExt.SquareDistance(k) > aTol * aTol
+                || (anExt.SquareDistance(k) <= TolDub * TolDub && !isOtherEndCrossing)
                 || aTO - fO <= Precision::Confusion() || lO - aTO <= Precision::Confusion())
             {
               continue;
