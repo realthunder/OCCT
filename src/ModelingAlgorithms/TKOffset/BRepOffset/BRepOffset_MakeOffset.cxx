@@ -5538,7 +5538,8 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
   // cut by the removed faces' surfaces (theIsCuttingFarRounds), and with the
   // crossings of two edges at an end taken by distance (the sections' ends
   // on the arcs between those tubes and spheres); not valid so too, it is
-  // made again as it was, or refused as it was. (None: the box chamfered 1
+  // made again as it was, or refused as it was. (None, and the offset of a
+  // face beside a removed plane wholly beyond it: the box chamfered 1
   // down and 3 across, its top removed outward by 1.055 or more -- the
   // chamfers' offsets pass wholly above the top's plane, and the wall ends
   // there in the tubes round the chamfers' lower edges, cut by the plane.)
@@ -5640,8 +5641,97 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     }
     return false;
   };
+  // After a refusal that is asked only where the offset of a face beside a
+  // removed face, a plane, lies wholly beyond that plane: each vertex of the
+  // neighbour, moved by the offset along the neighbour's normal there, on
+  // the far side of it. (On #613's part the retry cost 17 s on a refusal of
+  // 13, twice, and made nothing.)
+  auto aHasNeighbourBeyondACap = [&]() {
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      aMEF;
+    TopExp::MapShapesAndAncestors(aShapeAsked, TopAbs_EDGE, TopAbs_FACE, aMEF);
+    for (int i = 1; i <= aRemovedAsked.Extent(); ++i)
+    {
+      const TopoDS_Face&  aCF = TopoDS::Face(aRemovedAsked(i));
+      BRepAdaptor_Surface aCap(aCF);
+      if (aCap.GetType() != GeomAbs_Plane)
+      {
+        continue;
+      }
+      const gp_Pln aPln = aCap.Plane();
+      gp_Dir       aOut = aPln.Axis().Direction();
+      if (!aPln.Direct())
+      {
+        aOut.Reverse();
+      }
+      if (aCF.Orientation() == TopAbs_REVERSED)
+      {
+        aOut.Reverse();
+      }
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+      for (TopExp_Explorer anExpE(aCF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+      {
+        const NCollection_List<TopoDS_Shape>* aLF = aMEF.Seek(anExpE.Current());
+        if (!aLF)
+        {
+          continue;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(*aLF); itF.More(); itF.Next())
+        {
+          const TopoDS_Face& aNF = TopoDS::Face(itF.Value());
+          if (aRemovedAsked.Contains(aNF) || !aSeen.Add(aNF))
+          {
+            continue;
+          }
+          const double*       aOwn  = aFaceOffsetsAsked.Seek(aNF);
+          const double        anOff = aOwn ? *aOwn : anOffsetAsked;
+          BRepAdaptor_Surface aSurf(aNF);
+          bool                isBeyond = true;
+          int                 aNbV     = 0;
+          for (TopExp_Explorer anExpV(aNF, TopAbs_VERTEX); anExpV.More() && isBeyond;
+               anExpV.Next())
+          {
+            const TopoDS_Vertex& aV = TopoDS::Vertex(anExpV.Current());
+            gp_Pnt2d             aUV;
+            try
+            {
+              aUV = BRep_Tool::Parameters(aV, aNF);
+            }
+            catch (Standard_Failure const&)
+            {
+              isBeyond = false;
+              break;
+            }
+            gp_Pnt aP;
+            gp_Vec aDu, aDv;
+            aSurf.D1(aUV.X(), aUV.Y(), aP, aDu, aDv);
+            gp_Vec aN = aDu.Crossed(aDv);
+            if (aN.Magnitude() < gp::Resolution())
+            {
+              isBeyond = false;
+              break;
+            }
+            aN.Normalize();
+            if (aNF.Orientation() == TopAbs_REVERSED)
+            {
+              aN.Reverse();
+            }
+            const gp_Pnt aMoved = aP.Translated(aN * anOff);
+            isBeyond = gp_Vec(aPln.Location(), aMoved).Dot(gp_Vec(aOut)) > 10. * myTol;
+            ++aNbV;
+          }
+          if (isBeyond && aNbV > 0)
+          {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
   if (isManifoldAsked && aJoinAsked == GeomAbs_Arc && !aRemovedAsked.IsEmpty()
-      && aHasFarRoundAtACap() && !(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()))
+      && !(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()) && aHasFarRoundAtACap()
+      && (myDone || aHasNeighbourBeyondACap()))
   {
     const bool             wasMade   = myDone;
     const BRepOffset_Error aWasError = myError;
