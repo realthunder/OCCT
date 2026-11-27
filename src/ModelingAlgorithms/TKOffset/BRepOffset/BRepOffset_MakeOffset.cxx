@@ -5533,12 +5533,16 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       myError = BRepOffset_UnknownError;
     }
   }
-  // An answer that is not valid is asked again with the tubes and spheres
-  // of the removed faces' neighbours, those not on a removed face, cut by
-  // the removed faces' surfaces (theIsCuttingFarRounds), and with the
+  // An answer that is not valid, or none, is asked again with the tubes and
+  // spheres of the removed faces' neighbours, those not on a removed face,
+  // cut by the removed faces' surfaces (theIsCuttingFarRounds), and with the
   // crossings of two edges at an end taken by distance (the sections' ends
   // on the arcs between those tubes and spheres); not valid so too, it is
-  // made again as it was.
+  // made again as it was, or refused as it was. (None, and the offset of a
+  // face beside a removed plane wholly beyond it: the box chamfered 1
+  // down and 3 across, its top removed outward by 1.055 or more -- the
+  // chamfers' offsets pass wholly above the top's plane, and the wall ends
+  // there in the tubes round the chamfers' lower edges, cut by the plane.)
   // The validity is looked at only where a tube or sphere can reach a removed
   // face's surface at all: a point of an edge with no vertex on that face
   // (ends and three points between), or a vertex not on it, within the
@@ -5637,9 +5641,102 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     }
     return false;
   };
-  if (isManifoldAsked && myDone && aJoinAsked == GeomAbs_Arc && !aRemovedAsked.IsEmpty()
-      && aHasFarRoundAtACap() && !BRepCheck_Analyzer(myOffsetShape).IsValid())
+  // After a refusal that is asked only where the offset of a face beside a
+  // removed face, a plane, lies wholly beyond that plane: each vertex of the
+  // neighbour, moved by the offset along the neighbour's normal there, on
+  // the far side of it. (On #613's part the retry cost 17 s on a refusal of
+  // 13, twice, and made nothing.)
+  auto aHasNeighbourBeyondACap = [&]() {
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      aMEF;
+    TopExp::MapShapesAndAncestors(aShapeAsked, TopAbs_EDGE, TopAbs_FACE, aMEF);
+    for (int i = 1; i <= aRemovedAsked.Extent(); ++i)
+    {
+      const TopoDS_Face&  aCF = TopoDS::Face(aRemovedAsked(i));
+      BRepAdaptor_Surface aCap(aCF);
+      if (aCap.GetType() != GeomAbs_Plane)
+      {
+        continue;
+      }
+      const gp_Pln aPln = aCap.Plane();
+      gp_Dir       aOut = aPln.Axis().Direction();
+      if (!aPln.Direct())
+      {
+        aOut.Reverse();
+      }
+      if (aCF.Orientation() == TopAbs_REVERSED)
+      {
+        aOut.Reverse();
+      }
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aSeen;
+      for (TopExp_Explorer anExpE(aCF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+      {
+        const NCollection_List<TopoDS_Shape>* aLF = aMEF.Seek(anExpE.Current());
+        if (!aLF)
+        {
+          continue;
+        }
+        for (NCollection_List<TopoDS_Shape>::Iterator itF(*aLF); itF.More(); itF.Next())
+        {
+          const TopoDS_Face& aNF = TopoDS::Face(itF.Value());
+          if (aRemovedAsked.Contains(aNF) || !aSeen.Add(aNF))
+          {
+            continue;
+          }
+          const double*       aOwn  = aFaceOffsetsAsked.Seek(aNF);
+          const double        anOff = aOwn ? *aOwn : anOffsetAsked;
+          BRepAdaptor_Surface aSurf(aNF);
+          bool                isBeyond = true;
+          int                 aNbV     = 0;
+          for (TopExp_Explorer anExpV(aNF, TopAbs_VERTEX); anExpV.More() && isBeyond;
+               anExpV.Next())
+          {
+            const TopoDS_Vertex& aV = TopoDS::Vertex(anExpV.Current());
+            gp_Pnt2d             aUV;
+            try
+            {
+              aUV = BRep_Tool::Parameters(aV, aNF);
+            }
+            catch (Standard_Failure const&)
+            {
+              isBeyond = false;
+              break;
+            }
+            gp_Pnt aP;
+            gp_Vec aDu, aDv;
+            aSurf.D1(aUV.X(), aUV.Y(), aP, aDu, aDv);
+            gp_Vec aN = aDu.Crossed(aDv);
+            if (aN.Magnitude() < gp::Resolution())
+            {
+              isBeyond = false;
+              break;
+            }
+            aN.Normalize();
+            if (aNF.Orientation() == TopAbs_REVERSED)
+            {
+              aN.Reverse();
+            }
+            const gp_Pnt aMoved = aP.Translated(aN * anOff);
+            isBeyond = gp_Vec(aPln.Location(), aMoved).Dot(gp_Vec(aOut)) > 10. * myTol;
+            ++aNbV;
+          }
+          if (isBeyond && aNbV > 0)
+          {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+  // (the validity last: looked at for every answer, it cost the bench 4
+  // percent)
+  if (isManifoldAsked && aJoinAsked == GeomAbs_Arc && !aRemovedAsked.IsEmpty()
+      && aHasFarRoundAtACap() && (myDone || aHasNeighbourBeyondACap())
+      && !(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()))
   {
+    const bool             wasMade   = myDone;
+    const BRepOffset_Error aWasError = myError;
     {
       struct FarRoundsScope
       {
@@ -5659,7 +5756,16 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
     }
     if (!(myDone && BRepCheck_Analyzer(myOffsetShape).IsValid()))
     {
-      anAskAgain(isInterAsked, aJoinAsked);
+      if (wasMade)
+      {
+        anAskAgain(isInterAsked, aJoinAsked);
+      }
+      else
+      {
+        myDone  = false;
+        myError = aWasError != BRepOffset_NoError ? aWasError : BRepOffset_UnknownError;
+        myOffsetShape.Nullify();
+      }
     }
   }
   if (isManifoldAsked && myDone && HasEdgeOnMoreThanTwoFaces(myOffsetShape))
@@ -11626,9 +11732,117 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
         }
         return true;
       };
+      // whether none of nine points of <theE> is at the thickness from the
+      // shape, within ten times the tolerance (a section not yet cut to
+      // length runs on past the offset at its ends, and is on it between)
+      auto isNowhereOnTheOffset = [&](const TopoDS_Edge& theE) {
+        BRepAdaptor_Curve aBAC(theE);
+        if (Precision::IsInfinite(aBAC.FirstParameter())
+            || Precision::IsInfinite(aBAC.LastParameter()))
+        {
+          return false;
+        }
+        for (int k = 0; k < 9; ++k)
+        {
+          const gp_Pnt aP = aBAC.Value(
+            aBAC.FirstParameter()
+            + (aBAC.LastParameter() - aBAC.FirstParameter()) * (k + 0.5) / 9.);
+          BRepExtrema_DistShapeShape aDSS(BRepBuilderAPI_MakeVertex(aP).Vertex(), myFaceComp);
+          if (!(aDSS.IsDone() && aDSS.NbSolution() > 0)
+              || std::abs(aDSS.Value() - aT) < 10. * myTol)
+          {
+            return false;
+          }
+        }
+        return true;
+      };
+      // The section bounds, of the tube or sphere <theOF>, the part on the
+      // solid's side of the removed face <theCF>: turned round in the face's
+      // descendants where it runs the other way (the intersection orients it
+      // as for two offset faces across an edge, which a far tube is not).
+      auto aKeepBelow = [&](const TopoDS_Face& theCF, const TopoDS_Face& theOF,
+                            const TopoDS_Edge& theE) {
+        double                          aF, aL;
+        const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, theOF, aF, aL);
+        const occ::handle<Geom2d_Curve> aC2dCap = BRep_Tool::CurveOnSurface(theE, theCF, aF, aL);
+        if (aC2d.IsNull() || aC2dCap.IsNull())
+        {
+          return;
+        }
+        double aF1, aL1;
+        BRep_Tool::Range(theE, aF1, aL1);
+        const double aMid = 0.5 * (aF1 + aL1);
+        gp_Pnt2d     aP2d;
+        gp_Vec2d     aD2d;
+        aC2d->D1(aMid, aP2d, aD2d);
+        const BRepAdaptor_Surface aSurf(theOF, false);
+        gp_Pnt                    aP;
+        gp_Vec                    aDu, aDv;
+        aSurf.D1(aP2d.X(), aP2d.Y(), aP, aDu, aDv);
+        // to the left of the curve in the face's parameters
+        const gp_Vec aLeft = aDu * (-aD2d.Y()) + aDv * aD2d.X();
+        const gp_Pnt2d            aPCap = aC2dCap->Value(aMid);
+        const BRepAdaptor_Surface aCap(theCF, false);
+        gp_Pnt                    aQ;
+        gp_Vec                    aCu, aCv;
+        aCap.D1(aPCap.X(), aPCap.Y(), aQ, aCu, aCv);
+        gp_Vec aOut = aCu.Crossed(aCv);
+        if (theCF.Orientation() == TopAbs_REVERSED)
+        {
+          aOut.Reverse();
+        }
+        if (aLeft.Magnitude() < gp::Resolution() || aOut.Magnitude() < gp::Resolution())
+        {
+          return;
+        }
+        NCollection_List<TopoDS_Shape>& aLD = myAsDes->ChangeDescendant(theOF);
+        for (NCollection_List<TopoDS_Shape>::Iterator itD(aLD); itD.More(); itD.Next())
+        {
+          if (!itD.Value().IsSame(theE))
+          {
+            continue;
+          }
+          const bool isReversed = itD.Value().Orientation() == TopAbs_REVERSED;
+          // the side the edge keeps of the face, as it is oriented there
+          const double aSide = aLeft.Dot(aOut) * (isReversed ? -1. : 1.);
+          if (aSide > 0.)
+          {
+            itD.ChangeValue().Reverse();
+          }
+        }
+      };
       for (int i = 1; i <= myFaces.Extent(); ++i)
       {
         const TopoDS_Face& aCF = TopoDS::Face(myFaces(i));
+        // A section of the removed face with a neighbour's offset that is not
+        // on the offset of the shape bounds no rim: the neighbour's offset has
+        // passed wholly beyond the removed face there, and the tube round its
+        // far edge closes the wall below it.
+        if (myAsDes->HasDescendant(aCF))
+        {
+          NCollection_List<TopoDS_Shape> aStray;
+          for (NCollection_List<TopoDS_Shape>::Iterator itD(myAsDes->Descendant(aCF)); itD.More();
+               itD.Next())
+          {
+            if (itD.Value().ShapeType() == TopAbs_EDGE && NewEdges.Contains(itD.Value())
+                && isNowhereOnTheOffset(TopoDS::Edge(itD.Value())))
+            {
+              aStray.Append(itD.Value());
+            }
+          }
+          for (NCollection_List<TopoDS_Shape>::Iterator itS(aStray); itS.More(); itS.Next())
+          {
+            NCollection_List<TopoDS_Shape> anAsc;
+            if (myAsDes->HasAscendant(itS.Value()))
+            {
+              anAsc = myAsDes->Ascendant(itS.Value());
+            }
+            for (NCollection_List<TopoDS_Shape>::Iterator itA(anAsc); itA.More(); itA.Next())
+            {
+              aForget(itA.Value(), itS.Value());
+            }
+          }
+        }
         // the removed face's edges and vertices, and the faces across them
         NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aBeside, aSeen;
         NCollection_List<TopoDS_Shape>                         aNeighbours;
@@ -11694,6 +11908,10 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
                 {
                   aForget(aCF, aSection);
                   aForget(anOF, aSection);
+                }
+                else
+                {
+                  aKeepBelow(aCF, anOF, aSection);
                 }
               }
             }
