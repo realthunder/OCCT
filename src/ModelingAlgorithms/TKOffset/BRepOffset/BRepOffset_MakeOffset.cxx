@@ -12987,6 +12987,15 @@ void BRepOffset_MakeOffset::MakeSolid(const Message_ProgressRange& theRange)
 // long as the shell keeps a piece of a removed face -- the rim that closes
 // the opening; what is left is kept if nothing hangs any more. Otherwise the
 // shell is left as it came, for Deboucle3D to judge.
+// From fix level 5 a shell that had no piece of a removed face to begin with
+// loses its hanging faces too, as long as any face is left: the walls closed
+// over the whole of the removed face, and what hangs is a scrap of a tube
+// round an edge of that face (the stadium with its top edge filleted 1.5, a
+// straight fillet removed 1.148 to 1.155 inward: the tubes round the fillet's
+// two long edges cover it by less than 0.02, the lines they cut in it reach
+// the tube round its end, and the three scraps of that tube stayed on the
+// closed shell of the hollow -- refused, where from 1.1555 the scraps were
+// apart from the shell and it was made).
 static TopoDS_Shape DropHangingFaces(
   const TopoDS_Shape&                                           theShape,
   const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theFree,
@@ -13008,6 +13017,11 @@ static TopoDS_Shape DropHangingFaces(
     return theShape;
   }
   TopoDS_Shape aShell = theShape;
+  bool         hadRim = false;
+  for (TopoDS_Iterator aIt(theShape); aIt.More() && !hadRim; aIt.Next())
+  {
+    hadRim = theRim.Contains(aIt.Value());
+  }
   for (;;)
   {
     NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
@@ -13049,7 +13063,7 @@ static TopoDS_Shape DropHangingFaces(
       aBB.Add(aRest, aIt.Value());
       hasRim = hasRim || theRim.Contains(aIt.Value());
     }
-    if (!hasRim)
+    if (!hasRim && (hadRim || BRepOffset_FixLevel() < 5 || !TopoDS_Iterator(aRest).More()))
     {
       return theShape;
     }
