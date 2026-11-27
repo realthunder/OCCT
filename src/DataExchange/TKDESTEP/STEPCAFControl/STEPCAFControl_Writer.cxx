@@ -9546,3 +9546,11 @@ bool STEPCAFControl_Writer::writeMaterials(const occ::handle<XSControl_WorkSessi
 
   return true;
 }
+
+//=================================================================================================
+
+void STEPCAFControl_Writer_SetGDTPresentationColor(STEPCAFControl_Writer& theWriter,
+                                                   const Quantity_Color&  theColor)
+{
+  theWriter.SetGDTPresentationColor(theColor);
+}

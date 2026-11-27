@@ -197,4 +197,10 @@ public:
     const occ::handle<TDF_Attribute>& theAtt);
 };
 
+//! CitedDocumentsGUID and AttributeMeasuresGUID as C functions, for a client to look up by
+//! name at run time and do without where the library is upstream's, which has neither.
+extern "C" Standard_EXPORT const Standard_GUID& XCAFDoc_CitedDocumentsGUID();
+
+extern "C" Standard_EXPORT const Standard_GUID& XCAFDoc_AttributeMeasuresGUID();
+
 #endif // _XCAFDoc_HeaderFile

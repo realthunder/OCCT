@@ -657,3 +657,19 @@ void XCAFDoc_LayerTool::RemoveItemLayers(const TDF_Label& theItemL)
     theItemL.ForgetAttribute(XCAFDoc::ItemLayersGUID());
   }
 }
+
+//=================================================================================================
+
+void XCAFDoc_LayerTool_AddItemLayer(const TDF_Label&                    theItemL,
+                                    const XCAFDoc_LayerTool::ItemLayer& theLayer)
+{
+  XCAFDoc_LayerTool::AddItemLayer(theItemL, theLayer);
+}
+
+//=================================================================================================
+
+bool XCAFDoc_LayerTool_GetItemLayers(const TDF_Label&                                    theItemL,
+                                     NCollection_Sequence<XCAFDoc_LayerTool::ItemLayer>& theLayers)
+{
+  return XCAFDoc_LayerTool::GetItemLayers(theItemL, theLayers);
+}

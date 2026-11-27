@@ -466,4 +466,11 @@ private:
   occ::handle<StepRepr_ProductDefinitionShape> myGDTCommonPDS;
 };
 
+//! SetGDTPresentationColor as a C function, for a client to look up by name at run time and
+//! do without (GD&T drawn white) where the library is upstream's, which has none: a client
+//! calling it by its C++ name does not load there.
+extern "C" Standard_EXPORT void STEPCAFControl_Writer_SetGDTPresentationColor(
+  STEPCAFControl_Writer& theWriter,
+  const Quantity_Color&  theColor);
+
 #endif // _STEPCAFControl_Writer_HeaderFile

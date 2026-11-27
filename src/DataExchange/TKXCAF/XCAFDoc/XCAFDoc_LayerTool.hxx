@@ -236,4 +236,15 @@ private:
   occ::handle<XCAFDoc_ShapeTool> myShapeTool;
 };
 
+//! AddItemLayer and GetItemLayers as C functions, for a client to look up by name at run
+//! time (dlsym, GetProcAddress) and do without where the library is upstream's, which has
+//! neither: a client calling them by their C++ names does not load there.
+extern "C" Standard_EXPORT void XCAFDoc_LayerTool_AddItemLayer(
+  const TDF_Label&                    theItemL,
+  const XCAFDoc_LayerTool::ItemLayer& theLayer);
+
+extern "C" Standard_EXPORT bool XCAFDoc_LayerTool_GetItemLayers(
+  const TDF_Label&                                    theItemL,
+  NCollection_Sequence<XCAFDoc_LayerTool::ItemLayer>& theLayers);
+
 #endif // _XCAFDoc_LayerTool_HeaderFile

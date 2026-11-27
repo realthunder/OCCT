@@ -1610,6 +1610,15 @@ bool XCAFDoc_DimTolTool::GetPresentedWith(const TDF_Label& theGDTL, TDF_Label& t
 
 void XCAFDoc_DimTolTool::SetPlaceholder(const TDF_Label&               theGDTL,
                                         const TCollection_AsciiString& theKind,
+                                        const TCollection_AsciiString& theName)
+{
+  SetPlaceholder(theGDTL, theKind, theName, false);
+}
+
+//=================================================================================================
+
+void XCAFDoc_DimTolTool::SetPlaceholder(const TDF_Label&               theGDTL,
+                                        const TCollection_AsciiString& theKind,
                                         const TCollection_AsciiString& theName,
                                         const bool                     theShared)
 {
@@ -1974,4 +1983,11 @@ void XCAFDoc_DimTolTool::DumpJson(Standard_OStream& theOStream, int theDepth) co
     TDF_Tool::Entry(aDatumLabelIt.Value(), aDatumLabel);
     OCCT_DUMP_FIELD_VALUE_STRING(theOStream, aDatumLabel)
   }
+}
+
+//=================================================================================================
+
+int XCAFDoc_DimTolTool_PMI()
+{
+  return 1;
 }
