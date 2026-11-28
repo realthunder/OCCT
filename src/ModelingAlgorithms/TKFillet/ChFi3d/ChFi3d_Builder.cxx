@@ -3541,6 +3541,11 @@ void ChFi3d_Builder::Compute()
       // where it is 0.0005 with the one corner set back; 25 fillets of the
       // sweeps, all on that coil, are made differently by it).
       bool isMade = false;
+      if (ChFi3d_FixLevel() < 4 && aPlates.Extent() > 1)
+      {
+        // passed over: a level below that makes nothing goes on to it
+        ChFi3d_FixPassedOver() = true;
+      }
       if (ChFi3d_FixLevel() >= 4 && aPlates.Extent() > 1)
       {
         NCollection_List<TopoDS_Shape> aCorners;
@@ -3901,6 +3906,19 @@ void ChFi3d_Builder::Compute()
     // point of a stripe that runs on past its spine's end
     // (ChFi3d_CutStepBackAtSpineEnd). From fix level 4; kept on the terms
     // the fallbacks above keep a result on, else what there was.
+    if (ChFi3d_FixLevel() < 4 && !myListStripe.IsEmpty())
+    {
+      // passed over where level 4 would compute once more: a level below
+      // that makes nothing goes on to it
+      if (done && aKnownValid < 0)
+      {
+        aKnownValid = BRepCheck_Analyzer(myShapeResult).IsValid() ? 1 : 0;
+      }
+      if (!done || aKnownValid == 0)
+      {
+        ChFi3d_FixPassedOver() = true;
+      }
+    }
     if (ChFi3d_FixLevel() >= 4 && !myListStripe.IsEmpty())
     {
       if (done && aKnownValid < 0)

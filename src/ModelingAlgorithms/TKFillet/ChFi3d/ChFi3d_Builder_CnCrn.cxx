@@ -2403,6 +2403,12 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
             // whose fillets at two vertices level 2 made tighter, as level 1
             // did (level 4 makes them as level 2 does).
             const bool isCarrier = trouve || ChFi3d_FixLevel() < 4;
+            if (!trouve && ChFi3d_FixLevel() < 4 && !cp1.Arc().IsSame(Arc))
+            {
+              // what level 4 makes otherwise: a level below that makes
+              // nothing goes on to it
+              ChFi3d_FixPassedOver() = true;
+            }
             if (isCarrier && !cp1.Arc().IsSame(Arc) && std::abs(angedg - M_PI) < 0.01)
             {
               Evive.SetValue(ic, cp1.Arc());
@@ -2447,6 +2453,12 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
               angedg = std::abs(ChFi3d_AngleEdge(Vcom, Arc, cp2.Arc()));
             }
             const bool isCarrier = trouve || ChFi3d_FixLevel() < 4;
+            if (!trouve && ChFi3d_FixLevel() < 4 && !cp2.Arc().IsSame(Arc))
+            {
+              // what level 4 makes otherwise: a level below that makes
+              // nothing goes on to it
+              ChFi3d_FixPassedOver() = true;
+            }
             if (isCarrier && !cp2.Arc().IsSame(Arc) && std::abs(angedg - M_PI) < 0.01)
             {
               Evive.SetValue(ic, cp2.Arc());
@@ -3213,7 +3225,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
         // the edge is cut as far from the vertex as the point is.
         const auto ParOnSharp = [&](const ChFiDS_CommonPoint& theCP) {
           const TopoDS_Edge& anE = TopoDS::Edge(Evive.Value(ic));
-          if (theCP.Arc().IsSame(anE) || ChFi3d_FixLevel() < 4)
+          if (theCP.Arc().IsSame(anE))
           {
             return theCP.ParameterOnArc();
           }
@@ -3222,6 +3234,13 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
           ChFi3d_cherche_vertex(anE, theCP.Arc(), aVcom, isNext);
           if (isNext)
           {
+            return theCP.ParameterOnArc();
+          }
+          if (ChFi3d_FixLevel() < 4)
+          {
+            // level 4's place for the point passed over: a level below
+            // that makes nothing goes on to it
+            ChFi3d_FixPassedOver() = true;
             return theCP.ParameterOnArc();
           }
           Extrema_ExtPC anExt(theCP.Point(), C);
