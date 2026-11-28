@@ -29,6 +29,7 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepGProp.hxx>
+#include <ChFi3d.hxx>
 #include <GProp_GProps.hxx>
 #include <Bnd_Box.hxx>
 #include <Extrema_ExtPC.hxx>
@@ -351,7 +352,8 @@ bool ChainStep(const ChainInput& theInput, const ChainContour& theContour, Chain
 
 //! Where the contours of <theBuilder> were not made together: one after
 //! another, each on what the ones before it left of its edges -- in the
-//! order given and, where that makes nothing, in the reverse. What two
+//! order given and in the reverse; made both ways, only where the two
+//! results are the same. What two
 //! chamfer features one after the other make; at a vertex of four sharp
 //! edges and more the builder has no corner for two of them (#962's tooth,
 //! #631's wedge). At the latest fix level, whatever the caller's: what a
@@ -368,6 +370,12 @@ bool ChainStep(const ChainInput& theInput, const ChainContour& theContour, Chain
 //! none, nor one with an edge looser than the input's or a twentieth of the
 //! smallest chamfer (the terms the builder's own fallbacks keep a result
 //! on; #273's handle, a knot of facets with a vertex of 0.094 at size 1).
+//!
+//! Only where the two meet at a vertex of four sharp edges or more. At one
+//! of three the builder has its corners and the set back fallback, with
+//! limits a chain would pass: #309's tab and plate edges are set back up to
+//! a size of 1 and refused past it, and the chain from 1.02 is another
+//! shape, 0.8 cubes of the size from where the results below 1 lead.
 //!
 //! Two contours only. Three and more at a vertex (the sweeps' every edge of
 //! a vertex of four) come out valid and within these terms with slits and
@@ -416,6 +424,59 @@ bool BuildOneAfterAnother(ChFi3d_ChBuilder& theBuilder,
       aContour.myEdges.Append(aSpine->Edges(j));
     }
   }
+  // the two meet at a vertex of four sharp edges or more
+  {
+    NCollection_IndexedDataMap<TopoDS_Shape,
+                               NCollection_List<TopoDS_Shape>,
+                               TopTools_ShapeMapHasher>
+      aVE, anEF;
+    TopExp::MapShapesAndAncestors(theBuilder.InputShape(), TopAbs_VERTEX, TopAbs_EDGE, aVE);
+    TopExp::MapShapesAndAncestors(theBuilder.InputShape(), TopAbs_EDGE, TopAbs_FACE, anEF);
+    ShapeMap aFirstV;
+    for (NCollection_List<TopoDS_Shape>::Iterator itE(aContours[0].myEdges); itE.More(); itE.Next())
+    {
+      for (TopExp_Explorer ex(itE.Value(), TopAbs_VERTEX); ex.More(); ex.Next())
+      {
+        aFirstV.Add(ex.Current());
+      }
+    }
+    bool isAtFour = false;
+    for (NCollection_List<TopoDS_Shape>::Iterator itE(aContours[1].myEdges);
+         itE.More() && !isAtFour;
+         itE.Next())
+    {
+      for (TopExp_Explorer ex(itE.Value(), TopAbs_VERTEX); ex.More() && !isAtFour; ex.Next())
+      {
+        if (!aFirstV.Contains(ex.Current()) || !aVE.Contains(ex.Current()))
+        {
+          continue;
+        }
+        int      aNbSharp = 0;
+        ShapeMap aSeen;
+        for (NCollection_List<TopoDS_Shape>::Iterator it(aVE.FindFromKey(ex.Current()));
+             it.More();
+             it.Next())
+        {
+          const TopoDS_Edge& anE = TopoDS::Edge(it.Value());
+          if (!aSeen.Add(anE) || BRep_Tool::Degenerated(anE) || !anEF.Contains(anE))
+          {
+            continue;
+          }
+          const NCollection_List<TopoDS_Shape>& aFs = anEF.FindFromKey(anE);
+          if (aFs.Extent() != 2
+              || !ChFi3d::IsTangentFaces(anE, TopoDS::Face(aFs.First()), TopoDS::Face(aFs.Last())))
+          {
+            aNbSharp++;
+          }
+        }
+        isAtFour = aNbSharp >= 4;
+      }
+    }
+    if (!isAtFour)
+    {
+      return false;
+    }
+  }
   struct ChainGuard
   {
     ChainGuard()
@@ -461,6 +522,8 @@ bool BuildOneAfterAnother(ChFi3d_ChBuilder& theBuilder,
     aSum  += aD;
     anAbs += std::abs(aD);
   }
+  int    aNbMade      = 0;
+  double aFirstChange = 0.;
   for (int aTry = 0; aTry < 2; aTry++)
   {
     ChainState aState = anAlone[aTry == 0 ? 0 : aNb - 1];
@@ -502,12 +565,20 @@ bool BuildOneAfterAnother(ChFi3d_ChBuilder& theBuilder,
     {
       continue;
     }
+    if (aNbMade > 0)
+    {
+      // made either way: one result only where the two are the same
+      // (#309's tab at 1.02, the same two edges mirrored: 12747.34 one
+      // way and 12745.98 the other)
+      return std::abs(aChange - aFirstChange) <= 1.e-4 * anAbs;
+    }
+    aNbMade++;
+    aFirstChange = aChange;
     theResult    = aState.myShape;
     theModified  = aState.myModified;
     theGenerated = aState.myGenerated;
-    return true;
   }
-  return false;
+  return aNbMade > 0;
 }
 } // namespace
 
