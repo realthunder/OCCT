@@ -554,6 +554,20 @@ occ::handle<TopOpeBRepBuild_HBuilder> ChFi3d_Builder::Builder() const
   return myCoup;
 }
 
+//=================================================================================================
+
+void ChFi3d_Builder::SetBuilder(const occ::handle<TopOpeBRepBuild_HBuilder>& theBuilder)
+{
+  myCoup = theBuilder;
+}
+
+//=================================================================================================
+
+const TopoDS_Shape& ChFi3d_Builder::InputShape() const
+{
+  return myShape;
+}
+
 //=======================================================================
 // function : ChFi3d_FaceTangency
 // purpose  : determine if the faces opposing to edges are tangent

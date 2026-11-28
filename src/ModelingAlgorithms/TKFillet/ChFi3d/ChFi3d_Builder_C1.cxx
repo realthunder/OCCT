@@ -9087,6 +9087,13 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
         // (tangent faces, not the pieces of one: a split of a face kept in
         // coplanar pieces is no edge, and the vertex one of four edges --
         // the case of the pieces, below)
+        if (F1.IsNull())
+        {
+          // no face on the stripe's first side here: it was looked at
+          // null, and crashed (#962's arm, a contour of the edge that
+          // splits its wall chamfered at 0.3 with its neighbours' sizes)
+          throw Standard_Failure("PerformIntersectionAtEnd : no face on the stripe's side");
+        }
         bool isTangent0 = ChFi3d::IsTangentFaces(Edge[0], F1, Face[0])
                           && !ChFi3d_CoplanarPieces(F1, Face[0], 10 * tolapp3d);
         bool isTangent1 = ChFi3d::IsTangentFaces(Edge[1], Face[0], Face[1])

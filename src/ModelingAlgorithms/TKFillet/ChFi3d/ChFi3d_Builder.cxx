@@ -252,6 +252,11 @@ int ChFi3d_FixLevel()
   return THE_FIX_LEVEL;
 }
 
+int ChFi3d_FixLevelLatest()
+{
+  return THE_FIX_LEVEL_LATEST;
+}
+
 //=================================================================================================
 
 static void CompleteDS(TopOpeBRepDS_DataStructure& DStr, const TopoDS_Shape& S)

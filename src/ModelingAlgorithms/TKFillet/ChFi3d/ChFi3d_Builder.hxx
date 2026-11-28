@@ -179,6 +179,14 @@ public:
   //! Returns the Builder of topologic operations.
   Standard_EXPORT occ::handle<TopOpeBRepBuild_HBuilder> Builder() const;
 
+  //! Replaces the Builder of topologic operations: for
+  //! BRepFilletAPI_MakeChamfer, which keeps there the history of a result
+  //! it made of several computations.
+  Standard_EXPORT void SetBuilder(const occ::handle<TopOpeBRepBuild_HBuilder>& theBuilder);
+
+  //! The shape the contours are on, as it was given.
+  Standard_EXPORT const TopoDS_Shape& InputShape() const;
+
   //! Sets how far, at most, a corner's plate may miss its boundary while
   //! held tangent to the stripes it closes, as a fraction of the smallest
   //! radius (or chamfer distance) of the stripes at the corner. A corner of
@@ -1004,5 +1012,8 @@ extern "C" Standard_EXPORT int ChFi3d_SetFixLevel(const int theLevel);
 
 //! The calling thread's level of ChFi3d_SetFixLevel().
 extern "C" Standard_EXPORT int ChFi3d_FixLevel();
+
+//! The latest level there is.
+extern "C" Standard_EXPORT int ChFi3d_FixLevelLatest();
 
 #endif // _ChFi3d_Builder_HeaderFile
