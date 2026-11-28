@@ -2867,6 +2867,8 @@ occ::handle<Standard_Transient> undefinedParam(const occ::handle<Standard_Transi
 }
 } // namespace
 
+static bool isPresentationLink(const occ::handle<StepAP242_DraughtingModelItemAssociation>& theDMIA);
+
 //=================================================================================================
 
 bool STEPCAFControl_Reader::ReadValidationItems(
@@ -2911,28 +2913,48 @@ bool STEPCAFControl_Reader::ReadValidationItems(
       continue;
     }
     // A PMI's graphic: a characterized item within representation of its callout -- kept on
-    // the PMI it presents, else (a graphic of nothing, NIST CTC-05's notes) its own
-    TDF_Label                             aL;
-    const char*                           anOf = "";
-    const occ::handle<Standard_Transient> aCallout =
+    // the PMI it presents, else (a graphic of nothing, NIST CTC-05's notes) its own. Its own
+    // label first, when it was read alone: no PMI read holds it, whatever its links name (NIST
+    // STC-07's four oriented dimensions, linked to a radius that holds another graphic, and to
+    // the face and edges they are on: kept on the radius, they were written of its face). Then
+    // the PMI its presentation link names, then what its other associations name: those name
+    // its geometry, which may be a datum feature's too (NIST FTC-07's Text.2 and .3, each on a
+    // face of datum A's feature: kept on the datum, they were written of its two faces)
+    TDF_Label                       aL;
+    const char*                     anOf = "";
+    occ::handle<Standard_Transient> aCallout =
       undefinedParam(aDef, "CHARACTERIZED_ITEM_WITHIN_REPRESENTATION", 3);
+    // Of an occurrence a callout is made of rather than the callout (NIST CTC-05's twenty,
+    // each its callout's only one): the callout's
+    if (!aCallout.IsNull() && !aCallout->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+    {
+      for (Interface_EntityIterator anIter = aGraph.Sharings(aCallout); anIter.More();
+           anIter.Next())
+      {
+        if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+        {
+          aCallout = anIter.Value();
+          break;
+        }
+      }
+    }
     if (!aCallout.IsNull())
     {
       anOf = "presentation";
-      for (Interface_EntityIterator anIter = aGraph.Sharings(aCallout);
-           aL.IsNull() && anIter.More();
-           anIter.Next())
+      myGDTMap.Find(aCallout, aL);
+      for (int aPass = 0; aPass < 2 && aL.IsNull(); ++aPass)
       {
-        occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
-          occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
-        if (!aDMIA.IsNull())
+        for (Interface_EntityIterator anIter = aGraph.Sharings(aCallout);
+             aL.IsNull() && anIter.More();
+             anIter.Next())
         {
-          myGDTMap.Find(aDMIA->Definition().Value(), aL);
+          occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
+            occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+          if (!aDMIA.IsNull() && isPresentationLink(aDMIA) == (aPass == 0))
+          {
+            myGDTMap.Find(aDMIA->Definition().Value(), aL);
+          }
         }
-      }
-      if (aL.IsNull())
-      {
-        myGDTMap.Find(aCallout, aL);
       }
     }
     else if (!aDef.IsNull())
@@ -5155,7 +5177,10 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
       {
         aDatTargetObj->SetModifierWithValue(theXCAFModifWithVal, theModifValue);
       }
-      aDGTTool->SetDatumToGeomTol(aDatL, theGDTL);
+      if (!theGDTL.IsNull())
+      {
+        aDGTTool->SetDatumToGeomTol(aDatL, theGDTL);
+      }
       aDatTargetObj->IsDatumTarget(true);
       aDatTargetObj->SetDatumTargetNumber(aDT->TargetId()->IntegerValue());
       readAnnotation(aTR, aDT, aDatTargetObj, theLocalFactors);
@@ -5224,7 +5249,11 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
     {
       aDatObj->SetModifierWithValue(theXCAFModifWithVal, theModifValue);
     }
-    aDGTTool->SetDatumToGeomTol(aDatL, theGDTL);
+    // A datum no frame read cites is read with no tolerance (ReadGDTs)
+    if (!theGDTL.IsNull())
+    {
+      aDGTTool->SetDatumToGeomTol(aDatL, theGDTL);
+    }
     if (aDatObj->GetPresentation().IsNull())
     {
       // Try find annotation connected to datum entity (not right case, according recommended
@@ -8068,6 +8097,54 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       }
     }
   }
+  // The datums no frame read cites -- none does (NIST CTC-03's F, a datum feature with its
+  // graphic and its validation property), or only one not read: read alone, of no tolerance.
+  // One whose feature has a target is left: its targets are read by the frames that cite them
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<StepDimTol_Datum> aDatum = occ::down_cast<StepDimTol_Datum>(aModel->Value(i));
+    if (aDatum.IsNull() || myGDTMap.IsBound(aDatum))
+    {
+      continue;
+    }
+    bool isRead = false, hasTarget = false;
+    for (Interface_EntityIterator anIter = aGraph.Sharings(aDatum); anIter.More(); anIter.Next())
+    {
+      occ::handle<StepRepr_ShapeAspectRelationship> aSAR =
+        occ::down_cast<StepRepr_ShapeAspectRelationship>(anIter.Value());
+      if (aSAR.IsNull() || aSAR->RelatingShapeAspect().IsNull())
+      {
+        continue;
+      }
+      NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
+      aSAs.Append(aSAR->RelatingShapeAspect());
+      collectShapeAspect(aSAR->RelatingShapeAspect(), theWS, aSAs);
+      for (NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>::Iterator anSAIter(aSAs);
+           anSAIter.More(); anSAIter.Next())
+      {
+        const occ::handle<StepRepr_ShapeAspect>& aSA = anSAIter.Value();
+        if (aSA.IsNull())
+        {
+          continue;
+        }
+        hasTarget = hasTarget || aSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget));
+        isRead    = isRead || myGDTMap.IsBound(aSA);
+      }
+    }
+    if (isRead || hasTarget)
+    {
+      continue;
+    }
+    setDatumToXCAF(aDatum,
+                   TDF_Label(),
+                   0,
+                   NCollection_Sequence<XCAFDimTolObjects_DatumSingleModif>(),
+                   XCAFDimTolObjects_DatumModifWithValue_None,
+                   0.0,
+                   theDoc,
+                   theWS,
+                   theLocalFactors);
+  }
   // Composite frames: a lower segment's tolerance related to its upper's (AP242's
   // geometric_tolerance_relationship 'composite', the upper relating), both read. NIST
   // presents both segments by the upper's graphic, the lower's linked to none
@@ -8310,9 +8387,30 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
           aReadWords(aWordsOf);
         }
 
-        // Get shapes
+        // Get shapes. A graphic linked to plain shape aspects by several associations, one
+        // each, is on the shapes of them all (NIST FTC-08 -e4-tg: a hole's two half faces,
+        // one association each; taken by the first, the graphic was on one half)
         NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
         collectShapeAspect(aDefinition, theWS, aSAs);
+        if (!aDefinition.IsNull() && aDefinition->IsInstance(STANDARD_TYPE(StepRepr_ShapeAspect)))
+        {
+          for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt); anIter.More();
+               anIter.Next())
+          {
+            occ::handle<StepAP242_DraughtingModelItemAssociation> anAssoc =
+              occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+            if (anAssoc.IsNull() || anAssoc == aDMIA)
+            {
+              continue;
+            }
+            occ::handle<StepRepr_ShapeAspect> anOther = anAssoc->Definition().ShapeAspect();
+            if (!anOther.IsNull() && anOther != aDefinition
+                && anOther->IsInstance(STANDARD_TYPE(StepRepr_ShapeAspect)))
+            {
+              collectShapeAspect(anOther, theWS, aSAs);
+            }
+          }
+        }
         for (int aSAIt = 1; aSAIt <= aSAs.Length(); aSAIt++)
         {
           occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aGISU;
@@ -8331,7 +8429,12 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
             TDF_Label aLabel = getShapeLabel(aGISU->IdentifiedItemValue(anItemIt),
                                              theWS,
                                              XCAFDoc_DocumentTool::ShapeTool(theDoc->Main()));
-            if (!aLabel.IsNull())
+            bool isNew = !aLabel.IsNull();
+            for (int aLIt = 1; aLIt <= aShapesL.Length() && isNew; aLIt++)
+            {
+              isNew = aShapesL.Value(aLIt) != aLabel;
+            }
+            if (isNew)
             {
               aShapesL.Append(aLabel);
             }
@@ -8340,15 +8443,28 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       }
       bool isCommonLabel = (aShapesL.Length() == 0);
 
-      // Calculate unit
-      double           aFact         = 1.0;
-      StepData_Factors aLocalFactors = theLocalFactors;
+      // Calculate unit: of the draughting model its association names, else of the one that
+      // lists it. A graphic of no association (NIST STC-07's 'Geometrical Tolerance.1', of a
+      // file in inches) was taken in millimetres, 25.4 times too small
+      double                               aFact         = 1.0;
+      StepData_Factors                     aLocalFactors = theLocalFactors;
+      occ::handle<StepRepr_Representation> aUnitsOf;
       if (!aDMIA.IsNull())
+      {
+        aUnitsOf = aDMIA->UsedRepresentation();
+      }
+      for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt);
+           aUnitsOf.IsNull() && anIter.More();
+           anIter.Next())
+      {
+        aUnitsOf = occ::down_cast<StepVisual_DraughtingModel>(anIter.Value());
+      }
+      if (!aUnitsOf.IsNull())
       {
         XSAlgo_ShapeProcessor::PrepareForTransfer();
         STEPControl_ActorRead                  anActor(aModel);
         occ::handle<Transfer_TransientProcess> aTP = aTR->TransientProcess();
-        anActor.PrepareUnits(aDMIA->UsedRepresentation(), aTP, aLocalFactors);
+        anActor.PrepareUnits(aUnitsOf, aTP, aLocalFactors);
         aFact = aLocalFactors.LengthFactor();
       }
 
