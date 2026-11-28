@@ -2867,6 +2867,8 @@ occ::handle<Standard_Transient> undefinedParam(const occ::handle<Standard_Transi
 }
 } // namespace
 
+static bool isPresentationLink(const occ::handle<StepAP242_DraughtingModelItemAssociation>& theDMIA);
+
 //=================================================================================================
 
 bool STEPCAFControl_Reader::ReadValidationItems(
@@ -2911,7 +2913,13 @@ bool STEPCAFControl_Reader::ReadValidationItems(
       continue;
     }
     // A PMI's graphic: a characterized item within representation of its callout -- kept on
-    // the PMI it presents, else (a graphic of nothing, NIST CTC-05's notes) its own
+    // the PMI it presents, else (a graphic of nothing, NIST CTC-05's notes) its own. Its own
+    // label first, when it was read alone: no PMI read holds it, whatever its links name (NIST
+    // STC-07's four oriented dimensions, linked to a radius that holds another graphic, and to
+    // the face and edges they are on: kept on the radius, they were written of its face). Then
+    // the PMI its presentation link names, then what its other associations name: those name
+    // its geometry, which may be a datum feature's too (NIST FTC-07's Text.2 and .3, each on a
+    // face of datum A's feature: kept on the datum, they were written of its two faces)
     TDF_Label                             aL;
     const char*                           anOf = "";
     const occ::handle<Standard_Transient> aCallout =
@@ -2919,20 +2927,20 @@ bool STEPCAFControl_Reader::ReadValidationItems(
     if (!aCallout.IsNull())
     {
       anOf = "presentation";
-      for (Interface_EntityIterator anIter = aGraph.Sharings(aCallout);
-           aL.IsNull() && anIter.More();
-           anIter.Next())
+      myGDTMap.Find(aCallout, aL);
+      for (int aPass = 0; aPass < 2 && aL.IsNull(); ++aPass)
       {
-        occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
-          occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
-        if (!aDMIA.IsNull())
+        for (Interface_EntityIterator anIter = aGraph.Sharings(aCallout);
+             aL.IsNull() && anIter.More();
+             anIter.Next())
         {
-          myGDTMap.Find(aDMIA->Definition().Value(), aL);
+          occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
+            occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+          if (!aDMIA.IsNull() && isPresentationLink(aDMIA) == (aPass == 0))
+          {
+            myGDTMap.Find(aDMIA->Definition().Value(), aL);
+          }
         }
-      }
-      if (aL.IsNull())
-      {
-        myGDTMap.Find(aCallout, aL);
       }
     }
     else if (!aDef.IsNull())
@@ -8365,9 +8373,30 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
           aReadWords(aWordsOf);
         }
 
-        // Get shapes
+        // Get shapes. A graphic linked to plain shape aspects by several associations, one
+        // each, is on the shapes of them all (NIST FTC-08 -e4-tg: a hole's two half faces,
+        // one association each; taken by the first, the graphic was on one half)
         NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
         collectShapeAspect(aDefinition, theWS, aSAs);
+        if (!aDefinition.IsNull() && aDefinition->IsInstance(STANDARD_TYPE(StepRepr_ShapeAspect)))
+        {
+          for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt); anIter.More();
+               anIter.Next())
+          {
+            occ::handle<StepAP242_DraughtingModelItemAssociation> anAssoc =
+              occ::down_cast<StepAP242_DraughtingModelItemAssociation>(anIter.Value());
+            if (anAssoc.IsNull() || anAssoc == aDMIA)
+            {
+              continue;
+            }
+            occ::handle<StepRepr_ShapeAspect> anOther = anAssoc->Definition().ShapeAspect();
+            if (!anOther.IsNull() && anOther != aDefinition
+                && anOther->IsInstance(STANDARD_TYPE(StepRepr_ShapeAspect)))
+            {
+              collectShapeAspect(anOther, theWS, aSAs);
+            }
+          }
+        }
         for (int aSAIt = 1; aSAIt <= aSAs.Length(); aSAIt++)
         {
           occ::handle<StepAP242_ItemIdentifiedRepresentationUsage> aGISU;
@@ -8386,7 +8415,12 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
             TDF_Label aLabel = getShapeLabel(aGISU->IdentifiedItemValue(anItemIt),
                                              theWS,
                                              XCAFDoc_DocumentTool::ShapeTool(theDoc->Main()));
-            if (!aLabel.IsNull())
+            bool isNew = !aLabel.IsNull();
+            for (int aLIt = 1; aLIt <= aShapesL.Length() && isNew; aLIt++)
+            {
+              isNew = aShapesL.Value(aLIt) != aLabel;
+            }
+            if (isNew)
             {
               aShapesL.Append(aLabel);
             }
