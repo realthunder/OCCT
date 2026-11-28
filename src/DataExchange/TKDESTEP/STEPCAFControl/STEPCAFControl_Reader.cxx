@@ -2920,10 +2920,24 @@ bool STEPCAFControl_Reader::ReadValidationItems(
     // the PMI its presentation link names, then what its other associations name: those name
     // its geometry, which may be a datum feature's too (NIST FTC-07's Text.2 and .3, each on a
     // face of datum A's feature: kept on the datum, they were written of its two faces)
-    TDF_Label                             aL;
-    const char*                           anOf = "";
-    const occ::handle<Standard_Transient> aCallout =
+    TDF_Label                       aL;
+    const char*                     anOf = "";
+    occ::handle<Standard_Transient> aCallout =
       undefinedParam(aDef, "CHARACTERIZED_ITEM_WITHIN_REPRESENTATION", 3);
+    // Of an occurrence a callout is made of rather than the callout (NIST CTC-05's twenty,
+    // each its callout's only one): the callout's
+    if (!aCallout.IsNull() && !aCallout->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+    {
+      for (Interface_EntityIterator anIter = aGraph.Sharings(aCallout); anIter.More();
+           anIter.Next())
+      {
+        if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+        {
+          aCallout = anIter.Value();
+          break;
+        }
+      }
+    }
     if (!aCallout.IsNull())
     {
       anOf = "presentation";
@@ -8429,15 +8443,28 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
       }
       bool isCommonLabel = (aShapesL.Length() == 0);
 
-      // Calculate unit
-      double           aFact         = 1.0;
-      StepData_Factors aLocalFactors = theLocalFactors;
+      // Calculate unit: of the draughting model its association names, else of the one that
+      // lists it. A graphic of no association (NIST STC-07's 'Geometrical Tolerance.1', of a
+      // file in inches) was taken in millimetres, 25.4 times too small
+      double                               aFact         = 1.0;
+      StepData_Factors                     aLocalFactors = theLocalFactors;
+      occ::handle<StepRepr_Representation> aUnitsOf;
       if (!aDMIA.IsNull())
+      {
+        aUnitsOf = aDMIA->UsedRepresentation();
+      }
+      for (Interface_EntityIterator anIter = aGraph.Sharings(anEnt);
+           aUnitsOf.IsNull() && anIter.More();
+           anIter.Next())
+      {
+        aUnitsOf = occ::down_cast<StepVisual_DraughtingModel>(anIter.Value());
+      }
+      if (!aUnitsOf.IsNull())
       {
         XSAlgo_ShapeProcessor::PrepareForTransfer();
         STEPControl_ActorRead                  anActor(aModel);
         occ::handle<Transfer_TransientProcess> aTP = aTR->TransientProcess();
-        anActor.PrepareUnits(aDMIA->UsedRepresentation(), aTP, aLocalFactors);
+        anActor.PrepareUnits(aUnitsOf, aTP, aLocalFactors);
         aFact = aLocalFactors.LengthFactor();
       }
 

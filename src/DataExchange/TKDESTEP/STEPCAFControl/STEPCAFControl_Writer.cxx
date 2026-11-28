@@ -225,6 +225,10 @@
 #include <StepVisual_SurfaceStyleUsage.hxx>
 #include <StepVisual_TessellatedAnnotationOccurrence.hxx>
 #include <StepVisual_TessellatedGeometricSet.hxx>
+#include <StepVisual_ComplexTriangulatedSurfaceSet.hxx>
+#include <StepVisual_CoordinatesList.hxx>
+#include <StepVisual_TessellatedCurveSet.hxx>
+#include <StepVisual_TriangulatedSurfaceSet.hxx>
 #include <TCollection_AsciiString.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <NCollection_Map.hxx>
@@ -8616,6 +8620,179 @@ occ::handle<Standard_Transient> itemWithinRepresentation(
   aParams->AddEntity(Interface_ParamIdent, theDM);
   return anItem;
 }
+
+//! A graphic's own measures, as it is written (the CAx-IF's graphic validation properties): its
+//! curves' -- polylines, tessellated curves -- length, segments and the centre of their length
+//! (their segments' middles weighted by their lengths), its triangles' number, area and the
+//! centre of their area. NIST's are so, to their last digits (CTC-04, STC-07). A polyline
+//! curve length is of the polylines alone: NIST's CTC-05 counts a datum target's circle too,
+//! but not five frames' diameter signs, and gives three frames less than their polylines
+struct GraphicMeasures
+{
+  double Length   = 0.;
+  int    Segments = 0;
+  gp_XYZ LengthMoment;
+  int    Facets = 0;
+  double Area   = 0.;
+  gp_XYZ AreaMoment;
+
+  void AddSegment(const gp_XYZ& theA, const gp_XYZ& theB)
+  {
+    const double aLength = (theB - theA).Modulus();
+    Length += aLength;
+    ++Segments;
+    LengthMoment += (theA + theB) * (aLength / 2.);
+  }
+
+  void AddTriangle(const gp_XYZ& theA, const gp_XYZ& theB, const gp_XYZ& theC)
+  {
+    const double anArea = ((theB - theA) ^ (theC - theA)).Modulus() / 2.;
+    Area += anArea;
+    ++Facets;
+    AreaMoment += (theA + theB + theC) * (anArea / 3.);
+  }
+};
+
+//! A triangulated surface set's node theI: by its pnindex when it has one
+gp_XYZ surfaceNode(const occ::handle<NCollection_HArray1<gp_XYZ>>& thePoints,
+                   const occ::handle<NCollection_HArray1<int>>&    thePnindex,
+                   const int                                       theI)
+{
+  return thePoints->Value(thePnindex.IsNull() || thePnindex->IsEmpty() ? theI
+                                                                       : thePnindex->Value(theI));
+}
+
+//! The measures of theItem, a callout written or what it is made of; a placeholder (an entity
+//! OCCT has no type of) none
+void measureGraphic(const occ::handle<Standard_Transient>& theItem, GraphicMeasures& theM)
+{
+  if (theItem.IsNull())
+  {
+    return;
+  }
+  if (occ::handle<StepVisual_DraughtingCallout> aCallout =
+        occ::down_cast<StepVisual_DraughtingCallout>(theItem))
+  {
+    for (int i = 1; i <= aCallout->NbContents(); ++i)
+    {
+      measureGraphic(aCallout->ContentsValue(i).Value(), theM);
+    }
+  }
+  else if (occ::handle<StepVisual_StyledItem> aStyled =
+             occ::down_cast<StepVisual_StyledItem>(theItem))
+  {
+    measureGraphic(aStyled->Item(), theM);
+  }
+  else if (occ::handle<StepVisual_TessellatedGeometricSet> aSet =
+             occ::down_cast<StepVisual_TessellatedGeometricSet>(theItem))
+  {
+    if (!aSet->Items().IsNull())
+    {
+      for (const occ::handle<StepVisual_TessellatedItem>& anItem : *aSet->Items())
+      {
+        measureGraphic(anItem, theM);
+      }
+    }
+  }
+  else if (occ::handle<StepVisual_TessellatedCurveSet> aCurves =
+             occ::down_cast<StepVisual_TessellatedCurveSet>(theItem))
+  {
+    if (aCurves->CoordList().IsNull() || aCurves->Curves().IsNull())
+    {
+      return;
+    }
+    const occ::handle<NCollection_HArray1<gp_XYZ>> aPoints = aCurves->CoordList()->Points();
+    for (const occ::handle<NCollection_HSequence<int>>& aCurve : *aCurves->Curves())
+    {
+      for (int j = 2; !aCurve.IsNull() && j <= aCurve->Length(); ++j)
+      {
+        theM.AddSegment(aPoints->Value(aCurve->Value(j - 1)), aPoints->Value(aCurve->Value(j)));
+      }
+    }
+  }
+  else if (occ::handle<StepVisual_ComplexTriangulatedSurfaceSet> aComplex =
+             occ::down_cast<StepVisual_ComplexTriangulatedSurfaceSet>(theItem))
+  {
+    if (aComplex->Coordinates().IsNull())
+    {
+      return;
+    }
+    const occ::handle<NCollection_HArray1<gp_XYZ>> aPoints = aComplex->Coordinates()->Points();
+    const occ::handle<NCollection_HArray1<int>>    aPnindex = aComplex->Pnindex();
+    for (int aKind = 0; aKind < 2; ++aKind)
+    {
+      const occ::handle<NCollection_HArray1<occ::handle<Standard_Transient>>> aLists =
+        aKind == 0 ? aComplex->TriangleStrips() : aComplex->TriangleFans();
+      if (aLists.IsNull())
+      {
+        continue;
+      }
+      for (const occ::handle<Standard_Transient>& aList : *aLists)
+      {
+        occ::handle<NCollection_HArray1<int>> anIdx = occ::down_cast<NCollection_HArray1<int>>(aList);
+        if (anIdx.IsNull())
+        {
+          continue;
+        }
+        for (int j = anIdx->Lower() + 2; j <= anIdx->Upper(); ++j)
+        {
+          // A strip's each three in a row, a fan's each two with its first
+          const int aA = aKind == 0 ? anIdx->Value(j - 2) : anIdx->Value(anIdx->Lower());
+          const int aB = anIdx->Value(j - 1), aC = anIdx->Value(j);
+          if (aA != aB && aB != aC && aA != aC)
+          {
+            theM.AddTriangle(surfaceNode(aPoints, aPnindex, aA),
+                             surfaceNode(aPoints, aPnindex, aB),
+                             surfaceNode(aPoints, aPnindex, aC));
+          }
+        }
+      }
+    }
+  }
+  else if (occ::handle<StepVisual_TriangulatedSurfaceSet> aTriangulated =
+             occ::down_cast<StepVisual_TriangulatedSurfaceSet>(theItem))
+  {
+    const occ::handle<NCollection_HArray2<int>> aTriangles = aTriangulated->Triangles();
+    if (aTriangulated->Coordinates().IsNull() || aTriangles.IsNull())
+    {
+      return;
+    }
+    const occ::handle<NCollection_HArray1<gp_XYZ>> aPoints =
+      aTriangulated->Coordinates()->Points();
+    for (int i = aTriangles->LowerRow(); i <= aTriangles->UpperRow(); ++i)
+    {
+      const int c = aTriangles->LowerCol();
+      theM.AddTriangle(surfaceNode(aPoints, aTriangulated->Pnindex(), aTriangles->Value(i, c)),
+                       surfaceNode(aPoints, aTriangulated->Pnindex(), aTriangles->Value(i, c + 1)),
+                       surfaceNode(aPoints, aTriangulated->Pnindex(), aTriangles->Value(i, c + 2)));
+    }
+  }
+  else if (occ::handle<StepShape_GeometricSet> aGeometric =
+             occ::down_cast<StepShape_GeometricSet>(theItem))
+  {
+    for (int i = 1; i <= aGeometric->NbElements(); ++i)
+    {
+      measureGraphic(aGeometric->ElementsValue(i).Value(), theM);
+    }
+  }
+  else if (occ::handle<StepGeom_Polyline> aPolyline = occ::down_cast<StepGeom_Polyline>(theItem))
+  {
+    for (int i = 2; i <= aPolyline->NbPoints(); ++i)
+    {
+      const std::array<double, 3>& aA = aPolyline->PointsValue(i - 1)->Coordinates();
+      const std::array<double, 3>& aB = aPolyline->PointsValue(i)->Coordinates();
+      theM.AddSegment(gp_XYZ(aA[0], aA[1], aA[2]), gp_XYZ(aB[0], aB[1], aB[2]));
+    }
+  }
+}
+
+occ::handle<StepRepr_RepresentationItem> pointItem(const TCollection_AsciiString& theName,
+                                                   const gp_XYZ&                  thePoint)
+{
+  occ::handle<StepGeom_CartesianPoint> aPoint = new StepGeom_CartesianPoint();
+  aPoint->Init3D(new TCollection_HAsciiString(theName), thePoint.X(), thePoint.Y(), thePoint.Z());
+  return aPoint;
+}
 } // namespace
 
 //=================================================================================================
@@ -8926,6 +9103,9 @@ void STEPCAFControl_Writer::writePMIValidation(
       }
     }
     occ::handle<Standard_Transient> aWithin;
+    // Its graphic's own measures, as written: in the file's unit already
+    GraphicMeasures aMeasures;
+    measureGraphic(aCallout, aMeasures);
     for (const ValidationGroup& aGroup : aGroups)
     {
       occ::handle<Standard_Transient> aTarget;
@@ -8971,6 +9151,38 @@ void STEPCAFControl_Writer::writePMIValidation(
         else if (aName == "affected curve length" && aLength > 0.)
         {
           anItems.Append(measureItem(aName, aLength, 1, theRC));
+        }
+        else if (aGroup.Of == "presentation" && aMeasures.Length > 0.
+                 && (aName == "tessellated curve length" || aName == "polyline curve length"))
+        {
+          anItems.Append(measureItem(aName, aMeasures.Length, 1, theRC));
+        }
+        // A count of none is given (NIST FTC-08 -e4-tg: 60 graphics' facets 0), a measure of
+        // nothing not
+        else if (aGroup.Of == "presentation" && !aCallout.IsNull()
+                 && aName == "number of segments")
+        {
+          anItems.Append(integerItem(aName, aMeasures.Segments));
+        }
+        else if (aGroup.Of == "presentation" && aMeasures.Length > 0.
+                 && (aName == "tessellated curve centre point" || aName == "polyline centre point"))
+        {
+          anItems.Append(pointItem(aName, aMeasures.LengthMoment / aMeasures.Length));
+        }
+        else if (aGroup.Of == "presentation" && !aCallout.IsNull()
+                 && aName == "number of facets")
+        {
+          anItems.Append(integerItem(aName, aMeasures.Facets));
+        }
+        else if (aGroup.Of == "presentation" && aMeasures.Facets > 0
+                 && aName == "tessellated surface area")
+        {
+          anItems.Append(measureItem(aName, aMeasures.Area, 2, theRC));
+        }
+        else if (aGroup.Of == "presentation" && aMeasures.Area > 0.
+                 && aName == "tessellated surface centre point")
+        {
+          anItems.Append(pointItem(aName, aMeasures.AreaMoment / aMeasures.Area));
         }
         else if (aName == "datum references" && aGroup.Of != "presentation"
                  && aL.IsAttribute(XCAFDoc_GeomTolerance::GetID()))
