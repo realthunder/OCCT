@@ -9050,6 +9050,41 @@ void STEPCAFControl_Writer::writePMIValidation(
     }
   }
   const int anAnnotations = aCallouts.Extent();
+  // The semantic texts written (a note's words): of the part, else of what a graphic presents
+  // (the text or the shape aspect it is of) -- on PMI -- else on geometry. NIST STC-08's three,
+  // each of a shape aspect a graphic presents, are on PMI
+  NCollection_Map<occ::handle<Standard_Transient>> aPresented;
+  for (int i = 1; i <= aModel->NbEntities(); ++i)
+  {
+    occ::handle<StepAP242_DraughtingModelItemAssociation> aDMIA =
+      occ::down_cast<StepAP242_DraughtingModelItemAssociation>(aModel->Value(i));
+    if (!aDMIA.IsNull() && !aDMIA->Definition().Value().IsNull())
+    {
+      aPresented.Add(aDMIA->Definition().Value());
+    }
+  }
+  int aTexts = 0, aTextsOnPart = 0, aTextsOnPMI = 0;
+  for (int i = 1; i <= aModel->NbEntities(); ++i)
+  {
+    occ::handle<StepRepr_PropertyDefinition> aText =
+      occ::down_cast<StepRepr_PropertyDefinition>(aModel->Value(i));
+    if (aText.IsNull() || aText->Name().IsNull() || aText->Name()->String() != "semantic text")
+    {
+      continue;
+    }
+    ++aTexts;
+    const occ::handle<Standard_Transient> anOf = aText->Definition().Value();
+    if (!anOf.IsNull()
+        && (anOf->IsKind(STANDARD_TYPE(StepRepr_ProductDefinitionShape))
+            || anOf->IsKind(STANDARD_TYPE(StepBasic_ProductDefinition))))
+    {
+      ++aTextsOnPart;
+    }
+    else if (aPresented.Contains(aText) || (!anOf.IsNull() && aPresented.Contains(anOf)))
+    {
+      ++aTextsOnPMI;
+    }
+  }
   const int aSemantics    = aLocations + aSizes + aTolerances + aDatums + aTargets;
 
   // A part's: its counts, of its shape
@@ -9114,6 +9149,22 @@ void STEPCAFControl_Writer::writePMIValidation(
         else if (aName == "number of datum targets")
         {
           aCount = aTargets;
+        }
+        else if (aName == "number of semantic text notes")
+        {
+          aCount = aTexts;
+        }
+        else if (aName == "number of semantic text notes on part")
+        {
+          aCount = aTextsOnPart;
+        }
+        else if (aName == "number of semantic text notes on PMI")
+        {
+          aCount = aTextsOnPMI;
+        }
+        else if (aName == "number of semantic text notes on geometry")
+        {
+          aCount = aTexts - aTextsOnPart - aTextsOnPMI;
         }
         if (aCount >= 0)
         {
