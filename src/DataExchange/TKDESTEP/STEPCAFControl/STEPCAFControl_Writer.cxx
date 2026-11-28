@@ -432,6 +432,12 @@ public:
   {
     occ::handle<Standard_Transient> View;
     int                             Annotations = 0;
+    //! Its callouts by what they present: a tolerance, a dimension, a datum or datum target,
+    //! anything else (a note, a graphic alone)
+    int Tolerances = 0, Dimensions = 0, Datums = 0, Others = 0;
+    //! What it shows of the shapes, in the document's unit: its faces' area, and the length of
+    //! its curves of no face (supplemental geometry)
+    double VisibleArea = 0., VisibleLength = 0.;
   };
   NCollection_DataMap<TDF_Label, ViewWritten> Views;
   //! The datum written of each datum label (Semantics has its feature)
@@ -8653,6 +8659,66 @@ struct GraphicMeasures
   }
 };
 
+//! Which of a view's counts a callout presenting theL is of: a tolerance's, a datum's (a
+//! target's too), a dimension's, else (a note, a graphic alone: a dimension label of no
+//! dimension) the others'
+int& annotationKind(GDTPresentationModel::ViewWritten& theView,
+                    const TDF_Label&                   theL)
+{
+  occ::handle<XCAFDoc_Dimension> aDimension;
+  if (theL.IsAttribute(XCAFDoc_GeomTolerance::GetID()))
+  {
+    return theView.Tolerances;
+  }
+  if (theL.IsAttribute(XCAFDoc_Datum::GetID()))
+  {
+    return theView.Datums;
+  }
+  if (theL.FindAttribute(XCAFDoc_Dimension::GetID(), aDimension)
+      && !aDimension->GetObject().IsNull()
+      && aDimension->GetObject()->GetType() != XCAFDimTolObjects_DimensionType_CommonLabel
+      && aDimension->GetObject()->GetType()
+           != XCAFDimTolObjects_DimensionType_DimensionPresentation)
+  {
+    return theView.Dimensions;
+  }
+  return theView.Others;
+}
+
+//! What a view shows of theShapes: the area of their faces and the length of their edges of no
+//! face (curves: supplemental geometry), in the document's unit
+void visibleGeometry(const NCollection_Sequence<TopoDS_Shape>& theShapes,
+                     double&                                   theArea,
+                     double&                                   theLength)
+{
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aFaces, anEdges, aFaceEdges;
+  for (const TopoDS_Shape& aShape : theShapes)
+  {
+    if (aShape.IsNull())
+    {
+      continue;
+    }
+    TopExp::MapShapes(aShape, TopAbs_FACE, aFaces);
+    TopExp::MapShapes(aShape, TopAbs_EDGE, anEdges);
+  }
+  for (int i = 1; i <= aFaces.Extent(); ++i)
+  {
+    TopExp::MapShapes(aFaces(i), TopAbs_EDGE, aFaceEdges);
+    GProp_GProps aProps;
+    BRepGProp::SurfaceProperties(aFaces(i), aProps);
+    theArea += aProps.Mass();
+  }
+  for (int i = 1; i <= anEdges.Extent(); ++i)
+  {
+    if (!aFaceEdges.Contains(anEdges(i)))
+    {
+      GProp_GProps aProps;
+      BRepGProp::LinearProperties(anEdges(i), aProps);
+      theLength += aProps.Mass();
+    }
+  }
+}
+
 //! A triangulated surface set's node theI: by its pnindex when it has one
 gp_XYZ surfaceNode(const occ::handle<NCollection_HArray1<gp_XYZ>>& thePoints,
                    const occ::handle<NCollection_HArray1<int>>&    thePnindex,
@@ -9207,9 +9273,34 @@ void STEPCAFControl_Writer::writePMIValidation(
       NCollection_Sequence<occ::handle<StepRepr_RepresentationItem>> anItems;
       for (const TCollection_AsciiString& aName : aGroup.Items)
       {
+        const GDTPresentationModel::ViewWritten& aView = anIter.Value();
         if (aName == "number of annotations")
         {
-          anItems.Append(integerItem(aName, anIter.Value().Annotations));
+          anItems.Append(integerItem(aName, aView.Annotations));
+        }
+        else if (aName == "number of tolerance annotations")
+        {
+          anItems.Append(integerItem(aName, aView.Tolerances));
+        }
+        else if (aName == "number of dimension annotations")
+        {
+          anItems.Append(integerItem(aName, aView.Dimensions));
+        }
+        else if (aName == "number of datum annotations")
+        {
+          anItems.Append(integerItem(aName, aView.Datums));
+        }
+        else if (aName == "number of other annotations")
+        {
+          anItems.Append(integerItem(aName, aView.Others));
+        }
+        else if (aName == "visible geometry surface area")
+        {
+          anItems.Append(measureItem(aName, aView.VisibleArea / (aFactor * aFactor), 2, theRC));
+        }
+        else if (aName == "visible geometry curve length")
+        {
+          anItems.Append(measureItem(aName, aView.VisibleLength / aFactor, 1, theRC));
         }
       }
       writeValidationProperty(aModel, aGroup.Name, anIter.Value().View, anItems, theRC);
@@ -10153,6 +10244,8 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
       // of the GD&T it shows
       NCollection_DynamicArray<occ::handle<StepRepr_RepresentationItem>> anItems;
       NCollection_Map<occ::handle<Standard_Transient>>                    aListed;
+      GDTPresentationModel::ViewWritten                                   aWritten;
+      NCollection_Sequence<TopoDS_Shape>                                  aShown;
       anItems.Append(aCamera);
       NCollection_Sequence<TDF_Label> aShapes;
       aViewTool->GetRefShapeLabel(aViewL, aShapes);
@@ -10179,6 +10272,7 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
         {
           continue;
         }
+        aShown.Append(myLabels.Find(aShapeL));
         occ::handle<StepRepr_RepresentationMap> aMap = new StepRepr_RepresentationMap();
         aMap->Init(aCamera, aSDR->UsedRepresentation());
         occ::handle<StepRepr_MappedItem> aMapped = new StepRepr_MappedItem();
@@ -10202,6 +10296,7 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
         {
           aSubset.Append(aWritten->Item);
           aSubsetContext = aWritten->Context;
+          aShown.Append(XCAFDoc_ShapeTool::GetShape(anIter.Value()));
         }
       }
       if (!aSubset.IsEmpty())
@@ -10251,9 +10346,14 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
           if (aListed.Add(anIter.Value()))
           {
             anItems.Append(anIter.Value());
+            if (anIter.Value()->IsKind(STANDARD_TYPE(StepVisual_DraughtingCallout)))
+            {
+              ++annotationKind(aWritten, aGDTIter.Value());
+            }
           }
         }
       }
+      visibleGeometry(aShown, aWritten.VisibleArea, aWritten.VisibleLength);
 
       occ::handle<NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>> anArray =
         new NCollection_HArray1<occ::handle<StepRepr_RepresentationItem>>(1, anItems.Length());
@@ -10293,7 +10393,6 @@ void STEPCAFControl_Writer::writeViews(const occ::handle<XSControl_WorkSession>&
         aParams->AddEntity(Interface_ParamIdent, aCamera);
         aParams->AddEntity(Interface_ParamIdent, aModelOfView);
         aModel->AddWithRefs(aView);
-        GDTPresentationModel::ViewWritten aWritten;
         aWritten.View = aView;
         for (int i = 0; i < anItems.Length(); ++i)
         {
