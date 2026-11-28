@@ -28,6 +28,7 @@
 #include <BRep_Tool.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepGProp.hxx>
 #include <ChFi3d.hxx>
 #include <GProp_GProps.hxx>
@@ -548,8 +549,11 @@ bool BuildOneAfterAnother(ChFi3d_ChBuilder& theBuilder,
     {
       continue;
     }
+    // (a copy: what the result keeps of a frozen input is frozen, and the
+    // check, which settles tolerances as it goes, found #474's coil crossing
+    // itself frozen that it finds clean unfrozen)
     BOPAlgo_ArgumentAnalyzer aCheck;
-    aCheck.SetShape1(aState.myShape);
+    aCheck.SetShape1(BRepBuilderAPI_Copy(aState.myShape, false).Shape());
     aCheck.ArgumentTypeMode()   = false;
     aCheck.SelfInterMode()      = true;
     aCheck.SmallEdgeMode()      = false;
