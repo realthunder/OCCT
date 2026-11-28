@@ -5155,7 +5155,10 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
       {
         aDatTargetObj->SetModifierWithValue(theXCAFModifWithVal, theModifValue);
       }
-      aDGTTool->SetDatumToGeomTol(aDatL, theGDTL);
+      if (!theGDTL.IsNull())
+      {
+        aDGTTool->SetDatumToGeomTol(aDatL, theGDTL);
+      }
       aDatTargetObj->IsDatumTarget(true);
       aDatTargetObj->SetDatumTargetNumber(aDT->TargetId()->IntegerValue());
       readAnnotation(aTR, aDT, aDatTargetObj, theLocalFactors);
@@ -5224,7 +5227,11 @@ bool STEPCAFControl_Reader::setDatumToXCAF(
     {
       aDatObj->SetModifierWithValue(theXCAFModifWithVal, theModifValue);
     }
-    aDGTTool->SetDatumToGeomTol(aDatL, theGDTL);
+    // A datum no frame read cites is read with no tolerance (ReadGDTs)
+    if (!theGDTL.IsNull())
+    {
+      aDGTTool->SetDatumToGeomTol(aDatL, theGDTL);
+    }
     if (aDatObj->GetPresentation().IsNull())
     {
       // Try find annotation connected to datum entity (not right case, according recommended
@@ -8067,6 +8074,54 @@ bool STEPCAFControl_Reader::ReadGDTs(const occ::handle<XSControl_WorkSession>& t
         }
       }
     }
+  }
+  // The datums no frame read cites -- none does (NIST CTC-03's F, a datum feature with its
+  // graphic and its validation property), or only one not read: read alone, of no tolerance.
+  // One whose feature has a target is left: its targets are read by the frames that cite them
+  for (int i = 1; i <= nb; i++)
+  {
+    occ::handle<StepDimTol_Datum> aDatum = occ::down_cast<StepDimTol_Datum>(aModel->Value(i));
+    if (aDatum.IsNull() || myGDTMap.IsBound(aDatum))
+    {
+      continue;
+    }
+    bool isRead = false, hasTarget = false;
+    for (Interface_EntityIterator anIter = aGraph.Sharings(aDatum); anIter.More(); anIter.Next())
+    {
+      occ::handle<StepRepr_ShapeAspectRelationship> aSAR =
+        occ::down_cast<StepRepr_ShapeAspectRelationship>(anIter.Value());
+      if (aSAR.IsNull() || aSAR->RelatingShapeAspect().IsNull())
+      {
+        continue;
+      }
+      NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>> aSAs;
+      aSAs.Append(aSAR->RelatingShapeAspect());
+      collectShapeAspect(aSAR->RelatingShapeAspect(), theWS, aSAs);
+      for (NCollection_Sequence<occ::handle<StepRepr_ShapeAspect>>::Iterator anSAIter(aSAs);
+           anSAIter.More(); anSAIter.Next())
+      {
+        const occ::handle<StepRepr_ShapeAspect>& aSA = anSAIter.Value();
+        if (aSA.IsNull())
+        {
+          continue;
+        }
+        hasTarget = hasTarget || aSA->IsKind(STANDARD_TYPE(StepDimTol_DatumTarget));
+        isRead    = isRead || myGDTMap.IsBound(aSA);
+      }
+    }
+    if (isRead || hasTarget)
+    {
+      continue;
+    }
+    setDatumToXCAF(aDatum,
+                   TDF_Label(),
+                   0,
+                   NCollection_Sequence<XCAFDimTolObjects_DatumSingleModif>(),
+                   XCAFDimTolObjects_DatumModifWithValue_None,
+                   0.0,
+                   theDoc,
+                   theWS,
+                   theLocalFactors);
   }
   // Composite frames: a lower segment's tolerance related to its upper's (AP242's
   // geometric_tolerance_relationship 'composite', the upper relating), both read. NIST
