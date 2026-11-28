@@ -6986,9 +6986,59 @@ void BRepOffset_MakeOffset::MakeThickSolidOrRunaway(const Message_ProgressRange&
     }
 
     myOffsetShape = Glue.Shells();
+    // Several closed shells -- the walls closed over the removed face, a
+    // skin and a hollow that share no edge -- are each oriented by the faces
+    // the quilt met first, one whatever the other is: the hollow came out
+    // facing in or out by the order of the faces (the box with all its edges
+    // filleted 2, a corner removed 1.35 inward: right at one corner, at the
+    // next the same two shells with the hollow counted as material, 9233.8
+    // for 2375.4, invalid and refused). From fix level 5 the largest is the
+    // outside and the others face the other way.
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aTurned;
+    int aNbGlued = 0;
+    for (exp.Init(myOffsetShape, TopAbs_SHELL); exp.More() && aNbGlued < 2; exp.Next())
+    {
+      ++aNbGlued;
+    }
+    if (BRepOffset_FixLevel() >= 5 && aNbGlued > 1)
+    {
+      int                 aNbShells = 0, aLargest = 0;
+      bool                isAllClosed = true;
+      std::vector<double> aVolumes;
+      for (exp.Init(myOffsetShape, TopAbs_SHELL); exp.More() && isAllClosed; exp.Next())
+      {
+        isAllClosed = BRep_Tool::IsClosed(exp.Current());
+        if (isAllClosed)
+        {
+          TopoDS_Solid aOne;
+          B.MakeSolid(aOne);
+          B.Add(aOne, exp.Current());
+          GProp_GProps aProps;
+          BRepGProp::VolumeProperties(aOne, aProps);
+          aVolumes.push_back(aProps.Mass());
+          if (std::abs(aVolumes[aNbShells]) > std::abs(aVolumes[aLargest]))
+          {
+            aLargest = aNbShells;
+          }
+          ++aNbShells;
+        }
+      }
+      if (isAllClosed && aNbShells > 1 && std::abs(aVolumes[aLargest]) > Precision::Confusion())
+      {
+        int i = 0;
+        for (exp.Init(myOffsetShape, TopAbs_SHELL); exp.More(); exp.Next(), ++i)
+        {
+          if (i != aLargest && std::abs(aVolumes[i]) > Precision::Confusion()
+              && (aVolumes[i] > 0.) == (aVolumes[aLargest] > 0.))
+          {
+            aTurned.Add(exp.Current());
+          }
+        }
+      }
+    }
     for (exp.Init(myOffsetShape, TopAbs_SHELL); exp.More(); exp.Next())
     {
-      B.Add(Res, exp.Current());
+      B.Add(Res, aTurned.Contains(exp.Current()) ? exp.Current().Reversed() : exp.Current());
     }
     Res.Closed(true);
     // The quilt orients each shell by the faces it met first and reverses a
@@ -6998,6 +7048,7 @@ void BRepOffset_MakeOffset::MakeThickSolidOrRunaway(const Message_ProgressRange&
     // out inside out where its mirror image did not. Set the material inside.
     isOriented = BRepLib::OrientClosedSolid(Res);
     myOffsetShape = Res;
+    SHOW_TOPO_SHAPE(myOffsetShape, "ThickGlued");
 
     // Test of Validity of the result of thick Solid
     // more face than the initial solid.
@@ -13553,6 +13604,7 @@ void BRepOffset_MakeOffset::SelectShells()
   }
 
   myOffsetShape = BRepOffset_Tool::Deboucle3D(myOffsetShape, FreeEdges);
+  SHOW_TOPO_SHAPE(myOffsetShape, "AfterDeboucle");
 }
 
 //=================================================================================================
