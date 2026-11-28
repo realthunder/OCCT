@@ -5768,6 +5768,157 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
       }
     }
   }
+  // Where the tubes round a removed face's edges cover it whole -- every
+  // edge of it tangent to the face across, every point of it nearer than the
+  // thickness to one of its edges -- the walls close over it, the hollow has
+  // a shell of its own and the other shell is the part's skin, the removed
+  // face whole. The loops may leave it a pit there, between the pieces of
+  // the tubes that cut each other off (the box with all its edges filleted
+  // 2, a corner removed 1.35: the hollow right, the skin 0.1523 short of the
+  // part inward and 0.0153 over outward, at some corners and not at others).
+  // From fix level 5 the skin is then the part's own shell.
+  if (isManifoldAsked && myDone && aJoinAsked == GeomAbs_Arc && aRemovedAsked.Extent() == 1)
+  {
+    NCollection_Sequence<TopoDS_Shape> aShells;
+    for (TopExp_Explorer anExp(myOffsetShape, TopAbs_SHELL); anExp.More(); anExp.Next())
+    {
+      aShells.Append(anExp.Current());
+    }
+    TopExp_Explorer aPartShells(aShapeAsked, TopAbs_SHELL);
+    TopoDS_Shape    aPartShell;
+    if (aPartShells.More())
+    {
+      aPartShell = aPartShells.Current();
+      aPartShells.Next();
+    }
+    auto isCovered = [&]() {
+      const TopoDS_Face& aCF = TopoDS::Face(aRemovedAsked(1));
+      NCollection_IndexedDataMap<TopoDS_Shape,
+                                 NCollection_List<TopoDS_Shape>,
+                                 TopTools_ShapeMapHasher>
+        aMEF;
+      TopExp::MapShapesAndAncestors(aShapeAsked, TopAbs_EDGE, TopAbs_FACE, aMEF);
+      BRep_Builder    aBB;
+      TopoDS_Compound anEdges;
+      aBB.MakeCompound(anEdges);
+      const BRepAdaptor_Surface aSurf(aCF);
+      for (TopExp_Explorer anExpE(aCF, TopAbs_EDGE); anExpE.More(); anExpE.Next())
+      {
+        const TopoDS_Edge& anE = TopoDS::Edge(anExpE.Current());
+        if (BRep_Tool::Degenerated(anE))
+        {
+          continue;
+        }
+        const NCollection_List<TopoDS_Shape>* aLF = aMEF.Seek(anE);
+        if (!aLF || aLF->Extent() != 2)
+        {
+          return false;
+        }
+        const TopoDS_Face& aNF =
+          TopoDS::Face(aLF->First().IsSame(aCF) ? aLF->Last() : aLF->First());
+        if (aNF.IsSame(aCF))
+        {
+          return false;
+        }
+        // tangent across the edge, at its middle
+        double                          aF, aL;
+        const occ::handle<Geom2d_Curve> aC1 = BRep_Tool::CurveOnSurface(anE, aCF, aF, aL);
+        const occ::handle<Geom2d_Curve> aC2 = BRep_Tool::CurveOnSurface(anE, aNF, aF, aL);
+        if (aC1.IsNull() || aC2.IsNull())
+        {
+          return false;
+        }
+        const gp_Pnt2d            aP1 = aC1->Value(0.5 * (aF + aL));
+        const gp_Pnt2d            aP2 = aC2->Value(0.5 * (aF + aL));
+        const BRepAdaptor_Surface aNS(aNF);
+        gp_Pnt                    aP;
+        gp_Vec                    aDu, aDv;
+        aSurf.D1(aP1.X(), aP1.Y(), aP, aDu, aDv);
+        gp_Vec aN1 = aDu.Crossed(aDv);
+        aNS.D1(aP2.X(), aP2.Y(), aP, aDu, aDv);
+        gp_Vec aN2 = aDu.Crossed(aDv);
+        if (aN1.Magnitude() < gp::Resolution() || aN2.Magnitude() < gp::Resolution()
+            || aN1.Normalized().Crossed(aN2.Normalized()).Magnitude() > 1.e-4)
+        {
+          return false;
+        }
+        aBB.Add(anEdges, anE);
+      }
+      occ::handle<IntTools_Context> aCtx = new IntTools_Context;
+      double                        aU1, aU2, aV1, aV2;
+      BRepTools::UVBounds(aCF, aU1, aU2, aV1, aV2);
+      const int    aNbG = 9;
+      const double aT   = std::abs(anOffsetAsked);
+      int          aNbIn = 0;
+      for (int i = 1; i <= aNbG; ++i)
+      {
+        for (int j = 1; j <= aNbG; ++j)
+        {
+          const gp_Pnt2d aP2d(aU1 + (aU2 - aU1) * (i - 0.5) / aNbG,
+                              aV1 + (aV2 - aV1) * (j - 0.5) / aNbG);
+          if (!aCtx->IsPointInFace(aCF, aP2d))
+          {
+            continue;
+          }
+          ++aNbIn;
+          BRepExtrema_DistShapeShape aDSS(
+            BRepBuilderAPI_MakeVertex(aSurf.Value(aP2d.X(), aP2d.Y())).Vertex(),
+            anEdges);
+          if (!(aDSS.IsDone() && aDSS.NbSolution() > 0) || aDSS.Value() > aT * (1. - 1.e-2))
+          {
+            return false;
+          }
+        }
+      }
+      return aNbIn > 0;
+    };
+    if (aShells.Length() == 2 && !aPartShell.IsNull() && !aPartShells.More())
+    {
+      // the shell with a face of the part in it, and the part's volume
+      NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aPartFaces;
+      for (TopExp_Explorer anExp(aShapeAsked, TopAbs_FACE); anExp.More(); anExp.Next())
+      {
+        aPartFaces.Add(anExp.Current());
+      }
+      int aSkin = 0;
+      for (int i = 1; i <= 2; ++i)
+      {
+        for (TopExp_Explorer anExp(aShells(i), TopAbs_FACE); anExp.More(); anExp.Next())
+        {
+          if (aPartFaces.Contains(anExp.Current()))
+          {
+            aSkin = aSkin == 0 || aSkin == i ? i : -1;
+            break;
+          }
+        }
+      }
+      if (aSkin > 0)
+      {
+        GProp_GProps aSkinV, aPartV;
+        BRepGProp::VolumeProperties(aShells(aSkin), aSkinV);
+        BRepGProp::VolumeProperties(aPartShell, aPartV);
+        if (std::abs(std::abs(aSkinV.Mass()) - std::abs(aPartV.Mass()))
+              > 1.e-7 * std::abs(aPartV.Mass())
+            && isCovered())
+        {
+          TopoDS_Shape aNewSkin = aPartShell;
+          if ((aSkinV.Mass() < 0.) != (aPartV.Mass() < 0.))
+          {
+            aNewSkin.Reverse();
+          }
+          BRep_Builder aBB;
+          TopoDS_Solid aSolid;
+          aBB.MakeSolid(aSolid);
+          aBB.Add(aSolid, aNewSkin);
+          aBB.Add(aSolid, aShells(3 - aSkin));
+          if (BRepCheck_Analyzer(aSolid).IsValid())
+          {
+            myOffsetShape = aSolid;
+          }
+        }
+      }
+    }
+  }
   if (isManifoldAsked && myDone && HasEdgeOnMoreThanTwoFaces(myOffsetShape))
   {
     myDone  = false;

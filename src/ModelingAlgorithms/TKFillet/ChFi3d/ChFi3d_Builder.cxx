@@ -2383,9 +2383,20 @@ bool HasCoveredEdge(const TopoDS_Shape& theResult, const double theTolIn)
 // middle alone is not enough: #273's D-hole, the flat's rim of 5.2
 // chamfered at 2, came out as deep as asked at its middle, a chamfer 1.2
 // long between two patches of 10.8 each that stood out of the bottom.
+//
+// From fix level 4 (below it noted as passed over) the result's faces
+// that count are the chamfers' and the corners' own and the ones on the
+// surfaces of the edge's two faces: a
+// face of the input that the edge only ends on is near its point whatever
+// was made. #309's tab on its disc, the edge of 2 across the plate
+// chamfered with the tab's upright edge from 0.955 up, the corner set back
+// by the size: the point at three quarters of the 1.044 left is 0.261 off
+// the plate's far side, half the chamfer's depth is 0.262, and a valid
+// chamfer made all along was refused as not made.
 bool AreChamfersMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
                      const ChFiDS_Map&                                   theEFMap,
-                     const TopoDS_Shape&                                 theResult)
+                     const TopoDS_Shape&                                 theResult,
+                     const TopoDS_Shape&                                 theShape)
 {
   TopoDS_Compound aFaces;
   BRep_Builder    aBuilder;
@@ -2394,6 +2405,42 @@ bool AreChamfersMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStri
   {
     aBuilder.Add(aFaces, anExp.Current());
   }
+  const auto SurfaceOf = [](const TopoDS_Shape& theF) {
+    TopLoc_Location aLoc;
+    return occ::handle<Standard_Transient>(BRep_Tool::Surface(TopoDS::Face(theF), aLoc));
+  };
+  NCollection_Map<occ::handle<Standard_Transient>> anInput;
+  for (TopExp_Explorer anExp(theShape, TopAbs_FACE); anExp.More(); anExp.Next())
+  {
+    anInput.Add(SurfaceOf(anExp.Current()));
+  }
+  // the result's faces without those on the surface of a face of the input
+  // that is not one of the edge's
+  const auto FacesFor = [&](const TopoDS_Edge& theE) {
+    if (anInput.IsEmpty())
+    {
+      return aFaces;
+    }
+    NCollection_Map<occ::handle<Standard_Transient>> anOwn;
+    for (NCollection_List<TopoDS_Shape>::Iterator itF(theEFMap.FindFromKey(theE)); itF.More();
+         itF.Next())
+    {
+      anOwn.Add(SurfaceOf(itF.Value()));
+    }
+    TopoDS_Compound aRes;
+    aBuilder.MakeCompound(aRes);
+    bool isAny = false;
+    for (TopExp_Explorer anExp(theResult, TopAbs_FACE); anExp.More(); anExp.Next())
+    {
+      const occ::handle<Standard_Transient> aS = SurfaceOf(anExp.Current());
+      if (!anInput.Contains(aS) || anOwn.Contains(aS))
+      {
+        aBuilder.Add(aRes, anExp.Current());
+        isAny = true;
+      }
+    }
+    return isAny ? aRes : aFaces;
+  };
   for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(theStripes); it.More();
        it.Next())
   {
@@ -2467,10 +2514,28 @@ bool AreChamfersMade(const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStri
       const double aLong = aC.LastParameter() - aC.FirstParameter();
       const double aPar  = isRev ? aC.LastParameter() - aFrac * aLong
                                  : aC.FirstParameter() + aFrac * aLong;
+      const double aLimit = std::max(0.5 * aSmall * std::sin(0.5 * anA), 1.e-6);
       BRepExtrema_DistShapeShape aDist(BRepBuilderAPI_MakeVertex(aC.Value(aPar)).Vertex(), aFaces);
-      if (!aDist.IsDone() || aDist.Value() < std::max(0.5 * aSmall * std::sin(0.5 * anA), 1.e-6))
+      if (!aDist.IsDone())
       {
         return false;
+      }
+      if (aDist.Value() < aLimit)
+      {
+        // (the faces sorted out only where the test fails; below level 4
+        // the chamfer is refused as before, and noted as one a level above
+        // makes)
+        BRepExtrema_DistShapeShape aDistOwn(BRepBuilderAPI_MakeVertex(aC.Value(aPar)).Vertex(),
+                                            FacesFor(anE));
+        if (!aDistOwn.IsDone() || aDistOwn.Value() < aLimit)
+        {
+          return false;
+        }
+        if (ChFi3d_FixLevel() < 4)
+        {
+          ChFi3d_FixPassedOver() = true;
+          return false;
+        }
       }
     }
   }
@@ -2897,7 +2962,7 @@ void ChFi3d_Builder::ComputeSetbackFallback()
       // setback and twice the radius of their vertices
       if (done && IsValidResult(myShapeResult, aMaxTol())
           && AreFilletsMade(myListStripe, myEFMap, myShapeResult)
-          && AreChamfersMade(myListStripe, myEFMap, myShapeResult)
+          && AreChamfersMade(myListStripe, myEFMap, myShapeResult, myShape)
           && !(hasChamferEnd() && HasCoveredEdge(myShapeResult, aMaxVertexTolIn))
           && !HasFoldNear(myShapeResult,
                           myShape,
@@ -3476,6 +3541,11 @@ void ChFi3d_Builder::Compute()
       // where it is 0.0005 with the one corner set back; 25 fillets of the
       // sweeps, all on that coil, are made differently by it).
       bool isMade = false;
+      if (ChFi3d_FixLevel() < 4 && aPlates.Extent() > 1)
+      {
+        // passed over: a level below that makes nothing goes on to it
+        ChFi3d_FixPassedOver() = true;
+      }
       if (ChFi3d_FixLevel() >= 4 && aPlates.Extent() > 1)
       {
         NCollection_List<TopoDS_Shape> aCorners;
@@ -3836,6 +3906,19 @@ void ChFi3d_Builder::Compute()
     // point of a stripe that runs on past its spine's end
     // (ChFi3d_CutStepBackAtSpineEnd). From fix level 4; kept on the terms
     // the fallbacks above keep a result on, else what there was.
+    if (ChFi3d_FixLevel() < 4 && !myListStripe.IsEmpty())
+    {
+      // passed over where level 4 would compute once more: a level below
+      // that makes nothing goes on to it
+      if (done && aKnownValid < 0)
+      {
+        aKnownValid = BRepCheck_Analyzer(myShapeResult).IsValid() ? 1 : 0;
+      }
+      if (!done || aKnownValid == 0)
+      {
+        ChFi3d_FixPassedOver() = true;
+      }
+    }
     if (ChFi3d_FixLevel() >= 4 && !myListStripe.IsEmpty())
     {
       if (done && aKnownValid < 0)
